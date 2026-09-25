@@ -82,7 +82,7 @@
 - **健壮锁机制** -- PID 感知的锁文件，自动清理过期（>30s）或孤儿（PID 已死）锁
 - **过期会话清理** -- 活跃超过 24 小时的会话在下次启动时自动标记为 abandoned
 - **领域同义词扩展** -- 搜索查询自动扩展领域同义词（如 "修复" → fix, debug, bugfix, repair, error）
-- **多 provider LLM 调用** -- provider 优先级 `ANTHROPIC_API_KEY`（直连 Anthropic API）→ `OPENROUTER_API_KEY`（OpenRouter，OpenAI 兼容，可用 `OPENROUTER_MODEL` 指向任意模型）→ 无 key 时回退 `claude -p` CLI
+- **多 provider LLM 调用** -- provider 优先级 `ANTHROPIC_API_KEY`（直连 Anthropic API）→ `OPENROUTER_API_KEY`（OpenRouter）→ `OPENAI_API_KEY` / `OPENAI_BASE_URL`（**任意 OpenAI 兼容后端**：vLLM、Ollama、LM Studio、LiteLLM、Azure OpenAI、DashScope、DeepSeek、Groq、OpenAI 本身）→ 无 key 时回退 `claude -p` CLI；多套 key 同时存在时用 `CLAUDE_MEM_LLM_PROVIDER` 显式指定
 - **Haiku 熔断器** -- 连续 3 次 LLM 失败后，禁用 Haiku 调度 5 分钟，防止级联延迟
 - **否定意图感知** -- 正确处理 "不要测试了，先修 bug" 等复杂提示，排除被否定的意图，支持中英文混合输入
 - **可配置 LLM 模型** -- 通过 `CLAUDE_MEM_MODEL` 环境变量在 Haiku（快速/低成本）和 Sonnet（深度分析）之间切换
@@ -120,6 +120,31 @@ v5.1.0 到 v6.1.0 之间，`package.json` 声明的是 `os: ["darwin", "linux"]`
 
 ## 安装
 
+### Qwen Code（本 fork）
+
+本仓库是 claude-mem-lite 的 **Qwen Code fork**：以 Qwen Code 扩展形式安装，与 Claude Code 安装
+共用同一份代码与同一个存储（`~/.claude-mem-lite/`，两个宿主的项目历史互通），不依赖 Claude Code。
+
+```bash
+qwen extensions install /path/to/claude-mem-lite
+qwen extensions list                             # ✓ claude-mem-lite
+qwen extensions link /path/to/claude-mem-lite    # 直接跟踪工作副本
+```
+
+| 部件 | 本 fork 为 Qwen 做的事 |
+|------|------------------------|
+| 钩子 | Qwen Code 原样加载 `hooks/hooks.json` 并替换 `${CLAUDE_PLUGIN_ROOT}`。它发来的工具 id 是 Qwen 自己的（`write_file`、`read_file`、`edit`、`run_shell_command`），由 `lib/tool-names.mjs` 统一翻译一次，因此跳过表、编辑权重、Bash 显著性与错误召回的行为与 Claude Code 一致。 |
+| LLM 后端 | 用 `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL` 把后台调用指向任意 OpenAI 兼容后端；请同时设 `CLAUDE_MEM_LLM_PROVIDER=openai`，因为 Qwen 的 `settings.json` `env` 块会向每个会话注入 `ANTHROPIC_API_KEY`，否则它会抢先。完整表格见[环境变量](#环境变量)。 |
+| MCP 服务 | 由扩展自身声明——请保持这样。`~/.qwen/settings.json` 里的同名 `mem-lite` 会**覆盖**扩展声明（settings 优先），于是会话跑的是它指向的那份代码（例如过期的 `~/.claude-mem-lite/server.mjs`）。 |
+| 引导块 | 同时写入 `<cwd>/CLAUDE.md` **与** `<cwd>/QWEN.md`：Qwen Code 只读后者，Claude Code 只读前者，而 `adopt` 无法判断自己在哪个宿主下运行。 |
+| 转录特性 | Qwen 的转录格式是 `message.parts`，由 `lib/transcript-scan.mjs` 归一化，因此引用追踪、未保存 bugfix 提醒与快速摘要照常工作。 |
+| 自动更新 | 本 fork **默认关闭**：上游发布的是 Claude 专用构建，自动更新会静默回退 Qwen 支持。用 `git pull`（或 `qwen extensions update`）更新；`CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE=1` 可重新开启，`CLAUDE_MEM_UPDATE_REPO=<owner>/<name>` 指向本 fork 自己的发布。 |
+| 斜杠命令 | `/mem`、`/memory`、`/lesson`、`/bug`、`/adopt`、`/unadopt`、`/update` 来自 `commands/`。 |
+
+> **在本仓库内工作时注意：** Qwen 会显示 `mem-lite` 未连接——仓库根目录的项目级 `.mcp.json`（Claude Code 插件清单）在该位置不会被展开。钩子、斜杠命令与记忆采集不受影响；其它项目都走扩展自身的声明。
+
+Claude Code 安装路径（`node install.mjs install`，写 `~/.claude/settings.json`）未做改动，两个宿主并用时照常可用。
+
 ### 方式一：插件市场（推荐）
 
 ```bash
@@ -154,7 +179,7 @@ node install.mjs install
 1. **安装依赖** -- `npm install --omit=dev`（编译原生 `better-sqlite3`）
 2. **注册 MCP 服务器** -- `mem-lite` 服务器，包含 18 个工具（9 个核心通过 `tools/list` 暴露 + 9 个隐藏但可调；完整表见 Usage 段）。v2.78 前服务器名为通用的 `mem`，现已改名为 `mem-lite` 避免与用户其它 `.mcp.json` 冲突；工具名（`mem_search`/`mem_recall` 等）保持不变。
 
-> **自动 adopt 会写进你的项目，且每次 SessionStart 都跑（v3.13+）。** 插件向**项目自己的 `<cwd>/CLAUDE.md`**（通常是会进 git 的文件）写入一个 slug 限定的**托管块**，外加 `<cwd>/.claude/plugin_claude_mem_lite.md` 详情文件。该块是一条提升 Claude 主动调用 `mem_recall` / `mem_save` 的 system-authority 指针；块以外的内容逐字保留，也能与其它插件的块共存于同一文件。这是**每次** SessionStart 都做的幂等同步，不只是第一次——块被删掉会重新写回，出货模板变了会刷新。**任何安装路径都生效**（npm、npx、`/plugin`、手动），**无需再手动跑 `/adopt`**。
+> **自动 adopt 会写进你的项目，且每次 SessionStart 都跑（v3.13+）。** 插件向**项目自己的 `<cwd>/CLAUDE.md`** **与 `<cwd>/QWEN.md`**（通常是会进 git 的文件）各写入一个 slug 限定的**托管块**，外加 `<cwd>/.claude/plugin_claude_mem_lite.md`、`<cwd>/.qwen/plugin_claude_mem_lite.md` 详情文件——两个宿主互不读取对方的上下文文件：Claude Code 读 `CLAUDE.md`，Qwen Code 读 `QWEN.md`。该块是一条提升 Claude 主动调用 `mem_recall` / `mem_save` 的 system-authority 指针；块以外的内容逐字保留，也能与其它插件的块共存于同一文件。这是**每次** SessionStart 都做的幂等同步，不只是第一次——块被删掉会重新写回，出货模板变了会刷新。**任何安装路径都生效**（npm、npx、`/plugin`、手动），**无需再手动跑 `/adopt`**。
 >
 > 关闭方式：项目级 `claude-mem-lite adopt --disable`（重新启用用 `--enable`）；全局 `export MEM_NO_AUTO_ADOPT=1`；只冻结模板刷新用 `CLAUDE_MEM_NO_TEMPLATE_REFRESH=1`。`claude-mem-lite unadopt` 可移除托管块与详情文件。手动 `/adopt` 仍保留用于编辑后重写或 `--all` 批量场景。
 3. **配置钩子** -- 全部七个生命周期事件：`SessionStart`、`PreCompact`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`Stop`、`UserPromptSubmit`
@@ -687,6 +712,11 @@ npm run benchmark:gate    # CI 门控：指标回退超过 5% 容差时失败
 | `ANTHROPIC_API_KEY` | Anthropic API key。设置后所有后台 LLM 调用直连 Anthropic Messages API（带 prompt caching），优先级最高。 | _(未设 → CLI)_ |
 | `OPENROUTER_API_KEY` | OpenRouter API key（OpenAI 兼容）。当**未设** `ANTHROPIC_API_KEY` 时用于后台 LLM 调用；两者都未设则回退到 `claude -p` CLI。 | _(未设)_ |
 | `OPENROUTER_MODEL` | 覆盖**所有**后台调用的 OpenRouter 模型 slug（如 `openai/gpt-4o-mini`、`qwen/qwen-2.5-72b-instruct`）。未设时按 `CLAUDE_MEM_MODEL` 分层映射到 `anthropic/claude-haiku-4.5`（haiku）或 `anthropic/claude-sonnet-4.5`（sonnet）。 | _(分层默认)_ |
+| `OPENAI_API_KEY` | 通用 OpenAI 兼容后端的 API key。当 `ANTHROPIC_API_KEY` 与 `OPENROUTER_API_KEY` 都**未设**时用于后台 LLM 调用。**可省略**：无 key 的本地服务（Ollama、vLLM、LM Studio）仅靠 `OPENAI_BASE_URL` 即可，此时不发 `Authorization` 头。这几个变量名与 Qwen Code 一致，因此同一套环境变量同时配置宿主与本插件。 | _(未设)_ |
+| `OPENAI_BASE_URL` | OpenAI 兼容后端的 base URL，**含版本段**（OpenAI SDK 约定）：`https://api.openai.com/v1`、`http://127.0.0.1:11434/v1`、`https://dashscope.aliyuncs.com/compatible-mode/v1`。请求发往 `<OPENAI_BASE_URL>/chat/completions`，容忍末尾斜杠。 | `https://api.openai.com/v1` |
+| `OPENAI_MODEL` | 通用后端**所有**分层的模型 id（如 `qwen3.5-plus`、`llama3.2`、`gpt-4o-mini`）。非 api.openai.com 的后端都应设置——本地服务没有 `gpt-*` 部署。 | _(分层默认)_ |
+| `OPENAI_MODEL_HAIKU` / `OPENAI_MODEL_SONNET` | 各分层的模型 id，用于在统一后端上保留 haiku/sonnet 分层。优先于 `OPENAI_MODEL`。 | 内置 `gpt-4o-mini` / `gpt-4o` |
+| `CLAUDE_MEM_LLM_PROVIDER` | 指定 provider 腿：`api` \| `openrouter` \| `openai` \| `cli`。当多套 key 同时存在、按键存在顺序会选错时使用——在 Qwen Code 下这是常态，因为它的 `settings.json` `env` 块会向每个会话注入 `ANTHROPIC_API_KEY`。指定的腿未配置时记日志并忽略，而不会盲从。 | _(自动探测)_ |
 | `CLAUDE_MEM_DEBUG` | 启用调试日志（设为 `1` 启用）。 | _(禁用)_ |
 | `MEM_QUIET_HOOKS` | 低噪声 hook。设为 `1` 时，SessionStart 注入去掉 `File Lessons` / `Key Context` 两节，`[mem] Related memories` 去掉 lesson 后缀，MCP server instructions 去掉 `WHEN TO USE` / `Decision rules` 两段。ID 与 `Recent` 表仍保留，`mem_get(ids=[…])` 可继续展开细节。适用于启用了 invited-memory adopt 流程或偏好最小化自动注入的用户。**v2.82.0 起此 env 不再阻挡 auto-adopt——如需关闭 auto-adopt 用 `MEM_NO_AUTO_ADOPT=1`。** | _(禁用)_ |
 | `MEM_NO_AUTO_ADOPT` | auto-adopt 全局关闭开关（v2.82.0+）。设为 `1` 阻止每次 SessionStart 在**所有**项目自动写入 `CLAUDE.md` 托管块。项目级关闭走 `claude-mem-lite adopt --disable`（写 `<memdir>/.mem-no-auto-adopt` 哨兵，存活于 marker 删除）。 | _(禁用)_ |

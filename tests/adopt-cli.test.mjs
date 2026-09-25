@@ -374,7 +374,11 @@ describe('cmdAdopt --disable / --enable', () => {
     cmdAdopt([]);
     logs.length = 0;
     cmdAdopt(['--status']);
-    expect(logs.some((l) => l.includes('CLAUDE.md:') && l.includes('adopted'))).toBe(true);
+    // Two context files since the Qwen Code fork (claudemd.mjs LAYOUTS): each is reported
+    // separately, and 'adopted' summarizes the pair.
+    expect(logs.some((l) => l.includes('CLAUDE.md:') && l.includes('✓ adopted'))).toBe(true);
+    expect(logs.some((l) => l.includes('QWEN.md:') && l.includes('✓ adopted'))).toBe(true);
+    expect(logs.some((l) => l.includes('adopted:') && l.includes('✓ both'))).toBe(true);
     expect(logs.some((l) => l.includes('Auto-adopt gates'))).toBe(true);
   });
 });

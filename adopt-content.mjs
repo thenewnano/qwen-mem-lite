@@ -1,5 +1,6 @@
 // CLAUDE.md-steering plan (v3.13): content generators for the claude-mem-lite
-// managed block (written into <cwd>/CLAUDE.md) and its companion
+// managed block (written into <cwd>/CLAUDE.md AND <cwd>/QWEN.md — claudemd.mjs owns the
+// two-layout list and the reasoning) and its companion
 // <cwd>/.claude/plugin_claude_mem_lite.md detail doc. Kept separate from the
 // claudemd.mjs primitives so the strings are testable without side effects.
 //
@@ -56,14 +57,15 @@ PreToolUse hooks already run \`mem_recall\` for past lessons before Read/Edit/Wr
 | Deferring to a future session | \`mem_defer({title, priority:1|2|3, detail})\`; when fixed, add \`closes_deferred=[N]\` to \`mem_save\` |
 | Looking up past work / history | \`mem_search "keywords"\` · \`mem_recent\` · \`mem_timeline\` |
 
-Path cost is round-trips, not milliseconds: the PreToolUse hook above already recalls (0 calls) — prefer it. For an explicit query, if these \`mem_*\` tools are deferred behind ToolSearch this session, the Bash CLI \`${CLI}\` is one call vs two (ToolSearch + call); the MCP server instructions carry the absolute path to use when it is not on PATH.
+Path cost is round-trips, not milliseconds: the PreToolUse hook above already recalls (0 calls) — prefer it. For an explicit query, if these \`mem_*\` tools are deferred behind ToolSearch (Qwen Code: \`tool_search\`) this session, the Bash CLI \`${CLI}\` is one call vs two (ToolSearch + call); the MCP server instructions carry the absolute path to use when it is not on PATH.
 
-Full tool + CLI tables, citation/decay rules, and save discipline → \`.claude/plugin_claude_mem_lite.md\``;
+Full tool + CLI tables, citation/decay rules, and save discipline → \`.claude/plugin_claude_mem_lite.md\` (Claude Code) · \`.qwen/plugin_claude_mem_lite.md\` (Qwen Code)`;
 }
 
 /**
- * Full detail doc rendered into `<cwd>/.claude/plugin_claude_mem_lite.md`.
- * Not auto-loaded by Claude Code — the CLAUDE.md block points to it and Claude
+ * Full detail doc rendered into `<cwd>/.claude/plugin_claude_mem_lite.md` and its
+ * `<cwd>/.qwen/plugin_claude_mem_lite.md` twin (claudemd.mjs writes one per layout).
+ * Not auto-loaded by either host — the managed block points to it and the agent
  * reads it on demand. claudemd.writeManaged() prepends the `managed-by` marker;
  * this returns pure content.
  */
@@ -71,7 +73,7 @@ export function getDetailDoc() {
   return `# claude-mem-lite 插件契约（完整）
 
 > 由 \`${CLI} adopt\` 生成、随版本自动刷新；卸载用 \`${CLI} unadopt\`。
-> 精炼触发表在项目 \`CLAUDE.md\` 的 \`claude-mem-lite\` 托管块里；本文件是其展开。
+> 精炼触发表在项目 \`CLAUDE.md\`（Claude Code）/ \`QWEN.md\`（Qwen Code）的 \`claude-mem-lite\` 托管块里；本文件是其展开。
 > 设计背景见 docs/CLAUDE-MD-STEERING-PLAN.md。
 
 > **本文下方所有命令写作 \`${CLI} <cmd>\`。** 该名字只在全局装过
@@ -178,8 +180,8 @@ PreToolUse hook 在你 Read / Edit / Write 文件前已自动 \`mem_recall\` 该
 
 ## 卸载 / 关闭
 
-- \`${CLI} unadopt\`：移除 CLAUDE.md 托管块 + \`.claude/plugin_claude_mem_lite.md\`；
-  CLAUDE.md 里你自己的内容（sentinel 之外）不动。
+- \`${CLI} unadopt\`：移除 CLAUDE.md/QWEN.md 托管块 + \`.claude/plugin_claude_mem_lite.md\`、
+  \`.qwen/plugin_claude_mem_lite.md\`；两个文件里你自己的内容（sentinel 之外）不动。
 - 本项目永久关闭自动 adopt：\`${CLI} adopt --disable\`（\`--enable\` 重新武装）。
 - 全局禁用自动 adopt：环境变量 \`MEM_NO_AUTO_ADOPT=1\`。
 - 关闭版本漂移自动刷新（保留你对托管块的手改）：\`CLAUDE_MEM_NO_TEMPLATE_REFRESH=1\`。

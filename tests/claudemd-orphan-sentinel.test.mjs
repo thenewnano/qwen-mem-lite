@@ -129,6 +129,12 @@ describe('an unpaired managed sentinel must not eat user content or be reported 
     writeManaged(cwd, args());
     expect(existsSync(detailDocPath(cwd, SLUG))).toBe(true);
     writeFileSync(md, read().replace(/<!-- claude-mem-lite:end -->\n?/, ''));
+    // writeManaged now writes BOTH layouts (claudemd.mjs LAYOUTS), and the case this test
+    // states is "no block was removed anywhere, only an orphan remains" — a healthy QWEN.md
+    // block would legitimately answer 'removed'. Drop the second layout so the fixture is
+    // the single-file world the assertion was written for.
+    rmSync(join(cwd, 'QWEN.md'), { force: true });
+    rmSync(join(cwd, '.qwen'), { recursive: true, force: true });
 
     const r = removeManaged(cwd, SLUG);
     expect(existsSync(detailDocPath(cwd, SLUG)), 'premise: the doc really was deleted').toBe(false);
@@ -243,7 +249,11 @@ describe('an unpaired managed sentinel must not eat user content or be reported 
 
     cli('adopt');
     writeFileSync(md, read() + USER_TAIL);
-    writeFileSync(md, read().replace(/<!-- claude-mem-lite:end -->\n?/, ''));
+    // Both layouts carry a block after this fork's dual write; orphan EVERY one of them,
+    // or the healthy copy answers 'removed' and this test stops testing the partial path.
+    for (const f of [md, join(cwd, 'QWEN.md')]) {
+      writeFileSync(f, readFileSync(f, 'utf8').replace(/<!-- claude-mem-lite:end -->\n?/, ''));
+    }
     const out = cli('unadopt');
     expect(out).toMatch(/→ partial/);
     expect(out, 'the user is not told which file still carries the block').toMatch(/CLAUDE\.md/);

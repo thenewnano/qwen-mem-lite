@@ -1,13 +1,15 @@
-// CLAUDE.md-steering plan (v3.13): claudemd.mjs — primitives for the
-// project-tree managed block at <cwd>/CLAUDE.md plus an on-demand detail doc
-// at <cwd>/.claude/plugin_<slug>.md.
+// Context-file steering (v3.13, two-layout since the Qwen Code fork): primitives for the
+// project-tree managed block at <cwd>/CLAUDE.md AND <cwd>/QWEN.md, each with an on-demand
+// detail doc at <cwd>/.claude/plugin_<slug>.md / <cwd>/.qwen/plugin_<slug>.md.
 //
-// Why here and not memdir.mjs: Claude Code loads the project CLAUDE.md and the
-// memory-dir MEMORY.md at EQUAL weight, so steering belongs in CLAUDE.md (the
-// canonical home for project instructions) — seeding MEMORY.md just pollutes an
-// index meant for the user's own memories. This module mirrors the design
-// shipped by the sibling code-graph-mcp plugin (claude-plugin/scripts/adopt.js)
-// and the oh-my-claudecode versioned `<!-- :begin vN -->` managed-block pattern.
+// Why here and not memdir.mjs: a host loads its project context file and the memory-dir
+// MEMORY.md at EQUAL weight, so steering belongs in that context file (the canonical home
+// for project instructions) — seeding MEMORY.md just pollutes an index meant for the
+// user's own memories. This module mirrors the design shipped by the sibling
+// code-graph-mcp plugin (claude-plugin/scripts/adopt.js) and the oh-my-claudecode
+// versioned `<!-- :begin vN -->` managed-block pattern.
+//
+// Why TWO files, and which two: see the LAYOUTS comment below.
 //
 // The managed block is plugin-owned: it auto-refreshes when the shipped content
 // drifts (version bump or template change), UNLESS CLAUDE_MEM_NO_TEMPLATE_REFRESH=1.
@@ -24,21 +26,52 @@ import { memdirPath, removePluginSection, removePluginDoc, isAdopted as memdirIs
 
 // ─── Path helpers ────────────────────────────────────────────────────────────
 
+// Two hosts, two context files, and they do not overlap: Claude Code loads the project
+// CLAUDE.md (+ .claude/) and ignores QWEN.md; Qwen Code loads QWEN.md (+ .qwen/) and
+// ignores CLAUDE.md — measured on Qwen Code 0.24.4, which loaded neither this repo's 20 KB
+// CLAUDE.md nor any other, its context-file default being QWEN.md alone. A single target
+// would therefore make the steering block invisible to whichever host it did not pick, and
+// adopt cannot detect the host: its own CLI runs with no host env at all.
+//
+// So the managed block goes to BOTH, each file carrying its own slug-scoped sentinel, its
+// own detail doc and its own state sidecar, and every read ORs across the pair. The cost is
+// one file the other host ignores; the alternative is a silent no-op on half the user's
+// sessions. Add a host by adding one line here.
+const LAYOUTS = [
+  { id: 'claude', contextFile: 'CLAUDE.md', dir: '.claude' },
+  { id: 'qwen', contextFile: 'QWEN.md', dir: '.qwen' },
+];
+
+/** The historical target, kept as the default for callers that read a single file. */
+const PRIMARY_LAYOUT = LAYOUTS[0];
+
 function slugSnake(slug) {
   return String(slug).replace(/[^a-zA-Z0-9]/g, '_');
 }
 
-export function claudeMdPath(cwd) {
-  return join(cwd, 'CLAUDE.md');
+export function claudeMdPath(cwd, layout = PRIMARY_LAYOUT) {
+  return join(cwd, layout.contextFile);
 }
-function dotClaudeDir(cwd) {
-  return join(cwd, '.claude');
+function dotDir(cwd, layout) {
+  return join(cwd, layout.dir);
 }
-export function detailDocPath(cwd, slug) {
-  return join(dotClaudeDir(cwd), `plugin_${slugSnake(slug)}.md`);
+export function detailDocPath(cwd, slug, layout = PRIMARY_LAYOUT) {
+  return join(dotDir(cwd, layout), `plugin_${slugSnake(slug)}.md`);
 }
-function stateFilePath(cwd, slug) {
-  return join(dotClaudeDir(cwd), `.plugin_${slugSnake(slug)}_state.json`);
+function stateFilePath(cwd, slug, layout = PRIMARY_LAYOUT) {
+  return join(dotDir(cwd, layout), `.plugin_${slugSnake(slug)}_state.json`);
+}
+/**
+ * Every (context file, detail doc) pair this module manages — for callers that report
+ * rather than read, e.g. `adopt --status` and the adopt log lines.
+ */
+export function contextTargets(cwd, slug) {
+  return LAYOUTS.map((layout) => ({
+    id: layout.id,
+    layout,
+    contextFile: claudeMdPath(cwd, layout),
+    detailDoc: detailDocPath(cwd, slug, layout),
+  }));
 }
 
 // First line of the detail doc — an invisible (in rendered markdown) marker that
@@ -127,14 +160,14 @@ function sha256(s) {
 // been in this repo, shipped and used by install.mjs for ~/.claude/settings.json, since the
 // day that failure mode was first written down in its own docblock.
 
-function writeState(cwd, slug, state) {
-  const dir = dotClaudeDir(cwd);
+function writeState(cwd, slug, state, layout = PRIMARY_LAYOUT) {
+  const dir = dotDir(cwd, layout);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  atomicWrite(stateFilePath(cwd, slug), JSON.stringify(state, null, 2) + '\n');
+  atomicWrite(stateFilePath(cwd, slug, layout), JSON.stringify(state, null, 2) + '\n');
 }
 
-function clearState(cwd, slug) {
-  const p = stateFilePath(cwd, slug);
+function clearState(cwd, slug, layout = PRIMARY_LAYOUT) {
+  const p = stateFilePath(cwd, slug, layout);
   if (existsSync(p))
     try {
       unlinkSync(p);
@@ -149,8 +182,8 @@ function clearState(cwd, slug) {
  * Parse <cwd>/CLAUDE.md for our slug-scoped managed block.
  * @returns {{ exists: boolean, version: string|null, body: string|null, raw: string }}
  */
-export function readBlock(cwd, slug) {
-  const p = claudeMdPath(cwd);
+export function readBlock(cwd, slug, layout = PRIMARY_LAYOUT) {
+  const p = claudeMdPath(cwd, layout);
   if (!existsSync(p)) return { exists: false, version: null, body: null, raw: '' };
   const raw = readFileSync(p, 'utf8');
   const m = raw.match(blockRegex(slug));
@@ -166,8 +199,10 @@ export function readBlock(cwd, slug) {
  * detail doc exists. Both must hold so a half-written state still self-heals.
  */
 export function isAdopted(cwd, slug) {
-  const blk = readBlock(cwd, slug);
-  return blk.body !== null && existsSync(detailDocPath(cwd, slug));
+  return LAYOUTS.some((layout) => {
+    const blk = readBlock(cwd, slug, layout);
+    return blk.body !== null && existsSync(detailDocPath(cwd, slug, layout));
+  });
 }
 
 /**
@@ -179,8 +214,14 @@ export function isAdopted(cwd, slug) {
  * removed it. removeManaged cleans all three pieces, so sweep on any of them.
  */
 export function hasResidue(cwd, slug) {
-  const blk = readBlock(cwd, slug);
-  return blk.body !== null || existsSync(detailDocPath(cwd, slug)) || existsSync(stateFilePath(cwd, slug));
+  return LAYOUTS.some((layout) => {
+    const blk = readBlock(cwd, slug, layout);
+    return (
+      blk.body !== null ||
+      existsSync(detailDocPath(cwd, slug, layout)) ||
+      existsSync(stateFilePath(cwd, slug, layout))
+    );
+  });
 }
 
 // An unpaired sentinel is deliberately NOT in the list above (pre-ship review P2-3). A first
@@ -205,12 +246,18 @@ export function hasResidue(cwd, slug) {
  * overwritten on refresh (opt out with CLAUDE_MEM_NO_TEMPLATE_REFRESH=1 at the
  * caller). User content lives OUTSIDE the sentinel and is never compared.
  */
-export function needsRefresh(cwd, { slug, version, block, doc }) {
-  const blk = readBlock(cwd, slug);
+export function needsRefresh(cwd, args) {
+  // Any layout out of date → refresh rewrites both (writeManaged is idempotent, so the
+  // in-sync file is left byte-identical).
+  return LAYOUTS.some((layout) => layoutNeedsRefresh(cwd, layout, args));
+}
+
+function layoutNeedsRefresh(cwd, layout, { slug, version, block, doc }) {
+  const blk = readBlock(cwd, slug, layout);
   if (blk.body === null) return true;
   if (blk.version !== version) return true;
   if (blk.body !== block) return true;
-  const dp = detailDocPath(cwd, slug);
+  const dp = detailDocPath(cwd, slug, layout);
   if (!existsSync(dp)) return true;
   let cur;
   try {
@@ -232,8 +279,20 @@ export function needsRefresh(cwd, { slug, version, block, doc }) {
  *
  * @returns {{action: 'created'|'updated'|'unchanged'}} (block disposition)
  */
-export function writeManaged(cwd, { slug, version, block, doc }) {
-  const p = claudeMdPath(cwd);
+export function writeManaged(cwd, args) {
+  // Both layouts get the same block/doc text. The steering text is host-neutral apart from
+  // its detail-doc pointer, which names the pair (adopt-content.mjs), so there is no
+  // per-host variant to thread through here.
+  let action = 'unchanged';
+  for (const layout of LAYOUTS) {
+    const one = writeManagedIn(cwd, layout, args);
+    if (one.action === 'created' || (one.action === 'updated' && action !== 'created')) action = one.action;
+  }
+  return { action };
+}
+
+function writeManagedIn(cwd, layout, { slug, version, block, doc }) {
+  const p = claudeMdPath(cwd, layout);
   const raw = existsSync(p) ? readFileSync(p, 'utf8') : '';
   const section = renderBlock(slug, version, block);
   const m = raw.match(blockRegex(slug));
@@ -266,18 +325,23 @@ export function writeManaged(cwd, { slug, version, block, doc }) {
   // Detail doc (marker on first line so unadopt/refresh can tell it apart from a
   // user's same-named file).
   const docContent = `${managedByMarker(slug)}\n${doc}`;
-  const dp = detailDocPath(cwd, slug);
-  const dir = dotClaudeDir(cwd);
+  const dp = detailDocPath(cwd, slug, layout);
+  const dir = dotDir(cwd, layout);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const existingDoc = existsSync(dp) ? readFileSync(dp, 'utf8') : null;
   if (existingDoc !== docContent) atomicWrite(dp, docContent);
 
-  writeState(cwd, slug, {
-    version,
-    blockHash: sha256(block),
-    docHash: sha256(doc),
-    writtenAt: new Date().toISOString(),
-  });
+  writeState(
+    cwd,
+    slug,
+    {
+      version,
+      blockHash: sha256(block),
+      docHash: sha256(doc),
+      writtenAt: new Date().toISOString(),
+    },
+    layout,
+  );
   return { action };
 }
 
@@ -301,7 +365,23 @@ export function writeManaged(cwd, { slug, version, block, doc }) {
  * @returns {{action: 'removed'|'partial'|'absent', residue?: string}}
  */
 export function removeManaged(cwd, slug) {
-  const p = claudeMdPath(cwd);
+  // One outcome for the caller, as before: 'removed' wins over 'partial' wins over
+  // 'absent', and any residue text from either layout rides along. A sweep that empties
+  // one host's file and finds an orphan in the other's is 'removed' + residue — the two
+  // facts stay separate, as their docblocks below insist.
+  let action = 'absent';
+  const residues = [];
+  for (const layout of LAYOUTS) {
+    const r = removeManagedIn(cwd, slug, layout);
+    if (r.action === 'removed') action = 'removed';
+    else if (r.action === 'partial' && action === 'absent') action = 'partial';
+    if (r.residue) residues.push(r.residue);
+  }
+  return residues.length ? { action, residue: residues.join(' ') } : { action };
+}
+
+function removeManagedIn(cwd, slug, layout) {
+  const p = claudeMdPath(cwd, layout);
   let action = 'absent';
   let orphans = 0;
   if (existsSync(p)) {
@@ -359,19 +439,19 @@ export function removeManaged(cwd, slug) {
   // evidence — it is text, and a project that merely documents the marker in prose has one
   // (pre-ship review P2-3). Reporting residue there means telling a stranger to delete their
   // own paragraph, on a project this tool has never touched.
-  const dp = detailDocPath(cwd, slug);
-  const wasOurs = action === 'removed' || existsSync(dp) || existsSync(stateFilePath(cwd, slug));
+  const dp = detailDocPath(cwd, slug, layout);
+  const wasOurs = action === 'removed' || existsSync(dp) || existsSync(stateFilePath(cwd, slug, layout));
   if (existsSync(dp))
     try {
       unlinkSync(dp);
     } catch {
       /* best-effort */
     }
-  clearState(cwd, slug);
-  // Drop an emptied .claude/ so unadopt leaves no trace (skips if it holds
+  clearState(cwd, slug, layout);
+  // Drop an emptied .claude/ (or .qwen/) so unadopt leaves no trace (skips if it holds
   // anything else — e.g. settings.local.json).
   try {
-    const dir = dotClaudeDir(cwd);
+    const dir = dotDir(cwd, layout);
     if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
   } catch {
     /* best-effort */
@@ -384,7 +464,7 @@ export function removeManaged(cwd, slug) {
   // removals. Two facts, two fields.
   const residue =
     orphans > 0 && wasOurs
-      ? `${orphans} unpaired \`${slug}\` sentinel line(s) remain in ${claudeMdPath(cwd)} — the block they opened has no matching end marker, so its extent cannot be determined safely. Remove those lines and the text they wrap by hand.`
+      ? `${orphans} unpaired \`${slug}\` sentinel line(s) remain in ${claudeMdPath(cwd, layout)} — the block they opened has no matching end marker, so its extent cannot be determined safely. Remove those lines and the text they wrap by hand.`
       : null;
   if (action === 'removed') return residue ? { action, residue } : { action };
   if (residue) return { action: 'partial', residue };

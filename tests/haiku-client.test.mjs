@@ -1,4 +1,4 @@
-// Tests for haiku-client.mjs — unified Haiku LLM call wrapper
+// Tests for haiku-client.mjs - unified Haiku LLM call wrapper
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Mock child_process before importing haiku-client
@@ -12,7 +12,7 @@ vi.mock('../schema.mjs', () => ({
   DB_DIR: '/tmp/haiku-test',
 }));
 
-// Mock utils.mjs — only the functions haiku-client uses
+// Mock utils.mjs - only the functions haiku-client uses
 vi.mock('../utils.mjs', () => ({
   debugLog: vi.fn(),
   debugCatch: vi.fn(),
@@ -78,8 +78,18 @@ describe('haiku-client.mjs', () => {
     vi.stubEnv('ANTHROPIC_BASE_URL', '');
     vi.stubEnv('ANTHROPIC_DEFAULT_HAIKU_MODEL', '');
     vi.stubEnv('ANTHROPIC_DEFAULT_SONNET_MODEL', '');
+    // Same hermeticity trap for the generic OpenAI-compatible leg, and one level
+    // up for the pin that selects it: OPENAI_API_KEY / OPENAI_BASE_URL are exactly
+    // what a dev box has exported for other tools (Qwen Code's own auth among
+    // them), and EITHER one flips detectMode() to 'openai' - which would break
+    // every legacy 'cli'-mode case below. That leg's own coverage lives in
+    // tests/openai-compat-provider.test.mjs.
+    vi.stubEnv('OPENAI_API_KEY', '');
+    vi.stubEnv('OPENAI_BASE_URL', '');
+    vi.stubEnv('OPENAI_MODEL', '');
+    vi.stubEnv('CLAUDE_MEM_LLM_PROVIDER', '');
     // Proxy vars in the dev/CI shell would route the OpenRouter path through the
-    // CONNECT tunnel (real network) instead of the mocked fetch — same #8608 trap:
+    // CONNECT tunnel (real network) instead of the mocked fetch - same #8608 trap:
     // an env-gated transport silently breaks tests that rely on the default path.
     for (const v of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy']) vi.stubEnv(v, '');
     _resetMode();
@@ -136,7 +146,7 @@ describe('haiku-client.mjs', () => {
         ['-p', '--model', 'sonnet', '--no-session-persistence'],
         // Both halves of the headless-tax fix (d97d3d8) are pinned: the flag in
         // argv AND the hook opt-out in env. Args alone were asserted, so this
-        // site could silently lose DISABLE_CLAUDEMD_HOOKS and stay green —
+        // site could silently lose DISABLE_CLAUDEMD_HOOKS and stay green -
         // verified by mutation 2026-08-16, and this is the highest-volume async
         // headless caller (deep-search rewrite).
         expect.objectContaining({
@@ -221,7 +231,7 @@ describe('haiku-client.mjs', () => {
       // Haiku almost always wraps JSON in ```json fences. The old brace check
       // (startsWith '{' && endsWith '}') rejected a complete-but-fenced buffer, so
       // the already-emitted JSON was discarded on timeout. parseJsonFromLLM strips
-      // fences before validating — the fenced buffer is now salvaged.
+      // fences before validating - the fenced buffer is now salvaged.
       vi.useFakeTimers();
       try {
         const fenced = '```json\n{"variants":["a","b"]}\n```';
@@ -243,7 +253,7 @@ describe('haiku-client.mjs', () => {
   // The flag is an unguarded dependency on a recent Claude Code CLI (package.json
   // declares only node>=20). On an older binary the spawn died in argv parsing,
   // callModelCLI swallowed it, and EVERY CLI-leg LLM call returned null with no
-  // retry and no telemetry — enrichment, summarization and optimize all dead at
+  // retry and no telemetry - enrichment, summarization and optimize all dead at
   // once, on exactly the fallback leg the keyed providers degrade to.
   describe('headless flag compatibility', () => {
     const makeFakeChild = () => {
@@ -275,7 +285,7 @@ describe('haiku-client.mjs', () => {
         ['Unknown argument: no-session-persistence', true],
         ['unrecognized option `--no-session-persistence`', true],
         ['Invalid option: --no-session-persistence', true],
-        // A parser that answers with a usage banner rather than a parse verb —
+        // A parser that answers with a usage banner rather than a parse verb -
         // the shape the token-anchored second arm exists for.
         ['Usage: claude [options] [prompt]\n  --no-session-persistence', true],
         // Ordinary failures must NOT look like a parse rejection, or every
@@ -284,7 +294,7 @@ describe('haiku-client.mjs', () => {
         ['Credit balance is too low', false],
         ['Error: Not logged in', false],
         // Regression, pre-tag review HIGH: these are real Claude Code config
-        // diagnostics, emitted for a malformed agent/skill file — a persistent
+        // diagnostics, emitted for a malformed agent/skill file - a persistent
         // condition. Matching them meant the next transient 529 would drop the
         // flag for the whole process and log a WARN blaming it, silently putting
         // a healthy CLI back on the interactive-session tax v3.66.0 removed.
@@ -292,7 +302,7 @@ describe('haiku-client.mjs', () => {
         ["Plugin agent file a.md has invalid memory value 'x'. Valid options: y, z", false],
         ['Input validation error: Invalid arguments for tool', false],
         // The flag merely echoed back (a wrapper dumping argv on any failure) is
-        // not a rejection either — no parse verb, no usage banner.
+        // not a rejection either - no parse verb, no usage banner.
         ['connect ETIMEDOUT while running: claude -p --model haiku --no-session-persistence', false],
         ['', false],
         [null, false],
@@ -301,10 +311,10 @@ describe('haiku-client.mjs', () => {
       });
     });
 
-    it('ships with the flag ENABLED — pins the initializer the beforeEach hooks hide', async () => {
+    it('ships with the flag ENABLED - pins the initializer the beforeEach hooks hide', async () => {
       // Every other case in this file runs after _resetHeadlessFlag(), so flipping
-      // the module initializer to `false` — behaviourally identical to deleting
-      // the feature — would leave them all green: the harness would be supplying
+      // the module initializer to `false` - behaviourally identical to deleting
+      // the feature - would leave them all green: the harness would be supplying
       // the state it then asserts on. A fresh module instance is the only way to
       // observe the value a real process actually starts from.
       vi.resetModules();
@@ -407,10 +417,10 @@ describe('haiku-client.mjs', () => {
 
     it('sync leg: a timed-out call is never retried, however parse-shaped its output', async () => {
       // Pre-tag review HIGH. execFileSync kills the child on timeout and throws
-      // with its PARTIAL buffers attached — the same fact callModelCLI's salvage
-      // relies on — so without the kill guard a slow call could be retried on the
+      // with its PARTIAL buffers attached - the same fact callModelCLI's salvage
+      // relies on - so without the kill guard a slow call could be retried on the
       // full original budget. lesson-bridge runs this leg at 2500ms on PreToolUse
-      // where the CLI is measured at 8–13s, so that is a 2× block before an Edit.
+      // where the CLI is measured at 8-13s, so that is a 2× block before an Edit.
       const e = new Error('spawnSync claude ETIMEDOUT');
       e.killed = true;
       e.signal = 'SIGTERM';
@@ -431,7 +441,7 @@ describe('haiku-client.mjs', () => {
       });
 
       // Below RETRY_MIN_BUDGET_MS the retry could only spawn a process and kill it
-      // immediately — strictly worse than surfacing the original failure.
+      // immediately - strictly worse than surfacing the original failure.
       const result = await callLLMWithModel('p', 'haiku', { timeout: 100 });
 
       expect(result).toBeNull();
@@ -526,7 +536,7 @@ describe('haiku-client.mjs', () => {
         // A hung child can have emitted a parse-shaped complaint on stderr for an
         // unrelated reason; retrying would burn a second full timeout. The kill
         // path reports `code: null`, and the retry requires a numeric non-zero
-        // exit — a child that never exited on its own rejected nothing.
+        // exit - a child that never exited on its own rejected nothing.
         child.stderr.emit('data', Buffer.from("error: unknown option '--no-session-persistence'"));
         vi.advanceTimersByTime(60);
         await expect(p).resolves.toBeNull();
@@ -540,7 +550,7 @@ describe('haiku-client.mjs', () => {
       // The plain timeout case above cannot isolate this: a child that ran out the
       // clock leaves no budget, so the remaining-budget guard blocks the retry on
       // its own and `typeof code === 'number'` is mutation-silent there. Pinning
-      // Date.now while advancing the timer separates them — budget intact, child
+      // Date.now while advancing the timer separates them - budget intact, child
       // killed, complaint on stderr. A child that never exited on its own rejected
       // nothing, and treating it as a rejection buys a second full-budget spawn.
       vi.useFakeTimers();
@@ -575,7 +585,7 @@ describe('haiku-client.mjs', () => {
     it('async leg: a usage banner on STDOUT with a non-zero exit is a rejection, not an answer', async () => {
       // Pre-tag review MEDIUM: the old tail short-circuited on `first.result`, so
       // a CLI that prints usage to stdout had its banner returned as the model's
-      // reply — parsed to null upstream, no retry, no WARN. The original silent
+      // reply - parsed to null upstream, no retry, no WARN. The original silent
       // -null defect, intact on this leg for the life of the MCP process.
       const first = makeFakeChild();
       const second = makeFakeChild();
@@ -678,7 +688,7 @@ describe('haiku-client.mjs', () => {
 
     it('async leg: truncates a single oversized stderr chunk instead of retaining it whole', async () => {
       // The bound has to be applied AFTER appending. Checking the length first
-      // admits one arbitrarily large chunk in full — which is the shape a single
+      // admits one arbitrarily large chunk in full - which is the shape a single
       // big stderr write takes, so the cap would not actually cap anything. The
       // discriminating case is therefore one 5KB chunk with the parse complaint
       // past the 4096-byte mark: truncated, it is invisible and nothing retries;
@@ -701,7 +711,7 @@ describe('haiku-client.mjs', () => {
     });
   });
 
-  // ─── callModelJSONAsync (fully-async dispatch — no blocking CLI fallback) ──
+  // ─── callModelJSONAsync (fully-async dispatch - no blocking CLI fallback) ──
   describe('callModelJSONAsync', () => {
     const makeFakeChild = () => {
       const child = new EventEmitter();
@@ -820,7 +830,7 @@ describe('haiku-client.mjs', () => {
       vi.stubEnv('ANTHROPIC_API_KEY', '');
       _resetMode();
       expect(detectMode()).toBe('cli');
-      // Now set the key — should still return 'cli' (cached)
+      // Now set the key - should still return 'cli' (cached)
       vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
       expect(detectMode()).toBe('cli');
     });
@@ -857,7 +867,7 @@ describe('haiku-client.mjs', () => {
   // ─── callHaiku ────────────────────────────────────────────────────────────
 
   describe('callHaiku', () => {
-    // callHaiku's api leg used to have its own copy of the Anthropic call —
+    // callHaiku's api leg used to have its own copy of the Anthropic call -
     // byte-identical to callModelAPI apart from where the model id came from and a
     // hardcoded 'haiku-api' log label. Two copies meant every proxy patch had to be
     // applied twice, on the code path where getting the proxy wrong costs 13.5s vs
@@ -869,10 +879,10 @@ describe('haiku-client.mjs', () => {
       _resetMode();
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }));
       // debugLog is module-mocked at the top of this file, so assert on the mock's
-      // arguments — spying on console.error would observe a channel it never reaches.
+      // arguments - spying on console.error would observe a channel it never reaches.
       const { debugLog } = await import('../utils.mjs');
       vi.mocked(debugLog).mockClear();
-      // CLI fallback after the API failure — irrelevant here, just must not throw.
+      // CLI fallback after the API failure - irrelevant here, just must not throw.
       vi.mocked(execFileSync).mockReturnValue('fallback');
 
       await callHaiku('test prompt');
@@ -1147,7 +1157,7 @@ describe('haiku-client.mjs', () => {
       expect(execFileSync).toHaveBeenCalledWith(
         expect.any(String),
         ['-p', '--model', 'sonnet', '--no-session-persistence'],
-        // env half pinned alongside the argv half — see the callModelCLIAsync
+        // env half pinned alongside the argv half - see the callModelCLIAsync
         // note above. callModelCLI is the sync headless path every background
         // worker takes (save-enrich, optimize, registry-enrich).
         expect.objectContaining({
@@ -1405,7 +1415,7 @@ describe('haiku-client.mjs', () => {
   });
 
   // ─── OpenRouter provider (3-way detection: api > openrouter > cli) ────────
-  describe('detectMode — OpenRouter provider', () => {
+  describe('detectMode - OpenRouter provider', () => {
     it('returns "openrouter" when only OPENROUTER_API_KEY is set', () => {
       vi.stubEnv('ANTHROPIC_API_KEY', '');
       vi.stubEnv('OPENROUTER_API_KEY', 'sk-or-test');
@@ -1450,7 +1460,7 @@ describe('haiku-client.mjs', () => {
     });
   });
 
-  describe('callHaiku — OpenRouter mode', () => {
+  describe('callHaiku - OpenRouter mode', () => {
     it('POSTs to OpenRouter chat-completions with Bearer auth and OpenAI body shape', async () => {
       vi.stubEnv('ANTHROPIC_API_KEY', '');
       vi.stubEnv('OPENROUTER_API_KEY', 'sk-or-key');
@@ -1520,7 +1530,7 @@ describe('haiku-client.mjs', () => {
     });
   });
 
-  describe('callLLMWithModel — OpenRouter mode', () => {
+  describe('callLLMWithModel - OpenRouter mode', () => {
     it('routes to OpenRouter with the per-call model tier slug', async () => {
       vi.stubEnv('ANTHROPIC_API_KEY', '');
       vi.stubEnv('OPENROUTER_API_KEY', 'sk-or-key');
@@ -1606,10 +1616,10 @@ describe('haiku-client.mjs', () => {
   });
 
   // ─── Provider failure → CLI fallback ─────────────────────────────────────
-  // When the keyed provider (Anthropic API or OpenRouter) fails — HTTP error,
-  // network throw, or empty response — degrade to the `claude -p` CLI instead
+  // When the keyed provider (Anthropic API or OpenRouter) fails - HTTP error,
+  // network throw, or empty response - degrade to the `claude -p` CLI instead
   // of returning null. CLI is terminal (no further fallback).
-  describe('callHaiku — provider failure falls back to CLI', () => {
+  describe('callHaiku - provider failure falls back to CLI', () => {
     it('falls back to claude CLI when the Anthropic API returns an HTTP error', async () => {
       vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant');
       _resetMode();
@@ -1672,7 +1682,7 @@ describe('haiku-client.mjs', () => {
     });
   });
 
-  describe('callLLMWithModel — provider failure falls back to CLI', () => {
+  describe('callLLMWithModel - provider failure falls back to CLI', () => {
     it('falls back to callModelCLI with the requested model on OpenRouter failure', async () => {
       vi.stubEnv('ANTHROPIC_API_KEY', '');
       vi.stubEnv('OPENROUTER_API_KEY', 'sk-or');
@@ -1767,7 +1777,7 @@ describe('haiku-client.mjs', () => {
     // model's answer. execFileSync THROWS on a non-zero exit, so callModelCLI
     // only salvages such output when parseJsonFromLLM accepts it. Without the
     // same gate, an auth-failure banner reaches rerank's extractRanked, whose
-    // last resort matches any bracketed number list in prose — so `[1]` inside a
+    // last resort matches any bracketed number list in prose - so `[1]` inside a
     // stack frame silently becomes a ranking and reorders search results.
     it('callModelCLIAsync drops non-JSON stdout from a non-zero exit', async () => {
       vi.stubEnv('ANTHROPIC_API_KEY', '');
@@ -1803,7 +1813,7 @@ describe('haiku-client.mjs', () => {
     });
     // The other half of the callHaikuJSONAsync fix: it must inherit callHaiku's
     // 10s/500 budgets, not callModelJSONAsync's 15s/1000. A post-tag review
-    // reverted these defaults and the file stayed 119/119 green — the model-tier
+    // reverted these defaults and the file stayed 119/119 green - the model-tier
     // half was pinned, the budget half was not.
     it('callHaikuJSONAsync defaults to callHaiku budgets, not callModelJSONAsync ones', async () => {
       vi.stubEnv('ANTHROPIC_API_KEY', '');

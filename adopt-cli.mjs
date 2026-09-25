@@ -15,7 +15,7 @@
 
 import { existsSync, readdirSync, statSync, mkdirSync, writeFileSync, unlinkSync, readFileSync } from 'fs';
 import { homedir } from 'os';
-import { join, isAbsolute } from 'path';
+import { join, isAbsolute, basename } from 'path';
 import {
   memdirPath,
   removePluginSection,
@@ -29,10 +29,10 @@ import {
   isAdopted as claudeMdIsAdopted,
   hasResidue as claudeMdHasResidue,
   needsRefresh,
+  readBlock,
   migrateLegacyMemoryDir,
   hasLegacyMemdirSentinel,
-  claudeMdPath,
-  detailDocPath,
+  contextTargets,
 } from './claudemd.mjs';
 import { PLUGIN_SLUG, CURRENT_SENTINEL_VERSION, buildClaudeMdBlock, getDetailDoc } from './adopt-content.mjs';
 
@@ -139,8 +139,10 @@ function adoptOne(cwd, { force, dryRun }) {
 
   if (dryRun) {
     log(`[adopt --dry-run] ${cwd}`);
-    log(`  CLAUDE.md block:  ${claudeMdPath(cwd)} (${block.length} chars, ${version})`);
-    log(`  detail doc:       ${detailDocPath(cwd, PLUGIN_SLUG)} (${doc.length} chars)`);
+    for (const t of contextTargets(cwd, PLUGIN_SLUG)) {
+      log(`  ${t.id} block:  ${t.contextFile} (${block.length} chars, ${version})`);
+      log(`  ${t.id} doc:    ${t.detailDoc} (${doc.length} chars)`);
+    }
     if (hasLegacyMemdirSentinel(cwd, PLUGIN_SLUG)) {
       log(`  legacy migrate:   would strip memory-dir sentinel @ ${memdirPath(cwd)}`);
     }
@@ -338,10 +340,27 @@ function cmdEnable(args) {
  */
 function statusAll() {
   const cwd = detectCwd();
-  const adoptedHere = claudeMdIsAdopted(cwd, PLUGIN_SLUG);
   log('[adopt --status] current project:');
   log(`  cwd:        ${cwd}`);
-  log(`  CLAUDE.md:  ${adoptedHere ? `✓ adopted (${CURRENT_SENTINEL_VERSION})` : '✗ not adopted'}`);
+  // One line per context file — basename, not the full path: the cwd line above already
+  // says where we are, and a 60-column absolute path per file pushed the verdict off the
+  // edge of a narrow terminal. A file counts as adopted on the same gate isAdopted() uses
+  // (block AND detail doc), so a half-written state does not read as healthy here.
+  const targets = contextTargets(cwd, PLUGIN_SLUG);
+  for (const t of targets) {
+    const blk = readBlock(cwd, PLUGIN_SLUG, t.layout);
+    const state =
+      blk.body === null
+        ? '✗ not adopted'
+        : !existsSync(t.detailDoc)
+          ? '⚠ block present, detail doc missing'
+          : `✓ adopted (${blk.version})`;
+    log(`  ${(basename(t.contextFile) + ':').padEnd(11)}${state}`);
+  }
+  const adopted = targets.filter((t) => readBlock(cwd, PLUGIN_SLUG, t.layout).body !== null);
+  log(
+    `  adopted:    ${adopted.length === targets.length ? `✓ both (${CURRENT_SENTINEL_VERSION})` : adopted.length ? `⚠ ${adopted.length}/${targets.length}` : '✗ not adopted'}`,
+  );
   if (hasLegacyMemdirSentinel(cwd, PLUGIN_SLUG)) {
     log('  legacy:     ⚠ memory-dir sentinel still present (migrates on next SessionStart, or run `adopt`)');
   }

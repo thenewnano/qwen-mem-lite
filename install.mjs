@@ -1046,7 +1046,9 @@ function configureHooks() {
   // Agent dispatch (22.6ms → 2.4ms; see scripts/pre-agent-inject.sh). The prefilter
   // execs the same launcher when the flag is on.
   const memPreAgentInject = {
-    matcher: 'Agent|Task',
+    // `agent` is Qwen Code's runtime id for the same dispatch; the three names are the
+    // same three scripts/pre-agent-inject.js accepts (lib/tool-names.mjs).
+    matcher: 'Agent|Task|agent',
     hooks: [
       {
         type: 'command',

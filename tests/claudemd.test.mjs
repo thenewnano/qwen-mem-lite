@@ -52,6 +52,30 @@ describe('claudemd primitives', () => {
     expect(isAdopted(cwd, SLUG)).toBe(true);
   });
 
+  // Qwen Code loads QWEN.md and ignores CLAUDE.md; Claude Code is the other way round, and
+  // adopt cannot detect the host (claudemd.mjs LAYOUTS). One target would therefore leave
+  // the steering invisible on half the user's sessions, so both get the block — and unadopt
+  // has to clear both, or the second file outlives the first.
+  it('writeManaged writes BOTH context files, and removeManaged clears both', () => {
+    writeManaged(cwd, argsOf(cwd));
+    for (const name of ['CLAUDE.md', 'QWEN.md']) {
+      const body = readFileSync(join(cwd, name), 'utf8');
+      expect(body, name).toContain(`<!-- ${SLUG}:begin ${V} -->`);
+      expect(body, name).toContain('line one');
+    }
+    expect(readFileSync(join(cwd, '.qwen', `plugin_${SLUG.replace(/-/g, '_')}.md`), 'utf8')).toContain(
+      'managed-by',
+    );
+    expect(readBlock(cwd, SLUG).body, 'the legacy single-file read still sees the block').toContain(
+      'line one',
+    );
+
+    const r = removeManaged(cwd, SLUG);
+    expect(r.action).toBe('removed');
+    expect(existsSync(join(cwd, 'QWEN.md')), 'the QWEN.md we created is removed again').toBe(false);
+    expect(existsSync(join(cwd, '.qwen')), 'an emptied .qwen/ is dropped like .claude/').toBe(false);
+  });
+
   it('writeManaged is idempotent on user-visible files', () => {
     writeManaged(cwd, argsOf(cwd));
     const cm = readFileSync(claudeMdPath(cwd), 'utf8');

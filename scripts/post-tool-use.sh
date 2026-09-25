@@ -45,8 +45,11 @@ else
   exit 0
 fi
 
-# Read tool: track file path for episode context, then exit (no Node needed)
-if [[ "$tool" == "Read" ]]; then
+# Read tool: track file path for episode context, then exit (no Node needed).
+# `read_file` is Qwen Code's id for the same tool — this pre-filter cannot import
+# lib/tool-names.mjs (builtins only, ~5ms budget), so its two vocabularies are spelled
+# out here and tests/skip-tools.test.mjs pins the pair.
+if [[ "$tool" == "Read" || "$tool" == "read_file" ]]; then
   # Disabled plugin → write nothing; nothing would ever sweep the file (see guard above).
   # 2>/dev/null: a settings.json unlinked between the -r test and the read must stay
   # silent — Claude Code surfaces hook stderr.
@@ -148,6 +151,14 @@ case "$tool" in
   mcp__claude-in-chrome__screenshot|mcp__claude-in-chrome__read_page|\
   mcp__claude-in-chrome__tabs_context_mcp|mcp__claude-in-chrome__computer|\
   mcp__claude-in-chrome__find|mcp__claude-in-chrome__navigate)
+    exit 0
+    ;;
+  # The same skips under Qwen Code's runtime ids. A separate arm, not merged into the one
+  # above, so the Claude half stays a literal copy of SKIP_TOOLS; this arm must be exactly
+  # the Qwen ids in lib/tool-names.mjs that normalize INTO SKIP_TOOLS, and
+  # tests/skip-tools.test.mjs fails either way when the three fall out of step.
+  glob|todo_write|task_list|task_create|task_update|\
+  ask_user_question|enter_plan_mode|exit_plan_mode)
     exit 0
     ;;
   # Prefix filters

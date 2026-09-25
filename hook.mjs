@@ -42,6 +42,7 @@ import {
 import { inferProjectDir } from './project-utils.mjs';
 import { isPluginExplicitlyDisabled } from './lib/plugin-key.mjs';
 import { readHookStdin } from './lib/hook-stdin.mjs';
+import { normalizeToolName } from './lib/tool-names.mjs';
 // Aliased: `acquireLock` from hook-episode.mjs below is the episode buffer's own
 // (argument-less) lock — a different mutex with a different staleness policy.
 import { acquireLock as acquireProcLock } from './lib/proc-lock.mjs';
@@ -663,9 +664,15 @@ async function handlePostToolUse() {
     return;
   }
 
+  // Qwen Code sends its own runtime ids (`write_file`, `read_file`, `edit`,
+  // `run_shell_command`) where Claude Code sent `Write`/`Read`/`Edit`/`Bash`. Everything
+  // below branches on the Claude spelling, so translate once, here — lib/tool-names.mjs
+  // carries the mapping and the reasoning. Unknown names pass through untouched.
+  const toolName = normalizeToolName(tool_name);
+
   // Skip noise (source of truth: skip-tools.mjs)
-  if (SKIP_TOOLS.has(tool_name)) return;
-  if (SKIP_PREFIXES.some((p) => tool_name.startsWith(p))) return;
+  if (SKIP_TOOLS.has(toolName)) return;
+  if (SKIP_PREFIXES.some((p) => toolName.startsWith(p))) return;
 
   const resp = normalizeToolResponse(tool_response);
   if (!resp || resp.length < 10) return;
@@ -674,12 +681,12 @@ async function handlePostToolUse() {
   const files = extractFilePaths(toolInput);
 
   // Tier 1 B: Detect significant Bash commands
-  const bashSig = tool_name === 'Bash' ? detectBashSignificance(toolInput, resp) : null;
+  const bashSig = toolName === 'Bash' ? detectBashSignificance(toolInput, resp) : null;
 
   // Build episode entry
   const entry = {
-    tool: tool_name,
-    desc: scrubSecrets(makeEntryDesc(tool_name, toolInput, resp, bashSig)),
+    tool: toolName,
+    desc: scrubSecrets(makeEntryDesc(toolName, toolInput, resp, bashSig)),
     files,
     ts: Date.now(),
     isError: bashSig?.isError || false,
@@ -893,7 +900,9 @@ async function handlePostToolFailure() {
     );
     return;
   }
-  if (tool_name !== 'Bash') return;
+  // Same translation as handlePostToolUse: Qwen Code reports `run_shell_command`, so a
+  // raw comparison makes this whole path dead on that host (lib/tool-names.mjs).
+  if (normalizeToolName(tool_name) !== 'Bash') return;
   if (error !== undefined && typeof error !== 'string') {
     recordHookError(
       'post-tool-failure:error-type',

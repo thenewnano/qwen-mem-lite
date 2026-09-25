@@ -96,7 +96,19 @@ export function hasEscalatableCorpus(db, project, min = AUTO_DEEP_MIN_CORPUS) {
  */
 export function autoDeepLlmReady(env = process.env, injectedLlm) {
   if (injectedLlm) return true;
-  if (env.ANTHROPIC_API_KEY || env.OPENROUTER_API_KEY) return true;
+  // Mirrors haiku-client's detectModeFromEnv: any keyed leg counts, INCLUDING the
+  // generic OpenAI-compatible one — whose base URL alone is a complete config for a
+  // keyless local server, so testing only for keys would have marked a working
+  // provider unreachable and disabled auto-escalation on exactly the setups that
+  // just gained a backend.
+  if (
+    env.ANTHROPIC_API_KEY ||
+    env.OPENROUTER_API_KEY ||
+    env.OPENAI_API_KEY ||
+    (env.OPENAI_BASE_URL || '').trim()
+  ) {
+    return true;
+  }
   // No provider key → detectMode() would be 'cli'. CLI-auth users get auto
   // escalation by default; the burst/latency cost is bounded by the auto
   // provider (fail-fast + throttle) and a failed rewrite degrades to baseline.

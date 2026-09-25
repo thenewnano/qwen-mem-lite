@@ -53,12 +53,19 @@ export default defineConfig({
     // auto path inject a stub llm or mock haiku-client instead.
     //
     // Hermetic LLM mode: a dev/CI shell that exports a real ANTHROPIC_API_KEY /
-    // OPENROUTER_API_KEY flips detectMode() to 'api'/'openrouter', so any un-mocked
-    // LLM path would make a REAL network call — non-deterministic (rate-limit flakes),
-    // slow, and billable. haiku-client.test.mjs + e2e.test.mjs already stub these
-    // per-file ("the dev/CI shell may export a real key"); force them empty GLOBALLY
-    // so no test can leak a live call by forgetting to. Tests that exercise keyed
-    // mode override locally via vi.stubEnv (which restores to '' after each test).
+    // OPENROUTER_API_KEY / OPENAI_API_KEY flips detectMode() to 'api'/'openrouter'/
+    // 'openai', so any un-mocked LLM path would make a REAL network call — non-
+    // deterministic (rate-limit flakes), slow, and billable. haiku-client.test.mjs +
+    // e2e.test.mjs already stub these per-file ("the dev/CI shell may export a real
+    // key"); force them empty GLOBALLY so no test can leak a live call by forgetting
+    // to. Tests that exercise keyed mode override locally via vi.stubEnv (which
+    // restores to '' after each test).
+    //
+    // The OPENAI_* / CLAUDE_MEM_LLM_PROVIDER entries matter more than the two above
+    // ever did: OPENAI_API_KEY and OPENAI_BASE_URL are exactly the vars a dev box
+    // has exported for other tools (Qwen Code's own auth among them), and the model
+    // vars would silently change every expected request body while the pin would
+    // silently re-route a whole file's worth of cases.
     // Same systemic-scrub rationale for the two #8608-class leak vars (audit 2026-07-17
     // MED-5): MEM_QUIET_HOOKS=1 in a dev shell leaks into every spawned hook subprocess
     // (…process.env spread) and silently flips descriptive-stdout assertions; CLAUDE_MEM_DIR
@@ -79,6 +86,12 @@ export default defineConfig({
       CLAUDE_MEM_AUTO_DEEP_CLI: '0',
       ANTHROPIC_API_KEY: '',
       OPENROUTER_API_KEY: '',
+      OPENAI_API_KEY: '',
+      OPENAI_BASE_URL: '',
+      OPENAI_MODEL: '',
+      OPENAI_MODEL_HAIKU: '',
+      OPENAI_MODEL_SONNET: '',
+      CLAUDE_MEM_LLM_PROVIDER: '',
       MEM_QUIET_HOOKS: '',
       CLAUDE_MEM_DIR: '',
       CLAUDE_MEM_TEST_GUARD: '1',

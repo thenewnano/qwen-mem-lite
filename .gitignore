@@ -1,14 +1,14 @@
 # docs/ is developer-local (design specs, plans, templates) EXCEPT the four negated
 # below, which are records later rounds have to read: docs/measurement/ is CLAUDE.md's
 # evidence appendix, and docs/audit/ + docs/audits/ + docs/ARCHITECTURE.md are the audit
-# ledger — with them ignored, every round re-derived its context and nine items of the
+# ledger - with them ignored, every round re-derived its context and nine items of the
 # 2026-09-02 round were unrecoverable. Written as `/docs/*` plus negations on purpose: git
 # does not descend into an excluded DIRECTORY, so a bare `/docs` would make every `!` line
 # silently inert.
 #
 # `docs/audits/` (PLURAL) is a second ledger directory, not a typo for `docs/audit/`: the
 # two audit prompt templates write to different paths, and the 2026-09-05 R5 round landed
-# in the plural one and was immediately unreadable to the next round — the exact failure
+# in the plural one and was immediately unreadable to the next round - the exact failure
 # the singular directory was negated to stop (A20260905-R5-P2-2). Negating it beats moving
 # the file: the template that produces these reports names the plural path.
 /docs/*
@@ -16,7 +16,7 @@
 !/docs/audit/
 !/docs/audits/
 !/docs/ARCHITECTURE.md
-# CLAUDE.md is tracked on purpose — it is the operating manual for this tree, and /init
+# CLAUDE.md is tracked on purpose - it is the operating manual for this tree, and /init
 # cannot reconstruct the measurement doctrine or the record of which drafts were refuted.
 # It was listed here once; the entry did nothing (gitignore does not apply to tracked
 # files) except make `git add CLAUDE.md` need -f and hide an accidental untracking.
@@ -24,7 +24,7 @@
 # Bumping a native dep on a FUSE filesystem can leave one behind: `npm ci` cannot rmdir
 # `better-sqlite3/build/Release` while a long-running process still has the old `.node`
 # open, so the tree gets renamed aside and reinstalled. What is left is a ~2 MB
-# `.fuse_hidden*` binary that only disappears when that process exits — untracked, at the
+# `.fuse_hidden*` binary that only disappears when that process exits - untracked, at the
 # repo root, and one `git add -A` away from a release commit.
 /node_modules.stale-*
 /coverage
@@ -40,33 +40,34 @@
 .code-graph/
 .gsd/
 /.claude/
+/.qwen/
 .omx/
 .gstack/
 
-# Local working notes / carry-forward task lists — not part of release artifacts
+# Local working notes / carry-forward task lists - not part of release artifacts
 tasks/
 tmp/
 .context/
 .npmrc
-# loop-eng run state (autoloop/polish rounds) — local, regenerated per run
+# loop-eng run state (autoloop/polish rounds) - local, regenerated per run
 .loop/
 
-# Benchmark datasets (large, ~300 MB each — fetched via benchmark/datasets/*.sh)
+# Benchmark datasets (large, ~300 MB each - fetched via benchmark/datasets/*.sh)
 # and raw per-question result dumps. Download scripts + READMEs stay committed.
 benchmark/datasets/*.json
 benchmark/datasets/*.jsonl
 benchmark/results/
 
-# CI-generated release-signing artifacts (P1) — produced by scripts/sign-release.mjs
+# CI-generated release-signing artifacts (P1) - produced by scripts/sign-release.mjs
 # in the publish job and uploaded as GitHub Release assets; never committed.
 release-manifest.json
 release-manifest.json.sig
-# Release signing PRIVATE key — generated locally during Phase-2 activation, then
+# Release signing PRIVATE key - generated locally during Phase-2 activation, then
 # added as the RELEASE_SIGNING_KEY GitHub secret and deleted. Must NEVER be committed.
 release-signing-key.pem
 
 # Sandbox/harness artifacts that appear in the repo root under some run modes.
-# Not ours, never shipped (package.json#files is an allowlist) — listed so a stray
+# Not ours, never shipped (package.json#files is an allowlist) - listed so a stray
 # `git add -A` cannot commit a home directory into the repo (flagged in the v3.79.0 review).
 .bashrc
 .bash_profile

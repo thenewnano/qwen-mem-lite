@@ -1487,7 +1487,9 @@ describe('hook feature sweep: hook.mjs background workers', () => {
       cwd,
       stdin: '',
       timeout: 60000,
-      env: { ...OFFLINE, CLAUDE_MEM_SKIP_UPDATE: undefined }, // childEnv drops undefined keys
+      // CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE: the fork ships upstream checks OFF, so a child
+      // that wants the real lookup has to opt in the way a user would.
+      env: { ...OFFLINE, CLAUDE_MEM_SKIP_UPDATE: undefined, CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE: '1' },
     });
     expectSilentWorker('hook.mjs update-check (offline)', live);
 

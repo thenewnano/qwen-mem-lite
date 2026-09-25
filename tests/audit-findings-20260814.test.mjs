@@ -580,6 +580,7 @@ describe('F6 — update-check reaches its handler under the recursion guard', ()
         CLAUDE_MEM_DIR: dataDir,
         CLAUDE_MEM_HOOK_RUNNING: '1', // what spawnBackground sets on the child
         CLAUDE_MEM_SKIP_UPDATE: undefined, // BASE_ENV sets it; drop it so the handler runs
+        CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE: '1', // fork default keeps upstream checks off
         ...offlineEnv(fetchLog),
       },
       timeout: 60000,
@@ -710,6 +711,7 @@ describe('F6b — the restored update-check checks for a release but does not in
     CLAUDE_MEM_DIR: dataDir,
     CLAUDE_MEM_HOOK_RUNNING: '1', // what spawnBackground sets on the detached child
     CLAUDE_MEM_SKIP_UPDATE: undefined, // BASE_ENV sets it; drop it so the handler runs
+    CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE: '1', // the fork ships upstream checks off (hook-update.mjs)
     CLAUDE_PLUGIN_ROOT: undefined, // the install shape where the installer was reachable
     AUDIT_FETCH_LOG: fetchLog,
     AUDIT_CURL_LOG: curlLog,

@@ -29,8 +29,19 @@ describe('README auto-adopt description matches silentAutoAdopt', () => {
     // suite would otherwise keep passing.
     expect(ADOPT_CLI).toMatch(/export function silentAutoAdopt/);
     expect(ADOPT_CLI, 'silentAutoAdopt must go through the CLAUDE.md writer').toMatch(/writeManaged\(cwd,/);
-    expect(CLAUDEMD, 'writeManaged must target <cwd>/CLAUDE.md').toMatch(/claudeMdPath\(cwd\)/);
-    expect(CLAUDEMD, 'and the detail doc, under the project .claude dir').toMatch(/join\(cwd, '\.claude'\)/);
+    // TWO layouts since the Qwen Code fork: the block goes to <cwd>/CLAUDE.md AND
+    // <cwd>/QWEN.md, each with its own detail doc (claudemd.mjs LAYOUTS). The single-target
+    // form this asserts against is what left Qwen sessions — which never read CLAUDE.md —
+    // with no steering at all, silently.
+    expect(CLAUDEMD, 'writeManaged must target <cwd>/CLAUDE.md').toMatch(/contextFile: 'CLAUDE\.md'/);
+    expect(CLAUDEMD, 'and <cwd>/QWEN.md, which is the one Qwen Code reads').toMatch(
+      /contextFile: 'QWEN\.md'/,
+    );
+    expect(CLAUDEMD, 'with a detail doc under each host’s dot-dir').toMatch(/dir: '\.claude'/);
+    expect(CLAUDEMD).toMatch(/dir: '\.qwen'/);
+    expect(CLAUDEMD, 'and every write/remove/read must sweep both').toMatch(
+      /for \(const layout of LAYOUTS\)/,
+    );
     // Idempotent re-sync rather than a one-shot: the "already-adopted" / "refreshed"
     // branches are what make "every SessionStart" true.
     expect(ADOPT_CLI).toMatch(/already-adopted/);

@@ -241,7 +241,12 @@ describe('SessionStart stdout envelope', () => {
         updateAvailable: true,
       }),
     );
-    const stdout = runSessionStart('cc-env-3', { CLAUDE_MEM_SKIP_UPDATE: '' });
+    // CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE: the fork ships upstream checks OFF by default
+    // (hook-update.mjs); a case that wants the banner has to opt in the way a user would.
+    const stdout = runSessionStart('cc-env-3', {
+      CLAUDE_MEM_SKIP_UPDATE: '',
+      CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE: '1',
+    });
     const parsed = expectSingleEnvelope(stdout);
     // Pin the BANNER leg by content. Asserting only single-envelope-ness left the
     // banner unguarded anywhere in the repo, and the banner is the one contributor

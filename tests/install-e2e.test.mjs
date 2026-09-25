@@ -174,10 +174,13 @@ describe('E2E: Plugin install mode', () => {
     const preMatchers = preToolUse.map((h) => h.matcher);
     expect(preMatchers).toContain('Edit|Write|NotebookEdit|Read');
     expect(preMatchers).not.toContain('Skill');
-    expect(preMatchers).toContain('Agent|Task');
+    // Three names: Claude Code's Agent/Task and Qwen Code's runtime id `agent`
+    // (lib/tool-names.mjs; scripts/pre-agent-inject.js accepts all three).
+    expect(preMatchers).toContain('Agent|Task|agent');
 
-    // PreToolUse Agent|Task subagent-injection hook (P0)
-    const agentInject = preToolUse.find((h) => h.matcher === 'Agent|Task');
+    // PreToolUse Agent|Task subagent-injection hook (P0) — the matcher carries Qwen
+    // Code's `agent` id as well (lib/tool-names.mjs).
+    const agentInject = preToolUse.find((h) => h.matcher === 'Agent|Task|agent');
     // The registered command is the bash prefilter, not the Node entry (audit P2-5): a
     // default-off feature must not start an interpreter on every Agent dispatch. The .sh
     // execs the .js when the flag is on.
@@ -309,7 +312,7 @@ describe('E2E: Direct install mode (git clone / npx)', () => {
     expect(preToolUse.find((h) => h.matcher === 'Skill')).toBeUndefined();
 
     // Agent|Task subagent-injection hook (P0)
-    const agentMatcher = preToolUse.find((h) => h.matcher === 'Agent|Task');
+    const agentMatcher = preToolUse.find((h) => h.matcher === 'Agent|Task|agent');
     expect(agentMatcher).toBeTruthy();
     expect(agentMatcher.hooks[0].command).toContain('pre-agent-inject.sh');
     expect(agentMatcher.hooks[0].command.startsWith('bash ')).toBe(true);

@@ -94,7 +94,10 @@ async function main() {
     return;
   }
   if (!hook || typeof hook !== 'object') return;
-  if (hook.tool_name !== 'Agent' && hook.tool_name !== 'Task') return;
+  // `agent` is Qwen Code's id for the same dispatch (lib/tool-names.mjs is the canonical
+  // table; inlined here because this file's contract is a ZERO-IMPORT default-off path —
+  // see readStdin below, and the hook's own matcher already carries the same three names).
+  if (hook.tool_name !== 'Agent' && hook.tool_name !== 'Task' && hook.tool_name !== 'agent') return;
 
   // Heavy deps loaded ONLY on the enabled Agent-dispatch path, so the default-off
   // hot path never pays the schema.mjs + better-sqlite3 native load on every dispatch.

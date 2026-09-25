@@ -211,6 +211,11 @@ export const SOURCE_FILES = [
   // benchmark/error-recall-live-replay.mjs scores the SAME predicate, so a missing
   // registration would ship a hook that cannot load its own filter.
   'lib/tool-refusal.mjs',
+  // Qwen Code's runtime tool ids → the canonical names the pipeline branches on. Imported
+  // by hook.mjs (both tool-name handlers), scripts/pre-tool-recall.js, pre-agent-inject.js
+  // and lib/transcript-scan.mjs — a missing manifest entry ships hooks that cannot load, and
+  // the hook entry points are exactly the files this list exists to protect.
+  'lib/tool-names.mjs',
   // Corpus-size ramp for absolute relevance floors. Imported by BOTH floor-bearing
   // injection faces: scripts/user-prompt-search.js (standalone hook) and
   // lib/error-recall-core.mjs. Missing here = UserPromptSubmit dies on auto-update.

@@ -18,6 +18,10 @@ import { buildReleaseManifest, serializeManifest } from '../lib/release-digest.m
 
 vi.mock('node:child_process', () => ({ execSync: vi.fn() }));
 const mockedExecSync = vi.mocked(execSync);
+// The fork ships upstream auto-update OFF (hook-update.mjs's fork guard) because upstream's
+// tarball is the Claude-only build. This suite is that machinery's own coverage, so it flips
+// the same switch a user would.
+process.env.CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE = '1';
 const originalFetch = globalThis.fetch;
 const originalHome = process.env.HOME;
 const trackedDirs = new Set();

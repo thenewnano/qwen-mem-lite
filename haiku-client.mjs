@@ -1,14 +1,32 @@
 // claude-mem-lite: Unified LLM call wrapper
 // Shared by memory (hook.mjs) and dispatch modules
 // Provider priority: ANTHROPIC_API_KEY (direct Anthropic API) →
-// OPENROUTER_API_KEY (OpenRouter, OpenAI-compatible) → claude CLI fallback
-// Model configurable via CLAUDE_MEM_MODEL (haiku|sonnet); OpenRouter slug
-// overridable via OPENROUTER_MODEL. The direct-API leg honours
+// OPENROUTER_API_KEY (OpenRouter) → OPENAI_API_KEY / OPENAI_BASE_URL (any
+// OpenAI-compatible endpoint) → claude CLI fallback.
+//
+// Model configurable via CLAUDE_MEM_MODEL (haiku|sonnet). The two
+// OpenAI-dialect legs — OpenRouter and the generic endpoint — share ONE
+// transport (callOpenAICompatAPI) and differ only in target: OpenRouter's slug
+// via OPENROUTER_MODEL, the generic leg's model via OPENAI_MODEL (all tiers) or
+// OPENAI_MODEL_{HAIKU,SONNET} (one tier). The direct-API leg honours
 // ANTHROPIC_BASE_URL (no /v1 suffix - the path is appended) and per-tier
 // deployment names via ANTHROPIC_DEFAULT_{HAIKU,SONNET}_MODEL, the same vars
 // the `claude` CLI leg resolves its --model aliases through, so one env set
 // points both transports at a gateway (Azure AI Foundry, LiteLLM, Bedrock
 // proxies). Unset → public Anthropic API, unchanged.
+//
+// Why the generic leg earns its place: "OpenAI-compatible" is the widest
+// provider contract there is (vLLM, Ollama, LM Studio, LiteLLM, Azure OpenAI,
+// DashScope, DeepSeek, Groq, Together, OpenAI itself), and this fork's host —
+// Qwen Code — already standardises on exactly OPENAI_API_KEY / OPENAI_BASE_URL /
+// OPENAI_MODEL, so the env that configures the host configures these background
+// calls too.
+//
+// CLAUDE_MEM_LLM_PROVIDER pins the leg (api|openrouter|openai|cli) for installs
+// where several keys are present at once and key-presence order picks the wrong
+// one. That is the normal case under Qwen Code: its settings.json `env` block
+// injects ANTHROPIC_API_KEY into every session, so without the pin an
+// OpenAI-compatible backend is unreachable no matter what else is set.
 
 import { execFileSync, spawn } from 'child_process';
 import { mkdirSync } from 'fs';
@@ -140,22 +158,105 @@ export function resolveOpenRouterModel(tier) {
   return OPENROUTER_MODEL_MAP[tier] || OPENROUTER_MODEL_MAP.haiku;
 }
 
+// ─── Generic OpenAI-compatible leg ───────────────────────────────────────────
+
+// Tier defaults for the generic leg. Real api.openai.com ids, so a bare
+// OPENAI_API_KEY works with no model configured; every other backend names its
+// own models and a local one almost always must (vLLM and Ollama serve no
+// `gpt-*` deployment at all). Two DIFFERENT defaults rather than one, so the
+// project's haiku/sonnet quality tiering survives a uniform backend.
+const OPENAI_MODEL_MAP = { haiku: 'gpt-4o-mini', sonnet: 'gpt-4o' };
+
+/**
+ * Model id the generic OpenAI-compatible leg sends for a tier. Most specific
+ * wins: OPENAI_MODEL_<TIER> → OPENAI_MODEL → the built-in tier default. Blank
+ * (and whitespace-only) values count as unset.
+ * @param {'haiku'|'sonnet'} tier
+ * @returns {string}
+ */
+export function resolveOpenAIModel(tier) {
+  const perTier = (process.env[`OPENAI_MODEL_${String(tier).toUpperCase()}`] || '').trim();
+  if (perTier) return perTier;
+  const allTiers = (process.env.OPENAI_MODEL || '').trim();
+  if (allTiers) return allTiers;
+  return OPENAI_MODEL_MAP[tier] || OPENAI_MODEL_MAP.haiku;
+}
+
 // ─── Mode Detection ──────────────────────────────────────────────────────────
 
 let _mode = null;
 
+const PROVIDER_LEGS = new Set(['api', 'openrouter', 'openai', 'cli']);
+
 /**
- * Detect which provider to use for LLM calls. Priority (per user contract):
- * ANTHROPIC_API_KEY → direct Anthropic API ('api', native, supports prompt
- * caching), else OPENROUTER_API_KEY → OpenRouter ('openrouter', OpenAI-compat),
- * else fall back to the `claude` CLI ('cli'). Cached after first call.
- * @returns {'api'|'openrouter'|'cli'} The detected mode
+ * Is this leg actually configured here? `cli` always is — the fallback needs no
+ * credentials. The generic leg counts as configured by EITHER var, because a
+ * keyless local server (Ollama, vLLM, LM Studio) has no OPENAI_API_KEY to set
+ * and OPENAI_BASE_URL alone is its whole configuration.
+ * @param {'api'|'openrouter'|'openai'|'cli'} leg
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {boolean}
+ */
+function legConfigured(leg, env) {
+  if (leg === 'api') return Boolean(env.ANTHROPIC_API_KEY);
+  if (leg === 'openrouter') return Boolean(env.OPENROUTER_API_KEY);
+  if (leg === 'openai') return Boolean(env.OPENAI_API_KEY) || Boolean((env.OPENAI_BASE_URL || '').trim());
+  return true;
+}
+
+/**
+ * Pure mode detection — deliberately NOT memoized, so a diagnostic can ask per
+ * call and get the current answer while the worker path caches it in
+ * detectMode() below. It is the single source of the precedence order:
+ * lib/llm-provider-probe.mjs imports it rather than re-deriving the contract,
+ * which is what it used to do and what the drift note there warned about.
+ *
+ * Precedence (per user contract): ANTHROPIC_API_KEY → 'api' (native Messages
+ * API, supports prompt caching), else OPENROUTER_API_KEY → 'openrouter', else
+ * OPENAI_API_KEY / OPENAI_BASE_URL → 'openai', else the `claude` CLI.
+ *
+ * CLAUDE_MEM_LLM_PROVIDER overrides that order when it names one of the four
+ * legs AND the leg is configured. A pin that cannot be honoured — an unknown
+ * name, or a named leg with no credentials — is logged and IGNORED rather than
+ * obeyed: obeying it would point every call at a leg that cannot answer, and the
+ * CLI fallback is what keeps summaries flowing.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {'api'|'openrouter'|'openai'|'cli'}
+ */
+export function detectModeFromEnv(env = process.env) {
+  const pinned = (env.CLAUDE_MEM_LLM_PROVIDER || '').trim().toLowerCase();
+  if (pinned) {
+    if (!PROVIDER_LEGS.has(pinned)) {
+      debugLog(
+        'WARN',
+        'haiku-client',
+        `CLAUDE_MEM_LLM_PROVIDER="${pinned}" is not one of api|openrouter|openai|cli - ignoring`,
+      );
+    } else if (legConfigured(pinned, env)) {
+      return pinned;
+    } else {
+      debugLog(
+        'WARN',
+        'haiku-client',
+        `CLAUDE_MEM_LLM_PROVIDER=${pinned} but that provider is not configured - falling back to detection`,
+      );
+    }
+  }
+  if (env.ANTHROPIC_API_KEY) return 'api';
+  if (env.OPENROUTER_API_KEY) return 'openrouter';
+  if (legConfigured('openai', env)) return 'openai';
+  return 'cli';
+}
+
+/**
+ * Which provider to use for LLM calls, cached for the life of the process
+ * (workers are short-lived; the MCP server must not re-derive per call).
+ * @returns {'api'|'openrouter'|'openai'|'cli'} The detected mode
  */
 export function detectMode() {
   if (_mode) return _mode;
-  if (process.env.ANTHROPIC_API_KEY) _mode = 'api';
-  else if (process.env.OPENROUTER_API_KEY) _mode = 'openrouter';
-  else _mode = 'cli';
+  _mode = detectModeFromEnv(process.env);
   const { cli } = resolveModel();
   debugLog('DEBUG', 'haiku-client', `mode: ${_mode}, model: ${cli}`);
   return _mode;
@@ -257,10 +358,7 @@ export async function callHaiku(
     // log label that lied under CLAUDE_MEM_MODEL=sonnet. Two copies of an HTTP client
     // means every proxy fix has to land twice, on the path where missing the proxy is
     // the difference between 1.4s and 13.5s.
-    primary =
-      mode === 'api'
-        ? await callModelAPI(prompt, resolveModel().cli, { timeout, maxTokens, temperature })
-        : await callOpenRouterAPI(prompt, resolveModel().cli, { timeout, maxTokens, temperature });
+    primary = await callKeyedLeg(mode, prompt, resolveModel().cli, { timeout, maxTokens, temperature });
   } catch (e) {
     debugCatch(e, `callHaiku:${mode}`);
   }
@@ -299,7 +397,7 @@ export async function callHaikuJSON(prompt, opts) {
  *
  * `resolveModel().cli`, NOT the literal 'haiku': despite the name, callHaikuJSON
  * reaches the model through resolveModel() on ALL three legs (callHaikuAPI,
- * callOpenRouterAPI, callHaikuCLI), so it honours the documented CLAUDE_MEM_MODEL
+ * callOpenAICompatAPI, callHaikuCLI), so it honours the documented CLAUDE_MEM_MODEL
  * knob. Pinning 'haiku' here would silently downgrade any caller's model for every user
  * who set CLAUDE_MEM_MODEL=sonnet — pre-tag review finding, v3.68.0, when the caller in
  * question was registry enrichment.
@@ -354,10 +452,7 @@ export async function callLLMWithModel(
   // failure so a region-blocked / out-of-credit key still produces output.
   let primary = null;
   try {
-    primary =
-      mode === 'api'
-        ? await callModelAPI(prompt, resolvedModel, { timeout, maxTokens, temperature })
-        : await callOpenRouterAPI(prompt, resolvedModel, { timeout, maxTokens, temperature });
+    primary = await callKeyedLeg(mode, prompt, resolvedModel, { timeout, maxTokens, temperature });
   } catch (e) {
     debugCatch(e, `callLLMWithModel:${mode}:${resolvedModel}`);
   }
@@ -402,10 +497,7 @@ export async function callLLMWithModelAsync(
 
   let primary = null;
   try {
-    primary =
-      mode === 'api'
-        ? await callModelAPI(prompt, resolvedModel, { timeout, maxTokens, temperature })
-        : await callOpenRouterAPI(prompt, resolvedModel, { timeout, maxTokens, temperature });
+    primary = await callKeyedLeg(mode, prompt, resolvedModel, { timeout, maxTokens, temperature });
   } catch (e) {
     debugCatch(e, `callLLMWithModelAsync:${mode}:${resolvedModel}`);
   }
@@ -462,10 +554,7 @@ export async function callModelJSONAsync(
   // failure — NOT the blocking execFileSync callModelCLI that callModelJSON uses.
   let primary = null;
   try {
-    primary =
-      mode === 'api'
-        ? await callModelAPI(prompt, resolvedModel, { timeout, maxTokens, temperature })
-        : await callOpenRouterAPI(prompt, resolvedModel, { timeout, maxTokens, temperature });
+    primary = await callKeyedLeg(mode, prompt, resolvedModel, { timeout, maxTokens, temperature });
   } catch (e) {
     debugCatch(e, `callModelJSONAsync:${mode}:${resolvedModel}`);
   }
@@ -525,11 +614,11 @@ async function callModelAPI(prompt, model, { timeout, maxTokens, temperature = D
       body.system = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
     }
 
-    // Proxy-aware, same as the OpenRouter site below. Missing it here meant the
-    // ANTHROPIC_API_KEY paths were the one keyed provider still doing a bare
-    // fetch — a silent outage behind a proxy, and one the new doctor check would
-    // have certified as healthy because it probes the hop this code was ASSUMED
-    // to use. (pre-tag review SHOULD-FIX 3)
+    // Proxy-aware, same as the OpenAI-dialect section below. Missing it here
+    // meant the ANTHROPIC_API_KEY paths were the one keyed provider still doing
+    // a bare fetch — a silent outage behind a proxy, and one the new doctor check
+    // would have certified as healthy because it probes the hop this code was
+    // ASSUMED to use. (pre-tag review SHOULD-FIX 3)
     const apiUrl = `${anthropicBaseUrl()}/v1/messages`;
     const apiHeaders = {
       'Content-Type': 'application/json',
@@ -862,24 +951,82 @@ export async function callModelCLIAsync(prompt, model, { timeout }) {
   return second.result;
 }
 
-// ─── OpenRouter Mode ─────────────────────────────────────────────────────────
+// ─── Keyed-leg dispatch ──────────────────────────────────────────────────────
 
-// OpenRouter exposes an OpenAI-compatible chat-completions API (NOT the
-// Anthropic Messages format), so the request/response shapes differ from
-// callHaikuAPI/callModelAPI: Bearer auth, `messages` with a system-role entry,
-// and the reply lives at choices[0].message.content. Anthropic's prompt-cache
+/**
+ * One call onto whichever keyed leg detection selected. Every dispatcher above
+ * enters here, so the leg→transport mapping lives in exactly one place rather
+ * than in a ternary repeated at four call sites — which is how the fourth leg
+ * would have been wired into three of them.
+ * @param {'api'|'openrouter'|'openai'} mode
+ * @param {string|{system?:string,user:string}} prompt
+ * @param {'haiku'|'sonnet'} tier
+ * @param {{timeout:number,maxTokens:number,temperature?:number}} opts
+ * @returns {Promise<{text:string}|null>}
+ */
+function callKeyedLeg(mode, prompt, tier, opts) {
+  if (mode === 'api') return callModelAPI(prompt, tier, opts);
+  // Both OpenAI-dialect legs share one transport; only the target differs.
+  return callOpenAICompatAPI(prompt, tier, opts, mode);
+}
+
+// ─── OpenAI-compatible legs (OpenRouter + a generic endpoint) ────────────────
+
+// Neither leg speaks the Anthropic Messages format, so request/response shapes
+// differ from callModelAPI: Bearer auth, `messages` with a system-role entry,
+// and the reply at choices[0].message.content. Anthropic's prompt-cache
 // `cache_control` field has no OpenAI-format equivalent and is omitted.
-// `tier` is the resolved model tier ('haiku'|'sonnet'); OPENROUTER_MODEL can
-// override the resulting slug entirely (see resolveOpenRouterModel).
-async function callOpenRouterAPI(
+//
+// The generic leg's base URL carries the version segment — the OpenAI SDK and
+// Qwen Code convention, where OPENAI_BASE_URL=https://api.openai.com/v1 means
+// requests go to <base>/chat/completions. So the value a user already has for
+// Qwen Code, LiteLLM or a vLLM deployment works here unedited, and a trailing
+// slash is tolerated.
+function openAIBaseUrl() {
+  return (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').trim().replace(/\/+$/, '');
+}
+
+/**
+ * Where a leg's request goes, under which model and credential.
+ * @param {'openrouter'|'openai'} mode
+ * @param {'haiku'|'sonnet'} tier
+ * @returns {{label: string, url: string, apiKey?: string, model: string, headers: object}}
+ */
+function openAICompatTarget(mode, tier) {
+  if (mode === 'openrouter') {
+    return {
+      label: `${tier}-openrouter`,
+      url: 'https://openrouter.ai/api/v1/chat/completions',
+      apiKey: process.env.OPENROUTER_API_KEY,
+      model: resolveOpenRouterModel(tier),
+      // Optional OpenRouter attribution header (ignored by the API if absent).
+      // Deliberately NOT sent on the generic leg: gateways are not obliged to
+      // ignore unknown headers, and one rejection would fail every call.
+      headers: { 'X-Title': 'claude-mem-lite' },
+    };
+  }
+  return {
+    label: `${tier}-openai`,
+    url: `${openAIBaseUrl()}/chat/completions`,
+    apiKey: process.env.OPENAI_API_KEY,
+    model: resolveOpenAIModel(tier),
+    headers: {},
+  };
+}
+
+async function callOpenAICompatAPI(
   prompt,
   tier,
   { timeout, maxTokens, temperature = DEFAULT_LLM_TEMPERATURE },
+  mode = 'openai',
 ) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) return null;
+  const { label, url, apiKey, model, headers } = openAICompatTarget(mode, tier);
+  // OpenRouter is key-only. The generic leg is not: a keyless local server
+  // (Ollama, vLLM, LM Studio) is a real deployment, and there the Authorization
+  // header is omitted entirely rather than sent as a bare `Bearer ` — which
+  // several servers reject outright.
+  if (mode === 'openrouter' && !apiKey) return null;
 
-  const model = resolveOpenRouterModel(tier);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
 
@@ -889,23 +1036,18 @@ async function callOpenRouterAPI(
     if (system) messages.push({ role: 'system', content: system });
     messages.push({ role: 'user', content: user });
 
-    const url = 'https://openrouter.ai/api/v1/chat/completions';
-    const reqHeaders = {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-      // Optional OpenRouter attribution headers (ignored by the API if absent).
-      'X-Title': 'claude-mem-lite',
-    };
+    const reqHeaders = { 'Content-Type': 'application/json', ...headers };
+    if (apiKey) reqHeaders.Authorization = `Bearer ${apiKey}`;
     const reqBody = JSON.stringify({ model, max_tokens: maxTokens, temperature, messages });
     // Native fetch ignores HTTP(S)_PROXY; when a proxy is configured, tunnel the
-    // request through it — a direct fetch to openrouter.ai times out behind one.
+    // request through it — a direct fetch to the provider times out behind one.
     const proxy = httpConnectProxyFor(url);
     const res = proxy
       ? await postViaConnectProxy(proxy, url, { headers: reqHeaders, body: reqBody, timeout })
       : await fetch(url, { method: 'POST', headers: reqHeaders, body: reqBody, signal: controller.signal });
 
     if (!res.ok) {
-      debugLog('WARN', `${tier}-openrouter`, `HTTP ${res.status}`);
+      debugLog('WARN', label, `HTTP ${res.status}`);
       return null;
     }
 

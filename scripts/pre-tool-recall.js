@@ -32,6 +32,7 @@ import { fileIntelFor } from '../lib/file-intel.mjs';
 import { shouldWarnReread, buildRereadWarning, readFileMeta } from '../lib/reread-guard.mjs';
 import { recordMetric } from '../lib/metrics.mjs';
 import { presentIdents } from '../lib/lesson-idents.mjs';
+import { normalizeToolName } from '../lib/tool-names.mjs';
 import { neutralizeContextDelimiters } from '../format-utils.mjs';
 // D#154: the one stdout writer. This script has THREE emit sites (Read→Edit ack,
 // repeated-read guard, lesson block) and they stay one document because each branch
@@ -410,7 +411,9 @@ try {
     // `case 'NotebookEdit'` already knew the shape differs; this leg did not.
     filePath = toolEditPath(event.tool_input);
     sessionId = event.session_id || null;
-    toolName = event.tool_name || null;
+    // Host vocabulary → the canonical names HANDLED_TOOLS / isRead below are written in
+    // (lib/tool-names.mjs). Qwen Code reports `write_file` / `read_file` here.
+    toolName = normalizeToolName(event.tool_name || null);
     const off = event.tool_input?.offset;
     const lim = event.tool_input?.limit;
     isFullRead = (off === undefined || off === null) && (lim === undefined || lim === null);
@@ -424,6 +427,7 @@ try {
       process.exit(0);
     }
     ({ filePath, sessionId, toolName } = salvaged);
+    toolName = normalizeToolName(toolName);
     toolInput = {};
     isFullRead = true;
   }

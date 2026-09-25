@@ -105,7 +105,7 @@ How claude-mem-lite differs from the major neighbors in the LLM-memory space (ve
 - **Robust locking** -- PID-aware lock files with automatic stale/orphan cleanup (>30s timeout or dead PID)
 - **Stale session cleanup** -- Sessions active for >24h are automatically marked as abandoned on next start
 - **Domain synonym expansion** -- Search queries expand to domain synonyms (e.g., "fix" → debug, bugfix, troubleshoot, diagnose, repair)
-- **Multi-provider LLM mode** -- Provider priority `ANTHROPIC_API_KEY` (direct Anthropic API) → `OPENROUTER_API_KEY` (OpenRouter, OpenAI-compatible — point it at any model via `OPENROUTER_MODEL`) → `claude -p` CLI fallback when no key is set
+- **Multi-provider LLM mode** -- Provider priority `ANTHROPIC_API_KEY` (direct Anthropic API) → `OPENROUTER_API_KEY` (OpenRouter) → `OPENAI_API_KEY` / `OPENAI_BASE_URL` (**any OpenAI-compatible endpoint** — vLLM, Ollama, LM Studio, LiteLLM, Azure OpenAI, DashScope, DeepSeek, Groq, OpenAI itself) → `claude -p` CLI fallback when no key is set. `CLAUDE_MEM_LLM_PROVIDER` pins the leg when several are configured at once
 - **Lesson-learned indexing** -- `lesson_learned` field indexed in FTS5 with weight 8, making past debugging insights directly searchable
 - **Cross-source normalization** -- `mem_search` normalizes scores across observations, sessions, and prompts before merging, preventing any source from dominating results
 - **Exponential recency decay** -- Type-differentiated half-lives (decisions: 90d, discoveries: 60d, bugfixes: 14d, changes: 7d) consistently applied in all ranking paths
@@ -156,6 +156,38 @@ is still outside it gets a message naming both sides of the mismatch instead of 
 
 ## Installation
 
+### Qwen Code (this fork)
+
+This repository is the **Qwen Code fork** of claude-mem-lite. It installs as a Qwen Code
+extension, runs the same code and the same store as the Claude Code install
+(`~/.claude-mem-lite/`, so a project's history is shared between the two hosts), and needs
+no Claude Code present.
+
+```bash
+qwen extensions install /path/to/claude-mem-lite
+qwen extensions list                             # ✓ claude-mem-lite
+qwen extensions link /path/to/claude-mem-lite    # instead, to track a working copy in place
+```
+
+| Piece | What the fork does for Qwen |
+|-------|------------------------------|
+| Hooks | Qwen Code loads `hooks/hooks.json` verbatim and substitutes `${CLAUDE_PLUGIN_ROOT}`. Its payloads carry Qwen's own tool ids (`write_file`, `read_file`, `edit`, `run_shell_command`); `lib/tool-names.mjs` translates them once, so skip lists, edit weighting, Bash significance and error recall behave exactly as they do on Claude Code. |
+| LLM backend | Point the background calls anywhere OpenAI-compatible with `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL`; set `CLAUDE_MEM_LLM_PROVIDER=openai` to make that stick, because Qwen's `settings.json` env block injects `ANTHROPIC_API_KEY` into every session and it would otherwise win. Full table under [Environment Variables](#environment-variables). |
+| MCP server | Declared by the extension itself — keep it that way. A `mem-lite` entry in `~/.qwen/settings.json` **overrides** the extension's (settings win) and then runs whatever copy it points at, which is how a stale `~/.claude-mem-lite/server.mjs` ends up serving a session. |
+| Steering block | Written to **both** `<cwd>/CLAUDE.md` and `<cwd>/QWEN.md`: Qwen Code reads only the latter and Claude Code only the former, and `adopt` cannot tell which host it is running under. |
+| Transcript features | Qwen records its transcript as `message.parts`; `lib/transcript-scan.mjs` normalizes that shape, so citation tracking, the unsaved-bugfix nudge and the fast summary keep working. |
+| Auto-update | **Off in this fork.** Upstream's release tarball is the Claude-only build, so an automatic update would revert the Qwen support silently. Update with `git pull` (or `qwen extensions update`); `CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE=1` opts back in, `CLAUDE_MEM_UPDATE_REPO=<owner>/<name>` points it at this fork's own releases. |
+| Slash commands | `/mem`, `/memory`, `/lesson`, `/bug`, `/adopt`, `/unadopt`, `/update` come from `commands/`. |
+
+> **Heads-up when working *inside this repository*:** Qwen reports `mem-lite` as
+> disconnected there, because the repo root carries a project-scope `.mcp.json` (the Claude
+> Code plugin manifest) whose `${CLAUDE_PLUGIN_ROOT}` is not expanded in that position. Hooks,
+> slash commands and memory capture are unaffected; every other project uses the extension's
+> own entry.
+
+The Claude Code install path (`node install.mjs install`, which writes `~/.claude/settings.json`)
+is untouched and still works if you run both hosts.
+
 ### Method 1: Plugin Marketplace (recommended)
 
 ```bash
@@ -167,7 +199,7 @@ Plugin mode manages its own hooks/runtime. On session start it only **checks and
 
 > **The plugin install is complete on its own** — hooks, MCP tools, and the bundled slash commands (`/mem`, `/lesson`, `/bug`, `/adopt`) all run from the plugin with no second step. The slash commands invoke the bundled CLI by an absolute path resolved from the plugin directory (`${CLAUDE_PLUGIN_ROOT}/cli.mjs <cmd>`), so they work without anything on your `PATH`. A global `claude-mem-lite` **shell** command (for running queries yourself in a terminal) is **optional** — `npm i -g claude-mem-lite` — and is a *separate* npm install: the plugin's auto-update does **not** refresh it, so re-run `npm i -g claude-mem-lite@latest` if you want that shell command kept in sync. You do **not** need it for the plugin to be fully functional.
 
-> **Auto-adopt writes into your project, on every SessionStart (v3.13+).** The plugin adds a slug-scoped **managed block** to your project's own **`<cwd>/CLAUDE.md`** — a file that is normally committed to git — plus a `<cwd>/.claude/plugin_claude_mem_lite.md` detail file. The block is a system-authority pointer that boosts Claude's proactive use of `mem_recall` / `mem_save`. Everything outside the block is preserved verbatim, and it coexists with other plugins' blocks in the same file ([details](#invited-memory-v232)). This happens on **every** SessionStart, not just the first: the sync is idempotent and re-applies the block if it is edited away, and refreshes it when the shipped template changes. It applies regardless of install path (npm, npx, `/plugin`, manual), so **no manual `/adopt` is needed**.
+> **Auto-adopt writes into your project, on every SessionStart (v3.13+).** The plugin adds a slug-scoped **managed block** to your project's own **`<cwd>/CLAUDE.md`** **and `<cwd>/QWEN.md`** — files that are normally committed to git — plus a `<cwd>/.claude/plugin_claude_mem_lite.md` / `<cwd>/.qwen/plugin_claude_mem_lite.md` detail file. Both context files are written because the two hosts do not read each other's: Claude Code loads `CLAUDE.md`, Qwen Code loads `QWEN.md`. The block is a system-authority pointer that boosts Claude's proactive use of `mem_recall` / `mem_save`. Everything outside the block is preserved verbatim, and it coexists with other plugins' blocks in the same file ([details](#invited-memory-v232)). This happens on **every** SessionStart, not just the first: the sync is idempotent and re-applies the block if it is edited away, and refreshes it when the shipped template changes. It applies regardless of install path (npm, npx, `/plugin`, manual), so **no manual `/adopt` is needed**.
 >
 > Opt out per project with `claude-mem-lite adopt --disable` (`--enable` to re-arm), globally with `export MEM_NO_AUTO_ADOPT=1`, or freeze an already-adopted block against template refreshes with `CLAUDE_MEM_NO_TEMPLATE_REFRESH=1`. `claude-mem-lite unadopt` removes the block and the detail file. Manual `/adopt` remains available for re-applying after edits and for the `--all` batch path.
 
@@ -900,6 +932,11 @@ claude-mem-lite.
 | `ANTHROPIC_DEFAULT_SONNET_MODEL` | Same as above for the `sonnet` tier. | built-in `claude-sonnet-4-5-…` |
 | `OPENROUTER_API_KEY` | OpenRouter API key (OpenAI-compatible). Used for background LLM calls when `ANTHROPIC_API_KEY` is **not** set. If neither key is set, calls fall back to the `claude -p` CLI. | _(unset)_ |
 | `OPENROUTER_MODEL` | Overrides the OpenRouter model slug for **all** background calls (e.g. `openai/gpt-4o-mini`, `qwen/qwen-2.5-72b-instruct`). When unset, the `CLAUDE_MEM_MODEL` tier maps to `anthropic/claude-haiku-4.5` (haiku) or `anthropic/claude-sonnet-4.5` (sonnet). | _(tier default)_ |
+| `OPENAI_API_KEY` | API key for the generic OpenAI-compatible leg. Used for background LLM calls when neither `ANTHROPIC_API_KEY` nor `OPENROUTER_API_KEY` is set. **Optional**: a keyless local server (Ollama, vLLM, LM Studio) is configured by `OPENAI_BASE_URL` alone, and no `Authorization` header is sent in that case. These are Qwen Code's own variable names, so one env set points both the host and this plugin at the same backend. | _(unset)_ |
+| `OPENAI_BASE_URL` | Base URL of the OpenAI-compatible endpoint, **including** the version segment — the OpenAI SDK convention: `https://api.openai.com/v1`, `http://127.0.0.1:11434/v1`, `https://dashscope.aliyuncs.com/compatible-mode/v1`. Requests go to `<OPENAI_BASE_URL>/chat/completions`. Trailing slashes are tolerated. | `https://api.openai.com/v1` |
+| `OPENAI_MODEL` | Model id for **all** tiers on the generic leg (e.g. `qwen3.5-plus`, `llama3.2`, `gpt-4o-mini`). Set this for any backend that is not api.openai.com — local servers have no `gpt-*` deployment. | _(tier default)_ |
+| `OPENAI_MODEL_HAIKU` / `OPENAI_MODEL_SONNET` | Per-tier model ids, which is how the haiku/sonnet split survives a uniform backend. Beat `OPENAI_MODEL`. | built-in `gpt-4o-mini` / `gpt-4o` |
+| `CLAUDE_MEM_LLM_PROVIDER` | Pin the provider leg: `api` \| `openrouter` \| `openai` \| `cli`. Needed when several provider keys are set at once and key-presence order picks the wrong one — the normal case under Qwen Code, whose `settings.json` `env` block injects `ANTHROPIC_API_KEY` into every session. A pin naming a leg that is not configured is logged and ignored rather than obeyed. | _(auto-detect)_ |
 | `CLAUDE_MEM_DEBUG` | Enable debug logging (`1` to enable). | _(disabled)_ |
 | `MEM_QUIET_HOOKS` | Low-noise hooks. `1` drops the `File Lessons` / `Key Context` sections from SessionStart injection, the lesson suffix from `[mem] Related memories`, and the `WHEN TO USE` / `Decision rules` blocks from MCP server instructions. IDs and the `Recent` table still surface so `mem_get(ids=[…])` remains reachable. Intended for users running the invited-memory adopt path or who otherwise want minimal auto-injection. **Since v2.82.0 this env no longer gates auto-adopt — use `MEM_NO_AUTO_ADOPT=1` for that.** | _(disabled)_ |
 | `MEM_NO_AUTO_ADOPT` | Global opt-out for auto-adopt (v2.82.0+). `1` prevents the per-SessionStart auto-write of the `CLAUDE.md` managed block across **all** projects. For per-project opt-out use `claude-mem-lite adopt --disable` instead (writes a durable `<memdir>/.mem-no-auto-adopt` sentinel that survives marker deletion). | _(disabled)_ |
