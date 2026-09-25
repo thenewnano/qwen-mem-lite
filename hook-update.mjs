@@ -600,18 +600,25 @@ export function isRepairDowngrade(relVersion, localVersion) {
 }
 
 // ── Release signature verification (P1 supply-chain hardening) ──────────────
-// Embedded Ed25519 PUBLIC key (SPKI PEM). ACTIVE since v3.20.0 — auto-update now
-// FAILS CLOSED: a release missing valid signature assets is refused (the matching
-// private key is the GitHub Actions secret RELEASE_SIGNING_KEY; signer:
-// scripts/sign-release.mjs; verifier core: lib/release-digest.mjs). The signature
-// over v3.19.0's published manifest was verified against this key end-to-end
-// before activation. The CLAUDE_MEM_SKIP_SIG_VERIFY env escape hatch still forces a
-// skip. To ROTATE: generate a new keypair, set the new private key as the secret
-// and ship one signed release with it BEFORE replacing the key below — embedding a
-// key whose releases are not yet signed bricks auto-update (fail-closed on unsigned).
-// Setting this back to '' reverts to opportunistic (install-unsigned) behavior.
+// Embedded Ed25519 PUBLIC key (SPKI PEM): THIS FORK's own signing key, rotated at the fork.
+// Upstream's private half is not ours to hold, so a fork release can never be verified by
+// upstream's key — and since this regime is FAIL CLOSED, an unsigned release is REFUSED,
+// which is the protection wanted here: nothing installs over the fork without a signature
+// the fork's own key produced.
+//
+// The matching private key is the RELEASE_SIGNING_KEY secret on this fork's repository;
+// signer: scripts/sign-release.mjs; verifier core: lib/release-digest.mjs. The
+// CLAUDE_MEM_SKIP_SIG_VERIFY env escape hatch still forces a skip. To ROTATE: generate a new
+// keypair, set the new private key as the secret, ship one signed release with it, and only
+// THEN replace the key below — embedding a key whose releases are not yet signed bricks
+// auto-update (fail-closed on unsigned). Setting this back to '' reverts to opportunistic
+// (install-unsigned) behavior.
+//
+// Verified end-to-end before being embedded: the manifest this key signed for the current
+// commit validated against a real GitHub tarball of the same commit under this key, and came
+// back signature-invalid under upstream's — so the check below is bound to the right key.
 const RELEASE_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAau5x65mqsYxJU2cO2ORteueK71EuB4aphVZds8FOZKk=
+MCowBQYDK2VwAyEAcysf+tJfccnsSqkcUo1mTKR6rxc+MBdQR94YldUOssM=
 -----END PUBLIC KEY-----
 `;
 const MANIFEST_ASSET_NAME = 'release-manifest.json';
