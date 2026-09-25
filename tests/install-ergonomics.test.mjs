@@ -58,7 +58,7 @@ describe('setup.sh deps-broken flag round-trip (v2.79, binding-probe since D#6 f
     const home = makeTmpDir();
     try {
       const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       mkdirSync(pluginRoot, { recursive: true });
       writeFileSync(join(pluginRoot, 'package.json'), '{"name":"fixture"}\n');
@@ -100,7 +100,7 @@ describe('setup.sh deps-broken flag round-trip (v2.79, binding-probe since D#6 f
     const home = makeTmpDir();
     try {
       const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       mkdirSync(join(pluginRoot, 'lib'), { recursive: true });
       mkdirSync(join(pluginRoot, 'scripts'), { recursive: true });
@@ -152,7 +152,7 @@ describe('setup.sh deps-broken flag round-trip (v2.79, binding-probe since D#6 f
     const home = makeTmpDir();
     try {
       const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       mkdirSync(join(pluginRoot, 'scripts'), { recursive: true });
       writeFileSync(join(pluginRoot, 'package.json'), '{"name":"fixture"}\n');
@@ -191,7 +191,7 @@ describe('setup.sh deps-broken flag round-trip (v2.79, binding-probe since D#6 f
     const home = makeTmpDir();
     try {
       const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       mkdirSync(join(pluginRoot, 'lib'), { recursive: true });
       mkdirSync(join(pluginRoot, 'node_modules', 'better-sqlite3'), { recursive: true });
@@ -441,7 +441,7 @@ describe('doctor surfaces orphan hooks (v2.79)', () => {
 //
 // The fixture pins PATH to one EMPTY directory rather than filtering the inherited one: the
 // check's whole question is "does this bare name resolve", and a maintainer with a global
-// `npm i -g claude-mem-lite` would otherwise land in the ✓ branch and make every assertion
+// `npm i -g github:thenewnano/qwen-mem-lite` would otherwise land in the ✓ branch and make every assertion
 // below vacuous on exactly one machine. The only other command `status` shells out to is
 // `claude` (for `mcp list`), already inside a try/catch that degrades to its own ⚠.
 //

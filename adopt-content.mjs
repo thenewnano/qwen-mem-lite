@@ -23,7 +23,7 @@ export const CURRENT_SENTINEL_VERSION = 'v1';
 
 // The CLI name as written into the user's project tree — deliberately NOT `CLI_INVOKE`
 // (audit R7 P2-1). CLI_INVOKE resolves to an absolute, VERSION-PINNED path
-// (`node /home/<user>/.claude/plugins/cache/sdsrss/claude-mem-lite/<version>/cli.mjs`), and
+// (`node /home/<user>/.claude/plugins/cache/thenewano/claude-mem-lite/<version>/cli.mjs`), and
 // both generators below write files the user may commit: the managed block lands in
 // <cwd>/CLAUDE.md and the detail doc in <cwd>/.claude/, which is the standard home for
 // project-scoped settings/commands/agents and is commonly tracked. Embedding the resolved
@@ -77,7 +77,7 @@ export function getDetailDoc() {
 > 设计背景见 docs/CLAUDE-MD-STEERING-PLAN.md。
 
 > **本文下方所有命令写作 \`${CLI} <cmd>\`。** 该名字只在全局装过
-> （\`npm i -g claude-mem-lite\`）时才在 PATH 上；否则用等价的
+> （\`npm i -g github:thenewnano/qwen-mem-lite\`）时才在 PATH 上；否则用等价的
 > \`node <插件根目录>/cli.mjs <cmd>\`，绝对路径见本会话 MCP server 的 instructions。
 > 本文件**刻意不写死绝对路径**：它随安装位置与版本变化，而本文件可能被提交进仓库，
 > 写死会导致每次升版都改动该文件、且队友拿到的是只在别人机器上存在的路径。

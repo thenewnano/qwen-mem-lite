@@ -27,7 +27,7 @@ afterAll(() => fixtures.disposeAll());
 // idealised — the diagnostics block below the list is where a loose parser goes wrong.
 const REAL_OUTPUT = `Checking MCP server health…
 
-plugin:claude-mem-lite:mem-lite: node /home/u/.claude/plugins/cache/sdsrss/claude-mem-lite/6.3.0/scripts/launch.mjs - ✔ Connected
+plugin:claude-mem-lite:mem-lite: node /home/u/.claude/plugins/cache/thenewano/claude-mem-lite/6.3.0/scripts/launch.mjs - ✔ Connected
 plugin:code-graph-mcp:code-graph: node /home/u/.claude/plugins/cache/code-graph-mcp/0.142.0/scripts/mcp-launcher.js - ✔ Connected
 plugin:context7:context7: https://mcp.context7.com/mcp (HTTP) - ✔ Connected
 
@@ -89,7 +89,7 @@ describe('pluginIsRegistered', () => {
     if (recorded || entries) {
       writeFileSync(
         join(dir, '.claude', 'plugins', 'installed_plugins.json'),
-        JSON.stringify(entries ?? { 'claude-mem-lite@sdsrss': { version: '1.0.0' } }),
+        JSON.stringify(entries ?? { 'claude-mem-lite@thenewano': { version: '1.0.0' } }),
       );
     }
     return dir;
@@ -104,13 +104,16 @@ describe('pluginIsRegistered', () => {
   });
 
   it('accepts the nested `plugins` shape the registry also uses', () => {
-    const h = home({ entries: { plugins: { 'claude-mem-lite@sdsrss': [{ version: '1.0.0' }] } } });
+    const h = home({ entries: { plugins: { 'claude-mem-lite@thenewano': [{ version: '1.0.0' }] } } });
     expect(pluginIsRegistered({ home: h, settings: {} })).toBe(true);
   });
 
   it('is true when settings enable it, even with no registry file', () => {
     expect(
-      pluginIsRegistered({ home: home(), settings: { enabledPlugins: { 'claude-mem-lite@sdsrss': true } } }),
+      pluginIsRegistered({
+        home: home(),
+        settings: { enabledPlugins: { 'claude-mem-lite@thenewano': true } },
+      }),
     ).toBe(true);
   });
 
@@ -119,7 +122,7 @@ describe('pluginIsRegistered', () => {
     expect(
       pluginIsRegistered({
         home: home({ recorded: true }),
-        settings: { enabledPlugins: { 'claude-mem-lite@sdsrss': false } },
+        settings: { enabledPlugins: { 'claude-mem-lite@thenewano': false } },
       }),
     ).toBe(false);
   });
@@ -133,7 +136,7 @@ describe('pluginIsRegistered', () => {
   });
 
   it('ignores a sibling plugin from the same marketplace', () => {
-    const h = home({ entries: { 'other-plugin@sdsrss': { version: '1.0.0' } } });
+    const h = home({ entries: { 'other-plugin@thenewano': { version: '1.0.0' } } });
     expect(pluginIsRegistered({ home: h, settings: {} })).toBe(false);
   });
 });
@@ -156,7 +159,7 @@ describe('status does not health-check every MCP server on a plugin install', ()
     chmodSync(join(bin, 'claude'), 0o755);
 
     if (plugin || leftoverCache) {
-      const ver = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite', '9.9.9');
+      const ver = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite', '9.9.9');
       // scripts/launch.mjs is what lib/install-shape.mjs::listPluginCacheVersions keys on —
       // a version dir without it is not counted as a code home. The first draft of this
       // fixture omitted it and the plugin case silently graded as an npm-channel install.
@@ -170,7 +173,7 @@ describe('status does not health-check every MCP server on a plugin install', ()
       if (plugin) {
         writeFileSync(
           join(home, '.claude', 'plugins', 'installed_plugins.json'),
-          JSON.stringify({ 'claude-mem-lite@sdsrss': { version: '9.9.9' } }),
+          JSON.stringify({ 'claude-mem-lite@thenewano': { version: '9.9.9' } }),
         );
       }
     }
@@ -239,14 +242,14 @@ describe('doctor detects a duplicate MCP registration', () => {
     );
     chmodSync(join(bin, 'claude'), 0o755);
 
-    const ver = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite', '9.9.9');
+    const ver = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite', '9.9.9');
     mkdirSync(join(ver, 'scripts'), { recursive: true });
     writeFileSync(join(ver, 'scripts', 'launch.mjs'), '// stub\n');
     mkdirSync(join(home, '.claude', 'plugins'), { recursive: true });
     if (recorded) {
       writeFileSync(
         join(home, '.claude', 'plugins', 'installed_plugins.json'),
-        JSON.stringify({ 'claude-mem-lite@sdsrss': { version: '9.9.9' } }),
+        JSON.stringify({ 'claude-mem-lite@thenewano': { version: '9.9.9' } }),
       );
     }
 

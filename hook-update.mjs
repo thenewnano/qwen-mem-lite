@@ -44,6 +44,11 @@ import { acquireLock } from './lib/proc-lock.mjs';
 import { atomicWriteFileSync } from './lib/atomic-write.mjs';
 import { verifyReleaseFiles, verifyManifestSignature } from './lib/release-digest.mjs';
 import { detectInstallShape } from './lib/install-shape.mjs';
+// The plugin cache is keyed by the marketplace the plugin was installed FROM, so these three
+// paths must follow MARKETPLACE_KEY rather than spell it out — the same reason
+// scripts/setup.sh's copy is pinned. lib/plugin-key.mjs is a zero-import leaf, so this costs
+// hook-update nothing in import weight (the constraint its header documents).
+import { MARKETPLACE_KEY, PLUGIN_NAME } from './lib/plugin-key.mjs';
 
 // ── Configuration ──────────────────────────────────────────
 // Update source: this fork's own repository, NOT upstream (sdsrss/claude-mem-lite).
@@ -1154,7 +1159,7 @@ export async function syncDataDirFromCache(opts = {}) {
     let sourceDir = opts.sourceDir || null;
     if (!sourceDir) {
       const cacheBase =
-        opts.cacheBase || join(homedir(), '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite');
+        opts.cacheBase || join(homedir(), '.claude', 'plugins', 'cache', MARKETPLACE_KEY, PLUGIN_NAME);
       if (!existsSync(cacheBase)) return { synced: false, reason: 'no-cache' };
       const versions = readdirSync(cacheBase)
         .filter((n) => /^\d+\.\d+/.test(n))
@@ -1336,7 +1341,7 @@ export function clearCacheHookResidue() {
   // status/doctor then see the shape of a healthy plugin-only install. Inlined
   // here for the same reason the rest of this function is (see header).
   if (!hasInstallManagedSettingsHooks()) return 0;
-  const cacheBase = join(homedir(), '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite');
+  const cacheBase = join(homedir(), '.claude', 'plugins', 'cache', MARKETPLACE_KEY, PLUGIN_NAME);
   if (!existsSync(cacheBase)) return 0;
   let cleared = 0;
   for (const ver of readdirSync(cacheBase)) {
@@ -1385,7 +1390,7 @@ function isSameDir(a, b) {
 }
 
 export function prunePluginCache() {
-  const cacheBase = join(homedir(), '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite');
+  const cacheBase = join(homedir(), '.claude', 'plugins', 'cache', MARKETPLACE_KEY, PLUGIN_NAME);
   if (!existsSync(cacheBase)) return 0;
 
   const entries = readdirSync(cacheBase)

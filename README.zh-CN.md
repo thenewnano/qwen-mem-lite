@@ -148,18 +148,18 @@ Claude Code 安装路径（`node install.mjs install`，写 `~/.claude/settings.
 ### 方式一：插件市场（推荐）
 
 ```bash
-/plugin marketplace add sdsrss/claude-mem-lite
+/plugin marketplace add thenewnano/qwen-mem-lite
 /plugin install claude-mem-lite
 ```
 
 插件模式会管理自己的运行时与钩子。SessionStart 时它现在只会**检查并提示**新版本，不会直接覆盖插件目录中的文件。插件模式请通过 Claude 的插件更新流程完成升级。
 
-> **插件安装本身即完整** —— hooks、MCP 工具、以及捆绑的 slash 命令（`/mem`、`/lesson`、`/bug`、`/adopt`）全部从插件内运行，无需第二步。slash 命令以从插件目录解析出的绝对路径调用捆绑 CLI（`${CLAUDE_PLUGIN_ROOT}/cli.mjs <cmd>`），因此不依赖 `PATH` 上的任何东西。全局 `claude-mem-lite` **shell** 命令（用于你自己在终端里跑查询）是**可选**的 —— `npm i -g claude-mem-lite` —— 且是**独立**的 npm 安装：插件的自动更新**不会**刷新它，想保持同步就重新跑 `npm i -g claude-mem-lite@latest`。插件要完整工作**并不需要**它。
+> **插件安装本身即完整** —— hooks、MCP 工具、以及捆绑的 slash 命令（`/mem`、`/lesson`、`/bug`、`/adopt`）全部从插件内运行，无需第二步。slash 命令以从插件目录解析出的绝对路径调用捆绑 CLI（`${CLAUDE_PLUGIN_ROOT}/cli.mjs <cmd>`），因此不依赖 `PATH` 上的任何东西。全局 `claude-mem-lite` **shell** 命令（用于你自己在终端里跑查询）是**可选**的 —— `npm i -g github:thenewnano/qwen-mem-lite` —— 且是**独立**的 npm 安装：插件的自动更新**不会**刷新它，想保持同步就重新跑 `npm i -g github:thenewnano/qwen-mem-lite`。插件要完整工作**并不需要**它。
 
 ### 方式二：npx（一行命令）
 
 ```bash
-npx github:sdsrss/claude-mem-lite
+npx github:thenewnano/qwen-mem-lite
 ```
 
 源文件会自动复制到 `~/.claude-mem-lite/` 以持久化保存。
@@ -167,7 +167,7 @@ npx github:sdsrss/claude-mem-lite
 ### 方式三：git clone
 
 ```bash
-git clone https://github.com/sdsrss/claude-mem-lite.git
+git clone https://github.com/thenewnano/qwen-mem-lite.git
 cd claude-mem-lite
 node install.mjs install
 ```
@@ -530,9 +530,9 @@ node install.mjs cleanup-hooks        # 只清理 settings.json 中残留的 cla
 node install.mjs update               # 强制检查并安装更新（direct install / npx 模式）
 
 # npx 安装：
-npx claude-mem-lite                   # 安装 / 重新安装
-npx claude-mem-lite uninstall         # 移除（保留数据）
-npx claude-mem-lite doctor            # 诊断问题
+npx github:thenewnano/qwen-mem-lite                   # 安装 / 重新安装
+npx github:thenewnano/qwen-mem-lite uninstall         # 移除（保留数据）
+npx github:thenewnano/qwen-mem-lite doctor            # 诊断问题
 ```
 
 说明：
@@ -570,7 +570,7 @@ claude-mem-lite repair
 **如果 `repair` 自己也跑不起来**（bin 比 v2.84.0 旧，或 bin 也坏了），用这条单行命令——它把最新 tarball 拉到临时目录、跑 *那份* tarball 里的 `install.mjs`，完全不依赖你磁盘上的任何文件：
 
 ```bash
-T=$(mktemp -d) && U=$(curl -sL https://api.github.com/repos/sdsrss/claude-mem-lite/releases/latest | grep -o '"tarball_url"[^,]*' | cut -d'"' -f4) && curl -sL "$U" | tar xz -C "$T" --strip-components=1 && node "$T/install.mjs" install
+T=$(mktemp -d) && U=$(curl -sL https://api.github.com/repos/thenewnano/qwen-mem-lite/releases/latest | grep -o '"tarball_url"[^,]*' | cut -d'"' -f4) && curl -sL "$U" | tar xz -C "$T" --strip-components=1 && node "$T/install.mjs" install
 ```
 
 它会先解析出最新 **release** 的 tag。shell 单行命令无法像 `repair` 那样校验 release 签名，所以跑它等于你自己做了一次信任决定——这也是它排在最后、而不是被优先推荐的原因。
@@ -589,8 +589,8 @@ node install.mjs uninstall            # 保留 ~/.claude-mem-lite/ 数据
 node install.mjs uninstall --purge    # 删除 ~/.claude-mem-lite/ 及所有数据
 
 # npx：
-npx claude-mem-lite uninstall
-npx claude-mem-lite uninstall --purge
+npx github:thenewnano/qwen-mem-lite uninstall
+npx github:thenewnano/qwen-mem-lite uninstall --purge
 ```
 
 数据默认保留在 `~/.claude-mem-lite/` 中。如需删除：
@@ -606,7 +606,7 @@ rm -rf ~/.claude-mem-lite/
 可能已经不在 PATH 上了。所以要么**先**跑它，要么自己删：
 
 ```bash
-rm -rf ~/.claude/plugins/cache/sdsrss/claude-mem-lite
+rm -rf ~/.claude/plugins/cache/thenewano/claude-mem-lite
 ```
 
 ### 混装残留（用过多种安装方式的话务必看一下）

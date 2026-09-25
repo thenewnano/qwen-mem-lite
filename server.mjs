@@ -163,7 +163,7 @@ try {
   });
 } catch (err) {
   // Schema skew gets the same treatment as the CLI (mem-cli.mjs) and for the same reason:
-  // the raw message ends in `npm i -g claude-mem-lite@latest`, which repairs nothing on the
+  // the raw message ends in `npm i -g github:thenewnano/qwen-mem-lite`, which repairs nothing on the
   // plugin-cache install that actually hits this.
   //
   // This branch has to live HERE rather than in scripts/launch.mjs, which already knows how

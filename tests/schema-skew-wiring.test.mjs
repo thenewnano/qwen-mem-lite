@@ -222,13 +222,14 @@ describe('the CLI stops printing a repair that cannot work', () => {
   it('replaces the raw throw with the shape-aware notice', () => {
     // `recent` is the command a user reaches for right after doctor tells them something is
     // wrong, and it used to print the raw message — which ends in `npm i -g
-    // claude-mem-lite@latest`, inert on the plugin-cache install that actually hits this.
+    // github:thenewnano/qwen-mem-lite`, inert on the plugin-cache install that actually hits
+    // this.
     const dataDir = skewedDataDir();
     const r = run([join(REPO, 'cli.mjs'), 'recent'], dataDir);
     const out = `${r.stdout}${r.stderr}`;
     expect(out).toMatch(/Memory is OFF/);
     expect(out).toContain('999');
-    expect(out).not.toContain('npm i -g claude-mem-lite@latest');
+    expect(out).not.toContain('npm i -g github:thenewnano/qwen-mem-lite');
     expect(r.status).not.toBe(0);
   });
 
@@ -297,7 +298,7 @@ describe('doctor reports which code home cannot open the DB', () => {
 // format the notice — but server.mjs opens the DB while it is being imported and catches the
 // throw itself, printing `err.message` and calling process.exit(1). The launcher's catch is
 // therefore unreachable for exactly this error, and `err.message` is schema.mjs's raw text,
-// which ends in `npm i -g claude-mem-lite@latest` — inert on the plugin cache that actually
+// which ends in `npm i -g github:thenewnano/qwen-mem-lite` — inert on the plugin cache that actually
 // hits this.
 //
 // BOTH entry points are driven, because they are genuinely two shapes and only one of them
@@ -313,7 +314,7 @@ describe('the MCP server stops printing a repair that cannot work', () => {
     const out = `${r.stdout}${r.stderr}`;
     expect(out).toMatch(/Memory is OFF/);
     expect(out).toContain('999');
-    expect(out).not.toContain('npm i -g claude-mem-lite@latest');
+    expect(out).not.toContain('npm i -g github:thenewnano/qwen-mem-lite');
     expect(r.status).not.toBe(0);
   });
 
@@ -323,7 +324,7 @@ describe('the MCP server stops printing a repair that cannot work', () => {
     const out = `${r.stdout}${r.stderr}`;
     expect(out).toMatch(/Memory is OFF/);
     expect(out).toContain('999');
-    expect(out).not.toContain('npm i -g claude-mem-lite@latest');
+    expect(out).not.toContain('npm i -g github:thenewnano/qwen-mem-lite');
     expect(r.status).not.toBe(0);
   });
 

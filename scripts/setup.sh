@@ -335,7 +335,7 @@ fi
 
 # 8. Prune old plugin cache versions (keep latest 3)
 if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
-  CACHE_DIR="$HOME/.claude/plugins/cache/sdsrss/claude-mem-lite"
+  CACHE_DIR="$HOME/.claude/plugins/cache/thenewano/claude-mem-lite"
   if [[ -d "$CACHE_DIR" ]]; then
     # List version dirs sorted by semver descending, skip top 3
     # Use glob + while-read for bash 3.2 (macOS) compatibility (no mapfile, no `ls | grep`)

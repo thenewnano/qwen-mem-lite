@@ -1,6 +1,6 @@
 // phaseA-plugin.mjs — simulate a real user installing via the Claude Code plugin marketplace.
 //
-//   /plugin marketplace add sdsrss/claude-mem-lite
+//   /plugin marketplace add thenewnano/qwen-mem-lite
 //   /plugin install claude-mem-lite
 //
 // Claude Code clones the marketplace, copies the plugin into
@@ -44,7 +44,7 @@ const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).ver
 // only symptom was a tally nobody compared. Change this when you add or remove a check
 // on purpose — never to silence it.
 const EXPECTED_CHECKS = 47;
-const MP = 'sdsrss';
+const MP = 'thenewano';
 const CACHE = join(HOME, '.claude', 'plugins', 'cache', MP, 'claude-mem-lite', VERSION);
 const MARKET = join(HOME, '.claude', 'plugins', 'marketplaces', MP);
 
@@ -82,7 +82,7 @@ writeFileSync(
   join(HOME, '.claude', 'settings.json'),
   JSON.stringify(
     {
-      enabledPlugins: { 'claude-mem-lite@sdsrss': true },
+      enabledPlugins: { 'claude-mem-lite@thenewano': true },
     },
     null,
     2,
@@ -93,7 +93,7 @@ writeFileSync(
   join(HOME, '.claude', 'plugins', 'installed_plugins.json'),
   JSON.stringify(
     {
-      'claude-mem-lite@sdsrss': { version: VERSION, marketplace: MP },
+      'claude-mem-lite@thenewano': { version: VERSION, marketplace: MP },
     },
     null,
     2,
@@ -507,7 +507,7 @@ setPhase('A11: /plugin uninstall — residue check');
 const dbBefore = existsSync(join(HOME, '.claude-mem-lite', 'claude-mem-lite.db'));
 rmSync(join(HOME, '.claude', 'plugins', 'cache', MP, 'claude-mem-lite'), { recursive: true, force: true });
 const s = JSON.parse(readFileSync(join(HOME, '.claude', 'settings.json'), 'utf8'));
-delete s.enabledPlugins['claude-mem-lite@sdsrss'];
+delete s.enabledPlugins['claude-mem-lite@thenewano'];
 writeFileSync(join(HOME, '.claude', 'settings.json'), JSON.stringify(s, null, 2));
 check('plugin-form install never wrote hooks into settings.json', () => {
   const raw = readFileSync(join(HOME, '.claude', 'settings.json'), 'utf8');

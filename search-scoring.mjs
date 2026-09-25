@@ -38,7 +38,7 @@ import { PINNED_INJ_THRESHOLD } from './lib/maintain-core.mjs';
 const INSTRUCTIONS_BASE = [
   'Long-term memory across sessions. Hooks auto-inject context (0 round-trips) — prefer adopting that over any call. For an explicit query, pick the path with fewer model round-trips (CLI vs MCP below).',
   '',
-  `CLI (via Bash) — invoke as \`${CLI_INVOKE} <cmd>\` (resolves on any install shape; the bare \`claude-mem-lite\` shorthand works only after an optional global \`npm i -g claude-mem-lite\`):`,
+  `CLI (via Bash) — invoke as \`${CLI_INVOKE} <cmd>\` (resolves on any install shape; the bare \`claude-mem-lite\` shorthand works only after an optional global \`npm i -g github:thenewnano/qwen-mem-lite\`):`,
   `  ${CLI_INVOKE} search "query"  — FTS5 full-text search`,
   `  ${CLI_INVOKE} search "err" --type bugfix  — filter by type`,
   `  ${CLI_INVOKE} recall "file.mjs"  — file-related memories`,

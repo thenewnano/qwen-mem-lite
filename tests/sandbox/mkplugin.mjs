@@ -10,7 +10,7 @@ export function makePluginHome(label = 'P') {
   const HOME = join(SBX, 'home');
   const PROJECT = join(SBX, 'work', 'my-app');
   const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
-  const CACHE = join(HOME, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite', VERSION);
+  const CACHE = join(HOME, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite', VERSION);
   const DATA = join(HOME, '.claude-mem-lite');
 
   mkdirSync(join(HOME, '.claude'), { recursive: true });
@@ -33,7 +33,7 @@ export function makePluginHome(label = 'P') {
     join(HOME, '.claude', 'settings.json'),
     JSON.stringify(
       {
-        enabledPlugins: { 'claude-mem-lite@sdsrss': true },
+        enabledPlugins: { 'claude-mem-lite@thenewano': true },
       },
       null,
       2,
@@ -44,7 +44,7 @@ export function makePluginHome(label = 'P') {
     join(HOME, '.claude', 'plugins', 'installed_plugins.json'),
     JSON.stringify(
       {
-        'claude-mem-lite@sdsrss': { version: VERSION, marketplace: 'sdsrss' },
+        'claude-mem-lite@thenewano': { version: VERSION, marketplace: 'thenewano' },
       },
       null,
       2,

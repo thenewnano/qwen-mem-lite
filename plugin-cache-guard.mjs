@@ -16,7 +16,7 @@ import { readFileSync, writeFileSync, readdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
-export const DEFAULT_MARKETPLACE = 'sdsrss';
+export const DEFAULT_MARKETPLACE = 'thenewano';
 export const DEFAULT_PLUGIN = 'claude-mem-lite';
 
 function cacheBaseFor(opts) {

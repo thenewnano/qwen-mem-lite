@@ -12,7 +12,7 @@
 // Two things this file pins that are easy to get wrong:
 //
 // 1. THE REMEDY MUST MATCH THE INSTALL SHAPE. The message schema.mjs has thrown since v2.41
-//    says `npm i -g claude-mem-lite@latest` — which does nothing for a plugin-cache
+//    says `npm i -g github:thenewnano/qwen-mem-lite` — which does nothing for a plugin-cache
 //    install, and a plugin-cache install is exactly the shape that hits this (the cache is
 //    advanced by Claude Code's marketplace updater, so it lags whatever else wrote the DB).
 //    Sending a user down a repair that cannot work is worse than saying nothing.
@@ -121,11 +121,11 @@ describe('schemaSkewRemedy — the command must match the install shape', () => 
     const r = schemaSkewRemedy({
       managed: false,
       activePluginVersion: { version: '5.6.0' },
-      marketplace: 'sdsrss',
+      marketplace: 'thenewano',
     });
     expect(r.kind).toBe('plugin');
-    expect(r.commands.join('\n')).toContain('/plugin marketplace update sdsrss');
-    expect(r.commands.join('\n')).toContain('/plugin update claude-mem-lite@sdsrss');
+    expect(r.commands.join('\n')).toContain('/plugin marketplace update thenewano');
+    expect(r.commands.join('\n')).toContain('/plugin update claude-mem-lite@thenewano');
     // The RED case: this is the string schema.mjs prints today, and it repairs nothing here.
     expect(r.commands.join('\n')).not.toContain('npm i -g');
   });
@@ -149,14 +149,14 @@ describe('schemaSkewRemedy — the command must match the install shape', () => 
     // branch and printed `claude-mem-lite self-update` beneath a line reading "the code
     // running here (plugin cache v5.6.0)". Neither command advances a plugin cache. That is
     // verbatim the failure this module exists to prevent.
-    const cacheRoot = '/home/u/.claude/plugins/cache/sdsrss/claude-mem-lite/5.6.0';
+    const cacheRoot = '/home/u/.claude/plugins/cache/thenewano/claude-mem-lite/5.6.0';
     const r = schemaSkewRemedy({
       managed: true,
       activePluginVersion: { version: '5.6.0', root: cacheRoot },
       root: cacheRoot,
     });
     expect(r.kind).toBe('plugin');
-    expect(r.commands.join('\n')).toContain('/plugin update claude-mem-lite@sdsrss');
+    expect(r.commands.join('\n')).toContain('/plugin update claude-mem-lite@thenewano');
     expect(r.commands.join('\n')).not.toContain('self-update');
   });
 
@@ -240,12 +240,12 @@ describe('formatSchemaSkewNotice', () => {
       remedy: schemaSkewRemedy({
         managed: false,
         activePluginVersion: { version: '5.6.0' },
-        marketplace: 'sdsrss',
+        marketplace: 'thenewano',
       }),
     });
     expect(notice).toContain('49');
     expect(notice).toContain('48');
-    expect(notice).toContain('/plugin update claude-mem-lite@sdsrss');
+    expect(notice).toContain('/plugin update claude-mem-lite@thenewano');
     expect(notice).not.toContain('npm i -g');
     // One block, not a wall: the SessionStart envelope shares stdout with the dashboard.
     expect(notice.split('\n').length).toBeLessThanOrEqual(8);

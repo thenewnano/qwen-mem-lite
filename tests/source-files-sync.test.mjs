@@ -147,7 +147,7 @@ test('package.json files array ships every RELEASE_SIGNED_FILES entry', () => {
 });
 
 // Drift guard for the lockless-registry-install fix: npm refuses to pack
-// package-lock.json, so the ONLY way `npx claude-mem-lite` gets a locked
+// package-lock.json, so the ONLY way `npx github:thenewnano/qwen-mem-lite` gets a locked
 // dependency tree is the release workflow generating npm-shrinkwrap.json
 // before pack/publish. If someone drops that step, installs silently float
 // their transitive tree again with no local test failing.

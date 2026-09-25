@@ -142,7 +142,7 @@ describe('resolveLaunchEntry', () => {
     expect(err).toBeDefined();
     expect(err.code).toBe('INSTALL_INCOMPLETE');
     expect(err.missing).toEqual(['missing.mjs']);
-    expect(err.message).toMatch(/npm install -g claude-mem-lite@latest --force/);
+    expect(err.message).toMatch(/npm install -g github:thenewnano\/qwen-mem-lite --force/);
   });
 
   it('does not infinite-loop / double-warn when primaryRoot === fallbackRoot', () => {

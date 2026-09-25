@@ -32,7 +32,7 @@ const HOME = join(SBX, 'home');
 const PROJECT = join(SBX, 'work', 'my-app');
 const V_OLD = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
 const V_NEW = V_OLD.replace(/(\d+)$/, (m) => String(Number(m) + 1));
-const CACHE_BASE = join(HOME, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite');
+const CACHE_BASE = join(HOME, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
 const OLD = join(CACHE_BASE, V_OLD);
 const NEW = join(CACHE_BASE, V_NEW);
 const DATA = join(HOME, '.claude-mem-lite');
@@ -50,7 +50,7 @@ execFileSync('git', ['init', '-q'], { cwd: PROJECT });
 writeFileSync(join(PROJECT, 'app.js'), 'export const answer = 42;\n');
 writeFileSync(
   join(HOME, '.claude', 'settings.json'),
-  JSON.stringify({ enabledPlugins: { 'claude-mem-lite@sdsrss': true } }, null, 2),
+  JSON.stringify({ enabledPlugins: { 'claude-mem-lite@thenewano': true } }, null, 2),
 );
 
 const envFor = (root) => sandboxEnv(HOME, { CLAUDE_PLUGIN_ROOT: root });

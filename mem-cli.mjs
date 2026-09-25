@@ -3749,7 +3749,7 @@ async function runDispatch(argv) {
       return;
     }
     // Schema skew gets the same treatment as the native-binding family above, and for the
-    // same reason: the raw message ends in `npm i -g claude-mem-lite@latest`, which repairs
+    // same reason: the raw message ends in `npm i -g github:thenewnano/qwen-mem-lite`, which repairs
     // nothing on a plugin-cache install — the shape that actually hits this. Four surfaces
     // were wired before this one, and this is the command a user reaches for right after
     // `doctor` tells them something is wrong.

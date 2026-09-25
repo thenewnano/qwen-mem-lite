@@ -191,13 +191,13 @@ is untouched and still works if you run both hosts.
 ### Method 1: Plugin Marketplace (recommended)
 
 ```bash
-/plugin marketplace add sdsrss/claude-mem-lite
+/plugin marketplace add thenewnano/qwen-mem-lite
 /plugin install claude-mem-lite
 ```
 
 Plugin mode manages its own hooks/runtime. On session start it only **checks and reports** new claude-mem-lite versions; it does **not** self-overwrite plugin files in place. Update plugin-mode installs through Claude's plugin workflow.
 
-> **The plugin install is complete on its own** — hooks, MCP tools, and the bundled slash commands (`/mem`, `/lesson`, `/bug`, `/adopt`) all run from the plugin with no second step. The slash commands invoke the bundled CLI by an absolute path resolved from the plugin directory (`${CLAUDE_PLUGIN_ROOT}/cli.mjs <cmd>`), so they work without anything on your `PATH`. A global `claude-mem-lite` **shell** command (for running queries yourself in a terminal) is **optional** — `npm i -g claude-mem-lite` — and is a *separate* npm install: the plugin's auto-update does **not** refresh it, so re-run `npm i -g claude-mem-lite@latest` if you want that shell command kept in sync. You do **not** need it for the plugin to be fully functional.
+> **The plugin install is complete on its own** — hooks, MCP tools, and the bundled slash commands (`/mem`, `/lesson`, `/bug`, `/adopt`) all run from the plugin with no second step. The slash commands invoke the bundled CLI by an absolute path resolved from the plugin directory (`${CLAUDE_PLUGIN_ROOT}/cli.mjs <cmd>`), so they work without anything on your `PATH`. A global `claude-mem-lite` **shell** command (for running queries yourself in a terminal) is **optional** — `npm i -g github:thenewnano/qwen-mem-lite` — and is a *separate* npm install: the plugin's auto-update does **not** refresh it, so re-run `npm i -g github:thenewnano/qwen-mem-lite` if you want that shell command kept in sync. You do **not** need it for the plugin to be fully functional.
 
 > **Auto-adopt writes into your project, on every SessionStart (v3.13+).** The plugin adds a slug-scoped **managed block** to your project's own **`<cwd>/CLAUDE.md`** **and `<cwd>/QWEN.md`** — files that are normally committed to git — plus a `<cwd>/.claude/plugin_claude_mem_lite.md` / `<cwd>/.qwen/plugin_claude_mem_lite.md` detail file. Both context files are written because the two hosts do not read each other's: Claude Code loads `CLAUDE.md`, Qwen Code loads `QWEN.md`. The block is a system-authority pointer that boosts Claude's proactive use of `mem_recall` / `mem_save`. Everything outside the block is preserved verbatim, and it coexists with other plugins' blocks in the same file ([details](#invited-memory-v232)). This happens on **every** SessionStart, not just the first: the sync is idempotent and re-applies the block if it is edited away, and refreshes it when the shipped template changes. It applies regardless of install path (npm, npx, `/plugin`, manual), so **no manual `/adopt` is needed**.
 >
@@ -206,17 +206,17 @@ Plugin mode manages its own hooks/runtime. On session start it only **checks and
 ### Method 2: npx (one-liner)
 
 ```bash
-npx github:sdsrss/claude-mem-lite
+npx github:thenewnano/qwen-mem-lite
 ```
 
 Source files are automatically copied to `~/.claude-mem-lite/` for persistence.
 
-> **Note:** `npx github:…` installs from the repo's **default branch (HEAD)**, which can be ahead of the latest published release. For the stable released version use the npm package (`npx claude-mem-lite`), or pin a release tag: `npx github:sdsrss/claude-mem-lite#vX.Y.Z`.
+> **Note:** `npx github:…` installs from the repo's **default branch (HEAD)**, which can be ahead of the latest release. Pin a tag for a fixed version: `npx github:thenewnano/qwen-mem-lite#vX.Y.Z`. This fork publishes **no** npm package — the registry name `claude-mem-lite` belongs to the upstream project, whose published build is Claude-Code-only.
 
 ### Method 3: git clone
 
 ```bash
-git clone https://github.com/sdsrss/claude-mem-lite.git
+git clone https://github.com/thenewnano/qwen-mem-lite.git
 cd claude-mem-lite
 node install.mjs install
 ```
@@ -640,9 +640,9 @@ node install.mjs cleanup-hooks        # Remove only stale claude-mem-lite hooks 
 node install.mjs update               # Force-check for updates and install them (direct install / npx mode)
 
 # npx install:
-npx claude-mem-lite                   # Install / reinstall
-npx claude-mem-lite uninstall         # Remove (keep data)
-npx claude-mem-lite doctor            # Diagnose issues
+npx github:thenewnano/qwen-mem-lite                   # Install / reinstall
+npx github:thenewnano/qwen-mem-lite uninstall         # Remove (keep data)
+npx github:thenewnano/qwen-mem-lite doctor            # Diagnose issues
 ```
 
 > `doctor` and `repair` are spelled `cli.mjs`, not `install.mjs`, on purpose. Those two are
@@ -656,8 +656,8 @@ Notes:
 - Plugin mode only reports available updates; it does not self-update plugin files.
   To upgrade an installed plugin to the latest published version, run **inside Claude Code**:
   ```
-  /plugin marketplace update sdsrss
-  /plugin install claude-mem-lite@sdsrss
+  /plugin marketplace update thenewano
+  /plugin install claude-mem-lite@thenewano
   ```
   (The first command refreshes the local marketplace clone; the second reinstalls from it. Without the first command, `/plugin install` reuses the stale local clone and you stay on whichever version you originally pulled.)
 - Direct install / npx mode keeps auto-update enabled and uses staged replacement with rollback on install failure.
@@ -676,14 +676,14 @@ The three install paths do **not** carry the same supply-chain guarantees — pi
 
 ```bash
 # 1. Find the local marketplace clone
-ls ~/.claude/plugins/marketplaces/          # e.g. sdsrss
+ls ~/.claude/plugins/marketplaces/          # e.g. thenewano
 
 # 2. Pin it to the previous good tag (tags mirror npm versions, e.g. v3.62.0)
-cd ~/.claude/plugins/marketplaces/sdsrss
+cd ~/.claude/plugins/marketplaces/thenewano
 git fetch --tags && git checkout v3.62.0
 
 # 3. Reinstall from the pinned clone — inside Claude Code:
-#    /plugin install claude-mem-lite@sdsrss
+#    /plugin install claude-mem-lite@thenewano
 # 4. To leave the pin later: git checkout main, then the normal update flow.
 ```
 
@@ -715,7 +715,7 @@ claude-mem-lite repair
 **If `repair` itself fails** (the bin is older than v2.84.0, or the bin is also broken), run this one-liner — it pulls a fresh tarball into a temp dir and runs *that* tarball's `install.mjs`, bypassing every file on your disk:
 
 ```bash
-T=$(mktemp -d) && U=$(curl -sL https://api.github.com/repos/sdsrss/claude-mem-lite/releases/latest | grep -o '"tarball_url"[^,]*' | cut -d'"' -f4) && curl -sL "$U" | tar xz -C "$T" --strip-components=1 && node "$T/install.mjs" install
+T=$(mktemp -d) && U=$(curl -sL https://api.github.com/repos/thenewnano/qwen-mem-lite/releases/latest | grep -o '"tarball_url"[^,]*' | cut -d'"' -f4) && curl -sL "$U" | tar xz -C "$T" --strip-components=1 && node "$T/install.mjs" install
 ```
 
 It resolves the latest **release** tag first. A shell one-liner cannot verify the release signature the way `repair` does, so running it is a trust decision you are making explicitly — that is why it is the last resort and not the first suggestion.
@@ -734,8 +734,8 @@ node install.mjs uninstall            # Keeps ~/.claude-mem-lite/ data
 node install.mjs uninstall --purge    # Deletes ~/.claude-mem-lite/ and all data
 
 # npx:
-npx claude-mem-lite uninstall
-npx claude-mem-lite uninstall --purge
+npx github:thenewnano/qwen-mem-lite uninstall
+npx github:thenewnano/qwen-mem-lite uninstall --purge
 ```
 
 Data in `~/.claude-mem-lite/` is preserved by default. Delete manually if needed:
@@ -753,7 +753,7 @@ reclaim it, but after `/plugin uninstall` that command may no longer be on your 
 run it **first**, or delete the directory yourself:
 
 ```bash
-rm -rf ~/.claude/plugins/cache/sdsrss/claude-mem-lite
+rm -rf ~/.claude/plugins/cache/thenewano/claude-mem-lite
 ```
 
 ### Mixed-install residue (read this if you've used multiple install methods)

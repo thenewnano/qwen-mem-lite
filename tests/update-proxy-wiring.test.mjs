@@ -127,7 +127,7 @@ describe('auto-update honours the proxy', () => {
     vi.mocked(getViaConnectProxy).mockResolvedValue(proxyResponse(null, { buffer: payload }));
 
     const buf = await fetchAssetBuffer(
-      'https://github.com/sdsrss/claude-mem-lite/releases/download/v1/a.tgz',
+      'https://github.com/thenewnano/qwen-mem-lite/releases/download/v1/a.tgz',
     );
     expect(Buffer.isBuffer(buf)).toBe(true);
     expect(buf.toString()).toBe('tarball-bytes');
@@ -148,7 +148,7 @@ describe('auto-update honours the proxy', () => {
       proxyResponse(null, { status: 404, buffer: Buffer.alloc(0) }),
     );
     await expect(
-      fetchAssetBuffer('https://github.com/sdsrss/claude-mem-lite/releases/download/v1/a.tgz'),
+      fetchAssetBuffer('https://github.com/thenewnano/qwen-mem-lite/releases/download/v1/a.tgz'),
     ).rejects.toThrow(/404/);
   });
 });

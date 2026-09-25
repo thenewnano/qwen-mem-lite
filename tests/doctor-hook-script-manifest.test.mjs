@@ -61,7 +61,16 @@ function doctorOn({ scriptsDir = 'copy', omitScripts = [], pluginOnly = false } 
     // detectInstallShape: managed = server.mjs AND hook.mjs present in the install dir, so
     // omitting them leaves the data-only dir every shape creates. The plugin cache supplies
     // activePluginVersion — gated on scripts/launch.mjs, not mere directory presence.
-    const cache = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite', '3.72.0', 'scripts');
+    const cache = join(
+      home,
+      '.claude',
+      'plugins',
+      'cache',
+      'thenewano',
+      'claude-mem-lite',
+      '3.72.0',
+      'scripts',
+    );
     mkdirSync(cache, { recursive: true });
     writeFileSync(join(cache, 'launch.mjs'), '// launcher\n');
   } else {

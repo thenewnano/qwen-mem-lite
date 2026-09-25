@@ -864,7 +864,7 @@ describe('re-enrich --scope wide (R-7)', () => {
     const { findReenrichCandidates } = await import('../hook-optimize.mjs');
     insertObs(db, {
       type: 'bugfix',
-      title: 'gh release list --repo sdsrss/claude-mem-lite --l… (error)',
+      title: 'gh release list --repo thenewnano/qwen-mem-lite --l… (error)',
       narrative:
         'Tool invocation output captured as the degraded title; narrative is the raw gh CLI output with no actual fix or root cause — lesson extraction is impossible from this.',
     });

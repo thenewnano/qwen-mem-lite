@@ -3,7 +3,7 @@
 // `uninstall` reclaims it, but only through a branch gated on "no other plugin from this
 // marketplace remains", because the same branch also deletes the marketplace-wide directory.
 // That gate is right for `cache/<marketplace>/` and wrong for `cache/<marketplace>/
-// claude-mem-lite/`, which belongs to this plugin alone: a user with any sibling sdsrss
+// claude-mem-lite/`, which belongs to this plugin alone: a user with any sibling thenewano
 // plugin kept every cached version of a plugin they had uninstalled.
 //
 // §8.V3: a destructive path modified this session is exercised in a sandbox HOME, never
@@ -27,20 +27,20 @@ afterAll(() => fixtures.disposeAll());
 function sandboxHome({ siblingPlugin }) {
   const home = fixtures.track(mkdtempSync(join(tmpdir(), 'cml-uninst-home-')));
   const plugins = join(home, '.claude', 'plugins');
-  const ourCache = join(plugins, 'cache', 'sdsrss', 'claude-mem-lite', '6.3.0');
+  const ourCache = join(plugins, 'cache', 'thenewano', 'claude-mem-lite', '6.3.0');
   mkdirSync(join(ourCache, 'scripts'), { recursive: true });
   writeFileSync(join(ourCache, 'scripts', 'launch.mjs'), '// stub\n');
   writeFileSync(join(ourCache, 'package.json'), '{"name":"claude-mem-lite","version":"6.3.0"}');
 
-  const siblingCache = join(plugins, 'cache', 'sdsrss', 'other-plugin', '1.0.0');
+  const siblingCache = join(plugins, 'cache', 'thenewano', 'other-plugin', '1.0.0');
   mkdirSync(siblingCache, { recursive: true });
   writeFileSync(join(siblingCache, 'package.json'), '{"name":"other-plugin"}');
 
-  mkdirSync(join(plugins, 'marketplaces', 'sdsrss'), { recursive: true });
-  writeFileSync(join(plugins, 'marketplaces', 'sdsrss', 'marketplace.json'), '{}');
+  mkdirSync(join(plugins, 'marketplaces', 'thenewano'), { recursive: true });
+  writeFileSync(join(plugins, 'marketplaces', 'thenewano', 'marketplace.json'), '{}');
 
-  const installed = { 'claude-mem-lite@sdsrss': { version: '6.3.0' } };
-  if (siblingPlugin) installed['other-plugin@sdsrss'] = { version: '1.0.0' };
+  const installed = { 'claude-mem-lite@thenewano': { version: '6.3.0' } };
+  if (siblingPlugin) installed['other-plugin@thenewano'] = { version: '1.0.0' };
   writeFileSync(join(plugins, 'installed_plugins.json'), JSON.stringify(installed));
 
   mkdirSync(join(home, '.claude'), { recursive: true });
@@ -48,9 +48,9 @@ function sandboxHome({ siblingPlugin }) {
 
   return {
     home,
-    ourCacheRoot: join(plugins, 'cache', 'sdsrss', 'claude-mem-lite'),
-    siblingCacheRoot: join(plugins, 'cache', 'sdsrss', 'other-plugin'),
-    marketplaceCacheRoot: join(plugins, 'cache', 'sdsrss'),
+    ourCacheRoot: join(plugins, 'cache', 'thenewano', 'claude-mem-lite'),
+    siblingCacheRoot: join(plugins, 'cache', 'thenewano', 'other-plugin'),
+    marketplaceCacheRoot: join(plugins, 'cache', 'thenewano'),
     installedPath: join(plugins, 'installed_plugins.json'),
   };
 }
@@ -98,7 +98,7 @@ describe('uninstall reclaims its own plugin cache', () => {
     const s = sandboxHome({ siblingPlugin: true });
     runUninstall(s.home);
     const installed = JSON.parse(readFileSync(s.installedPath, 'utf8'));
-    expect(installed['other-plugin@sdsrss']).toBeTruthy();
-    expect(installed['claude-mem-lite@sdsrss']).toBeUndefined();
+    expect(installed['other-plugin@thenewano']).toBeTruthy();
+    expect(installed['claude-mem-lite@thenewano']).toBeUndefined();
   });
 });

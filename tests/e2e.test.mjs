@@ -180,7 +180,7 @@ describe('Suite 1: Full Session Lifecycle', () => {
       join(settingsDir, 'settings.json'),
       JSON.stringify(
         {
-          enabledPlugins: { 'claude-mem-lite@sdsrss': false },
+          enabledPlugins: { 'claude-mem-lite@thenewano': false },
           hooks: {
             SessionStart: [
               { matcher: '*', hooks: [{ type: 'command', command: `node "${HOOK_PATH}" session-start` }] },

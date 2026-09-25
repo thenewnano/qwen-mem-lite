@@ -69,7 +69,7 @@ function withBrokenDeps(root) {
 }
 
 function pluginCacheDir(h, version) {
-  return join(h, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite', version);
+  return join(h, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite', version);
 }
 
 /** Minimum shape Claude Code leaves behind for a runnable plugin version. */
@@ -141,7 +141,7 @@ describe('listPluginCacheVersions', () => {
 
   it('ignores non-version entries in the cache dir', () => {
     makePluginVersion(home, '3.69.1', { deps: 'none' });
-    mkdirSync(join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite', 'scratch'), {
+    mkdirSync(join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite', 'scratch'), {
       recursive: true,
     });
     expect(listPluginCacheVersions({ home }).map((v) => v.version)).toEqual(['3.69.1']);

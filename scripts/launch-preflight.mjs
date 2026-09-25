@@ -70,12 +70,12 @@ export function resolveLaunchEntry({ primaryRoot, fallbackRoot, warn = () => {} 
     }
   }
 
-  const repairCmd = 'npm install -g claude-mem-lite@latest --force';
+  const repairCmd = 'npm install -g github:thenewnano/qwen-mem-lite --force';
   const err = new Error(
     `[claude-mem-lite] Install incomplete at ${primaryRoot}\n` +
       `[claude-mem-lite]   Missing: ${primaryMissing.join(', ')}\n` +
       `[claude-mem-lite] Repair: ${repairCmd}\n` +
-      `[claude-mem-lite] Or via Claude Code: /plugin uninstall claude-mem-lite && /plugin install claude-mem-lite@sdsrss`,
+      `[claude-mem-lite] Or via Claude Code: /plugin uninstall claude-mem-lite && /plugin install claude-mem-lite@thenewano`,
   );
   err.code = 'INSTALL_INCOMPLETE';
   err.missing = primaryMissing;

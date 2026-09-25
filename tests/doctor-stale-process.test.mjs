@@ -68,7 +68,7 @@ describe('isStaleMemProcess — must NOT flag', () => {
   it('the CURRENT plugin-cache launcher', () => {
     expect(
       isStaleMemProcess(
-        `999 node /home/u/.claude/plugins/cache/sdsrss/claude-mem-lite/${V}/scripts/launch.mjs`,
+        `999 node /home/u/.claude/plugins/cache/thenewano/claude-mem-lite/${V}/scripts/launch.mjs`,
         V,
       ),
     ).toBe(false);
@@ -82,7 +82,7 @@ describe('isStaleMemProcess — must NOT flag', () => {
   it('a path that merely CONTAINS an old server.mjs (a .bak, not an executed script)', () => {
     expect(
       isStaleMemProcess(
-        '999 node /home/u/.claude/plugins/cache/sdsrss/claude-mem-lite/3.66.1/server.mjs.bak',
+        '999 node /home/u/.claude/plugins/cache/thenewano/claude-mem-lite/3.66.1/server.mjs.bak',
         V,
       ),
     ).toBe(false);
@@ -96,14 +96,17 @@ describe('isStaleMemProcess — must NOT flag', () => {
 describe('isStaleMemProcess — version-mismatched plugin cache', () => {
   it('flags an OLD cache version still serving the MCP server', () => {
     expect(
-      isStaleMemProcess('999 node /home/u/.claude/plugins/cache/sdsrss/claude-mem-lite/3.66.1/server.mjs', V),
+      isStaleMemProcess(
+        '999 node /home/u/.claude/plugins/cache/thenewano/claude-mem-lite/3.66.1/server.mjs',
+        V,
+      ),
     ).toBe(true);
   });
 
   it('flags an old cache launcher', () => {
     expect(
       isStaleMemProcess(
-        '999 node /home/u/.claude/plugins/cache/sdsrss/claude-mem-lite/3.66.1/scripts/launch.mjs',
+        '999 node /home/u/.claude/plugins/cache/thenewano/claude-mem-lite/3.66.1/scripts/launch.mjs',
         V,
       ),
     ).toBe(true);
@@ -112,7 +115,7 @@ describe('isStaleMemProcess — version-mismatched plugin cache', () => {
   it('cannot judge a mismatch when the running version is unknown', () => {
     expect(
       isStaleMemProcess(
-        '999 node /home/u/.claude/plugins/cache/sdsrss/claude-mem-lite/3.66.1/server.mjs',
+        '999 node /home/u/.claude/plugins/cache/thenewano/claude-mem-lite/3.66.1/server.mjs',
         '',
       ),
     ).toBe(false);

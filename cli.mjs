@@ -59,8 +59,8 @@ function explainBrokenInstall(what) {
   const w = (s) => process.stderr.write(`[claude-mem-lite] ${s}\n`);
   w(`This install is incomplete — ${what}`);
   w('That is why this command cannot run: these files load before any of their code executes.');
-  w('Repair: npm install -g claude-mem-lite@latest --force');
-  w('Or, in Claude Code: /plugin uninstall claude-mem-lite && /plugin install claude-mem-lite@sdsrss');
+  w('Repair: npm install -g github:thenewnano/qwen-mem-lite --force');
+  w('Or, in Claude Code: /plugin uninstall claude-mem-lite && /plugin install claude-mem-lite@thenewano');
   process.exit(1);
 }
 

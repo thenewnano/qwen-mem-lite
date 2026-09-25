@@ -1673,7 +1673,7 @@ describe('LOW_SIGNAL_TITLE regex', () => {
     ['(error)', 'literal (error) — original exact-match case'],
     // Bug #2: (error) suffix — was not matched by the original regex
     [
-      'gh release list --repo sdsrss/claude-mem-lite --l… (error)',
+      'gh release list --repo thenewnano/qwen-mem-lite --l… (error)',
       '(error) suffix — tool invocation fragment',
     ],
     ['cargo test --no-default-features 2>&1 | tail -20 (error)', '(error) suffix — long cmd'],

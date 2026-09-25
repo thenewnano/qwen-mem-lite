@@ -19,7 +19,7 @@ import { tmpdir } from 'os';
 import { detectInstallShape } from '../lib/install-shape.mjs';
 
 let home;
-const CACHE = ['.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite'];
+const CACHE = ['.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite'];
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'mem-activever-'));
@@ -48,7 +48,7 @@ function seedInstalledPlugins(version) {
     JSON.stringify({
       version: 2,
       plugins: {
-        'claude-mem-lite@sdsrss': [
+        'claude-mem-lite@thenewano': [
           {
             scope: 'user',
             installPath: join(home, ...CACHE, version),

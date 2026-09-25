@@ -710,7 +710,7 @@ describe('cache hook residue clearing', () => {
 
   it('clears populated hooks.json in every remaining cache version', async () => {
     const home = makeDir('mem-cache-residue');
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
     for (const v of ['2.28.0', '2.31.0']) {
       mkdirSync(join(cacheBase, v, 'hooks'), { recursive: true });
       writeFileSync(
@@ -768,7 +768,7 @@ describe('cache hook residue clearing', () => {
   // a full session with zero hook fires.
   it('refuses to clear when settings.json holds no install-managed hooks (plugin-only install)', async () => {
     const home = makeDir('mem-cache-residue-pluginonly');
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
     const manifest = join(cacheBase, '3.95.0', 'hooks', 'hooks.json');
     mkdirSync(join(cacheBase, '3.95.0', 'hooks'), { recursive: true });
     const original = JSON.stringify({
@@ -812,7 +812,7 @@ describe('cache hook residue clearing', () => {
   // gated on the string alone empties it on every update check.
   it('refuses to clear when the settings.json entry names a path that no longer exists', async () => {
     const home = makeDir('mem-cache-residue-stale');
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
     const manifest = join(cacheBase, '3.95.1', 'hooks', 'hooks.json');
     mkdirSync(join(cacheBase, '3.95.1', 'hooks'), { recursive: true });
     const original = JSON.stringify({
@@ -837,7 +837,7 @@ describe('cache hook residue clearing', () => {
 describe('plugin cache pruning', () => {
   it('removes old versions and keeps the latest 3', async () => {
     const home = makeDir('mem-prune-home');
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
     const versions = ['1.0.0', '1.1.0', '2.0.0', '2.1.0', '2.5.0'];
     for (const v of versions) {
       mkdirSync(join(cacheBase, v), { recursive: true });
@@ -865,7 +865,7 @@ describe('plugin cache pruning', () => {
   // (tests/install-lifecycle.test.mjs) — the two prune the same directory.
   it('never removes the version dir CLAUDE_PLUGIN_ROOT points at', async () => {
     const home = makeDir('mem-prune-home3');
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
     for (const v of ['3.90.0', '3.94.0', '3.95.0', '3.96.0']) {
       mkdirSync(join(cacheBase, v), { recursive: true });
       writeFileSync(join(cacheBase, v, 'server.mjs'), `// v${v}`);
@@ -891,7 +891,7 @@ describe('plugin cache pruning', () => {
   // the keep window the surplus still goes.
   it('CONTROL: still prunes the surplus when the running root is inside keep-latest-3', async () => {
     const home = makeDir('mem-prune-home4');
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
     for (const v of ['3.90.0', '3.94.0', '3.95.0', '3.96.0']) {
       mkdirSync(join(cacheBase, v), { recursive: true });
     }
@@ -912,7 +912,7 @@ describe('plugin cache pruning', () => {
 
   it('does nothing when 3 or fewer versions exist', async () => {
     const home = makeDir('mem-prune-home2');
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
     for (const v of ['1.0.0', '2.0.0']) {
       mkdirSync(join(cacheBase, v), { recursive: true });
     }
@@ -1021,7 +1021,7 @@ describe('D#187: plugin-only install detected without CLAUDE_PLUGIN_ROOT', () =>
   // runtime cannot start, so it is deliberately not counted.
   function makePluginOnlyHome(version = '3.9.0') {
     const home = makeDir('mem-plugin-only-home');
-    const root = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite', version);
+    const root = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite', version);
     mkdirSync(join(root, 'scripts'), { recursive: true });
     writeFileSync(join(root, 'scripts', 'launch.mjs'), '// launcher');
     writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'claude-mem-lite', version }, null, 2));
@@ -1244,12 +1244,12 @@ describe('non-blocking SessionStart helpers (P3d)', () => {
   });
 });
 
-// A plugin-cache version dir: ~/.claude/plugins/cache/sdsrss/claude-mem-lite/<ver>/
+// A plugin-cache version dir: ~/.claude/plugins/cache/thenewano/claude-mem-lite/<ver>/
 // with a package.json whose name passes validateExtractedTarball and the three
 // required entry points. No source-files.mjs → loadReleaseManifest falls back to
 // the real LOCAL_SOURCE_FILES manifest; only the files present here get copied.
 function makeCacheVersion(home, version, body = `// v${version}`) {
-  const dir = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite', version);
+  const dir = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite', version);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'claude-mem-lite', version }, null, 2));
   writeFileSync(join(dir, 'cli.mjs'), `#!/usr/bin/env node\n${body} cli\n`);

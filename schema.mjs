@@ -483,7 +483,7 @@ export function initSchema(db) {
         // shape-correct repair; see its header for the 2026-09-08 measurement.
         const err = new Error(
           `DB schema is v${row.version} but this claude-mem-lite binary supports up to v${CURRENT_SCHEMA_VERSION}. ` +
-            `A newer version wrote this DB; upgrade claude-mem-lite (npm i -g claude-mem-lite@latest) or point CLAUDE_MEM_DIR to a fresh directory.`,
+            `A newer version wrote this DB; upgrade claude-mem-lite (npm i -g github:thenewnano/qwen-mem-lite) or point CLAUDE_MEM_DIR to a fresh directory.`,
         );
         err.code = SCHEMA_SKEW_CODE;
         err.dbVersion = row.version;

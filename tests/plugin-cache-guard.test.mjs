@@ -18,7 +18,7 @@ function makeHome() {
 }
 
 function writeCacheHooks(home, version, hooksBody) {
-  const dir = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite', version, 'hooks');
+  const dir = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite', version, 'hooks');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'hooks.json'), JSON.stringify(hooksBody, null, 2));
   return join(dir, 'hooks.json');
@@ -38,7 +38,7 @@ describe('plugin-cache-guard', () => {
             Stop: [{ matcher: '*', hooks: [] }],
           },
         });
-        const root = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite', '3.95.0');
+        const root = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite', '3.95.0');
         expect(pluginCacheHookEvents(root)).toEqual({
           ok: true,
           events: ['SessionStart', 'Stop'],
@@ -57,7 +57,7 @@ describe('plugin-cache-guard', () => {
           _note: 'Auto-cleared by hook-update.mjs post-install',
           hooks: {},
         });
-        const root = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite', '3.95.0');
+        const root = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite', '3.95.0');
         expect(pluginCacheHookEvents(root)).toEqual({ ok: false, events: [], reason: 'empty' });
       } finally {
         rmSync(home, { recursive: true, force: true });
@@ -67,7 +67,7 @@ describe('plugin-cache-guard', () => {
     it('says NO for a missing manifest and for an unparseable one', () => {
       const home = makeHome();
       try {
-        const root = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite', '3.95.0');
+        const root = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite', '3.95.0');
         expect(pluginCacheHookEvents(root)).toEqual({ ok: false, events: [], reason: 'no-manifest' });
 
         mkdirSync(join(root, 'hooks'), { recursive: true });
@@ -104,7 +104,16 @@ describe('plugin-cache-guard', () => {
     it('ignores malformed hooks.json', () => {
       const home = makeHome();
       try {
-        const dir = join(home, '.claude', 'plugins', 'cache', 'sdsrss', 'claude-mem-lite', '2.28.0', 'hooks');
+        const dir = join(
+          home,
+          '.claude',
+          'plugins',
+          'cache',
+          'thenewano',
+          'claude-mem-lite',
+          '2.28.0',
+          'hooks',
+        );
         mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, 'hooks.json'), 'not-json');
         expect(scanPluginCacheHookPollution({ home })).toEqual([]);

@@ -135,7 +135,7 @@ const CLI_REPAIR = `node ${join(INSTALL_DIR, 'cli.mjs')} repair`;
 // fifth surface starts hardcoding its own. Resolves the latest RELEASE tag rather than
 // `/tarball` (the default branch, i.e. unreleased WIP).
 const TARBALL_FALLBACK =
-  'T=$(mktemp -d) && U=$(curl -sL https://api.github.com/repos/sdsrss/claude-mem-lite/releases/latest | grep -o \'"tarball_url"[^,]*\' | cut -d\'"\' -f4) && curl -sL "$U" | tar xz -C "$T" --strip-components=1 && node "$T/install.mjs" install';
+  'T=$(mktemp -d) && U=$(curl -sL https://api.github.com/repos/thenewnano/qwen-mem-lite/releases/latest | grep -o \'"tarball_url"[^,]*\' | cut -d\'"\' -f4) && curl -sL "$U" | tar xz -C "$T" --strip-components=1 && node "$T/install.mjs" install';
 
 const [, , entryArg, ...rest] = process.argv;
 if (!entryArg) {
