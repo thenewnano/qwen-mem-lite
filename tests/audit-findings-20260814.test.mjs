@@ -580,7 +580,6 @@ describe('F6 — update-check reaches its handler under the recursion guard', ()
         CLAUDE_MEM_DIR: dataDir,
         CLAUDE_MEM_HOOK_RUNNING: '1', // what spawnBackground sets on the child
         CLAUDE_MEM_SKIP_UPDATE: undefined, // BASE_ENV sets it; drop it so the handler runs
-        CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE: '1', // fork default keeps upstream checks off
         ...offlineEnv(fetchLog),
       },
       timeout: 60000,
@@ -590,9 +589,9 @@ describe('F6 — update-check reaches its handler under the recursion guard', ()
 
     const urls = fetched(fetchLog);
     expect(urls[0], `update-check made no release lookup: ${JSON.stringify(urls)}`).toBe(
-      'https://api.github.com/repos/sdsrss/claude-mem-lite/releases/latest',
+      'https://api.github.com/repos/thenewnano/qwen-mem-lite/releases/latest',
     );
-    expect(urls[1]).toMatch(/^https:\/\/api\.github\.com\/repos\/sdsrss\/claude-mem-lite\/tags\b/);
+    expect(urls[1]).toMatch(/^https:\/\/api\.github\.com\/repos\/thenewnano\/qwen-mem-lite\/tags\b/);
     expect(urls).toHaveLength(2);
 
     // …and the 24h throttle it feeds was stamped, which is the whole reason the worker exists.
@@ -702,7 +701,7 @@ describe('F6 — update-check reaches its handler under the recursion guard', ()
 // REDS the preflight instead of letting a real request out.
 
 describe('F6b — the restored update-check checks for a release but does not install it', () => {
-  const LATEST_URL = 'https://api.github.com/repos/sdsrss/claude-mem-lite/releases/latest';
+  const LATEST_URL = 'https://api.github.com/repos/thenewnano/qwen-mem-lite/releases/latest';
   let dataDir, runtimeDir, cwd, binDir, fetchLog, curlLog, releaseFetch;
 
   const lines = (f) => (existsSync(f) ? readFileSync(f, 'utf8').trim().split('\n').filter(Boolean) : []);
@@ -711,7 +710,6 @@ describe('F6b — the restored update-check checks for a release but does not in
     CLAUDE_MEM_DIR: dataDir,
     CLAUDE_MEM_HOOK_RUNNING: '1', // what spawnBackground sets on the detached child
     CLAUDE_MEM_SKIP_UPDATE: undefined, // BASE_ENV sets it; drop it so the handler runs
-    CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE: '1', // the fork ships upstream checks off (hook-update.mjs)
     CLAUDE_PLUGIN_ROOT: undefined, // the install shape where the installer was reachable
     AUDIT_FETCH_LOG: fetchLog,
     AUDIT_CURL_LOG: curlLog,
@@ -747,8 +745,8 @@ describe('F6b — the restored update-check checks for a release but does not in
         '  if (String(url) === LATEST) {',
         '    return { ok: true, status: 200, json: async () => ({',
         "      tag_name: 'v999.0.0',",
-        "      tarball_url: 'https://api.github.com/repos/sdsrss/claude-mem-lite/tarball/v999.0.0',",
-        "      html_url: 'https://github.com/sdsrss/claude-mem-lite/releases/tag/v999.0.0',",
+        "      tarball_url: 'https://api.github.com/repos/thenewnano/qwen-mem-lite/tarball/v999.0.0',",
+        "      html_url: 'https://github.com/thenewnano/qwen-mem-lite/releases/tag/v999.0.0',",
         '      assets: [],',
         '    }) };',
         '  }',
@@ -799,7 +797,7 @@ describe('F6b — the restored update-check checks for a release but does not in
   // defaults to true on this (non-plugin) install shape, downloadAndInstall runs, and the
   // curl log carries the v999.0.0 tarball URL. Verified by mutation: reverting hook.mjs to
   // `await checkForUpdate()` reds the curl assertion with
-  // ['-sL -H Accept: application/vnd.github+json https://api.github.com/repos/sdsrss/claude-mem-lite/tarball/v999.0.0 -o …'].
+  // ['-sL -H Accept: application/vnd.github+json https://api.github.com/repos/thenewnano/qwen-mem-lite/tarball/v999.0.0 -o …'].
   it('runs the release lookup and writes the banner state without entering the installer', async () => {
     const r = await fire(process.execPath, [HOOK_PATH, 'update-check'], {
       cwd,

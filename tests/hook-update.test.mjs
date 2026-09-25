@@ -18,10 +18,6 @@ import { buildReleaseManifest, serializeManifest } from '../lib/release-digest.m
 
 vi.mock('node:child_process', () => ({ execSync: vi.fn() }));
 const mockedExecSync = vi.mocked(execSync);
-// The fork ships upstream auto-update OFF (hook-update.mjs's fork guard) because upstream's
-// tarball is the Claude-only build. This suite is that machinery's own coverage, so it flips
-// the same switch a user would.
-process.env.CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE = '1';
 const originalFetch = globalThis.fetch;
 const originalHome = process.env.HOME;
 const trackedDirs = new Set();
@@ -90,6 +86,11 @@ async function loadModule(env = {}) {
   for (const v of PROXY_ENV_VARS) delete process.env[v];
   delete process.env.CLAUDE_PLUGIN_ROOT;
   delete process.env.CLAUDE_MEM_SKIP_UPDATE;
+  // CLAUDE_MEM_UPDATE_REPO is deliberately NOT scrubbed here: hook-update reads it at
+  // import time, so the override test must set it before loadModule — a scrub here would
+  // delete it out from under the import and the test would silently assert the default.
+  // Real shells do not set it, afterEach clears it between tests, and the default-repo
+  // test deletes it explicitly.
   // `process.env.X = undefined` coerces to the STRING "undefined", which the
   // schema.mjs data-dir resolver now rejects (lib/resolve-data-dir.mjs). A test
   // that doesn't relocate must leave CLAUDE_MEM_DIR truly UNSET, not "undefined"
@@ -124,6 +125,7 @@ afterEach(() => {
   }
   delete process.env.CLAUDE_PLUGIN_ROOT;
   delete process.env.CLAUDE_MEM_SKIP_UPDATE;
+  delete process.env.CLAUDE_MEM_UPDATE_REPO;
   delete process.env.CLAUDE_MEM_DIR;
   process.env.HOME = originalHome;
   for (const dir of trackedDirs) rmSync(dir, { recursive: true, force: true });
@@ -1210,6 +1212,35 @@ describe('non-blocking SessionStart helpers (P3d)', () => {
     process.env.CLAUDE_MEM_SKIP_UPDATE = '1';
     expect(mod.isUpdateCheckDue()).toBe(false);
     expect(mod.getCachedUpdateBanner()).toBeNull();
+  });
+
+  it('defaults the release lookup to this fork repo, not upstream', async () => {
+    // The fork must never install upstream's tarball: it is the Claude-only build, so an
+    // update from there reverts the Qwen support (hooks/hooks.json, lib/tool-names.mjs, the
+    // QWEN.md half of adopt) with no symptom beyond behavior disappearing on one host.
+    // Pinned by URL because the URL *is* the contract — this constant feeds the
+    // releases/latest lookup and the tags fallback alike.
+    delete process.env.CLAUDE_MEM_UPDATE_REPO; // order-independent: a sibling test sets it
+    const { home } = makeCodeHome('1.0.0');
+    const dataDir = makeDataDir('1.0.0');
+    const mod = await loadModule({ CLAUDE_MEM_DIR: dataDir, HOME: home });
+    globalThis.fetch = vi.fn(async () => ({ ok: false, status: 404, json: async () => ({}) }));
+    expect(await mod.fetchLatestRelease()).toBeNull();
+    const urls = globalThis.fetch.mock.calls.map((c) => String(c[0]));
+    expect(urls[0]).toBe('https://api.github.com/repos/thenewnano/qwen-mem-lite/releases/latest');
+    expect(urls[1]).toBe('https://api.github.com/repos/thenewnano/qwen-mem-lite/tags?per_page=1');
+  });
+
+  it('CLAUDE_MEM_UPDATE_REPO aims that lookup at a mirror', async () => {
+    const { home } = makeCodeHome('1.0.0');
+    const dataDir = makeDataDir('1.0.0');
+    process.env.CLAUDE_MEM_UPDATE_REPO = 'acme/mem-mirror'; // read at import time, so set first
+    const mod = await loadModule({ CLAUDE_MEM_DIR: dataDir, HOME: home });
+    globalThis.fetch = vi.fn(async () => ({ ok: false, status: 404, json: async () => ({}) }));
+    expect(await mod.fetchLatestRelease()).toBeNull();
+    const urls = globalThis.fetch.mock.calls.map((c) => String(c[0]));
+    expect(urls[0]).toBe('https://api.github.com/repos/acme/mem-mirror/releases/latest');
+    expect(urls[1]).toBe('https://api.github.com/repos/acme/mem-mirror/tags?per_page=1');
   });
 });
 

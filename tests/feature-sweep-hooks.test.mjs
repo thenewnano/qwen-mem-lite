@@ -1487,9 +1487,7 @@ describe('hook feature sweep: hook.mjs background workers', () => {
       cwd,
       stdin: '',
       timeout: 60000,
-      // CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE: the fork ships upstream checks OFF, so a child
-      // that wants the real lookup has to opt in the way a user would.
-      env: { ...OFFLINE, CLAUDE_MEM_SKIP_UPDATE: undefined, CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE: '1' },
+      env: { ...OFFLINE, CLAUDE_MEM_SKIP_UPDATE: undefined }, // childEnv drops undefined keys
     });
     expectSilentWorker('hook.mjs update-check (offline)', live);
 
@@ -1501,8 +1499,8 @@ describe('hook feature sweep: hook.mjs background workers', () => {
       'update-check made no release lookup at all — the handler never ran (deleted case? recursion guard?)',
     ).toBe(true);
     const urls = readFileSync(fetchLog, 'utf8').trim().split('\n');
-    expect(urls[0]).toBe('https://api.github.com/repos/sdsrss/claude-mem-lite/releases/latest');
-    expect(urls[1]).toMatch(/^https:\/\/api\.github\.com\/repos\/sdsrss\/claude-mem-lite\/tags\b/);
+    expect(urls[0]).toBe('https://api.github.com/repos/thenewnano/qwen-mem-lite/releases/latest');
+    expect(urls[1]).toMatch(/^https:\/\/api\.github\.com\/repos\/thenewnano\/qwen-mem-lite\/tags\b/);
     expect(urls).toHaveLength(2);
     // …and persisted the attempt into the SANDBOX state file (absent one assertion earlier),
     // with a timestamp from this run. FAILS IF: the no-release path stops stamping lastCheck

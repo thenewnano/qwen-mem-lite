@@ -176,7 +176,7 @@ qwen extensions link /path/to/claude-mem-lite    # instead, to track a working c
 | MCP server | Declared by the extension itself — keep it that way. A `mem-lite` entry in `~/.qwen/settings.json` **overrides** the extension's (settings win) and then runs whatever copy it points at, which is how a stale `~/.claude-mem-lite/server.mjs` ends up serving a session. |
 | Steering block | Written to **both** `<cwd>/CLAUDE.md` and `<cwd>/QWEN.md`: Qwen Code reads only the latter and Claude Code only the former, and `adopt` cannot tell which host it is running under. |
 | Transcript features | Qwen records its transcript as `message.parts`; `lib/transcript-scan.mjs` normalizes that shape, so citation tracking, the unsaved-bugfix nudge and the fast summary keep working. |
-| Auto-update | **Off in this fork.** Upstream's release tarball is the Claude-only build, so an automatic update would revert the Qwen support silently. Update with `git pull` (or `qwen extensions update`); `CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE=1` opts back in, `CLAUDE_MEM_UPDATE_REPO=<owner>/<name>` points it at this fork's own releases. |
+| Auto-update | **On by default**, reading **this fork's own repo** (`thenewnano/qwen-mem-lite`) — never upstream, whose release tarball is the Claude-only build and would revert the Qwen support silently. `CLAUDE_MEM_SKIP_UPDATE=1` disables the check; `CLAUDE_MEM_UPDATE_REPO=<owner>/<name>` aims it at a mirror. Installable releases need this fork's own signing key: the install path is fail-closed on release signatures, so an unsigned tag is found but refused. |
 | Slash commands | `/mem`, `/memory`, `/lesson`, `/bug`, `/adopt`, `/unadopt`, `/update` come from `commands/`. |
 
 > **Heads-up when working *inside this repository*:** Qwen reports `mem-lite` as
@@ -1021,7 +1021,8 @@ what is already stored — only whether new work runs.
 | `CLAUDE_MEM_SKIP_OPTIMIZE` | Skip the LLM optimization pass (re-enrich, normalize, cluster-merge). | _(runs)_ |
 | `CLAUDE_MEM_SKIP_AUTO_DEDUP_FUZZY` | Skip the MinHash near-duplicate pass, keeping exact dedup. | _(runs)_ |
 | `CLAUDE_MEM_SKIP_MARKER_GC` | Skip the runtime-marker sweep. **Must be exactly `1`** — unlike the other `CLAUDE_MEM_SKIP_*` flags, which accept any truthy value, this one compares against the string `1`. That is deliberate: a truthy check makes `=0` mean "skip", which is the opposite of what anyone typing it intends. | _(runs)_ |
-| `CLAUDE_MEM_SKIP_UPDATE` | Skip the 24h auto-update check against GitHub Releases. | _(runs)_ |
+| `CLAUDE_MEM_SKIP_UPDATE` | Skip the 24h auto-update check. The check reads **this fork's** releases, never upstream's, whose tarball is the Claude-only build and would revert the Qwen support. | _(runs)_ |
+| `CLAUDE_MEM_UPDATE_REPO` | Aim the auto-update check at another repository (`<owner>/<name>`) — a private mirror or another fork. The install path is fail-closed on release signatures, so releases there must be signed with a key this tree trusts (`scripts/sign-release.mjs`), or set `CLAUDE_MEM_SKIP_SIG_VERIFY=1` knowingly. | `thenewnano/qwen-mem-lite` |
 | `CLAUDE_MEM_SKIP_SIG_VERIFY` | Skip Ed25519 signature verification of a downloaded update. **Escape hatch — leaves updates unauthenticated.** | _(verifies)_ |
 | `CLAUDE_MEM_NO_LESSON_RETRY` | `1` disables the one-shot retry that re-asks for a missing `lesson_learned`. | _(retries)_ |
 | `CLAUDE_MEM_FLUSH_TIMEOUT` | Seconds the Stop hook waits for pending episode flushes. | `15` |

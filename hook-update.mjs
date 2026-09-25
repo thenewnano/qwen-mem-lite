@@ -46,19 +46,24 @@ import { verifyReleaseFiles, verifyManifestSignature } from './lib/release-diges
 import { detectInstallShape } from './lib/install-shape.mjs';
 
 // ── Configuration ──────────────────────────────────────────
-// Fork guard. This tree is the Qwen Code fork of claude-mem-lite: the Qwen extension
-// registers hooks/hooks.json, the hook entry points translate Qwen's runtime tool ids
-// (lib/tool-names.mjs), and the adopt layer writes QWEN.md as well as CLAUDE.md. Upstream's
-// release tarball is the Claude-only build, so installing it over this tree reverts every
-// one of those — silently, because the only symptom is that behavior stops appearing on one
-// host. Upstream checks are therefore OFF by default; the fork updates by pulling this repo
-// (or `qwen extensions update`), not by fetching upstream releases.
+// Update source: this fork's own repository, NOT upstream (sdsrss/claude-mem-lite).
+// Upstream's release tarball is the Claude-only build, so installing it over this tree
+// reverts the Qwen Code support (hooks/hooks.json + lib/tool-names.mjs + the QWEN.md half of
+// adopt) — silently, because the only symptom is that the behavior stops appearing on one
+// host. Pointed at the fork, any update that arrives is by definition a Qwen-compatible one.
 //
-// Two knobs, both explicit: CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE=1 restores the upstream
-// behavior wholesale (tests use it), and CLAUDE_MEM_UPDATE_REPO=<owner>/<name> points the
-// same machinery at this fork's releases once it publishes them.
-const UPSTREAM_UPDATE_ENABLED = process.env.CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE === '1';
-const GITHUB_REPO = process.env.CLAUDE_MEM_UPDATE_REPO || 'sdsrss/claude-mem-lite';
+// CLAUDE_MEM_SKIP_UPDATE=1 disables the check on demand (dev machines, CI, air-gapped
+// boxes); CLAUDE_MEM_UPDATE_REPO=<owner>/<name> aims the same machinery at a mirror.
+//
+// For whoever publishes this fork's first release: the install path is FAIL-CLOSED on
+// release signatures (RELEASE_PUBLIC_KEY below). A release carrying no
+// release-manifest.json / release-manifest.json.sig assets is refused, and upstream's private
+// signing key is not ours to use — so this fork's releases need their own keypair
+// (scripts/sign-release.mjs signs; embed the new public key below) or the operator sets
+// CLAUDE_MEM_SKIP_SIG_VERIFY=1 knowingly. Until a signed release exists, the check runs,
+// finds nothing installable, and installs nothing.
+const GITHUB_REPO = process.env.CLAUDE_MEM_UPDATE_REPO || 'thenewnano/qwen-mem-lite';
+
 // Plugin CODE location (server.mjs / package.json / install target) — always
 // homedir-rooted, NEVER follows CLAUDE_MEM_DIR (see schema.mjs CODE_DIR). Used
 // for dev-mode detection, current-version read, and the install target dir.
@@ -83,7 +88,7 @@ export async function checkForUpdate(options = {}) {
     const force = Boolean(options.force);
     const allowInstall = options.allowInstall ?? !pluginMode;
 
-    if (isDevMode() || process.env.CLAUDE_MEM_SKIP_UPDATE || !UPSTREAM_UPDATE_ENABLED) return null;
+    if (isDevMode() || process.env.CLAUDE_MEM_SKIP_UPDATE) return null;
 
     const state = readState();
     if (!force && !shouldCheck(state)) {
@@ -170,7 +175,7 @@ export async function checkForUpdate(options = {}) {
 // Banner string from cached update-state (≤24h stale), or null. No network I/O.
 export function getCachedUpdateBanner() {
   try {
-    if (isDevMode() || process.env.CLAUDE_MEM_SKIP_UPDATE || !UPSTREAM_UPDATE_ENABLED) return null;
+    if (isDevMode() || process.env.CLAUDE_MEM_SKIP_UPDATE) return null;
     const state = readState();
     if (state.updateAvailable && state.latestVersion) {
       // Cached "available" state only persists for deferred installs (plugin mode
@@ -190,7 +195,7 @@ export function getCachedUpdateBanner() {
 // Caller spawns the refresh in the background so this session doesn't wait.
 export function isUpdateCheckDue() {
   try {
-    if (isDevMode() || process.env.CLAUDE_MEM_SKIP_UPDATE || !UPSTREAM_UPDATE_ENABLED) return false;
+    if (isDevMode() || process.env.CLAUDE_MEM_SKIP_UPDATE) return false;
     return shouldCheck(readState());
   } catch {
     return false;

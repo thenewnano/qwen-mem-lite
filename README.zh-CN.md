@@ -138,7 +138,7 @@ qwen extensions link /path/to/claude-mem-lite    # 直接跟踪工作副本
 | MCP 服务 | 由扩展自身声明——请保持这样。`~/.qwen/settings.json` 里的同名 `mem-lite` 会**覆盖**扩展声明（settings 优先），于是会话跑的是它指向的那份代码（例如过期的 `~/.claude-mem-lite/server.mjs`）。 |
 | 引导块 | 同时写入 `<cwd>/CLAUDE.md` **与** `<cwd>/QWEN.md`：Qwen Code 只读后者，Claude Code 只读前者，而 `adopt` 无法判断自己在哪个宿主下运行。 |
 | 转录特性 | Qwen 的转录格式是 `message.parts`，由 `lib/transcript-scan.mjs` 归一化，因此引用追踪、未保存 bugfix 提醒与快速摘要照常工作。 |
-| 自动更新 | 本 fork **默认关闭**：上游发布的是 Claude 专用构建，自动更新会静默回退 Qwen 支持。用 `git pull`（或 `qwen extensions update`）更新；`CLAUDE_MEM_ALLOW_UPSTREAM_UPDATE=1` 可重新开启，`CLAUDE_MEM_UPDATE_REPO=<owner>/<name>` 指向本 fork 自己的发布。 |
+| 自动更新 | **默认开启**，读取**本 fork 自己的仓库**（`thenewnano/qwen-mem-lite`）——绝不指向上游：上游发布的是 Claude 专用构建，会静默回退 Qwen 支持。`CLAUDE_MEM_SKIP_UPDATE=1` 关闭检查；`CLAUDE_MEM_UPDATE_REPO=<owner>/<name>` 指向镜像。可安装的发布需要本 fork 自己的签名密钥：安装路径对发布签名 fail-closed，未签名的 tag 会被发现但被拒绝。 |
 | 斜杠命令 | `/mem`、`/memory`、`/lesson`、`/bug`、`/adopt`、`/unadopt`、`/update` 来自 `commands/`。 |
 
 > **在本仓库内工作时注意：** Qwen 会显示 `mem-lite` 未连接——仓库根目录的项目级 `.mcp.json`（Claude Code 插件清单）在该位置不会被展开。钩子、斜杠命令与记忆采集不受影响；其它项目都走扩展自身的声明。
