@@ -2,6 +2,74 @@
 
 All notable changes to claude-mem-lite are documented in this file.
 
+## v6.12.0 — the fork runs on Qwen Code, updates from itself, and signs with its own key
+
+Forked from upstream v6.11.0. Everything upstream shipped is here; this entry covers what the
+fork adds and what it changed, because a reader upgrading from 6.11.0 needs to know both.
+
+**Upgrade note.** No schema change, no migration, no config. Three things change for anyone
+already running this build, and one of them is a default:
+
+- **Auto-update is on again, and it reads THIS fork's releases** (`thenewnano/qwen-mem-lite`),
+  never upstream's. Upstream's tarball is the Claude-Code-only build, so installing it over
+  this tree would revert everything below, silently — the only symptom would be behaviour
+  disappearing on one host. `CLAUDE_MEM_SKIP_UPDATE=1` disables the check;
+  `CLAUDE_MEM_UPDATE_REPO=<owner>/<name>` aims it at a mirror. Releases are signed with a key
+  this fork generated, and the install path stays FAIL CLOSED: a release without a valid
+  `release-manifest.json` + `.sig` pair is refused rather than installed.
+- **The Claude Code plugin identity is `claude-mem-lite@thenewano`.** An install made from
+  upstream's marketplace (`claude-mem-lite@sdsrss`, cached under `plugins/cache/sdsrss/`) is
+  no longer recognised by this build's plugin checks. The product name, the CLI, the MCP tool
+  names and the `~/.claude-mem-lite/` store are unchanged, so the database and both hosts'
+  sessions keep working across the change.
+- **Background LLM calls accept any OpenAI-compatible endpoint** — `OPENAI_API_KEY` /
+  `OPENAI_BASE_URL` / `OPENAI_MODEL`, plus `OPENAI_MODEL_HAIKU` and `OPENAI_MODEL_SONNET` for
+  the tier split, and `CLAUDE_MEM_LLM_PROVIDER=api|openrouter|openai|cli` to pin the leg.
+  Provider precedence is otherwise unchanged, so an existing install resolves exactly as it
+  did. The pin exists because Qwen Code's settings inject `ANTHROPIC_API_KEY` into every
+  session, which would otherwise always win.
+
+**Qwen Code support, which is the point of the fork.** Qwen Code loads this plugin's
+`hooks/hooks.json` verbatim and substitutes `${CLAUDE_PLUGIN_ROOT}`, so the hooks already fired
+there — and then took the wrong branch, silently, because the two hosts disagree in three
+places that had no translation layer. It sends its own runtime tool ids (`write_file`,
+`read_file`, `edit`, `run_shell_command`, `agent`) where every downstream decision is keyed on
+Claude Code's spellings, so a read was weighted as an edit, an edit matched no skip entry, and
+Bash significance, error recall and the subagent injection never ran at all. It reads
+`QWEN.md`/`.qwen/` and ignores `CLAUDE.md` outright, so the adopt block was invisible on every
+Qwen session. And it records transcripts as `message.parts` where the twelve transcript
+scanners read `message.content` blocks, so citation tracking, the unsaved-bugfix nudge and the
+fast summary all answered zero.
+
+All three are now translated at the payload boundary — `lib/tool-names.mjs` for the tool
+vocabulary, a two-layout `claudemd.mjs` that writes and clears both context files, and a
+`message.parts` normalizer in `lib/transcript-scan.mjs` — so the pipeline keeps one vocabulary
+and one shape, and Claude Code sessions are untouched (its names are identity in the map, and
+its layout is one of the two). `scripts/post-tool-use.sh` cannot import a module, so
+`tests/skip-tools.test.mjs` derives its case list from the table instead of trusting a
+hand-kept copy.
+
+**The fork installs from itself.** The repository slug, the marketplace key, the npm install
+hints and the plugin cache paths all named upstream, and following any of them got the
+Claude-only build; all of them now name the fork, including the CI surface. `publish.yml`'s
+`npm publish` is skipped unless the repository variable `NPM_PUBLISH=true` — the name in
+package.json belongs to upstream on the public registry, so the step cannot succeed here, and
+it runs BEFORE signing, which is what would have stopped this fork from ever producing a
+signed release.
+
+**Release signing.** The fork generated its own Ed25519 keypair; the private half is the
+`RELEASE_SIGNING_KEY` secret and the public half is embedded in `hook-update.mjs`. This was
+verified against the artifact the updater actually downloads, not in the abstract: the
+manifest the new key signed validated against a real GitHub tarball of the same commit under
+the new key, and came back `signature-invalid` under upstream's — the negative control is what
+makes the check meaningful.
+
+**Not carried over, so nobody has to wonder why it is missing.** This release ships without the
+three pre-ship review rounds and without a re-measured Baselines row in `CLAUDE.md`; that row
+still describes the v6.11.0 tree at `9c41144`, which is what it claims to describe. Neither
+absence is a claim about the code — the full suite is green — but neither ritual was performed,
+and pretending otherwise in a changelog would be worse than saying so.
+
 ## v6.11.0 — the second secret on a line, a budget that sat idle, and two faces of one install that disagreed
 
 **Upgrade note.** No schema change, no migration, no config. One default behaviour changes,

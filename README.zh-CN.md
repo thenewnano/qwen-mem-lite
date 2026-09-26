@@ -224,19 +224,17 @@ rm -rf ~/claude-mem-lite/   # v0.5 前的非隐藏目录（如未自动迁移）
     repos/               # 浅克隆的源代码仓库
 ```
 
-## 升级到 6.11.0
+## 升级到 6.12.0
 
-**只有一个默认行为变化：re-enrich 不再让一部分预算空着。** 它为两个回填任务预留每次运行一半的
-预算，其余给主范围。以前主范围待处理的行数少于它那一份时，剩下的额度就空着不用；现在转给回填
-任务。每日后台任务是**每台机器每天一次、对所有项目合并运行**，所以主池为空时，它现在每天最多
-做 6 次这类 LLM 调用，而以前是 3 次。上限 6 没变——这一直是声明的预算；另有一个单独计预算的
-「范围分类」任务，本版未改动，最多还会再加 6 次简短调用。手动运行 `claude-mem-lite optimize --run`
-或 `mem_optimize` 行为相同。没有 schema 变更、没有迁移：旧版本仍能打开数据库，回退就是固定到
-`claude-mem-lite@6.10.3`。
+**本构建是 Qwen Code fork：它从自己这里更新，并用自己的密钥签名。** 对已在运行它的用户，有三处变化：
 
-**有一个安全修复不会作用于你已有的数据。** 同一行里两个带标签的凭据，在某些组合下——例如
-`token: <v> secret: <v>`，且第一个值以字母结尾——以前的版本会脱敏第一个、把第二个按原样存下来。
-分行写的值从未受影响。本版本修的是写入路径；数据库里已有的内容不会被改写。
+*自动更新重新默认开启，且读取本 fork 自己的发布。* 它读取 `thenewnano/qwen-mem-lite`，绝不指向上游——上游发布的是 Claude 专用构建，装到本树会静默回退下述全部内容，唯一症状是某个宿主上的行为消失。`CLAUDE_MEM_SKIP_UPDATE=1` 关闭检查；`CLAUDE_MEM_UPDATE_REPO=<owner>/<name>` 指向镜像。安装路径对发布签名 fail-closed：缺少有效 `release-manifest.json` + `.sig` 的发布会被拒绝。
+
+*Claude Code 插件标识现为 `claude-mem-lite@thenewano`。* 从上游市场安装的 `claude-mem-lite@sdsrss`（缓存于 `plugins/cache/sdsrss/`）不再被本构建的插件检查识别；若需要这些检查看到它，请从本仓库重新添加市场。
+
+*Qwen Code 成为一等宿主。* 它的运行时工具 id、`QWEN.md` + `.qwen/` 引导目标、以及 `message.parts` 转录，都在边界处翻译成既有词汇，因此跳过表、编辑权重、错误召回、引用追踪与保存提醒走的都是与 Claude Code 相同的分支。存储两者共用：同一个 `~/.claude-mem-lite/`、同一个数据库、无 schema 变更、无迁移，旧版构建仍可打开。
+
+本版还包括：后台 LLM 调用可指向**任意 OpenAI 兼容后端**——`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`，以及用于保留分层模型的 `OPENAI_MODEL_HAIKU`、`OPENAI_MODEL_SONNET`，并用 `CLAUDE_MEM_LLM_PROVIDER` 指定 provider 腿。在 Qwen Code 下这个指定是必需的：它的设置会向每个会话注入 `ANTHROPIC_API_KEY`，否则会抢先。
 
 <!-- normalize-per-project-note:start -->
 ## 升级到 6.8.0

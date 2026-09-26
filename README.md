@@ -269,24 +269,35 @@ rm -rf ~/claude-mem-lite/   # pre-v0.5 unhidden (if not auto-moved)
     repos/               # Shallow-cloned source repos
 ```
 
-## Upgrading to 6.11.0
+## Upgrading to 6.12.0
 
-**One default changes: re-enrich stops leaving part of its budget idle.** It reserves half of
-each run's budget for two backfill passes and gives its main scope the rest. When the main
-scope had fewer rows to enrich than its share, the remainder went unspent; it now goes to the
-backfills. The daily unattended pass runs once per machine per day, over all projects
-together, so with an empty main pool it now makes up to 6 of these LLM calls a day where it
-made 3. The ceiling of 6 is unchanged — it was always the declared budget — and a separately
-budgeted scope-classification pass, also unchanged, can add up to 6 more short calls. A manual
-`claude-mem-lite optimize --run` or `mem_optimize` behaves the same way. No schema change and
-no migration: an older build still opens the database, so reverting is pinning
-`claude-mem-lite@6.10.3`.
+**This build is the Qwen Code fork, it updates from itself, and it signs with its own key.**
+Three things change for anyone already running it:
 
-**One security fix does not reach data you already have.** In some combinations of two
-labelled credentials on one line — `token: <v> secret: <v>` is one, when the first value ends
-in a letter — earlier versions redacted the first and stored the second as typed. Values on
-separate lines were never affected. This release fixes the write path; nothing already in
-your database is rewritten.
+*Auto-update is on again, and it reads this fork's releases.* It reads
+`thenewnano/qwen-mem-lite`, never upstream's — upstream's tarball is the Claude-Code-only
+build, so installing it over this tree would revert everything below with no symptom beyond
+behaviour disappearing on one host. `CLAUDE_MEM_SKIP_UPDATE=1` turns the check off;
+`CLAUDE_MEM_UPDATE_REPO=<owner>/<name>` aims it at a mirror. The install path is fail-closed
+on release signatures, so a release without a valid `release-manifest.json` + `.sig` pair is
+refused.
+
+*The Claude Code plugin identity is `claude-mem-lite@thenewano`.* An install made from
+upstream's marketplace (`claude-mem-lite@sdsrss`, cached under `plugins/cache/sdsrss/`) is no
+longer recognised by this build's plugin checks; re-add the marketplace from this repository
+if you want them to see it.
+
+*Qwen Code is a first-class host.* Its runtime tool ids, its `QWEN.md` + `.qwen/` steering
+targets, and its `message.parts` transcripts are translated at the boundary, so skip lists,
+edit weighting, error recall, citation tracking and the save nudge take the same branches they
+take under Claude Code. The store is shared either way: same `~/.claude-mem-lite/`, same
+database, no schema change, no migration, and an older build still opens it.
+
+Also in this release: background LLM calls can go to **any OpenAI-compatible endpoint** —
+`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`, plus `OPENAI_MODEL_HAIKU` and
+`OPENAI_MODEL_SONNET` so the tier split survives a uniform backend, and
+`CLAUDE_MEM_LLM_PROVIDER` to pin the provider leg. The pin is required under Qwen Code, whose
+settings inject `ANTHROPIC_API_KEY` into every session and would otherwise win.
 
 <!-- normalize-per-project-note:start -->
 ## Upgrading to 6.8.0
