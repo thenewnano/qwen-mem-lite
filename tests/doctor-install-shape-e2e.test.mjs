@@ -58,7 +58,7 @@ function withBrokenDeps(root) {
 }
 
 function pluginCacheDir(version) {
-  return join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite', version);
+  return join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', version);
 }
 
 function makePluginVersion(version, { deps = 'real' } = {}) {
@@ -94,7 +94,7 @@ function enablePlugin() {
     join(home, '.claude', 'settings.json'),
     JSON.stringify(
       {
-        enabledPlugins: { 'claude-mem-lite@thenewano': true },
+        enabledPlugins: { 'claude-mem-lite@thenewnano': true },
       },
       null,
       2,
@@ -299,7 +299,7 @@ describe('an EMPTY plugin manifest is not the healthy plugin shape', () => {
   // cleanup-hooks both are `{"hooks":{}}` and a cp between them changes nothing.
   describe('the repair line it prints', () => {
     function marketplaceHooks(body) {
-      const dir = join(home, '.claude', 'plugins', 'marketplaces', 'thenewano', 'hooks');
+      const dir = join(home, '.claude', 'plugins', 'marketplaces', 'thenewnano', 'hooks');
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, 'hooks.json'), JSON.stringify(body));
     }

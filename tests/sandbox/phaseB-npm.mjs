@@ -27,7 +27,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, readdirSync } from 'node:fs';
 import { sandboxBase } from './sbx-base.mjs';
 // Asked, not spelled: B9 builds a plugin cache at the path install.mjs will walk, and a
-// hardcoded 'thenewano' here would keep passing after a marketplace rename while testing a
+// hardcoded 'thenewnano' here would keep passing after a marketplace rename while testing a
 // directory nothing writes.
 import { MARKETPLACE_KEY } from '../../lib/plugin-key.mjs';
 

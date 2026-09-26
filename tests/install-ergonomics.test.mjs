@@ -58,7 +58,7 @@ describe('setup.sh deps-broken flag round-trip (v2.79, binding-probe since D#6 f
     const home = makeTmpDir();
     try {
       const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       mkdirSync(pluginRoot, { recursive: true });
       writeFileSync(join(pluginRoot, 'package.json'), '{"name":"fixture"}\n');
@@ -100,7 +100,7 @@ describe('setup.sh deps-broken flag round-trip (v2.79, binding-probe since D#6 f
     const home = makeTmpDir();
     try {
       const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       mkdirSync(join(pluginRoot, 'lib'), { recursive: true });
       mkdirSync(join(pluginRoot, 'scripts'), { recursive: true });
@@ -152,7 +152,7 @@ describe('setup.sh deps-broken flag round-trip (v2.79, binding-probe since D#6 f
     const home = makeTmpDir();
     try {
       const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       mkdirSync(join(pluginRoot, 'scripts'), { recursive: true });
       writeFileSync(join(pluginRoot, 'package.json'), '{"name":"fixture"}\n');
@@ -191,7 +191,7 @@ describe('setup.sh deps-broken flag round-trip (v2.79, binding-probe since D#6 f
     const home = makeTmpDir();
     try {
       const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       mkdirSync(join(pluginRoot, 'lib'), { recursive: true });
       mkdirSync(join(pluginRoot, 'node_modules', 'better-sqlite3'), { recursive: true });

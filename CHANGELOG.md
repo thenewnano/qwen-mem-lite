@@ -17,7 +17,7 @@ already running this build, and one of them is a default:
   `CLAUDE_MEM_UPDATE_REPO=<owner>/<name>` aims it at a mirror. Releases are signed with a key
   this fork generated, and the install path stays FAIL CLOSED: a release without a valid
   `release-manifest.json` + `.sig` pair is refused rather than installed.
-- **The Claude Code plugin identity is `claude-mem-lite@thenewano`.** An install made from
+- **The Claude Code plugin identity is `claude-mem-lite@thenewnano`.** An install made from
   upstream's marketplace (`claude-mem-lite@sdsrss`, cached under `plugins/cache/sdsrss/`) is
   no longer recognised by this build's plugin checks. The product name, the CLI, the MCP tool
   names and the `~/.claude-mem-lite/` store are unchanged, so the database and both hosts'

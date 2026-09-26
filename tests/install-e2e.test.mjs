@@ -211,7 +211,7 @@ describe('E2E: Plugin install mode', () => {
     const home = makeTmpDir();
     try {
       const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
       mkdirSync(dataDir, { recursive: true });
       mkdirSync(pluginRoot, { recursive: true });
       // Pre-create node_modules symlink (simulating previous install)
@@ -357,8 +357,8 @@ describe('E2E: Direct install mode (git clone / npx)', () => {
     // Simulate prior marketplace install: cache dirs contain populated hooks.json
     // that Claude Code runtime would read, causing hooks to register twice
     // (once from cache, once from settings.json written by install.mjs).
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
-    const marketplaceDir = join(home, '.claude', 'plugins', 'marketplaces', 'thenewano');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+    const marketplaceDir = join(home, '.claude', 'plugins', 'marketplaces', 'thenewnano');
     mkdirSync(marketplaceDir, { recursive: true });
 
     const populatedHooks = {

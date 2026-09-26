@@ -23,7 +23,7 @@ export const CURRENT_SENTINEL_VERSION = 'v1';
 
 // The CLI name as written into the user's project tree — deliberately NOT `CLI_INVOKE`
 // (audit R7 P2-1). CLI_INVOKE resolves to an absolute, VERSION-PINNED path
-// (`node /home/<user>/.claude/plugins/cache/thenewano/claude-mem-lite/<version>/cli.mjs`), and
+// (`node /home/<user>/.claude/plugins/cache/thenewnano/claude-mem-lite/<version>/cli.mjs`), and
 // both generators below write files the user may commit: the managed block lands in
 // <cwd>/CLAUDE.md and the detail doc in <cwd>/.claude/, which is the standard home for
 // project-scoped settings/commands/agents and is commonly tracked. Embedding the resolved

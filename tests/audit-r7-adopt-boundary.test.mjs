@@ -3,7 +3,7 @@
 // every session (adopt-cli.mjs silentAutoAdopt).
 //
 // P2-1 — getDetailDoc() embedded CLI_INVOKE, which resolves to
-//   `node /home/<user>/.claude/plugins/cache/thenewano/claude-mem-lite/<VERSION>/cli.mjs`
+//   `node /home/<user>/.claude/plugins/cache/thenewnano/claude-mem-lite/<VERSION>/cli.mjs`
 // on a plugin install: machine-specific AND version-pinned. Measured on the live tree, the
 // generated .claude/plugin_claude_mem_lite.md carried 24 occurrences of it. The sibling
 // generator buildClaudeMdBlock() deliberately avoids CLI_INVOKE and says why — "it would make

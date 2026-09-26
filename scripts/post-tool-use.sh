@@ -32,7 +32,7 @@ _mem_plugin_disabled() {
   [[ -r "$_mem_settings_file" ]] || return 1
   local _settings
   _settings=$(<"$_mem_settings_file")
-  [[ "$_settings" =~ \"claude-mem-lite@thenewano\"[[:space:]]*:[[:space:]]*false ]]
+  [[ "$_settings" =~ \"claude-mem-lite@thenewnano\"[[:space:]]*:[[:space:]]*false ]]
 }
 
 # Read stdin (tool hook JSON)

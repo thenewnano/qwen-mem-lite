@@ -282,7 +282,7 @@ behaviour disappearing on one host. `CLAUDE_MEM_SKIP_UPDATE=1` turns the check o
 on release signatures, so a release without a valid `release-manifest.json` + `.sig` pair is
 refused.
 
-*The Claude Code plugin identity is `claude-mem-lite@thenewano`.* An install made from
+*The Claude Code plugin identity is `claude-mem-lite@thenewnano`.* An install made from
 upstream's marketplace (`claude-mem-lite@sdsrss`, cached under `plugins/cache/sdsrss/`) is no
 longer recognised by this build's plugin checks; re-add the marketplace from this repository
 if you want them to see it.
@@ -667,8 +667,8 @@ Notes:
 - Plugin mode only reports available updates; it does not self-update plugin files.
   To upgrade an installed plugin to the latest published version, run **inside Claude Code**:
   ```
-  /plugin marketplace update thenewano
-  /plugin install claude-mem-lite@thenewano
+  /plugin marketplace update thenewnano
+  /plugin install claude-mem-lite@thenewnano
   ```
   (The first command refreshes the local marketplace clone; the second reinstalls from it. Without the first command, `/plugin install` reuses the stale local clone and you stay on whichever version you originally pulled.)
 - Direct install / npx mode keeps auto-update enabled and uses staged replacement with rollback on install failure.
@@ -687,14 +687,14 @@ The three install paths do **not** carry the same supply-chain guarantees — pi
 
 ```bash
 # 1. Find the local marketplace clone
-ls ~/.claude/plugins/marketplaces/          # e.g. thenewano
+ls ~/.claude/plugins/marketplaces/          # e.g. thenewnano
 
 # 2. Pin it to the previous good tag (tags mirror npm versions, e.g. v3.62.0)
-cd ~/.claude/plugins/marketplaces/thenewano
+cd ~/.claude/plugins/marketplaces/thenewnano
 git fetch --tags && git checkout v3.62.0
 
 # 3. Reinstall from the pinned clone — inside Claude Code:
-#    /plugin install claude-mem-lite@thenewano
+#    /plugin install claude-mem-lite@thenewnano
 # 4. To leave the pin later: git checkout main, then the normal update flow.
 ```
 
@@ -764,7 +764,7 @@ reclaim it, but after `/plugin uninstall` that command may no longer be on your 
 run it **first**, or delete the directory yourself:
 
 ```bash
-rm -rf ~/.claude/plugins/cache/thenewano/claude-mem-lite
+rm -rf ~/.claude/plugins/cache/thenewnano/claude-mem-lite
 ```
 
 ### Mixed-install residue (read this if you've used multiple install methods)

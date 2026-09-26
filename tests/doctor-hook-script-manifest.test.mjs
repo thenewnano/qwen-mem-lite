@@ -66,7 +66,7 @@ function doctorOn({ scriptsDir = 'copy', omitScripts = [], pluginOnly = false } 
       '.claude',
       'plugins',
       'cache',
-      'thenewano',
+      'thenewnano',
       'claude-mem-lite',
       '3.72.0',
       'scripts',

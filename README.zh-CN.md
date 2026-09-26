@@ -230,7 +230,7 @@ rm -rf ~/claude-mem-lite/   # v0.5 前的非隐藏目录（如未自动迁移）
 
 *自动更新重新默认开启，且读取本 fork 自己的发布。* 它读取 `thenewnano/qwen-mem-lite`，绝不指向上游——上游发布的是 Claude 专用构建，装到本树会静默回退下述全部内容，唯一症状是某个宿主上的行为消失。`CLAUDE_MEM_SKIP_UPDATE=1` 关闭检查；`CLAUDE_MEM_UPDATE_REPO=<owner>/<name>` 指向镜像。安装路径对发布签名 fail-closed：缺少有效 `release-manifest.json` + `.sig` 的发布会被拒绝。
 
-*Claude Code 插件标识现为 `claude-mem-lite@thenewano`。* 从上游市场安装的 `claude-mem-lite@sdsrss`（缓存于 `plugins/cache/sdsrss/`）不再被本构建的插件检查识别；若需要这些检查看到它，请从本仓库重新添加市场。
+*Claude Code 插件标识现为 `claude-mem-lite@thenewnano`。* 从上游市场安装的 `claude-mem-lite@sdsrss`（缓存于 `plugins/cache/sdsrss/`）不再被本构建的插件检查识别；若需要这些检查看到它，请从本仓库重新添加市场。
 
 *Qwen Code 成为一等宿主。* 它的运行时工具 id、`QWEN.md` + `.qwen/` 引导目标、以及 `message.parts` 转录，都在边界处翻译成既有词汇，因此跳过表、编辑权重、错误召回、引用追踪与保存提醒走的都是与 Claude Code 相同的分支。存储两者共用：同一个 `~/.claude-mem-lite/`、同一个数据库、无 schema 变更、无迁移，旧版构建仍可打开。
 
@@ -604,7 +604,7 @@ rm -rf ~/.claude-mem-lite/
 可能已经不在 PATH 上了。所以要么**先**跑它，要么自己删：
 
 ```bash
-rm -rf ~/.claude/plugins/cache/thenewano/claude-mem-lite
+rm -rf ~/.claude/plugins/cache/thenewnano/claude-mem-lite
 ```
 
 ### 混装残留（用过多种安装方式的话务必看一下）

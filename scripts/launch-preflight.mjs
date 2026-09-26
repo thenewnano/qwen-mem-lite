@@ -75,7 +75,7 @@ export function resolveLaunchEntry({ primaryRoot, fallbackRoot, warn = () => {} 
     `[claude-mem-lite] Install incomplete at ${primaryRoot}\n` +
       `[claude-mem-lite]   Missing: ${primaryMissing.join(', ')}\n` +
       `[claude-mem-lite] Repair: ${repairCmd}\n` +
-      `[claude-mem-lite] Or via Claude Code: /plugin uninstall claude-mem-lite && /plugin install claude-mem-lite@thenewano`,
+      `[claude-mem-lite] Or via Claude Code: /plugin uninstall claude-mem-lite && /plugin install claude-mem-lite@thenewnano`,
   );
   err.code = 'INSTALL_INCOMPLETE';
   err.missing = primaryMissing;

@@ -113,7 +113,7 @@ describe('install lifecycle checks', () => {
         join(claudeDir, 'settings.json'),
         JSON.stringify(
           {
-            enabledPlugins: { 'claude-mem-lite@thenewano': true },
+            enabledPlugins: { 'claude-mem-lite@thenewnano': true },
             hooks: {
               SessionStart: [
                 {
@@ -129,7 +129,7 @@ describe('install lifecycle checks', () => {
           2,
         ),
       );
-      const cacheVerDir = join(claudeDir, 'plugins', 'cache', 'thenewano', 'claude-mem-lite', '2.31.0');
+      const cacheVerDir = join(claudeDir, 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', '2.31.0');
       mkdirSync(join(cacheVerDir, 'hooks'), { recursive: true });
       writeFileSync(
         join(cacheVerDir, 'hooks', 'hooks.json'),
@@ -164,7 +164,7 @@ describe('install lifecycle checks', () => {
         join(claudeDir, 'settings.json'),
         JSON.stringify(
           {
-            enabledPlugins: { 'claude-mem-lite@thenewano': true },
+            enabledPlugins: { 'claude-mem-lite@thenewnano': true },
             hooks: {
               SessionStart: [
                 {
@@ -180,7 +180,7 @@ describe('install lifecycle checks', () => {
           2,
         ),
       );
-      const cacheVerDir = join(claudeDir, 'plugins', 'cache', 'thenewano', 'claude-mem-lite', '2.31.0');
+      const cacheVerDir = join(claudeDir, 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', '2.31.0');
       mkdirSync(join(cacheVerDir, 'hooks'), { recursive: true });
       writeFileSync(
         join(cacheVerDir, 'hooks', 'hooks.json'),
@@ -213,7 +213,7 @@ describe('install lifecycle checks', () => {
         join(claudeDir, 'settings.json'),
         JSON.stringify(
           {
-            enabledPlugins: { 'claude-mem-lite@thenewano': false },
+            enabledPlugins: { 'claude-mem-lite@thenewnano': false },
             hooks: {
               SessionStart: [
                 {
@@ -258,7 +258,7 @@ describe('install lifecycle checks', () => {
         settingsPath,
         JSON.stringify(
           {
-            enabledPlugins: { 'claude-mem-lite@thenewano': false, 'other@vendor': true },
+            enabledPlugins: { 'claude-mem-lite@thenewnano': false, 'other@vendor': true },
             hooks: {
               SessionStart: [
                 {
@@ -291,7 +291,7 @@ describe('install lifecycle checks', () => {
       expect(output).toContain('Removed 2 claude-mem-lite hook configurations');
 
       const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
-      expect(settings.enabledPlugins['claude-mem-lite@thenewano']).toBe(false);
+      expect(settings.enabledPlugins['claude-mem-lite@thenewnano']).toBe(false);
       expect(settings.enabledPlugins['other@vendor']).toBe(true);
       expect(settings.hooks.PostToolUse).toBeUndefined();
       expect(settings.hooks.SessionStart).toHaveLength(1);
@@ -306,13 +306,13 @@ describe('install lifecycle checks', () => {
   it('direct install clears stale disabled plugin flag without touching other plugin flags', () => {
     const settings = {
       enabledPlugins: {
-        'claude-mem-lite@thenewano': false,
+        'claude-mem-lite@thenewnano': false,
         'other@vendor': true,
       },
     };
 
     expect(clearPluginDisabledMarkerForDirectInstall(settings)).toBe(true);
-    expect(settings.enabledPlugins['claude-mem-lite@thenewano']).toBeUndefined();
+    expect(settings.enabledPlugins['claude-mem-lite@thenewnano']).toBeUndefined();
     expect(settings.enabledPlugins['other@vendor']).toBe(true);
   });
 
@@ -320,8 +320,8 @@ describe('install lifecycle checks', () => {
     expect(
       hasOtherMarketplacePlugins({
         plugins: {
-          'claude-mem-lite@thenewano': {},
-          'other-tool@thenewano': {},
+          'claude-mem-lite@thenewnano': {},
+          'other-tool@thenewnano': {},
         },
       }),
     ).toBe(true);
@@ -329,7 +329,7 @@ describe('install lifecycle checks', () => {
     expect(
       hasOtherMarketplacePlugins({
         plugins: {
-          'claude-mem-lite@thenewano': {},
+          'claude-mem-lite@thenewnano': {},
           'other-tool@vendor': {},
         },
       }),
@@ -341,8 +341,8 @@ describe('install lifecycle checks', () => {
     try {
       const claudeDir = join(home, '.claude');
       const pluginsDir = join(claudeDir, 'plugins');
-      const marketplaceDir = join(pluginsDir, 'marketplaces', 'thenewano');
-      const cacheDir = join(pluginsDir, 'cache', 'thenewano');
+      const marketplaceDir = join(pluginsDir, 'marketplaces', 'thenewnano');
+      const cacheDir = join(pluginsDir, 'cache', 'thenewnano');
       mkdirSync(marketplaceDir, { recursive: true });
       // Realistic layout: Claude Code materializes versions under
       // cache/<marketplace>/<plugin>/<version>/, never straight into cache/<marketplace>/.
@@ -354,8 +354,8 @@ describe('install lifecycle checks', () => {
         join(claudeDir, 'settings.json'),
         JSON.stringify(
           {
-            enabledPlugins: { 'claude-mem-lite@thenewano': true },
-            extraKnownMarketplaces: { thenewano: { url: 'https://example.com' } },
+            enabledPlugins: { 'claude-mem-lite@thenewnano': true },
+            extraKnownMarketplaces: { thenewnano: { url: 'https://example.com' } },
             hooks: {
               SessionStart: [
                 {
@@ -375,7 +375,7 @@ describe('install lifecycle checks', () => {
         join(pluginsDir, 'installed_plugins.json'),
         JSON.stringify(
           {
-            plugins: { 'claude-mem-lite@thenewano': [{ version: '2.10.0' }] },
+            plugins: { 'claude-mem-lite@thenewnano': [{ version: '2.10.0' }] },
           },
           null,
           2,
@@ -385,7 +385,7 @@ describe('install lifecycle checks', () => {
         join(pluginsDir, 'known_marketplaces.json'),
         JSON.stringify(
           {
-            thenewano: { url: 'https://example.com' },
+            thenewnano: { url: 'https://example.com' },
           },
           null,
           2,
@@ -406,8 +406,8 @@ describe('install lifecycle checks', () => {
       expect(output).toContain('Data purged');
 
       const settings = JSON.parse(readFileSync(join(claudeDir, 'settings.json'), 'utf8'));
-      expect(settings.enabledPlugins?.['claude-mem-lite@thenewano']).toBeUndefined();
-      expect(settings.extraKnownMarketplaces?.thenewano).toBeUndefined();
+      expect(settings.enabledPlugins?.['claude-mem-lite@thenewnano']).toBeUndefined();
+      expect(settings.extraKnownMarketplaces?.thenewnano).toBeUndefined();
       expect(settings.hooks?.SessionStart).toBeUndefined();
       expect(existsSync(marketplaceDir)).toBe(false);
       expect(existsSync(cacheDir)).toBe(false);
@@ -626,8 +626,8 @@ describe('install lifecycle checks', () => {
     const home = makeTmpDir();
     try {
       const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
-      const marketplaceDir = join(home, '.claude', 'plugins', 'marketplaces', 'thenewano');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+      const marketplaceDir = join(home, '.claude', 'plugins', 'marketplaces', 'thenewnano');
       mkdirSync(dataDir, { recursive: true });
       mkdirSync(pluginRoot, { recursive: true });
       mkdirSync(marketplaceDir, { recursive: true });
@@ -683,7 +683,7 @@ describe('install lifecycle checks', () => {
     const home = makeTmpDir();
     try {
       const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       mkdirSync(pluginRoot, { recursive: true });
       symlinkSync(resolve('node_modules'), join(dataDir, 'node_modules'));
@@ -728,7 +728,7 @@ describe('install lifecycle checks', () => {
     const home = makeTmpDir();
     try {
       const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       mkdirSync(pluginRoot, { recursive: true });
       symlinkSync(resolve('node_modules'), join(dataDir, 'node_modules'));
@@ -767,7 +767,7 @@ describe('install lifecycle checks', () => {
     const home = makeTmpDir();
     try {
       const dataDir = join(home, '.claude-mem-lite');
-      const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
+      const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
       const pluginRoot = join(cacheBase, '2.21.0');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       symlinkSync(resolve('node_modules'), join(dataDir, 'node_modules'));
@@ -809,7 +809,7 @@ describe('install lifecycle checks', () => {
     const home = makeTmpDir();
     try {
       const dataDir = join(home, '.claude-mem-lite');
-      const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
+      const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
       // Running from the OLDEST of four — rank 4 of 4, outside keep-latest-3.
       const pluginRoot = join(cacheBase, '3.90.0');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
@@ -851,7 +851,7 @@ describe('install lifecycle checks', () => {
     const home = makeTmpDir();
     try {
       const dataDir = join(home, '.claude-mem-lite');
-      const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite');
+      const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
       const pluginRoot = join(cacheBase, '3.96.0');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       symlinkSync(resolve('node_modules'), join(dataDir, 'node_modules'));

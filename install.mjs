@@ -1168,7 +1168,7 @@ async function dogfoodAutoAdopt() {
       // that run it: this repository's own suite detects the repo by this remote, and a
       // fresh clone-and-fork (the normal way to work on a fork) would never auto-adopt.
       const isDogfood =
-        /github\.com[:/](?:thenewano\/(?:qwen-mem-lite|claude-mem-lite)|sdsrss\/claude-mem-lite)(?:\.git)?$/i.test(
+        /github\.com[:/](?:thenewnano\/(?:qwen-mem-lite|claude-mem-lite)|sdsrss\/claude-mem-lite)(?:\.git)?$/i.test(
           remote,
         );
       if (isDogfood) {
@@ -1317,7 +1317,7 @@ async function uninstall() {
   // The gate exists so uninstalling this plugin does not delete a sibling plugin published
   // under the same marketplace. That reasoning covers `cache/<marketplace>/`; it does not
   // cover `cache/<marketplace>/claude-mem-lite/`, which is ours alone. Because only the
-  // gated branch existed, a user with any other thenewano plugin installed kept every cached
+  // gated branch existed, a user with any other thenewnano plugin installed kept every cached
   // version of THIS one — measured at 241 MB on a machine where `/plugin uninstall` had
   // already removed the manifest, i.e. bytes belonging to a plugin that was gone.
   const ownCacheDir = join(pluginsDir, 'cache', marketplaceKey, PLUGIN_NAME);
@@ -1345,7 +1345,7 @@ async function uninstall() {
   }
 
   if (!canRemoveMarketplaceArtifacts && (existsSync(marketplaceDir) || existsSync(cacheDir))) {
-    log('Marketplace cache preserved (other plugins may still depend on thenewano marketplace)');
+    log('Marketplace cache preserved (other plugins may still depend on thenewnano marketplace)');
   }
 
   // 6. Purge data if requested
@@ -1986,7 +1986,7 @@ async function doctor() {
     for (const entry of ['server.mjs', 'hook.mjs', 'cli.mjs']) {
       if (!existsSync(join(v.root, entry))) {
         fail(
-          `Plugin cache v${v.version}: ${entry} missing — reinstall with \`/plugin install claude-mem-lite@thenewano\``,
+          `Plugin cache v${v.version}: ${entry} missing — reinstall with \`/plugin install claude-mem-lite@thenewnano\``,
         );
         issues++;
       }
@@ -3092,8 +3092,8 @@ async function manualUpdate() {
   } else if (result?.updateAvailable && result?.installDeferred) {
     warn(`v${result.to} available — plugin mode only checks for updates.`);
     log('  To upgrade, inside Claude Code run:');
-    log('    /plugin marketplace update thenewano');
-    log('    /plugin install claude-mem-lite@thenewano');
+    log('    /plugin marketplace update thenewnano');
+    log('    /plugin install claude-mem-lite@thenewnano');
   } else if (result?.updateAvailable) {
     warn(`v${result.to} available but install failed — try: node install.mjs install`);
   } else {

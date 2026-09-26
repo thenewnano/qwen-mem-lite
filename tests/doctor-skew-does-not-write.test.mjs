@@ -155,7 +155,7 @@ describe('doctor does not write to a database it has declared too new', () => {
      * premise case above exists because that is exactly what happened first.
      */
     function seedStalePluginCache(version, supportedSchema) {
-      const root = join(home, '.claude', 'plugins', 'cache', 'thenewano', 'claude-mem-lite', version);
+      const root = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', version);
       mkdirSync(join(root, 'scripts'), { recursive: true });
       // listPluginCacheVersions requires scripts/launch.mjs before it counts a dir.
       writeFileSync(join(root, 'scripts', 'launch.mjs'), '// fixture\n');

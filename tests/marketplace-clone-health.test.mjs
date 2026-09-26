@@ -101,7 +101,7 @@ describe('doctor reports marketplace clone updatability', () => {
     const home = fixtures.track(mkdtempSync(join(tmpdir(), 'cml-mp-home-')));
     const marketplaces = join(home, '.claude', 'plugins', 'marketplaces');
     mkdirSync(marketplaces, { recursive: true });
-    build?.(join(marketplaces, 'thenewano'));
+    build?.(join(marketplaces, 'thenewnano'));
     const dataDir = fixtures.track(mkdtempSync(join(tmpdir(), 'cml-mp-data-')));
     return spawnSync(process.execPath, [join(REPO, 'install.mjs'), 'doctor'], {
       cwd: REPO,

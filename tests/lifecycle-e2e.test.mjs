@@ -112,22 +112,22 @@ describe('plugin lifecycle: install → adopt → update → uninstall → unado
     writeFileSync(join(PROJ, 'CLAUDE.md'), USER_CLAUDE_MD);
     writeFileSync(join(PROJ, 'package.json'), '{"name":"myapp"}\n');
     // Simulate a prior marketplace install so uninstall has artifacts to sweep.
-    mkdirSync(join(pluginsDir(), 'marketplaces', 'thenewano'), { recursive: true });
-    mkdirSync(join(pluginsDir(), 'cache', 'thenewano'), { recursive: true });
+    mkdirSync(join(pluginsDir(), 'marketplaces', 'thenewnano'), { recursive: true });
+    mkdirSync(join(pluginsDir(), 'cache', 'thenewnano'), { recursive: true });
     writeFileSync(
       join(pluginsDir(), 'installed_plugins.json'),
-      JSON.stringify({ plugins: { 'claude-mem-lite@thenewano': [{ version: '3.14.0' }] } }, null, 2),
+      JSON.stringify({ plugins: { 'claude-mem-lite@thenewnano': [{ version: '3.14.0' }] } }, null, 2),
     );
     writeFileSync(
       join(pluginsDir(), 'known_marketplaces.json'),
-      JSON.stringify({ thenewano: { url: 'https://example.com' } }, null, 2),
+      JSON.stringify({ thenewnano: { url: 'https://example.com' } }, null, 2),
     );
     writeFileSync(
       settingsPath(),
       JSON.stringify(
         {
-          enabledPlugins: { 'claude-mem-lite@thenewano': true, 'other@vendor': true },
-          extraKnownMarketplaces: { thenewano: { url: 'x' } },
+          enabledPlugins: { 'claude-mem-lite@thenewnano': true, 'other@vendor': true },
+          extraKnownMarketplaces: { thenewnano: { url: 'x' } },
         },
         null,
         2,
@@ -205,13 +205,13 @@ describe('plugin lifecycle: install → adopt → update → uninstall → unado
     expect(existsSync(dataDir)).toBe(false);
     expect(existsSync(cliLink)).toBe(false);
     expect(memHookCount(s)).toBe(0);
-    expect(s.enabledPlugins?.['claude-mem-lite@thenewano']).toBeUndefined();
+    expect(s.enabledPlugins?.['claude-mem-lite@thenewnano']).toBeUndefined();
     expect(s.enabledPlugins?.['other@vendor']).toBe(true);
     expect(
-      readJSON(join(pluginsDir(), 'installed_plugins.json'))?.plugins?.['claude-mem-lite@thenewano'],
+      readJSON(join(pluginsDir(), 'installed_plugins.json'))?.plugins?.['claude-mem-lite@thenewnano'],
     ).toBeUndefined();
-    expect(existsSync(join(pluginsDir(), 'marketplaces', 'thenewano'))).toBe(false);
-    expect(existsSync(join(pluginsDir(), 'cache', 'thenewano'))).toBe(false);
+    expect(existsSync(join(pluginsDir(), 'marketplaces', 'thenewnano'))).toBe(false);
+    expect(existsSync(join(pluginsDir(), 'cache', 'thenewnano'))).toBe(false);
     // The documented gap: uninstall does NOT unadopt — the project block survives.
     expect(adoptedBlock(PROJ).present).toBe(true);
     expect(existsSync(join(PROJ, '.claude', 'plugin_claude_mem_lite.md'))).toBe(true);
