@@ -269,7 +269,7 @@ rm -rf ~/claude-mem-lite/   # pre-v0.5 unhidden (if not auto-moved)
     repos/               # Shallow-cloned source repos
 ```
 
-## Upgrading to 6.12.0
+## Upgrading to 6.12.1
 
 **This build is the Qwen Code fork, it updates from itself, and it signs with its own key.**
 Three things change for anyone already running it:

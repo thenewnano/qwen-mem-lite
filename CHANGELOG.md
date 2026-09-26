@@ -2,10 +2,20 @@
 
 All notable changes to claude-mem-lite are documented in this file.
 
-## v6.12.0 — the fork runs on Qwen Code, updates from itself, and signs with its own key
+## v6.12.1 — the fork runs on Qwen Code, updates from itself, and signs with its own key
 
 Forked from upstream v6.11.0. Everything upstream shipped is here; this entry covers what the
 fork adds and what it changed, because a reader upgrading from 6.11.0 needs to know both.
+
+**v6.12.0 was tagged but never published**, so this is the fork's first release in the only
+sense that matters to an installer: no release object, no assets and no npm artifact exist for
+6.12.0, and nothing could have installed it. Its CI run failed before the release job — on the
+fork's own mistake. The marketplace key this release renames was a letter short (`thenewano`
+for the owner `thenewnano`), and because the dogfood check matches a checkout's git remote
+against that key, the suite was green on the machine that made the change and red in CI, where
+the only remote is the fork's. v6.12.1 is 6.12.0's content plus that fix. The 6.12.0 tag stays
+where it is rather than being moved: the red run is part of the history now, and rewriting the
+ref would hide it.
 
 **Upgrade note.** No schema change, no migration, no config. Three things change for anyone
 already running this build, and one of them is a default:
