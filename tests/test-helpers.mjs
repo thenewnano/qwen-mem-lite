@@ -1,4 +1,4 @@
-// Shared test utilities for claude-mem-lite
+// Shared test utilities for qwen-mem-lite
 // Single source of truth: uses initSchema — no DDL duplication
 
 import Database from 'better-sqlite3';
@@ -226,7 +226,7 @@ export const SUBPROCESS_TIMEOUT_MS = resolveSubprocessTimeout(process.env.MEM_TE
  *   2. RECREATION AFTER DISPOSAL (ssenv, t4-stop — 2 of the 11, still 2 by design).
  *      Removal SUCCEEDS, then a detached worker of the hook subprocess re-runs
  *      resolveDataDir against the HOME it was handed — the path just deleted — and
- *      recreates `.claude-mem-lite/runtime` plus a fresh 274KB DB. Identified by shape:
+ *      recreates `.qwen-mem-lite/runtime` plus a fresh 274KB DB. Identified by shape:
  *      the fixture's own subdirs (`work/`, `audit/`) never come back, only the data dir.
  *      lib/tmp-fixture-sweep.mjs absorbs this class via its `mem-` prefix (:24) and
  *      DEFAULT_FIXTURE_AGE_MS (:51) — NOT the R10 P2-18 comment at :40-45, which is about
@@ -277,7 +277,7 @@ export function disposeFixtureDir(dir, { rm = rmSync } = {}) {
  * existed again when the file finished. A detached worker of a hook subprocess re-runs
  * `resolveDataDir` against the HOME it was handed, which the test has since deleted, and
  * recreates it. The shape confirms it and is worth keeping as the diagnostic: a recreated
- * dir holds ONLY `.claude-mem-lite/` (db + `runtime/`), never the fixture's own subdirs —
+ * dir holds ONLY `.qwen-mem-lite/` (db + `runtime/`), never the fixture's own subdirs —
  * `beforeEach` also makes `parent/testproj/`, and that never comes back.
  *
  * `afterAll` is late enough: the same instrumentation saw all 13 alive at that point. That

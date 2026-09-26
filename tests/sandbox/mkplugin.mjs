@@ -10,8 +10,8 @@ export function makePluginHome(label = 'P') {
   const HOME = join(SBX, 'home');
   const PROJECT = join(SBX, 'work', 'my-app');
   const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
-  const CACHE = join(HOME, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', VERSION);
-  const DATA = join(HOME, '.claude-mem-lite');
+  const CACHE = join(HOME, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', VERSION);
+  const DATA = join(HOME, '.qwen-mem-lite');
 
   mkdirSync(join(HOME, '.claude'), { recursive: true });
   mkdirSync(join(HOME, 'tmp'), { recursive: true });
@@ -33,7 +33,7 @@ export function makePluginHome(label = 'P') {
     join(HOME, '.claude', 'settings.json'),
     JSON.stringify(
       {
-        enabledPlugins: { 'claude-mem-lite@thenewnano': true },
+        enabledPlugins: { 'qwen-mem-lite@thenewnano': true },
       },
       null,
       2,
@@ -44,7 +44,7 @@ export function makePluginHome(label = 'P') {
     join(HOME, '.claude', 'plugins', 'installed_plugins.json'),
     JSON.stringify(
       {
-        'claude-mem-lite@thenewnano': { version: VERSION, marketplace: 'thenewnano' },
+        'qwen-mem-lite@thenewnano': { version: VERSION, marketplace: 'thenewnano' },
       },
       null,
       2,

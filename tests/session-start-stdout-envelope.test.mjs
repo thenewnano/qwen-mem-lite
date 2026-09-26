@@ -1,7 +1,7 @@
 // SessionStart stdout must be EXACTLY ONE JSON envelope.
 //
 // hook.mjs session-start had three independent writers on one stdout: the
-// startup-dashboard envelope, a raw <claude-mem-context> block, and the
+// startup-dashboard envelope, a raw <qwen-mem-context> block, and the
 // update banner. The result is a stdout that is not a single JSON document,
 // and the observed consequence in a live Claude Code session (2026-08-17) is
 // that the envelope is NOT parsed: the session shows
@@ -107,10 +107,10 @@ describe('SessionStart stdout envelope', () => {
     tmpHome = fixtures.track(mkdtempSync(join(tmpdir(), 'mem-ssenv-')));
     projDir = join(tmpHome, 'work', 'fresh');
     mkdirSync(projDir, { recursive: true });
-    const dbDir = join(tmpHome, '.claude-mem-lite');
+    const dbDir = join(tmpHome, '.qwen-mem-lite');
     runtimeDir = join(dbDir, 'runtime');
     mkdirSync(runtimeDir, { recursive: true });
-    dbPath = join(dbDir, 'claude-mem-lite.db');
+    dbPath = join(dbDir, 'qwen-mem-lite.db');
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
     initSchema(db);
@@ -118,20 +118,20 @@ describe('SessionStart stdout envelope', () => {
 
     env = { ...process.env };
     for (const k of Object.keys(env)) {
-      if (/^(CLAUDE_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete env[k];
+      if (/^(QWEN_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete env[k];
     }
     Object.assign(env, {
       CLAUDE_CODE_PATH: join(tmpHome, 'no-such-claude-binary'),
       ANTHROPIC_API_KEY: '',
       OPENROUTER_API_KEY: '',
-      CLAUDE_MEM_SKIP_UPDATE: '1',
-      CLAUDE_MEM_SKIP_EPISODE_LLM: '1',
-      CLAUDE_MEM_SKIP_COMPRESS: '1',
-      CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-      CLAUDE_MEM_SKIP_MAINTAIN: '1',
-      CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
-      CLAUDE_MEM_SKIP_REPOS: '1',
-      CLAUDE_MEM_NO_DELAY: '1',
+      QWEN_MEM_SKIP_UPDATE: '1',
+      QWEN_MEM_SKIP_EPISODE_LLM: '1',
+      QWEN_MEM_SKIP_COMPRESS: '1',
+      QWEN_MEM_SKIP_OPTIMIZE: '1',
+      QWEN_MEM_SKIP_MAINTAIN: '1',
+      QWEN_MEM_SKIP_SAVE_ENRICH: '1',
+      QWEN_MEM_SKIP_REPOS: '1',
+      QWEN_MEM_NO_DELAY: '1',
       MEM_NO_AUTO_ADOPT: '1',
     });
   });
@@ -140,7 +140,7 @@ describe('SessionStart stdout envelope', () => {
     // D#2. This one still leaks 1 dir per run and that is the designed outcome, not a
     // gap: removal SUCCEEDS (no report from the helper), then a detached worker of the
     // hook subprocess — whose HOME is still this now-deleted path — re-runs
-    // resolveDataDir and recreates `.claude-mem-lite/runtime` plus a fresh 274KB DB.
+    // resolveDataDir and recreates `.qwen-mem-lite/runtime` plus a fresh 274KB DB.
     // `work/` never comes back, which is how the shape is identified. That is the class
     // lib/tmp-fixture-sweep.mjs absorbs via its `mem-` prefix (:24) at the next run
     // past DEFAULT_FIXTURE_AGE_MS (:51).
@@ -158,8 +158,8 @@ describe('SessionStart stdout envelope', () => {
     const parsed = expectSingleEnvelope(stdout);
     // Both surfaces must survive the merge — this is a delivery-channel change,
     // not a content change.
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('<claude-mem-context>');
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('</claude-mem-context>');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('<qwen-mem-context>');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('</qwen-mem-context>');
     expect(parsed.hookSpecificOutput.additionalContext).toContain('Retry budget was shared across shards');
   });
 
@@ -183,7 +183,7 @@ describe('SessionStart stdout envelope', () => {
     });
     expect(jsonLines).toHaveLength(1);
     // Pin the DASHBOARD leg by content, not by "additionalContext is non-empty":
-    // deleting the dashboard push left this green because the <claude-mem-context>
+    // deleting the dashboard push left this green because the <qwen-mem-context>
     // block alone satisfied a length check (pre-tag review, SHOULD-FIX-3).
     // `mem events` is the dashboard's own line, absent from the context block.
     expect(parsed.hookSpecificOutput.additionalContext).toMatch(/\[mem\] Startup dashboard|mem events:/);
@@ -241,7 +241,7 @@ describe('SessionStart stdout envelope', () => {
         updateAvailable: true,
       }),
     );
-    const stdout = runSessionStart('cc-env-3', { CLAUDE_MEM_SKIP_UPDATE: '' });
+    const stdout = runSessionStart('cc-env-3', { QWEN_MEM_SKIP_UPDATE: '' });
     const parsed = expectSingleEnvelope(stdout);
     // Pin the BANNER leg by content. Asserting only single-envelope-ness left the
     // banner unguarded anywhere in the repo, and the banner is the one contributor
@@ -261,7 +261,7 @@ describe('SessionStart stdout envelope', () => {
     if (stdout.trim()) {
       // A dashboard line is legitimate on an empty DB; a bare wrapper is not.
       const parsed = expectSingleEnvelope(stdout);
-      expect(parsed.hookSpecificOutput.additionalContext).not.toContain('<claude-mem-context>');
+      expect(parsed.hookSpecificOutput.additionalContext).not.toContain('<qwen-mem-context>');
     }
   });
 

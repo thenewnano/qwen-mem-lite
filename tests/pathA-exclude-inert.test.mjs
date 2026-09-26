@@ -39,7 +39,7 @@
 // second suppressor to an already-suppressed face, which needs an A/B.
 //
 // THE RULER NOW EXISTS — `lib/patha-exclude-meter.mjs`, wired into the same read in
-// `hook.mjs handleUserPrompt` and off unless `CLAUDE_MEM_METRICS=1`. It does NOT persist
+// `hook.mjs handleUserPrompt` and off unless `QWEN_MEM_METRICS=1`. It does NOT persist
 // the marker for a later replay (the route the ledger leaned toward, and one this repo has
 // a standing rule against: never diff two runs taken at different times). It runs both
 // arms at the read, one database state, and records `suppressed` / `refilled` / `net` per

@@ -42,12 +42,12 @@ afterEach(() => {
 function doctorWith({ path } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'doctor-bash-'));
   homes.push(home);
-  mkdirSync(join(home, '.claude-mem-lite'), { recursive: true });
+  mkdirSync(join(home, '.qwen-mem-lite'), { recursive: true });
   const env = {
     ...process.env,
     HOME: home,
-    CLAUDE_MEM_DIR: join(home, 'data'),
-    CLAUDE_MEM_SKIP_UPDATE: '1',
+    QWEN_MEM_DIR: join(home, 'data'),
+    QWEN_MEM_SKIP_UPDATE: '1',
     MEM_QUIET_HOOKS: '1',
     MEM_NO_AUTO_ADOPT: '1',
   };

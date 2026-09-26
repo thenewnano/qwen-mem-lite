@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# claude-mem-lite: Fast bash pre-filter for PostToolUse hook
+# qwen-mem-lite: Fast bash pre-filter for PostToolUse hook
 # Skips known low-value tools in ~5ms instead of launching Node (~80-150ms)
 # SYNC: Skip list must match skip-tools.mjs (source of truth)
 # Consistency enforced by tests/skip-tools.test.mjs
 
 # Prevent recursive hooks
-[[ -n "$CLAUDE_MEM_HOOK_RUNNING" ]] && exit 0
+[[ -n "$QWEN_MEM_HOOK_RUNNING" ]] && exit 0
 
 # Claude Code plugin-disable guard (audit P3-4).
 # install.mjs writes DIRECT hook entries into ~/.claude/settings.json, so disabling the
@@ -32,7 +32,7 @@ _mem_plugin_disabled() {
   [[ -r "$_mem_settings_file" ]] || return 1
   local _settings
   _settings=$(<"$_mem_settings_file")
-  [[ "$_settings" =~ \"claude-mem-lite@thenewnano\"[[:space:]]*:[[:space:]]*false ]]
+  [[ "$_settings" =~ \"qwen-mem-lite@thenewnano\"[[:space:]]*:[[:space:]]*false ]]
 }
 
 # Read stdin (tool hook JSON)
@@ -76,15 +76,15 @@ if [[ "$tool" == "Read" || "$tool" == "read_file" ]]; then
     project="${project//[^a-zA-Z0-9_.-]/-}"
     project="${project:0:100}"
     project="${project:-unknown}"
-    # Honor CLAUDE_MEM_DIR relocation (mirrors schema.mjs DB_DIR → hook-shared RUNTIME_DIR).
-    # hook.mjs flushEpisode reads reads-<project>.txt from CLAUDE_MEM_DIR/runtime; if this
+    # Honor QWEN_MEM_DIR relocation (mirrors schema.mjs DB_DIR → hook-shared RUNTIME_DIR).
+    # hook.mjs flushEpisode reads reads-<project>.txt from QWEN_MEM_DIR/runtime; if this
     # bash fast-path wrote to $HOME unconditionally, a relocated install would drop all
     # Read context from episodes AND grow an uncollected reads file in $HOME forever.
-    _data_dir="${CLAUDE_MEM_DIR:-$HOME/.claude-mem-lite}"
+    _data_dir="${QWEN_MEM_DIR:-$HOME/.qwen-mem-lite}"
     # Test containment, mirroring containInTests() in lib/resolve-data-dir.mjs (audit
     # ENG-1). That guard sits at the NODE exit of this channel, and this channel has two:
     # the Read fast path above never reaches Node, so a test that spawned the prefilter
-    # without setting CLAUDE_MEM_DIR appended straight into the developer's live runtime
+    # without setting QWEN_MEM_DIR appended straight into the developer's live runtime
     # dir. That is not hypothetical — it is what v3.83.0 had to clean up, and the fix
     # there was a single-file canary keyed on one fingerprint, so any other test using
     # any other project name still walked through.
@@ -92,10 +92,10 @@ if [[ "$tool" == "Read" || "$tool" == "read_file" ]]; then
     # Same three conditions as the Node side, same order: guard armed, target IS the real
     # directory (not merely "outside tmp" — suites legitimately point HOME at fixtures),
     # and an absolute sandbox to redirect into. Pure builtins; no spawn on this ~5ms path.
-    if [[ "${CLAUDE_MEM_TEST_GUARD:-}" == "1" ]]; then
-      _real_dir="${CLAUDE_MEM_TEST_REALDIR:-$HOME/.claude-mem-lite}"
+    if [[ "${QWEN_MEM_TEST_GUARD:-}" == "1" ]]; then
+      _real_dir="${QWEN_MEM_TEST_REALDIR:-$HOME/.qwen-mem-lite}"
       # Node compares resolve(dir) !== resolve(real); a raw string compare here let
-      # `CLAUDE_MEM_DIR="$HOME/.claude-mem-lite/"` (trailing slash) walk straight through
+      # `QWEN_MEM_DIR="$HOME/.qwen-mem-lite/"` (trailing slash) walk straight through
       # the guard and append into the live runtime dir — the exact leak this exists to
       # close. Trailing-slash strip only, with the same builtin loop used for `_dir` above:
       # a realpath spawn would blow the ~5ms budget, and a trailing slash is the spelling
@@ -103,17 +103,17 @@ if [[ "$tool" == "Read" || "$tool" == "read_file" ]]; then
       while [[ "$_data_dir" == */ && ${#_data_dir} -gt 1 ]]; do _data_dir="${_data_dir%/}"; done
       while [[ "$_real_dir" == */ && ${#_real_dir} -gt 1 ]]; do _real_dir="${_real_dir%/}"; done
       if [[ "$_data_dir" == "$_real_dir" ]]; then
-        if [[ "${CLAUDE_MEM_TEST_SANDBOX:-}" == /* ]]; then
-          _data_dir="$CLAUDE_MEM_TEST_SANDBOX"
+        if [[ "${QWEN_MEM_TEST_SANDBOX:-}" == /* ]]; then
+          _data_dir="$QWEN_MEM_TEST_SANDBOX"
         else
-          _data_dir="${TMPDIR:-/tmp}"; _data_dir="${_data_dir%/}/claude-mem-test-fallback"
+          _data_dir="${TMPDIR:-/tmp}"; _data_dir="${_data_dir%/}/qwen-mem-test-fallback"
         fi
       fi
     fi
-    # Mirror resolveRuntimeDir() (lib/resolve-data-dir.mjs): CLAUDE_MEM_RUNTIME_DIR wins when
+    # Mirror resolveRuntimeDir() (lib/resolve-data-dir.mjs): QWEN_MEM_RUNTIME_DIR wins when
     # non-empty, and a relative value resolves against cwd. Without this the two sides of the
     # channel disagreed whenever that override was set — bash appended to
-    # $CLAUDE_MEM_DIR/runtime while hook.mjs read (and hook-shared.mjs reaped) the override
+    # $QWEN_MEM_DIR/runtime while hook.mjs read (and hook-shared.mjs reaped) the override
     # dir, which is both harms named at the top of this branch: every Read dropped from the
     # episode, and an orphaned file nothing ever collects.
     #
@@ -123,8 +123,8 @@ if [[ "$tool" == "Read" || "$tool" == "read_file" ]]; then
     #
     # Builtins only. This is the ~5ms pre-filter — a `node -e` resolver of the kind setup.sh
     # can afford at SessionStart costs ~27ms measured, on every tool call.
-    if [[ -n "${CLAUDE_MEM_RUNTIME_DIR:-}" ]]; then
-      runtime_dir="$CLAUDE_MEM_RUNTIME_DIR"
+    if [[ -n "${QWEN_MEM_RUNTIME_DIR:-}" ]]; then
+      runtime_dir="$QWEN_MEM_RUNTIME_DIR"
       [[ "$runtime_dir" == /* ]] || runtime_dir="${PWD}/${runtime_dir}"
     else
       runtime_dir="${_data_dir}/runtime"
@@ -162,7 +162,7 @@ case "$tool" in
     exit 0
     ;;
   # Prefix filters
-  mem_*|mcp__mem__*|mcp__mem-lite__*|mcp__plugin_claude-mem-lite*|mcp__sequential*|mcp__plugin_context7*)
+  mem_*|mcp__mem__*|mcp__mem-lite__*|mcp__plugin_qwen-mem-lite*|mcp__sequential*|mcp__plugin_context7*)
     exit 0
     ;;
 esac

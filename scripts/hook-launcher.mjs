@@ -35,13 +35,13 @@ import { createHash } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const INSTALL_DIR = join(__dirname, '..');
-// A bogus CLAUDE_MEM_DIR ("undefined"/"null"/relative from a mis-quoted env
+// A bogus QWEN_MEM_DIR ("undefined"/"null"/relative from a mis-quoted env
 // interpolation) must degrade to the default here, not become a stray dir. The
 // launcher's pure-node charter (above) forbids importing lib/resolve-data-dir.mjs,
 // and its fail-open duty forbids throwing, so mirror that guard inline + lenient:
 // non-absolute → default. Data-writing paths import that module and throw instead.
-const MEM_DIR = process.env.CLAUDE_MEM_DIR;
-const DATA_DIR = MEM_DIR && isAbsolute(MEM_DIR) ? MEM_DIR : join(homedir(), '.claude-mem-lite');
+const MEM_DIR = process.env.QWEN_MEM_DIR;
+const DATA_DIR = MEM_DIR && isAbsolute(MEM_DIR) ? MEM_DIR : join(homedir(), '.qwen-mem-lite');
 // TWO runtime dirs, because this file writes BOTH classes of state and v3.93.0 shipped a
 // split by moving only doctor's READ side. `RUNTIME_DIR` is data-dir-relative and serves
 // `swap-in-progress`, which is installation identity and must NOT follow a per-harness
@@ -65,9 +65,9 @@ const DATA_DIR = MEM_DIR && isAbsolute(MEM_DIR) ? MEM_DIR : join(homedir(), '.cl
 // behaviour in step; do not read "identical" into the difference.
 // `tests/runtime-dir-single-home.test.mjs` asserts this file still carries the rule.
 const RUNTIME_DIR = join(DATA_DIR, 'runtime'); // runtime-dir:stays-put — serves swap-in-progress only; HOOK_RUNTIME_DIR carries the hook markers
-const HOOK_RUNTIME_DIR = process.env.CLAUDE_MEM_RUNTIME_DIR || RUNTIME_DIR;
+const HOOK_RUNTIME_DIR = process.env.QWEN_MEM_RUNTIME_DIR || RUNTIME_DIR;
 // Per CODE HOME, not per machine. The runtime dir is data-dir-relative and therefore SHARED
-// by every install shape on this box — a plugin cache version, a managed ~/.claude-mem-lite,
+// by every install shape on this box — a plugin cache version, a managed ~/.qwen-mem-lite,
 // a dev checkout. With one global name, a failed heal attempt for root A silenced root B's
 // heal for the next six hours, and the two are repaired by different commands. The suffix is
 // derived from INSTALL_DIR, which is what `cli.mjs repair` below actually acts on.
@@ -123,7 +123,7 @@ const NB_MANUAL_CMD =
 
 // Resolvable invocation of the bundled CLI's repair path. Absolute via
 // INSTALL_DIR (import.meta.url) so it works on a plugin-only install, where
-// bare `claude-mem-lite` is not on PATH and ~/.claude-mem-lite/ holds no source.
+// bare `qwen-mem-lite` is not on PATH and ~/.qwen-mem-lite/ holds no source.
 // cli.mjs routes `repair` → install.mjs. (review #3)
 const CLI_REPAIR = `node ${join(INSTALL_DIR, 'cli.mjs')} repair`;
 
@@ -139,7 +139,7 @@ const TARBALL_FALLBACK =
 
 const [, , entryArg, ...rest] = process.argv;
 if (!entryArg) {
-  process.stderr.write('[claude-mem-lite] hook-launcher: missing entry argument\n');
+  process.stderr.write('[qwen-mem-lite] hook-launcher: missing entry argument\n');
   process.exit(1);
 }
 
@@ -229,11 +229,11 @@ function ownDependencies() {
 function isLocalModuleErr(e) {
   if (!e || e.code !== 'ERR_MODULE_NOT_FOUND') return false;
   // Missing RELATIVE module: e.url is the missing file's URL. Ours iff it sits
-  // under our install dir (the `.claude-mem-lite` substring also covers the
+  // under our install dir (the `.qwen-mem-lite` substring also covers the
   // symlink-farm dev/direct-install case where INSTALL_DIR is the realpath).
   if (e.url) {
     const p = String(e.url).replace(/^file:\/\//, '');
-    return p.startsWith(INSTALL_DIR) || p.includes('.claude-mem-lite');
+    return p.startsWith(INSTALL_DIR) || p.includes('.qwen-mem-lite');
   }
   // Missing BARE dependency: e.url is UNDEFINED; message is
   // `Cannot find package '<name>' imported from <importer>`. The (.+) capture
@@ -244,7 +244,7 @@ function isLocalModuleErr(e) {
   const importer = /imported from (.+)/.exec(msg)?.[1]?.trim();
   if (!importer) return false;
   const importerPath = importer.replace(/^file:\/\//, '');
-  if (!(importerPath.startsWith(INSTALL_DIR) || importerPath.includes('.claude-mem-lite'))) return false;
+  if (!(importerPath.startsWith(INSTALL_DIR) || importerPath.includes('.qwen-mem-lite'))) return false;
   // Importer is ours — but only self-heal if the missing package is one we
   // actually declare. A foreign/typo'd name re-throws so the bug is visible.
   const pkgName = /Cannot find package '([^']+)'/.exec(msg)?.[1];
@@ -336,9 +336,9 @@ function clearBreakage() {
 // spawn like the native-binding path, not this one.
 function deferHealToSessionStart(reason) {
   process.stderr.write(
-    `[claude-mem-lite] Broken install (${reason}) — self-heal deferred to the next SessionStart ` +
+    `[qwen-mem-lite] Broken install (${reason}) — self-heal deferred to the next SessionStart ` +
       `(this hook has a 2-5s budget; repair needs minutes).\n` +
-      `[claude-mem-lite] Manual recovery: ${CLI_REPAIR}\n`,
+      `[qwen-mem-lite] Manual recovery: ${CLI_REPAIR}\n`,
   );
   return false;
 }
@@ -346,19 +346,19 @@ function deferHealToSessionStart(reason) {
 async function attemptHeal(reason) {
   if (recentHealAttempt()) {
     process.stderr.write(
-      `[claude-mem-lite] Self-heal skipped (last attempt < 6h ago).\n` +
-        `[claude-mem-lite] Manual recovery: ${CLI_REPAIR}\n` +
-        `[claude-mem-lite] If that fails, run: ${TARBALL_FALLBACK}\n`,
+      `[qwen-mem-lite] Self-heal skipped (last attempt < 6h ago).\n` +
+        `[qwen-mem-lite] Manual recovery: ${CLI_REPAIR}\n` +
+        `[qwen-mem-lite] If that fails, run: ${TARBALL_FALLBACK}\n`,
     );
     return false;
   }
   recordHealAttempt();
-  process.stderr.write(`[claude-mem-lite] Detected broken install (${reason}) — running self-heal\n`);
+  process.stderr.write(`[qwen-mem-lite] Detected broken install (${reason}) — running self-heal\n`);
   const installer = join(INSTALL_DIR, 'install.mjs');
   if (!existsSync(installer)) {
     process.stderr.write(
-      `[claude-mem-lite] install.mjs missing at ${installer} — cannot self-heal\n` +
-        `[claude-mem-lite] Manual recovery: ${TARBALL_FALLBACK}\n`,
+      `[qwen-mem-lite] install.mjs missing at ${installer} — cannot self-heal\n` +
+        `[qwen-mem-lite] Manual recovery: ${TARBALL_FALLBACK}\n`,
     );
     return false;
   }
@@ -414,13 +414,13 @@ function healRecordedBreakage() {
     const installer = join(INSTALL_DIR, 'install.mjs');
     if (!existsSync(installer)) {
       process.stderr.write(
-        `[claude-mem-lite] A hook fire degraded to exit 0 and install.mjs is missing — ${TARBALL_FALLBACK}\n`,
+        `[qwen-mem-lite] A hook fire degraded to exit 0 and install.mjs is missing — ${TARBALL_FALLBACK}\n`,
       );
       return;
     }
     recordHealAttempt();
     process.stderr.write(
-      '[claude-mem-lite] A previous hook fire degraded to exit 0 — repairing in the background\n',
+      '[qwen-mem-lite] A previous hook fire degraded to exit 0 — repairing in the background\n',
     );
     const child = spawn(process.execPath, [installer, 'repair'], {
       detached: true,
@@ -490,7 +490,7 @@ function healNativeBindingIfBroken() {
     const installer = join(INSTALL_DIR, 'install.mjs');
     if (!existsSync(installer)) {
       process.stderr.write(
-        `[claude-mem-lite] native DB binding unusable and install.mjs is missing — run: cd "${INSTALL_DIR}" && ${NB_MANUAL_CMD}\n`,
+        `[qwen-mem-lite] native DB binding unusable and install.mjs is missing — run: cd "${INSTALL_DIR}" && ${NB_MANUAL_CMD}\n`,
       );
       return;
     }
@@ -499,7 +499,7 @@ function healNativeBindingIfBroken() {
     // silently did nothing — lock contention, a no-op npm — still reads as
     // "healed", dropping the cooldown and re-spawning npm on every session.
     process.stderr.write(
-      '[claude-mem-lite] native DB binding unusable (Node version change?) — rebuilding in the background\n',
+      '[qwen-mem-lite] native DB binding unusable (Node version change?) — rebuilding in the background\n',
     );
     const child = spawn(process.execPath, [installer, 'rebuild-binding'], {
       detached: true,
@@ -565,8 +565,8 @@ try {
   } catch (retryErr) {
     recordBreakage(`retry-failed: ${retryErr.message}`);
     process.stderr.write(
-      `[claude-mem-lite] Hook still failing after self-heal: ${retryErr.message}\n` +
-        `[claude-mem-lite] Manual recovery: ${TARBALL_FALLBACK}\n`,
+      `[qwen-mem-lite] Hook still failing after self-heal: ${retryErr.message}\n` +
+        `[qwen-mem-lite] Manual recovery: ${TARBALL_FALLBACK}\n`,
     );
     process.exit(0);
   }

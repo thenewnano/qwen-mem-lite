@@ -5,7 +5,7 @@
 // over an unsegmented run), all of it before the model sees the turn. With the caps:
 // 0.2ms and 1.4ms respectively.
 //
-// The caps are OPT-IN per caller. An explicit `claude-mem-lite search` stays uncapped —
+// The caps are OPT-IN per caller. An explicit `qwen-mem-lite search` stays uncapped —
 // a person who types a long query meant it. These cases hold both halves: the option
 // works, and the automatic surface is the one passing it.
 import { describe, it, expect } from 'vitest';

@@ -5,14 +5,14 @@
 // `✓ Hook interpreter: no hook command needs bash`. That arm is not hypothetical: it is the
 // npm / npx / `git clone` shape. `hooks/hooks.json` is in RELEASE_SIGNED_FILES but NOT in
 // SOURCE_FILES (`source-files.mjs` — verified: `SOURCE_FILES.filter(f => f.startsWith('hooks/'))`
-// is empty), so the installed copy under ~/.claude-mem-lite/ has no `hooks/` directory at
+// is empty), so the installed copy under ~/.qwen-mem-lite/ has no `hooks/` directory at
 // all — while that same shape is the one that registers bash hooks through settings.json.
 //
 // So on the shape where two bash hooks really are live, doctor asserted there were none.
 // That is worse than the silence the whole round exists to remove: a warning that never
 // fires leaves a user searching, but a green line that says "nothing to look at" ends the
 // search. It also falsified a SHIPPED promise — both READMEs tell the reader
-// `claude-mem-lite doctor` reports a missing bash, and `claude-mem-lite` is the ~/.local/bin
+// `qwen-mem-lite doctor` reports a missing bash, and `qwen-mem-lite` is the ~/.local/bin
 // symlink pointing at exactly the copy with no manifest.
 //
 // The rule this encodes: THREE outcomes, never two. A count of zero is only reportable when
@@ -61,7 +61,7 @@ function manifestDir(commands) {
   return join(root, 'hooks', 'hooks.json');
 }
 
-const INSTALL_DIR = '/home/someone/.claude-mem-lite';
+const INSTALL_DIR = '/home/someone/.qwen-mem-lite';
 
 describe('resolveBashHookCount — the plugin shape (manifest present)', () => {
   it("counts the manifest's bash commands and names them", () => {
@@ -168,15 +168,15 @@ describe('WIRING: doctor itself takes the unknown arm when no manifest is deploy
 
     const home = mkdtempSync(join(tmpdir(), 'doctor-nomanifest-home-'));
     dirs.push(home);
-    mkdirSync(join(home, '.claude-mem-lite'), { recursive: true });
+    mkdirSync(join(home, '.qwen-mem-lite'), { recursive: true });
     let out;
     try {
       out = execFileSync(process.execPath, [join(fixture, 'install.mjs'), 'doctor', '--json'], {
         env: {
           ...process.env,
           HOME: home,
-          CLAUDE_MEM_DIR: join(home, 'data'),
-          CLAUDE_MEM_SKIP_UPDATE: '1',
+          QWEN_MEM_DIR: join(home, 'data'),
+          QWEN_MEM_SKIP_UPDATE: '1',
           MEM_QUIET_HOOKS: '1',
           MEM_NO_AUTO_ADOPT: '1',
         },

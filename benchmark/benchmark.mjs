@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Benchmark runner for claude-mem-lite search quality
+// Benchmark runner for qwen-mem-lite search quality
 // Uses the exact same BM25 scoring formula from server.mjs
 
 import { readFileSync } from 'fs';
@@ -127,7 +127,7 @@ export function seedDatabase(db, data) {
 //
 // It used to say "(FTS + vector + RRF)" and require a seedVectors() call first. Both were
 // false in the shipped default long before Phase-2 removed the arm: searchObservationsHybrid
-// returned before reading a single vector whenever CLAUDE_MEM_VECTORS was unset, so the
+// returned before reading a single vector whenever QWEN_MEM_VECTORS was unset, so the
 // seeding was paid for and discarded. Removing it does not move any number this mode
 // reports — verified by re-running --production-hybrid against the pre-removal reading.
 export function searchProductionHybrid(db, query, { limit = 10, project = null, obsType = null } = {}) {

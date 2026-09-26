@@ -15,7 +15,7 @@ describe('buildLessonNudge', () => {
 
   it('nudges a lessonless decision on the CLI face with the CLI update command', () => {
     const out = buildLessonNudge({ type: 'decision', id: 7, lessonCaptured: false, surface: 'cli' });
-    expect(out).toContain('claude-mem-lite update 7 --lesson');
+    expect(out).toContain('qwen-mem-lite update 7 --lesson');
     expect(out).toContain('decision #7');
   });
 

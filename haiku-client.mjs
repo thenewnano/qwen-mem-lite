@@ -1,10 +1,10 @@
-// claude-mem-lite: Unified LLM call wrapper
+// qwen-mem-lite: Unified LLM call wrapper
 // Shared by memory (hook.mjs) and dispatch modules
 // Provider priority: ANTHROPIC_API_KEY (direct Anthropic API) →
 // OPENROUTER_API_KEY (OpenRouter) → OPENAI_API_KEY / OPENAI_BASE_URL (any
 // OpenAI-compatible endpoint) → claude CLI fallback.
 //
-// Model configurable via CLAUDE_MEM_MODEL (haiku|sonnet). The two
+// Model configurable via QWEN_MEM_MODEL (haiku|sonnet). The two
 // OpenAI-dialect legs — OpenRouter and the generic endpoint — share ONE
 // transport (callOpenAICompatAPI) and differ only in target: OpenRouter's slug
 // via OPENROUTER_MODEL, the generic leg's model via OPENAI_MODEL (all tiers) or
@@ -22,7 +22,7 @@
 // OPENAI_MODEL, so the env that configures the host configures these background
 // calls too.
 //
-// CLAUDE_MEM_LLM_PROVIDER pins the leg (api|openrouter|openai|cli) for installs
+// QWEN_MEM_LLM_PROVIDER pins the leg (api|openrouter|openai|cli) for installs
 // where several keys are present at once and key-presence order picks the wrong
 // one. That is the normal case under Qwen Code: its settings.json `env` block
 // injects ANTHROPIC_API_KEY into every session, so without the pin an
@@ -122,12 +122,12 @@ export const BG_LLM_TIMEOUT_MS = 45000;
 
 /**
  * Resolve the LLM model to use for background calls.
- * Reads CLAUDE_MEM_MODEL env var, defaults to 'haiku'.
+ * Reads QWEN_MEM_MODEL env var, defaults to 'haiku'.
  * @returns {{ cli: string, api: string }} CLI name and API model ID (tier
  *   deployment-name override when set, else the built-in Anthropic ID)
  */
 export function resolveModel() {
-  const raw = (process.env.CLAUDE_MEM_MODEL || 'haiku').toLowerCase().trim();
+  const raw = (process.env.QWEN_MEM_MODEL || 'haiku').toLowerCase().trim();
   const cli = MODEL_MAP[raw] ? raw : 'haiku';
   const api = apiModelId(cli);
   return { cli, api };
@@ -146,7 +146,7 @@ const OPENROUTER_MODEL_MAP = {
 /**
  * Resolve the OpenRouter model slug for a given tier.
  * OPENROUTER_MODEL (if set, non-blank) overrides every tier with an explicit
- * slug — this is how users point claude-mem-lite at any OpenRouter model
+ * slug — this is how users point qwen-mem-lite at any OpenRouter model
  * (e.g. openai/gpt-4o-mini, qwen/...). Otherwise the tier maps to its default
  * anthropic/* slug, falling back to the haiku slug for unknown tiers.
  * @param {string} tier 'haiku' | 'sonnet'
@@ -215,7 +215,7 @@ function legConfigured(leg, env) {
  * API, supports prompt caching), else OPENROUTER_API_KEY → 'openrouter', else
  * OPENAI_API_KEY / OPENAI_BASE_URL → 'openai', else the `claude` CLI.
  *
- * CLAUDE_MEM_LLM_PROVIDER overrides that order when it names one of the four
+ * QWEN_MEM_LLM_PROVIDER overrides that order when it names one of the four
  * legs AND the leg is configured. A pin that cannot be honoured — an unknown
  * name, or a named leg with no credentials — is logged and IGNORED rather than
  * obeyed: obeying it would point every call at a leg that cannot answer, and the
@@ -225,13 +225,13 @@ function legConfigured(leg, env) {
  * @returns {'api'|'openrouter'|'openai'|'cli'}
  */
 export function detectModeFromEnv(env = process.env) {
-  const pinned = (env.CLAUDE_MEM_LLM_PROVIDER || '').trim().toLowerCase();
+  const pinned = (env.QWEN_MEM_LLM_PROVIDER || '').trim().toLowerCase();
   if (pinned) {
     if (!PROVIDER_LEGS.has(pinned)) {
       debugLog(
         'WARN',
         'haiku-client',
-        `CLAUDE_MEM_LLM_PROVIDER="${pinned}" is not one of api|openrouter|openai|cli - ignoring`,
+        `QWEN_MEM_LLM_PROVIDER="${pinned}" is not one of api|openrouter|openai|cli - ignoring`,
       );
     } else if (legConfigured(pinned, env)) {
       return pinned;
@@ -239,7 +239,7 @@ export function detectModeFromEnv(env = process.env) {
       debugLog(
         'WARN',
         'haiku-client',
-        `CLAUDE_MEM_LLM_PROVIDER=${pinned} but that provider is not configured - falling back to detection`,
+        `QWEN_MEM_LLM_PROVIDER=${pinned} but that provider is not configured - falling back to detection`,
       );
     }
   }
@@ -355,7 +355,7 @@ export async function callHaiku(
     // callModelAPI, not a second copy of it: the two were byte-identical apart from
     // where the model id came from (MODEL_MAP[model] vs resolveModel().api — the same
     // value, since resolveModel().cli is a MODEL_MAP key) and a hardcoded 'haiku-api'
-    // log label that lied under CLAUDE_MEM_MODEL=sonnet. Two copies of an HTTP client
+    // log label that lied under QWEN_MEM_MODEL=sonnet. Two copies of an HTTP client
     // means every proxy fix has to land twice, on the path where missing the proxy is
     // the difference between 1.4s and 13.5s.
     primary = await callKeyedLeg(mode, prompt, resolveModel().cli, { timeout, maxTokens, temperature });
@@ -397,9 +397,9 @@ export async function callHaikuJSON(prompt, opts) {
  *
  * `resolveModel().cli`, NOT the literal 'haiku': despite the name, callHaikuJSON
  * reaches the model through resolveModel() on ALL three legs (callHaikuAPI,
- * callOpenAICompatAPI, callHaikuCLI), so it honours the documented CLAUDE_MEM_MODEL
+ * callOpenAICompatAPI, callHaikuCLI), so it honours the documented QWEN_MEM_MODEL
  * knob. Pinning 'haiku' here would silently downgrade any caller's model for every user
- * who set CLAUDE_MEM_MODEL=sonnet — pre-tag review finding, v3.68.0, when the caller in
+ * who set QWEN_MEM_MODEL=sonnet — pre-tag review finding, v3.68.0, when the caller in
  * question was registry enrichment.
  *
  * Defaults also mirror callHaiku (10s / 500 tokens), not callModelJSONAsync's
@@ -751,7 +751,7 @@ export function execClaudeCliSync(modelName, { input, timeout }) {
     input,
     timeout,
     encoding: 'utf8',
-    env: { ...process.env, CLAUDE_MEM_HOOK_RUNNING: '1', DISABLE_CLAUDEMD_HOOKS: '1' },
+    env: { ...process.env, QWEN_MEM_HOOK_RUNNING: '1', DISABLE_CLAUDEMD_HOOKS: '1' },
     stdio: ['pipe', 'pipe', 'pipe'],
     cwd: cliSpawnCwd(), // private dir, not /tmp — see cliSpawnCwd (R10 P2-13)
   };
@@ -837,7 +837,7 @@ export async function callModelCLIAsync(prompt, model, { timeout }) {
       try {
         // Same headless-tax flags + flag-compat retry as callModelCLI (rationale there).
         child = spawn(getClaudePath(), args, {
-          env: { ...process.env, CLAUDE_MEM_HOOK_RUNNING: '1', DISABLE_CLAUDEMD_HOOKS: '1' },
+          env: { ...process.env, QWEN_MEM_HOOK_RUNNING: '1', DISABLE_CLAUDEMD_HOOKS: '1' },
           cwd: cliSpawnCwd(), // private dir, not /tmp — see cliSpawnCwd (R10 P2-13)
           stdio: ['pipe', 'pipe', 'pipe'],
         });
@@ -1002,7 +1002,7 @@ function openAICompatTarget(mode, tier) {
       // Optional OpenRouter attribution header (ignored by the API if absent).
       // Deliberately NOT sent on the generic leg: gateways are not obliged to
       // ignore unknown headers, and one rejection would fail every call.
-      headers: { 'X-Title': 'claude-mem-lite' },
+      headers: { 'X-Title': 'qwen-mem-lite' },
     };
   }
   return {

@@ -27,7 +27,7 @@ export const SKIP_PREFIXES = [
   'mem_',
   'mcp__mem__', // legacy global MCP name (pre-rename)
   'mcp__mem-lite__', // current global MCP name (post-rename v2.78+)
-  'mcp__plugin_claude-mem-lite',
+  'mcp__plugin_qwen-mem-lite',
   'mcp__sequential',
   'mcp__plugin_context7',
 ];

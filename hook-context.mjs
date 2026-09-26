@@ -1,4 +1,4 @@
-// claude-mem-lite CLAUDE.md context injection and token budgeting
+// qwen-mem-lite CLAUDE.md context injection and token budgeting
 // SHARED ENGINE — the `hook-` prefix is historical, not a scope. buildSessionContextLines
 // is imported by hook.mjs (SessionStart), mem-cli.mjs (`context` command) and
 // hook-precompact.mjs, so it runs outside the hook pipeline too. Do not assume
@@ -52,7 +52,7 @@ import { DAY_MS } from './lib/time-constants.mjs';
  */
 // Sanitize a string for a GitHub-flavored-markdown table cell: a literal `|`
 // in a title (e.g. "grep | sort | uniq") would otherwise open phantom columns
-// and corrupt the <claude-mem-context> Recent table the model+user see every
+// and corrupt the <qwen-mem-context> Recent table the model+user see every
 // SessionStart. Escape pipes and collapse any CR/LF/tab to a space so one obs
 // stays one row/cell.
 function mdCell(s) {
@@ -407,7 +407,7 @@ export function cleanupClaudeMdLegacyBlock() {
   // whether CLAUDE.md exists or not) drops a project-scoped marker in RUNTIME_DIR.
   // Subsequent SessionStarts short-circuit here — no CLAUDE.md stat, no regex scan.
   // Recovery path if a user manually re-adds a legacy block: delete the marker
-  // file (`~/.claude-mem-lite/runtime/.legacy-claude-md-cleaned-<project>`) and
+  // file (`~/.qwen-mem-lite/runtime/.legacy-claude-md-cleaned-<project>`) and
   // the next SessionStart will sweep again.
   const markerPath = join(RUNTIME_DIR, `.legacy-claude-md-cleaned-${inferProject()}`);
   if (existsSync(markerPath)) return;
@@ -544,10 +544,10 @@ function withFallbackTopUp(observations, fallbackObs) {
 }
 
 /**
- * Assemble the full markdown body that goes inside the <claude-mem-context>
+ * Assemble the full markdown body that goes inside the <qwen-mem-context>
  * block emitted at session start. Same shape as the inline builder hook.mjs
  * used to compose directly; extracted so both the SessionStart hook AND the
- * `claude-mem-lite context` CLI can read live context from the DB.
+ * `qwen-mem-lite context` CLI can read live context from the DB.
  *
  * Sections (in order):
  *   1. Last Session (from session_summaries.latest)
@@ -567,7 +567,7 @@ function withFallbackTopUp(observations, fallbackObs) {
  *   File Lessons / Key Context sections ([] under quiet/adopted or when the
  *   sections are empty). handleUserPrompt persists this as its exclude-set
  *   (D#123: the exclude-set must mirror real injections, not the keyObs query).
- * @returns {string} Joined markdown lines (without <claude-mem-context> wrappers)
+ * @returns {string} Joined markdown lines (without <qwen-mem-context> wrappers)
  */
 export function buildSessionContextLines(
   db,
@@ -891,7 +891,7 @@ export function buildSessionContextLines(
   }
 
   // Defang any literal block-delimiter tag carried in a title/lesson/summary so a row
-  // can't prematurely close the <claude-mem-context> block it's wrapped in (mdCell does
+  // can't prematurely close the <qwen-mem-context> block it's wrapped in (mdCell does
   // the same for `|`). One source of truth: both the SessionStart hook and the CLI
   // `context` command consume this return.
   return neutralizeContextDelimiters(

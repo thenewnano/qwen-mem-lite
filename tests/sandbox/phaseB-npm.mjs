@@ -1,6 +1,6 @@
 // phaseB-npm.mjs — simulate a real user installing the npm way:
 //   npm i -g github:thenewnano/qwen-mem-lite     (README "Method 2/3" + the optional shell CLI)
-//   claude-mem-lite install
+//   qwen-mem-lite install
 // then exercise functionality, the real auto-update path, self-heal, and uninstall.
 
 import {
@@ -36,7 +36,7 @@ const HOME = join(SBX, 'home');
 const PROJECT = join(SBX, 'work', 'my-app');
 const NPM_PREFIX = join(SBX, 'npm-global');
 const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
-const DATA = join(HOME, '.claude-mem-lite');
+const DATA = join(HOME, '.qwen-mem-lite');
 const SESSION = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
 
 // Every check this phase must run — see summary()'s doc. B8 lost eight checks to a stale
@@ -74,7 +74,7 @@ const ENV = sandboxEnv(HOME, {
   PATH: `${join(NPM_PREFIX, 'bin')}:${join(HOME, 'bin')}:${process.env.PATH}`,
   npm_config_prefix: NPM_PREFIX,
 });
-const CLI = join(NPM_PREFIX, 'bin', 'claude-mem-lite');
+const CLI = join(NPM_PREFIX, 'bin', 'qwen-mem-lite');
 
 // ── 1. npm pack + npm i -g (exactly what a user runs) ───────────────────────
 setPhase('B1: npm pack + npm i -g <tarball>');
@@ -99,11 +99,11 @@ check('npm i -g succeeds', () => ({
   ok: gi.code === 0,
   detail: `exit=${gi.code} ${(gi.stdout + gi.stderr).slice(-500)}`,
 }));
-check('claude-mem-lite lands on PATH', () => ({ ok: existsSync(CLI), detail: CLI }));
+check('qwen-mem-lite lands on PATH', () => ({ ok: existsSync(CLI), detail: CLI }));
 check('the globally-installed package can run at all', () => {
   const r = run(CLI, ['--help'], { env: ENV, cwd: PROJECT });
   return {
-    ok: r.code === 0 && /claude-mem-lite/.test(r.stdout + r.stderr),
+    ok: r.code === 0 && /qwen-mem-lite/.test(r.stdout + r.stderr),
     detail: `exit=${r.code} ${(r.stdout || r.stderr).slice(0, 200)}`,
   };
 });
@@ -111,7 +111,7 @@ check('the globally-installed package can run at all', () => {
 // The npm-shipped tarball is what auto-update also unpacks; a missing file here
 // is invisible to every repo-run test.
 setPhase('B2: shipped tarball completeness');
-const globalPkgDir = join(NPM_PREFIX, 'lib', 'node_modules', 'claude-mem-lite');
+const globalPkgDir = join(NPM_PREFIX, 'lib', 'node_modules', 'qwen-mem-lite');
 check('better-sqlite3 present in the global install', () =>
   existsSync(join(globalPkgDir, 'node_modules', 'better-sqlite3')),
 );
@@ -127,8 +127,8 @@ check('the CLI works on first use despite npm leaving the binding uncompiled', (
   return { ok: r.code === 0, detail: `exit=${r.code} ${(r.stdout || r.stderr).slice(0, 200)}` };
 });
 
-// ── 3. claude-mem-lite install ──────────────────────────────────────────────
-setPhase('B3: claude-mem-lite install');
+// ── 3. qwen-mem-lite install ──────────────────────────────────────────────
+setPhase('B3: qwen-mem-lite install');
 
 const inst = run(CLI, ['install'], { env: ENV, cwd: PROJECT, timeout: 600_000 });
 check('install exits 0', () => ({
@@ -136,7 +136,7 @@ check('install exits 0', () => ({
   detail: `exit=${inst.code} ${(inst.stdout + inst.stderr).slice(-700)}`,
 }));
 check(
-  'code deployed into ~/.claude-mem-lite',
+  'code deployed into ~/.qwen-mem-lite',
   () =>
     existsSync(join(DATA, 'server.mjs')) &&
     existsSync(join(DATA, 'hook.mjs')) &&
@@ -224,7 +224,7 @@ for (const [event, groups] of Object.entries(settings.hooks || {})) {
   for (const g of groups) {
     for (const h of g.hooks || []) {
       const cmd = String(h.command || '');
-      if (!/claude-mem-lite|hook-launcher|post-tool-use/.test(cmd)) continue;
+      if (!/qwen-mem-lite|hook-launcher|post-tool-use/.test(cmd)) continue;
       const payload = {
         session_id: SESSION,
         cwd: PROJECT,
@@ -235,7 +235,7 @@ for (const [event, groups] of Object.entries(settings.hooks || {})) {
         tool_input: { file_path: join(PROJECT, 'app.js'), old_string: '42', new_string: '43' },
         tool_response: { filePath: join(PROJECT, 'app.js'), success: true },
       };
-      const r = runHook(cmd, payload, { env: { ...ENV, CLAUDE_MEM_SKIP_SUMMARY: '1' }, cwd: PROJECT });
+      const r = runHook(cmd, payload, { env: { ...ENV, QWEN_MEM_SKIP_SUMMARY: '1' }, cwd: PROJECT });
       fired.push({ event, cmd, code: r.code, stderr: r.stderr, stdout: r.stdout });
     }
   }
@@ -292,7 +292,7 @@ check('no hook wrote a settings-referenced path that does not exist (orphan chec
 });
 
 // ── 6. MCP server from the managed install ─────────────────────────────────
-setPhase('B6: MCP server from ~/.claude-mem-lite');
+setPhase('B6: MCP server from ~/.qwen-mem-lite');
 
 const mcp = await mcpSession(process.execPath, [join(DATA, 'server.mjs')], {
   env: ENV,
@@ -349,15 +349,15 @@ check('MCP mem_save then mem_search round-trips', () => {
 setPhase('B7: auto-update (managed form)');
 
 check('self-update in a healthy install exits 0 (no-op when current)', () => {
-  // CLAUDE_MEM_FORCE_UPDATE_CHECK removed (P1-13): nothing in the tree reads it, so it was
+  // QWEN_MEM_FORCE_UPDATE_CHECK removed (P1-13): nothing in the tree reads it, so it was
   // decoration implying a force mechanism that does not exist. `self-update` is explicit and
   // needs no forcing.
   const r = run(CLI, ['self-update'], { env: ENV, cwd: PROJECT, timeout: 180_000 });
   return { ok: r.code === 0, detail: `exit=${r.code} ${(r.stdout || r.stderr).slice(0, 400)}` };
 });
-check('doctor never prescribes `claude-mem-lite update` (that is the observation editor)', () => {
+check('doctor never prescribes `qwen-mem-lite update` (that is the observation editor)', () => {
   const r = run(CLI, ['doctor'], { env: ENV, cwd: PROJECT, timeout: 120_000 });
-  const bad = (r.stdout || '').match(/claude-mem-lite update(?!\s*<)/);
+  const bad = (r.stdout || '').match(/qwen-mem-lite update(?!\s*<)/);
   return { ok: !bad, detail: bad ? bad[0] : '(clean)' };
 });
 check('update did not damage the install', () => {
@@ -480,7 +480,7 @@ writeFileSync(
   join(marketplaceDir, 'hooks', 'hooks.json'),
   JSON.stringify({ description: 'marketplace', hooks: { PostToolUse: [FOREIGN_HOOK] } }, null, 2),
 );
-const cacheBase = join(HOME, '.claude', 'plugins', 'cache', MARKETPLACE_KEY, 'claude-mem-lite');
+const cacheBase = join(HOME, '.claude', 'plugins', 'cache', MARKETPLACE_KEY, 'qwen-mem-lite');
 const oldVerDir = join(cacheBase, OLD_VER);
 const curVerDir = join(cacheBase, VERSION);
 const SENTINEL = (v) => `// CACHE-SENTINEL ${v}\nprocess.exit(0);\n`;
@@ -573,7 +573,7 @@ check('cached hooks.json is still cleared in EVERY version dir (the other half o
 // ── 10. In-place install under live hook traffic (R10-P2-12) ────────────────
 setPhase('B10: hooks firing DURING an in-place install');
 
-// R10-P2-12, mechanism-only in the report: install() / repair overwrite ~/.claude-mem-lite
+// R10-P2-12, mechanism-only in the report: install() / repair overwrite ~/.qwen-mem-lite
 // file by file with no swap barrier (hook-update.mjs has one — markSwapStart/clearSwapMarker
 // at :727/:736, honoured by scripts/hook-launcher.mjs:149 — install does not), while
 // PreToolUse / PostToolUse import that same tree on every tool call. The claimed harm is a
@@ -727,16 +727,16 @@ check('uninstall exits 0', () => ({
   ok: un.code === 0,
   detail: `exit=${un.code} ${(un.stdout + un.stderr).slice(-400)}`,
 }));
-check('settings.json has no claude-mem-lite hooks left', () => {
+check('settings.json has no qwen-mem-lite hooks left', () => {
   const raw = readFileSync(join(HOME, '.claude', 'settings.json'), 'utf8');
-  return { ok: !/claude-mem-lite|hook-launcher|post-tool-use/.test(raw), detail: raw.slice(0, 400) };
+  return { ok: !/qwen-mem-lite|hook-launcher|post-tool-use/.test(raw), detail: raw.slice(0, 400) };
 });
 check('MCP registration removed', () => {
   const st = join(HOME, '.claude', 'mcp-state.txt');
   const txt = existsSync(st) ? readFileSync(st, 'utf8') : '';
   return { ok: !/mem-lite/.test(txt), detail: txt.trim() || '(empty)' };
 });
-check('user DB survives a plain uninstall', () => existsSync(join(DATA, 'claude-mem-lite.db')));
+check('user DB survives a plain uninstall', () => existsSync(join(DATA, 'qwen-mem-lite.db')));
 check('uninstall preserved the foreign hook group it never owned', () => {
   const s = JSON.parse(readFileSync(join(HOME, '.claude', 'settings.json'), 'utf8'));
   const groups = Object.values(s.hooks || {}).flat();
@@ -753,7 +753,7 @@ check('uninstall --purge exits 0', () => ({
   detail: `exit=${pur.code} ${(pur.stdout + pur.stderr).slice(-400)}`,
 }));
 check('--purge removes the data dir', () => ({
-  ok: !existsSync(join(DATA, 'claude-mem-lite.db')),
+  ok: !existsSync(join(DATA, 'qwen-mem-lite.db')),
   detail: existsSync(DATA) ? readdirSync(DATA).join(',') : '(dir gone)',
 }));
 

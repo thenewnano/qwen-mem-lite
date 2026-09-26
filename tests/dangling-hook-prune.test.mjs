@@ -26,7 +26,7 @@ let root, installDir;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'mem-dangling-'));
-  installDir = join(root, '.claude-mem-lite');
+  installDir = join(root, '.qwen-mem-lite');
   mkdirSync(join(installDir, 'scripts'), { recursive: true });
   // The launcher itself exists; so does one live entry. The removed one does not.
   writeFileSync(join(installDir, 'scripts', 'hook-launcher.mjs'), '// launcher');

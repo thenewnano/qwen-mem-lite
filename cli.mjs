@@ -56,11 +56,11 @@ const REMOVED_COMMANDS = new Set(['registry', 'import', 'enrich']);
 // about the world (this install's files are not intact) and get the same answer.
 // Anything else is rethrown: this is a classifier, not a swallow.
 function explainBrokenInstall(what) {
-  const w = (s) => process.stderr.write(`[claude-mem-lite] ${s}\n`);
+  const w = (s) => process.stderr.write(`[qwen-mem-lite] ${s}\n`);
   w(`This install is incomplete — ${what}`);
   w('That is why this command cannot run: these files load before any of their code executes.');
   w('Repair: npm install -g github:thenewnano/qwen-mem-lite --force');
-  w('Or, in Claude Code: /plugin uninstall claude-mem-lite && /plugin install claude-mem-lite@thenewnano');
+  w('Or, in Claude Code: /plugin uninstall qwen-mem-lite && /plugin install qwen-mem-lite@thenewnano');
   process.exit(1);
 }
 
@@ -136,7 +136,7 @@ const INSTALL_COMMANDS = new Set([
   'release',
 ]);
 
-// A reader that leaves is not an error. `claude-mem-lite search x | head -1`,
+// A reader that leaves is not an error. `qwen-mem-lite search x | head -1`,
 // `| grep -q`, or quitting `less` closes the read end while we are still writing;
 // Node then emits 'error' on the stdout Socket, and with no listener that is an
 // UNHANDLED error event — a ~20-line stack ending in `outVerbatim` where the user
@@ -164,7 +164,7 @@ const INSTALL_COMMANDS = new Set([
 // `doctor | head -1` under `pipefail` exited 0 on 10/10 runs while the same doctor
 // exits 1 unpiped, because `runDoctor` assigns `process.exitCode = 1` AFTER its last
 // print (install.mjs, "Diagnostic-tool exit-code contract") and the forced exit lands
-// first. That silently turns a failing `claude-mem-lite doctor || alert` — the
+// first. That silently turns a failing `qwen-mem-lite doctor || alert` — the
 // wrapper that contract names — into a passing one. `process.exitCode ?? 0` does not
 // rescue it: the verdict does not exist yet at kill time. Returning instead reads
 // exit 1 on 10/10 and keeps the crash fixed (doctor 0/10, search 0/10 EPIPE stacks).
@@ -179,7 +179,7 @@ process.stdout.on('error', (err) => {
 const cmd = process.argv[2];
 
 // `version` and `-V` are aliases, not extra syntax: the bare subcommand is what a user
-// types first (`claude-mem-lite version`), and it is far enough from every real command
+// types first (`qwen-mem-lite version`), and it is far enough from every real command
 // name that the edit-distance suggester below fell through to the generic
 // "Run help / Run install" line — a wrong answer to a question the CLI can answer.
 if (cmd === '--version' || cmd === '-v' || cmd === '-V' || cmd === 'version') {
@@ -187,7 +187,7 @@ if (cmd === '--version' || cmd === '-v' || cmd === '-V' || cmd === 'version') {
   const { fileURLToPath } = await import('url');
   const { dirname, join } = await import('path');
   const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'package.json'), 'utf8'));
-  process.stdout.write(`claude-mem-lite v${pkg.version}\n`);
+  process.stdout.write(`qwen-mem-lite v${pkg.version}\n`);
 } else if (cmd === '--help' || cmd === '-h') {
   const { run } = await import('./mem-cli.mjs');
   await run(['help']);
@@ -210,12 +210,12 @@ if (cmd === '--version' || cmd === '-v' || cmd === '-V' || cmd === 'version') {
   // No command: show CLI help if installed, install help if not
   const { existsSync } = await import('fs');
   const { join } = await import('path');
-  // D#29: honor CLAUDE_MEM_DIR so the install-vs-CLI help routing is correct on
+  // D#29: honor QWEN_MEM_DIR so the install-vs-CLI help routing is correct on
   // relocated installs (matches schema.mjs DB_DIR via the shared resolver, which
   // also fixes the HOME-unset relative-path fallback this branch used to have).
   const { resolveDataDir } = await import('./lib/resolve-data-dir.mjs');
-  const dataDir = resolveDataDir(process.env.CLAUDE_MEM_DIR);
-  const dbPath = join(dataDir, 'claude-mem-lite.db');
+  const dataDir = resolveDataDir(process.env.QWEN_MEM_DIR);
+  const dbPath = join(dataDir, 'qwen-mem-lite.db');
   if (existsSync(dbPath)) {
     const { run } = await import('./mem-cli.mjs');
     await run(['help']);
@@ -272,7 +272,7 @@ if (cmd === '--version' || cmd === '-v' || cmd === '-V' || cmd === 'version') {
     process.stderr.write(`[mem] Did you mean: ${best}?\n`);
   } else {
     process.stderr.write(
-      '[mem] Run "claude-mem-lite help" for CLI commands or "claude-mem-lite install" for setup\n',
+      '[mem] Run "qwen-mem-lite help" for CLI commands or "qwen-mem-lite install" for setup\n',
     );
   }
   process.exitCode = 1;

@@ -1,4 +1,4 @@
-// claude-mem-lite LLM concurrency semaphore
+// qwen-mem-lite LLM concurrency semaphore
 // Limits concurrent claude -p calls to prevent resource contention
 
 import { join } from 'path';

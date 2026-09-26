@@ -76,7 +76,7 @@ const MODEL_TOLERANCE_PP = 15;
 // ─── 1. Real tool streams out of the transcripts ─────────────────────────────
 
 function transcriptDirs() {
-  const root = process.env.CLAUDE_MEM_TRANSCRIPT_ROOT || join(homedir(), '.claude', 'projects');
+  const root = process.env.QWEN_MEM_TRANSCRIPT_ROOT || join(homedir(), '.claude', 'projects');
   try {
     return readdirSync(root, { withFileTypes: true })
       .filter((d) => d.isDirectory())
@@ -483,7 +483,7 @@ export function assertRulerCanSayNo(byProject) {
  * wrong. Both sides currently span the same three days.
  *
  * Returns null when the sink holds no `episode_significance` rows AT ALL, which the caller
- * renders as SKIP. That is a real state on a machine that never set CLAUDE_MEM_METRICS=1 —
+ * renders as SKIP. That is a real state on a machine that never set QWEN_MEM_METRICS=1 —
  * but it means the check has no teeth there, so the SKIP line says so rather than reading
  * like a pass.
  */
@@ -631,7 +631,7 @@ function main() {
       );
     } else {
       console.error(`  2 meter agreement SKIP — no episode_significance rows in the metrics sink, so the`);
-      console.error(`                          flush MODEL is unchecked here. Set CLAUDE_MEM_METRICS=1 and`);
+      console.error(`                          flush MODEL is unchecked here. Set QWEN_MEM_METRICS=1 and`);
       console.error(`                          re-run after some real sessions to give this check teeth.`);
     }
     console.error(

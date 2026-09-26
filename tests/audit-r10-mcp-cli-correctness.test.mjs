@@ -250,8 +250,8 @@ describe('R10 P2-13 — the claude CLI is never spawned with a world-writable cw
     const { join } = await import('path');
     const { tmpdir } = await import('os');
     const sandbox = mkdtempSync(join(tmpdir(), 'mem-clicwd-'));
-    const saved = process.env.CLAUDE_MEM_DIR;
-    process.env.CLAUDE_MEM_DIR = sandbox;
+    const saved = process.env.QWEN_MEM_DIR;
+    process.env.QWEN_MEM_DIR = sandbox;
     try {
       const { resolveRuntimeDir } = await import('../lib/resolve-data-dir.mjs');
       const { resolveDataDir } = await import('../lib/resolve-data-dir.mjs');
@@ -264,8 +264,8 @@ describe('R10 P2-13 — the claude CLI is never spawned with a world-writable cw
       expect((statSync(expected).mode & 0o777).toString(8)).toBe('700');
       expect(expected.startsWith(sandbox), 'the cwd escaped the configured data dir').toBe(true);
     } finally {
-      if (saved === undefined) delete process.env.CLAUDE_MEM_DIR;
-      else process.env.CLAUDE_MEM_DIR = saved;
+      if (saved === undefined) delete process.env.QWEN_MEM_DIR;
+      else process.env.QWEN_MEM_DIR = saved;
       rmSync(sandbox, { recursive: true, force: true });
     }
   });

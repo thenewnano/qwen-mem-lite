@@ -106,7 +106,7 @@ describe('pre-agent-inject.js (script plumbing, spawned)', () => {
         '--lesson',
         'use rrfMerge not naive union',
       ],
-      { env: { ...process.env, CLAUDE_MEM_DIR: sb }, stdio: 'ignore', timeout: 20000 },
+      { env: { ...process.env, QWEN_MEM_DIR: sb }, stdio: 'ignore', timeout: 20000 },
     );
   });
   afterAll(() => {
@@ -119,7 +119,7 @@ describe('pre-agent-inject.js (script plumbing, spawned)', () => {
     }
   });
 
-  // CLAUDE_MEM_SUBAGENT_INJECT is cleared by default (it is set on in this project's
+  // QWEN_MEM_SUBAGENT_INJECT is cleared by default (it is set on in this project's
   // settings.local.json for dogfood and would otherwise leak into the child — #87499fd).
   // CLAUDE_PROJECT_DIR = sb so the script infers the SAME project the lesson was seeded under.
   const run = (payload, { on = false } = {}) =>
@@ -129,10 +129,10 @@ describe('pre-agent-inject.js (script plumbing, spawned)', () => {
       timeout: 8000,
       env: {
         ...process.env,
-        CLAUDE_MEM_DIR: sb,
+        QWEN_MEM_DIR: sb,
         CLAUDE_PROJECT_DIR: sb,
-        CLAUDE_MEM_HOOK_RUNNING: undefined,
-        CLAUDE_MEM_SUBAGENT_INJECT: on ? 'on' : undefined,
+        QWEN_MEM_HOOK_RUNNING: undefined,
+        QWEN_MEM_SUBAGENT_INJECT: on ? 'on' : undefined,
       },
     }).trim();
 

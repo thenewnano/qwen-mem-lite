@@ -6,7 +6,7 @@
 // first MATCH — so the fault surfaces at QUERY time, where neither face consulted the
 // classifier:
 //
-//   $ claude-mem-lite search "sanitizeFtsQuery"
+//   $ qwen-mem-lite search "sanitizeFtsQuery"
 //   [mem] search failed: fts5: corruption found reading blob … from table "observations_fts"
 //   (exit 1; the rejected randomblob fixture says "corrupt structure record" instead — same
 //   code, different sentence, which is why the assertions below match on neither in full)
@@ -68,9 +68,9 @@ function makeCorruptFtsDir() {
   const dir = mkdtempSync(join(tmpdir(), 'cml-ftsq-'));
   const env = {
     ...process.env,
-    CLAUDE_MEM_DIR: dir,
+    QWEN_MEM_DIR: dir,
     MEM_NO_AUTO_ADOPT: '1',
-    CLAUDE_MEM_TEST_GUARD: '0',
+    QWEN_MEM_TEST_GUARD: '0',
   };
   execFileSync(
     process.execPath,
@@ -87,7 +87,7 @@ function makeCorruptFtsDir() {
     ],
     { env, stdio: 'ignore' },
   );
-  const db = new Database(join(dir, 'claude-mem-lite.db'));
+  const db = new Database(join(dir, 'qwen-mem-lite.db'));
   db.unsafeMode(true);
   // 30/30 SQLITE_CORRUPT_VTAB — see the fixture note in the header for the three modes
   // measured and rejected. Ids <= 10 are FTS5's reserved averages/structure records; the
@@ -171,7 +171,7 @@ describe('a damaged FTS index names its own lossless remedy at query time', () =
       let stderr = '';
       try {
         execFileSync(process.execPath, [CLI, 'get', '424242'], {
-          env: { ...process.env, CLAUDE_MEM_DIR: dir, MEM_NO_AUTO_ADOPT: '1', CLAUDE_MEM_TEST_GUARD: '0' },
+          env: { ...process.env, QWEN_MEM_DIR: dir, MEM_NO_AUTO_ADOPT: '1', QWEN_MEM_TEST_GUARD: '0' },
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
         });

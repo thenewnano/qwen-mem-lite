@@ -1,4 +1,4 @@
-// Integration Scenario Tests — Claude Code × claude-mem-lite Invocation Quality
+// Integration Scenario Tests — Claude Code × qwen-mem-lite Invocation Quality
 // Tests the three-layer invocation chain: Hooks → MCP Tools → Skills/Instructions
 // Evaluates: Does the right layer fire for each real-world coding scenario?
 //
@@ -98,21 +98,21 @@ const MCP_INSTRUCTION_RULES = [
 // ─── Skill Descriptions ─────────────────────────────────────────────────────
 
 const SKILL_DESCRIPTIONS = {
-  'claude-mem-lite:search':
+  'qwen-mem-lite:search':
     'Search memory for past bugfixes, decisions, discoveries. Use when: encountering a familiar error, investigating a module before changes, or looking for prior solutions to a similar problem',
-  'claude-mem-lite:recall':
+  'qwen-mem-lite:recall':
     'Recall past observations for a file before editing. Use when: about to edit a file, investigating a file with past issues, or before refactoring to check for past lessons',
-  'claude-mem-lite:recent':
+  'qwen-mem-lite:recent':
     'Show recent memory observations. Use when: checking what happened recently, reviewing session progress, or verifying recent changes were captured',
-  'claude-mem-lite:timeline':
+  'qwen-mem-lite:timeline':
     'Browse memory timeline around an observation. Use when: exploring what happened before/after a specific event, understanding the sequence of changes that led to a bug, or reviewing chronological context',
-  'claude-mem-lite:memory':
+  'qwen-mem-lite:memory':
     'Save content to memory — with explicit content, instructions, or auto-summarize current session. Use when: the user asks to remember something, after solving a non-obvious problem, or to capture key session findings',
-  'claude-mem-lite:update':
+  'qwen-mem-lite:update':
     'Auto-maintain memory and resource registry — deduplicate, merge, decay, cleanup, reindex. Use when: search results seem noisy, after bulk imports, or during periodic maintenance',
-  'claude-mem-lite:tools':
+  'qwen-mem-lite:tools':
     'Import skills and agents from GitHub repositories into the tool resource registry. Use when: looking for a skill to solve a problem, importing tools from a repo, or managing installed tools',
-  'claude-mem-lite:mem':
+  'qwen-mem-lite:mem':
     'Search and manage project memory (observations, sessions, prompts). Use when: user asks about past work, wants to find a previous bugfix, check project history, save a decision, or manage stored memories',
 };
 
@@ -133,10 +133,10 @@ function makeTmpDir() {
 }
 
 function initTestDbOnDisk(tmpHome) {
-  const dbDir = join(tmpHome, '.claude-mem-lite');
+  const dbDir = join(tmpHome, '.qwen-mem-lite');
   mkdirSync(dbDir, { recursive: true });
   mkdirSync(join(dbDir, 'runtime'), { recursive: true });
-  const dbPath = join(dbDir, 'claude-mem-lite.db');
+  const dbPath = join(dbDir, 'qwen-mem-lite.db');
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = OFF');
@@ -145,7 +145,7 @@ function initTestDbOnDisk(tmpHome) {
 }
 
 function openTestDb(tmpHome) {
-  const dbPath = join(tmpHome, '.claude-mem-lite', 'claude-mem-lite.db');
+  const dbPath = join(tmpHome, '.qwen-mem-lite', 'qwen-mem-lite.db');
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('busy_timeout = 3000');
@@ -158,9 +158,9 @@ function runScript(scriptPath, { stdin, env = {}, args = [] } = {}) {
     HOME: env.HOME || tmpHome,
     CLAUDE_PROJECT_DIR: env.CLAUDE_PROJECT_DIR || projectDir,
     CLAUDE_CODE_PATH: env.CLAUDE_CODE_PATH || MOCK_CLAUDE,
-    CLAUDE_MEM_HOOK_RUNNING: undefined,
-    CLAUDE_MEM_DEBUG: '1',
-    CLAUDE_MEM_SKIP_UPDATE: '1',
+    QWEN_MEM_HOOK_RUNNING: undefined,
+    QWEN_MEM_DEBUG: '1',
+    QWEN_MEM_SKIP_UPDATE: '1',
     ...env,
   };
   for (const k of Object.keys(mergedEnv)) {
@@ -189,7 +189,7 @@ function runBash(scriptPath, { stdin, env = {} } = {}) {
     ...process.env,
     HOME: env.HOME || tmpHome,
     CLAUDE_PROJECT_DIR: env.CLAUDE_PROJECT_DIR || projectDir,
-    CLAUDE_MEM_HOOK_RUNNING: undefined,
+    QWEN_MEM_HOOK_RUNNING: undefined,
     ...env,
   };
   for (const k of Object.keys(mergedEnv)) {
@@ -335,11 +335,11 @@ describe('Scenario 1: Session Start — Context Injection', () => {
     } catch {}
   });
 
-  it('injects claude-mem-context with recent activity and key context', () => {
+  it('injects qwen-mem-context with recent activity and key context', () => {
     const { stdout, exitCode } = runHook('session-start');
     expect(exitCode).toBe(0);
-    expect(stdout).toContain('<claude-mem-context>');
-    expect(stdout).toContain('</claude-mem-context>');
+    expect(stdout).toContain('<qwen-mem-context>');
+    expect(stdout).toContain('</qwen-mem-context>');
     // Should contain structured sections
     expect(stdout).toMatch(/Recent|Key Context|File Lessons|Last Session/);
   });
@@ -493,10 +493,10 @@ describe('Scenario 3: File Edit Pre-Recall — PreToolUse', () => {
       tool_input: { file_path: '/tmp/brand-new-file.js' },
     });
     // The backfill reminder is opt-in (default off) since the cross-project audit
-    // found it was ~70% no-value noise; CLAUDE_MEM_PRETOOL_NUDGE=1 restores it.
+    // found it was ~70% no-value noise; QWEN_MEM_PRETOOL_NUDGE=1 restores it.
     const { stdout, exitCode } = runScript(PRE_RECALL_PATH, {
       stdin: payload,
-      env: { CLAUDE_MEM_PRETOOL_NUDGE: '1' },
+      env: { QWEN_MEM_PRETOOL_NUDGE: '1' },
     });
     expect(exitCode).toBe(0);
     const parsed = JSON.parse(stdout);
@@ -565,7 +565,7 @@ describe('Scenario 4: Error Detection in Bash — PostToolUse', () => {
     expect(exitCode).toBe(0);
 
     // Episode buffer should have the error entry
-    const runtimeDir = join(tmpHome, '.claude-mem-lite', 'runtime');
+    const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
     const epFiles = readdirSync(runtimeDir).filter(
       (f) => f.startsWith('ep-') && f.endsWith('.json') && !f.startsWith('ep-flush-'),
     );
@@ -591,7 +591,7 @@ describe('Scenario 4: Error Detection in Bash — PostToolUse', () => {
     const { exitCode } = runHook('post-tool-use', { stdin: payload });
     expect(exitCode).toBe(0);
 
-    const runtimeDir = join(tmpHome, '.claude-mem-lite', 'runtime');
+    const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
     const epFiles = readdirSync(runtimeDir).filter(
       (f) => f.startsWith('ep-') && f.endsWith('.json') && !f.startsWith('ep-flush-'),
     );
@@ -617,7 +617,7 @@ describe('Scenario 4: Error Detection in Bash — PostToolUse', () => {
     const { exitCode } = runHook('post-tool-use', { stdin: payload });
     expect(exitCode).toBe(0);
 
-    const runtimeDir = join(tmpHome, '.claude-mem-lite', 'runtime');
+    const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
     const epFiles = readdirSync(runtimeDir).filter(
       (f) => f.startsWith('ep-') && f.endsWith('.json') && !f.startsWith('ep-flush-'),
     );
@@ -654,7 +654,7 @@ describe('Scenario 5: Low-Value Tool Skip — PostToolUse Filtering', () => {
     { tool: 'TodoWrite', reason: 'internal task tracking' },
     { tool: 'TaskList', reason: 'meta-tool operation' },
     { tool: 'AskUserQuestion', reason: 'user interaction noise' },
-    { tool: 'mcp__plugin_claude-mem-lite_mem-lite__mem_search', reason: 'self-referential tool' },
+    { tool: 'mcp__plugin_qwen-mem-lite_mem-lite__mem_search', reason: 'self-referential tool' },
     { tool: 'mcp__sequential_thinking', reason: 'thinking frame noise' },
     { tool: 'mcp__plugin_context7_context7__query-docs', reason: 'external API call' },
   ];
@@ -665,7 +665,7 @@ describe('Scenario 5: Low-Value Tool Skip — PostToolUse Filtering', () => {
       const { exitCode } = runBash(POST_TOOL_SH, { stdin: payload });
       expect(exitCode).toBe(0);
       // No episode should be created (tool was skipped by bash pre-filter)
-      const runtimeDir = join(tmpHome, '.claude-mem-lite', 'runtime');
+      const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
       const epFiles = existsSync(runtimeDir)
         ? readdirSync(runtimeDir).filter((f) => f.startsWith('ep-') && f.endsWith('.json'))
         : [];
@@ -701,7 +701,7 @@ describe('Scenario 5: Low-Value Tool Skip — PostToolUse Filtering', () => {
     runBash(POST_TOOL_SH, { stdin: payload });
 
     // Check reads file was created
-    const runtimeDir = join(tmpHome, '.claude-mem-lite', 'runtime');
+    const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
     const readsFiles = existsSync(runtimeDir)
       ? readdirSync(runtimeDir).filter((f) => f.startsWith('reads-'))
       : [];
@@ -1069,31 +1069,31 @@ describe('Scenario 10: Skill Description Trigger Coverage', () => {
   it('search skill matches error investigation scenario', () => {
     const matches = skillMatchesScenario('encountering error investigating module bugfixes');
     const skillNames = matches.map((m) => m.skill);
-    expect(skillNames).toContain('claude-mem-lite:search');
+    expect(skillNames).toContain('qwen-mem-lite:search');
   });
 
   it('recall skill matches file editing scenario', () => {
     const matches = skillMatchesScenario('recall file before editing observations');
     const skillNames = matches.map((m) => m.skill);
-    expect(skillNames).toContain('claude-mem-lite:recall');
+    expect(skillNames).toContain('qwen-mem-lite:recall');
   });
 
   it('memory skill matches save decision scenario', () => {
     const matches = skillMatchesScenario('save decision memory content session');
     const skillNames = matches.map((m) => m.skill);
-    expect(skillNames).toContain('claude-mem-lite:memory');
+    expect(skillNames).toContain('qwen-mem-lite:memory');
   });
 
   it('recent skill matches progress check scenario', () => {
     const matches = skillMatchesScenario('checking recently progress session captured');
     const skillNames = matches.map((m) => m.skill);
-    expect(skillNames).toContain('claude-mem-lite:recent');
+    expect(skillNames).toContain('qwen-mem-lite:recent');
   });
 
   it('timeline skill matches bug sequence scenario', () => {
     const matches = skillMatchesScenario('exploring before after observation sequence bug changes');
     const skillNames = matches.map((m) => m.skill);
-    expect(skillNames).toContain('claude-mem-lite:timeline');
+    expect(skillNames).toContain('qwen-mem-lite:timeline');
   });
 
   it('all 8 skills have "Use when:" trigger language (100% coverage)', () => {
@@ -1129,7 +1129,7 @@ describe('Scenario 11: MCP Instructions Decision Rules', () => {
   it('instructions mention both CLI and MCP tools', () => {
     // The instructions block should guide both CLI and MCP tool usage
     const instructionText = [
-      'CLI (via Bash): claude-mem-lite search',
+      'CLI (via Bash): qwen-mem-lite search',
       'MCP tools: mem_search, mem_recent, mem_save',
     ];
     // This is a static assertion — validates our design
@@ -1176,8 +1176,8 @@ describe('Integration Coverage Summary', () => {
 // ─── Scenario 14: Smart Skill Invocation — Path-based guidance ──────────────
 //
 // Real managed directory structure (verified from filesystem):
-//   skills:  ~/.claude-mem-lite/managed/skills/{name}/SKILL.md          (220 .md paths, 9 directory paths)
-//   agents:  ~/.claude-mem-lite/managed/agents/{group}/agents/{name}.md (171, ALL .md — zero AGENT.md)
+//   skills:  ~/.qwen-mem-lite/managed/skills/{name}/SKILL.md          (220 .md paths, 9 directory paths)
+//   agents:  ~/.qwen-mem-lite/managed/agents/{group}/agents/{name}.md (171, ALL .md — zero AGENT.md)
 //
 // All test paths use ~ prefix (portable format) matching real output.
 // DB in production stores absolute paths; conversion is tested separately.

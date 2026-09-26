@@ -1,7 +1,7 @@
 // phaseA-plugin.mjs — simulate a real user installing via the Claude Code plugin marketplace.
 //
 //   /plugin marketplace add thenewnano/qwen-mem-lite
-//   /plugin install claude-mem-lite
+//   /plugin install qwen-mem-lite
 //
 // Claude Code clones the marketplace, copies the plugin into
 // ~/.claude/plugins/cache/<mp>/<plugin>/<ver>/, flips enabledPlugins, and then
@@ -45,7 +45,7 @@ const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).ver
 // on purpose — never to silence it.
 const EXPECTED_CHECKS = 47;
 const MP = 'thenewnano';
-const CACHE = join(HOME, '.claude', 'plugins', 'cache', MP, 'claude-mem-lite', VERSION);
+const CACHE = join(HOME, '.claude', 'plugins', 'cache', MP, 'qwen-mem-lite', VERSION);
 const MARKET = join(HOME, '.claude', 'plugins', 'marketplaces', MP);
 
 console.log(`sandbox: ${SBX}\nversion: ${VERSION}`);
@@ -82,7 +82,7 @@ writeFileSync(
   join(HOME, '.claude', 'settings.json'),
   JSON.stringify(
     {
-      enabledPlugins: { 'claude-mem-lite@thenewnano': true },
+      enabledPlugins: { 'qwen-mem-lite@thenewnano': true },
     },
     null,
     2,
@@ -93,7 +93,7 @@ writeFileSync(
   join(HOME, '.claude', 'plugins', 'installed_plugins.json'),
   JSON.stringify(
     {
-      'claude-mem-lite@thenewnano': { version: VERSION, marketplace: MP },
+      'qwen-mem-lite@thenewnano': { version: VERSION, marketplace: MP },
     },
     null,
     2,
@@ -114,12 +114,12 @@ check('setup.sh stdout is empty (SessionStart stdout is a JSON envelope)', () =>
   ok: setup1.stdout.trim() === '',
   detail: `stdout=${JSON.stringify(setup1.stdout.slice(0, 300))}`,
 }));
-check('data dir created at ~/.claude-mem-lite', () => existsSync(join(HOME, '.claude-mem-lite', 'runtime')));
+check('data dir created at ~/.qwen-mem-lite', () => existsSync(join(HOME, '.qwen-mem-lite', 'runtime')));
 check('deps resolved: node_modules/better-sqlite3 present in plugin cache', () =>
   existsSync(join(CACHE, 'node_modules', 'better-sqlite3')),
 );
 check('no .deps-broken flag after a successful cold install', () => {
-  const f = join(HOME, '.claude-mem-lite', 'runtime', '.deps-broken');
+  const f = join(HOME, '.qwen-mem-lite', 'runtime', '.deps-broken');
   return { ok: !existsSync(f), detail: existsSync(f) ? readFileSync(f, 'utf8') : '' };
 });
 check('ABI-keyed binding marker written', () => {
@@ -159,10 +159,10 @@ check('auto-adopt wrote the steering block into the project CLAUDE.md', () => {
   const p = join(PROJECT, 'CLAUDE.md');
   if (!existsSync(p)) return { ok: false, detail: 'CLAUDE.md not created' };
   const txt = readFileSync(p, 'utf8');
-  return { ok: txt.includes('claude-mem-lite'), detail: `${txt.length} bytes` };
+  return { ok: txt.includes('qwen-mem-lite'), detail: `${txt.length} bytes` };
 });
 check('auto-adopt wrote the detail doc', () =>
-  existsSync(join(PROJECT, '.claude', 'plugin_claude_mem_lite.md')),
+  existsSync(join(PROJECT, '.claude', 'plugin_qwen_mem_lite.md')),
 );
 
 // ── 4. UserPromptSubmit ─────────────────────────────────────────────────────
@@ -270,7 +270,7 @@ check('Stop hook exits 0', () => {
       hook_event_name: 'Stop',
       transcript_path: transcript,
     },
-    { env: { ...ENV, CLAUDE_MEM_SKIP_SUMMARY: '1' }, cwd: PROJECT },
+    { env: { ...ENV, QWEN_MEM_SKIP_SUMMARY: '1' }, cwd: PROJECT },
   );
   return { ok: r.code === 0, detail: `exit=${r.code} ${r.stderr.slice(0, 300)}` };
 });
@@ -377,13 +377,13 @@ for (const [label, args] of [
 setPhase('A9: auto-update — plugin mode must report, never self-install');
 
 // Audit 2026-09-02 P1-13: this drove `node hook-update.mjs --check` with
-// CLAUDE_MEM_FORCE_UPDATE_CHECK=1. `hook-update.mjs` has NO argv entry point and nothing
+// QWEN_MEM_FORCE_UPDATE_CHECK=1. `hook-update.mjs` has NO argv entry point and nothing
 // anywhere reads that env var, so the process imported the module, ran nothing and exited
 // 0 — both checks passed vacuously, and the contract in this phase's own title was never
 // exercised. The real entry is `hook.mjs update-check` (the detached worker SessionStart
 // spawns). The env var is gone rather than renamed: inventing a reader for it would be
 // building a mechanism to justify a test.
-const STATE_JSON = join(HOME, '.claude-mem-lite', 'runtime', 'update-state.json');
+const STATE_JSON = join(HOME, '.qwen-mem-lite', 'runtime', 'update-state.json');
 const readLastCheck = () => {
   try {
     return JSON.parse(readFileSync(STATE_JSON, 'utf8')).lastCheck ?? null;
@@ -405,7 +405,7 @@ try {
   /* no prior state — shouldCheck() then returns true on its own */
 }
 const lastCheckBefore = readLastCheck();
-const before = readdirSync(join(HOME, '.claude', 'plugins', 'cache', MP, 'claude-mem-lite'));
+const before = readdirSync(join(HOME, '.claude', 'plugins', 'cache', MP, 'qwen-mem-lite'));
 const upd = node([join(CACHE, 'hook.mjs'), 'update-check'], { env: ENV, cwd: PROJECT, timeout: 60_000 });
 check('hook.mjs update-check exits 0 in plugin mode', () => ({
   ok: upd.code === 0,
@@ -432,7 +432,7 @@ check('update-check actually ran (update-state.json lastCheck advanced)', () => 
 // because the flag alone already forces the same answer. Testing plugin mode on its own
 // would need a caller that passes allowInstall:true, and no shipped entry point does.
 check('the update-check worker did not mutate the plugin cache', () => {
-  const after = readdirSync(join(HOME, '.claude', 'plugins', 'cache', MP, 'claude-mem-lite'));
+  const after = readdirSync(join(HOME, '.claude', 'plugins', 'cache', MP, 'qwen-mem-lite'));
   return { ok: JSON.stringify(before) === JSON.stringify(after), detail: `${before} -> ${after}` };
 });
 
@@ -461,7 +461,7 @@ check('binding is genuinely unloadable now (control)', () => {
 // degrade without crashing, say so, and hand over a repair THAT WORKS. This block used to
 // assert a heal, which is why it needed a binding npm rebuild could fix — a v12 assumption
 // that outlived v12.
-const DEPS_FLAG = join(HOME, '.claude-mem-lite', 'runtime', '.deps-broken');
+const DEPS_FLAG = join(HOME, '.qwen-mem-lite', 'runtime', '.deps-broken');
 const heal = runHook(`bash "${CACHE}/scripts/setup.sh"`, {}, { env: ENV, cwd: PROJECT });
 check('setup.sh exits 0 rather than crashing the session', () => ({
   ok: heal.code === 0,
@@ -504,20 +504,20 @@ check('hooks work again after the heal', () => {
 // ── 11. Uninstall ───────────────────────────────────────────────────────────
 setPhase('A11: /plugin uninstall — residue check');
 
-const dbBefore = existsSync(join(HOME, '.claude-mem-lite', 'claude-mem-lite.db'));
-rmSync(join(HOME, '.claude', 'plugins', 'cache', MP, 'claude-mem-lite'), { recursive: true, force: true });
+const dbBefore = existsSync(join(HOME, '.qwen-mem-lite', 'qwen-mem-lite.db'));
+rmSync(join(HOME, '.claude', 'plugins', 'cache', MP, 'qwen-mem-lite'), { recursive: true, force: true });
 const s = JSON.parse(readFileSync(join(HOME, '.claude', 'settings.json'), 'utf8'));
-delete s.enabledPlugins['claude-mem-lite@thenewnano'];
+delete s.enabledPlugins['qwen-mem-lite@thenewnano'];
 writeFileSync(join(HOME, '.claude', 'settings.json'), JSON.stringify(s, null, 2));
 check('plugin-form install never wrote hooks into settings.json', () => {
   const raw = readFileSync(join(HOME, '.claude', 'settings.json'), 'utf8');
   return {
-    ok: !raw.includes('claude-mem-lite/hook') && !raw.includes('hook-launcher'),
+    ok: !raw.includes('qwen-mem-lite/hook') && !raw.includes('hook-launcher'),
     detail: raw.slice(0, 300),
   };
 });
 check('user data survives plugin uninstall (DB preserved)', () => ({
-  ok: dbBefore && existsSync(join(HOME, '.claude-mem-lite', 'claude-mem-lite.db')),
+  ok: dbBefore && existsSync(join(HOME, '.qwen-mem-lite', 'qwen-mem-lite.db')),
   detail: `dbBefore=${dbBefore}`,
 }));
 

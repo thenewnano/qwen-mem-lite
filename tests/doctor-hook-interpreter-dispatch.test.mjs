@@ -27,7 +27,7 @@ function recorder() {
   };
 }
 
-const INSTALL_DIR = '/home/u/.claude-mem-lite';
+const INSTALL_DIR = '/home/u/.qwen-mem-lite';
 const SETTINGS_PATH = '/home/u/.claude/settings.json';
 
 function ctx(over = {}) {

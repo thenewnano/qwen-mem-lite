@@ -6,7 +6,7 @@
 // guard checks the event NAME. It cannot see a call site that skips the event's SUPPRESSION
 // FLAG, which is the defect this file covers.
 //
-// Found while measuring D#2: `llm-summary` was gated by CLAUDE_MEM_SKIP_SUMMARY at its
+// Found while measuring D#2: `llm-summary` was gated by QWEN_MEM_SKIP_SUMMARY at its
 // handleStop call site and ungated at its SessionStart handoff call site. The flag exists
 // because that worker recreates a test's sandbox tree behind the test's own cleanup — the
 // comment at the gated site records a recreate timed at 432ms beating a 300ms grace period,
@@ -32,12 +32,12 @@ const UPDATE_SRC = readFileSync(join(ROOT, 'hook-update.mjs'), 'utf8');
 
 // event -> the env flag a user (or a test) sets to suppress it.
 const SKIP_FLAG_FOR_EVENT = {
-  'llm-episode': 'CLAUDE_MEM_SKIP_EPISODE_LLM',
-  'llm-summary': 'CLAUDE_MEM_SKIP_SUMMARY',
-  'auto-compress': 'CLAUDE_MEM_SKIP_COMPRESS',
-  'llm-optimize': 'CLAUDE_MEM_SKIP_OPTIMIZE',
-  'auto-maintain': 'CLAUDE_MEM_SKIP_MAINTAIN',
-  'update-check': 'CLAUDE_MEM_SKIP_UPDATE',
+  'llm-episode': 'QWEN_MEM_SKIP_EPISODE_LLM',
+  'llm-summary': 'QWEN_MEM_SKIP_SUMMARY',
+  'auto-compress': 'QWEN_MEM_SKIP_COMPRESS',
+  'llm-optimize': 'QWEN_MEM_SKIP_OPTIMIZE',
+  'auto-maintain': 'QWEN_MEM_SKIP_MAINTAIN',
+  'update-check': 'QWEN_MEM_SKIP_UPDATE',
 };
 
 // Events whose flag is honoured somewhere other than the guard around the spawn. Each entry
@@ -138,7 +138,7 @@ describe('spawnBackground skip-flag invariant', () => {
     const sites = spawnSites(HOOK_SRC).filter((s) => s.event === 'llm-summary');
     expect(sites.length).toBe(2);
     for (const site of sites) {
-      expect(site.window, `hook.mjs:${site.line}`).toContain('CLAUDE_MEM_SKIP_SUMMARY');
+      expect(site.window, `hook.mjs:${site.line}`).toContain('QWEN_MEM_SKIP_SUMMARY');
     }
   });
 });

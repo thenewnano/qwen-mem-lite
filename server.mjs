@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// claude-mem-lite MCP Server — All-in-one memory system
+// qwen-mem-lite MCP Server — All-in-one memory system
 // FTS5 search, zero LLM calls, single process
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -184,10 +184,10 @@ try {
         import('./hook-update.mjs'),
       ]);
       // CODE_DIR, not DB_DIR: `hasManagedCodeInstall` looks for server.mjs + hook.mjs inside
-      // whatever it is handed, and DB_DIR follows CLAUDE_MEM_DIR. Handing it the relocated DATA
+      // whatever it is handed, and DB_DIR follows QWEN_MEM_DIR. Handing it the relocated DATA
       // dir reports `managed: false` for a machine that has a managed install, so the remedy
       // came out as "could not identify this install" or, with any plugin cache present, the
-      // plugin commands printed under a line naming ~/.claude-mem-lite. The three sibling call
+      // plugin commands printed under a line naming ~/.qwen-mem-lite. The three sibling call
       // sites (mem-cli.mjs, hook.mjs, scripts/launch.mjs) all pass the CODE dir.
       shape = shapeMod.detectInstallShape({ installDir: CODE_DIR });
       dev = updateMod.isDevMode();
@@ -211,14 +211,14 @@ try {
     process.exit(1);
   }
   // Fatal: log and exit with descriptive message (Claude Code shows stderr)
-  console.error(`[claude-mem-lite] FATAL: Database cannot be opened: ${err.message}`);
+  console.error(`[qwen-mem-lite] FATAL: Database cannot be opened: ${err.message}`);
   if (err.walRecoveryAttempted) {
     console.error(
-      `[claude-mem-lite] Try: rm "${DB_PATH}-wal" "${DB_PATH}-shm" or reinstall with: node install.mjs install`,
+      `[qwen-mem-lite] Try: rm "${DB_PATH}-wal" "${DB_PATH}-shm" or reinstall with: node install.mjs install`,
     );
   } else {
     console.error(
-      `[claude-mem-lite] Left WAL/SHM intact (not a corruption error). If this persists, retry or reinstall: node install.mjs install`,
+      `[qwen-mem-lite] Left WAL/SHM intact (not a corruption error). If this persists, retry or reinstall: node install.mjs install`,
     );
   }
   process.exit(1);
@@ -267,10 +267,10 @@ function resolveProjectForWrite(name) {
 
 // Emit one-line instructions-mode trace on stderr so debugging the "why did
 // the server send BASE instead of BASE+VERBOSE?" path doesn't require reading
-// three files (server.mjs → hook-shared.mjs → memdir.mjs). CLAUDE_MEM_QUIET_TRACE=0
+// three files (server.mjs → hook-shared.mjs → memdir.mjs). QWEN_MEM_QUIET_TRACE=0
 // opts out. stderr doesn't pollute the MCP stdio protocol channel.
 const _quiet = effectiveQuiet();
-if (process.env.CLAUDE_MEM_QUIET_TRACE !== '0') {
+if (process.env.QWEN_MEM_QUIET_TRACE !== '0') {
   const reason =
     process.env.MEM_QUIET_HOOKS === '1' ? 'env:MEM_QUIET_HOOKS=1' : _quiet ? 'adopted:steering' : 'none';
   const mode = _quiet ? 'BASE' : 'BASE+VERBOSE';
@@ -526,7 +526,7 @@ async function runSearchPipeline(db, args, { llm, rerankLlm } = {}) {
   const { epochFrom, epochTo } = bounds;
 
   // MCP defaults to 'auto' (escalate on weak results) unless overridden by
-  // args.deep or CLAUDE_MEM_AUTO_DEEP. Rerank is explicit-deep only (D#43).
+  // args.deep or QWEN_MEM_AUTO_DEEP. Rerank is explicit-deep only (D#43).
   const deepMode = resolveDeepMode(args.deep, { surface: 'mcp' });
   const rerank = args.rerank === true && deepMode === 'deep';
 
@@ -1933,12 +1933,12 @@ server.registerTool(
 
 const HIDDEN_TOOL_NAMES = new Set(TOOL_DEFS.filter((t) => t.hidden === true).map((t) => t.name));
 
-// Opt-out: setting CLAUDE_MEM_ALL_TOOLS=1 restores pre-v2.34.0 behavior where
+// Opt-out: setting QWEN_MEM_ALL_TOOLS=1 restores pre-v2.34.0 behavior where
 // every registered tool is visible in `tools/list`. Users who relied on Claude
 // Code autonomously invoking the now-hidden maintenance tools can use this as
 // an immediate escape hatch while adopting the CLI entry points documented in
 // adopt-content.mjs / README.
-const EXPOSE_ALL_TOOLS = process.env.CLAUDE_MEM_ALL_TOOLS === '1';
+const EXPOSE_ALL_TOOLS = process.env.QWEN_MEM_ALL_TOOLS === '1';
 
 if (!EXPOSE_ALL_TOOLS) {
   // Force mcp.js to install its default ListTools/CallTools handlers before
@@ -1959,9 +1959,9 @@ if (!EXPOSE_ALL_TOOLS) {
 // harnesses stay silent.
 if (!effectiveQuiet()) {
   const status = EXPOSE_ALL_TOOLS
-    ? `all ${TOOL_DEFS.length} tools exposed via CLAUDE_MEM_ALL_TOOLS=1`
-    : `tools/list narrowed to ${TOOL_DEFS.length - HIDDEN_TOOL_NAMES.size} core tools (${HIDDEN_TOOL_NAMES.size} hidden but callable by exact name; unset CLAUDE_MEM_ALL_TOOLS to keep, set =1 to restore all)`;
-  process.stderr.write(`[claude-mem-lite v${PKG_VERSION}] ${status}\n`);
+    ? `all ${TOOL_DEFS.length} tools exposed via QWEN_MEM_ALL_TOOLS=1`
+    : `tools/list narrowed to ${TOOL_DEFS.length - HIDDEN_TOOL_NAMES.size} core tools (${HIDDEN_TOOL_NAMES.size} hidden but callable by exact name; unset QWEN_MEM_ALL_TOOLS to keep, set =1 to restore all)`;
+  process.stderr.write(`[qwen-mem-lite v${PKG_VERSION}] ${status}\n`);
 }
 
 // ─── WAL Checkpoint (periodic) ───────────────────────────────────────────────

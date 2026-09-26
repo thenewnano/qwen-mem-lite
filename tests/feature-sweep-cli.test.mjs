@@ -12,7 +12,7 @@
 // failure names the surface immediately.
 //
 // ISOLATION CONTRACT (all four are load-bearing — see the sandbox setup below):
-//   1. CLAUDE_MEM_DIR → a mkdtempSync sandbox. vitest.config.mjs sets it to '' for
+//   1. QWEN_MEM_DIR → a mkdtempSync sandbox. vitest.config.mjs sets it to '' for
 //      the runner, which makes children fall back to the LIVE ~/.claude DB unless
 //      each child sets it explicitly. Every runCli() call does.
 //   2. cwd + PWD + CLAUDE_PROJECT_DIR → a sandbox dir. adopt / unadopt /
@@ -23,7 +23,7 @@
 //   3. No LLM, no network. CLAUDE_CODE_PATH points at a path that does not exist,
 //      so haiku-client's CLI mode (its default when no API key is set) fails fast
 //      instead of spawning a real `claude`; the API keys stay empty (vitest global);
-//      CLAUDE_MEM_SKIP_SAVE_ENRICH=1 stops `save` from queueing a background
+//      QWEN_MEM_SKIP_SAVE_ENRICH=1 stops `save` from queueing a background
 //      enrichment worker. `import` is exercised only on its pre-fetch validation
 //      path (parseGitHubUrl throws "Invalid GitHub URL" before the first fetch).
 //   4. afterAll removes the sandbox. The dir prefix is `mem-` so global-setup.mjs
@@ -128,7 +128,7 @@ const jsonOf = (r) => JSON.parse(r.stdout);
 
 /** Open the sandbox DB read-only-ish for independent verification of writes. */
 function withDb(fn) {
-  const db = new Database(join(DATA_DIR, 'claude-mem-lite.db'));
+  const db = new Database(join(DATA_DIR, 'qwen-mem-lite.db'));
   try {
     return fn(db);
   } finally {
@@ -211,18 +211,18 @@ beforeAll(() => {
   BASE_ENV = {
     ...process.env,
     HOME: join(ROOT, 'home'),
-    CLAUDE_MEM_DIR: DATA_DIR,
+    QWEN_MEM_DIR: DATA_DIR,
     // haiku-client detectMode() falls back to 'cli' with no API key and would spawn
     // the real `claude`. Point it at a path that cannot exist → fail fast, no spend.
     CLAUDE_CODE_PATH: join(ROOT, 'no-such-claude-binary'),
     ANTHROPIC_API_KEY: '',
     OPENROUTER_API_KEY: '',
-    CLAUDE_MEM_AUTO_DEEP: '0',
-    CLAUDE_MEM_AUTO_DEEP_CLI: '0',
-    CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
-    CLAUDE_MEM_SKIP_REPOS: '1',
+    QWEN_MEM_AUTO_DEEP: '0',
+    QWEN_MEM_AUTO_DEEP_CLI: '0',
+    QWEN_MEM_SKIP_SAVE_ENRICH: '1',
+    QWEN_MEM_SKIP_REPOS: '1',
   };
-  delete BASE_ENV.CLAUDE_MEM_HOOK_RUNNING;
+  delete BASE_ENV.QWEN_MEM_HOOK_RUNNING;
 
   // ── Seed: three distinct observations in the default project. Distinct wording
   // matters — `save` dedups near-identical text within a 5 minute window.
@@ -375,8 +375,8 @@ describe('CLI feature sweep: read commands', () => {
 
   itCmd('context', () => {
     const r = ok(['context', '--project', PROJECT]);
-    expect(r.stdout).toContain('<claude-mem-context>');
-    expect(r.stdout).toContain('</claude-mem-context>');
+    expect(r.stdout).toContain('<qwen-mem-context>');
+    expect(r.stdout).toContain('</qwen-mem-context>');
     expect(r.stdout).toContain('Fixed the widget cache invalidation race');
     expect(r.stdout).toContain(`D#${SEED_DEFER_ID}`); // deferred work section is wired
   });
@@ -428,7 +428,7 @@ describe('CLI feature sweep: read commands', () => {
 
   itCmd('help', () => {
     const r = ok(['help']);
-    expect(r.stdout).toContain('claude-mem-lite CLI');
+    expect(r.stdout).toContain('qwen-mem-lite CLI');
 
     // (a) The router's command set has not drifted from the pinned list.
     const routerSet = readFileSync(CLI_PATH, 'utf8').match(/const CLI_COMMANDS = new Set\(\[([^\]]*)\]\)/)[1];
@@ -831,14 +831,14 @@ describe('CLI feature sweep: adoption commands', () => {
     expect(dry.stdout).toContain('[adopt --dry-run]');
     expect(dry.stdout).toContain(ADOPT_DIR);
     expect(readFileSync(claudeMd(), 'utf8')).toBe(userContent); // dry-run wrote nothing
-    expect(existsSync(join(ADOPT_DIR, '.claude', 'plugin_claude_mem_lite.md'))).toBe(false);
+    expect(existsSync(join(ADOPT_DIR, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(false);
 
     const applied = ok(['adopt'], { cwd: ADOPT_DIR });
     expect(applied.stdout).toMatch(/\[adopt\].*→ (created|updated)/);
     const md = readFileSync(claudeMd(), 'utf8');
-    expect((md.match(/<!-- claude-mem-lite:begin/g) || []).length).toBe(1);
+    expect((md.match(/<!-- qwen-mem-lite:begin/g) || []).length).toBe(1);
     expect(md).toContain('use tabs'); // user content preserved
-    expect(existsSync(join(ADOPT_DIR, '.claude', 'plugin_claude_mem_lite.md'))).toBe(true);
+    expect(existsSync(join(ADOPT_DIR, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(true);
 
     expect(ok(['adopt', '--status'], { cwd: ADOPT_DIR }).stdout).toMatch(/CLAUDE\.md:\s+✓ adopted/);
   });
@@ -849,19 +849,19 @@ describe('CLI feature sweep: adoption commands', () => {
     const md_ = join(UNADOPT_DIR, 'CLAUDE.md');
     writeFileSync(md_, userContent);
     ok(['adopt'], { cwd: UNADOPT_DIR });
-    expect(readFileSync(md_, 'utf8')).toContain('<!-- claude-mem-lite:begin');
-    expect(existsSync(join(UNADOPT_DIR, '.claude', 'plugin_claude_mem_lite.md'))).toBe(true);
+    expect(readFileSync(md_, 'utf8')).toContain('<!-- qwen-mem-lite:begin');
+    expect(existsSync(join(UNADOPT_DIR, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(true);
 
     const dry = ok(['unadopt', '--dry-run'], { cwd: UNADOPT_DIR });
     expect(dry.stdout).toContain(UNADOPT_DIR);
-    expect(readFileSync(md_, 'utf8')).toContain('<!-- claude-mem-lite:begin'); // dry-run is read-only
+    expect(readFileSync(md_, 'utf8')).toContain('<!-- qwen-mem-lite:begin'); // dry-run is read-only
 
     const removed = ok(['unadopt'], { cwd: UNADOPT_DIR });
     expect(removed.stdout).toMatch(/\[unadopt\].*→ removed/);
     const md = readFileSync(md_, 'utf8');
-    expect(md).not.toContain('<!-- claude-mem-lite:begin');
+    expect(md).not.toContain('<!-- qwen-mem-lite:begin');
     expect(md).toContain('use tabs'); // user content survives
-    expect(existsSync(join(UNADOPT_DIR, '.claude', 'plugin_claude_mem_lite.md'))).toBe(false);
+    expect(existsSync(join(UNADOPT_DIR, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(false);
   });
 
   itCmd('memdir-audit', () => {

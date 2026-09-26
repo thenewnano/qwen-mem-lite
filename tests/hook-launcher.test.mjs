@@ -48,7 +48,7 @@ const nbHealMarker = (root) => join(root, 'runtime', 'native-binding-lastheal');
 function runLauncher(root, args, env = {}) {
   return spawnSync(process.execPath, [join(root, 'scripts', 'hook-launcher.mjs'), ...args], {
     encoding: 'utf8',
-    env: { ...process.env, CLAUDE_MEM_DIR: root, ...env },
+    env: { ...process.env, QWEN_MEM_DIR: root, ...env },
   });
 }
 
@@ -124,13 +124,13 @@ describe('hook-launcher self-heal', () => {
 
   it('does not let one code home arm the cooldown against another', () => {
     // The runtime dir is SHARED by every install shape on a machine (a plugin cache version,
-    // a managed ~/.claude-mem-lite, a dev checkout), and each is repaired by its own
+    // a managed ~/.qwen-mem-lite, a dev checkout), and each is repaired by its own
     // `cli.mjs repair`. With a single global marker name, root A's failed attempt bought six
     // hours of silence for root B — measured as a real gap 2026-09-08.
     const shared = join(tmpdir(), `cml-launcher-shared-rt-${randomUUID().slice(0, 8)}`);
     mkdirSync(shared, { recursive: true });
     tracked.add(shared);
-    const env = { CLAUDE_MEM_RUNTIME_DIR: shared };
+    const env = { QWEN_MEM_RUNTIME_DIR: shared };
 
     const rootA = makeInstall('cml-launcher-home-a');
     const rootB = makeInstall('cml-launcher-home-b');
@@ -600,8 +600,8 @@ describe('hook-launcher native-binding self-heal (session-start)', () => {
       join(root, 'entry.mjs'),
       `import { writeFileSync, mkdirSync } from 'fs';\n` +
         `import { join } from 'path';\n` +
-        `mkdirSync(join(process.env.CLAUDE_MEM_DIR, 'runtime'), { recursive: true });\n` +
-        `writeFileSync(join(process.env.CLAUDE_MEM_DIR, 'runtime', 'native-binding-broken'), JSON.stringify({ reason: 'abi', ts: Date.now() }));\n` +
+        `mkdirSync(join(process.env.QWEN_MEM_DIR, 'runtime'), { recursive: true });\n` +
+        `writeFileSync(join(process.env.QWEN_MEM_DIR, 'runtime', 'native-binding-broken'), JSON.stringify({ reason: 'abi', ts: Date.now() }));\n` +
         `process.stdout.write("ENTRY-OK\\n");\n`,
     );
 
@@ -620,9 +620,9 @@ describe('hook-launcher native-binding self-heal (session-start)', () => {
     expect(existsSync(RAN(root))).toBe(false);
   });
 
-  it('reads the marker dir the standalone hook scripts write to (CLAUDE_MEM_RUNTIME_DIR)', () => {
-    // pre-tool-recall.js / post-tool-recall.js honor CLAUDE_MEM_RUNTIME_DIR and
-    // wrote 78 of the 79 field markers; a launcher reading only CLAUDE_MEM_DIR
+  it('reads the marker dir the standalone hook scripts write to (QWEN_MEM_RUNTIME_DIR)', () => {
+    // pre-tool-recall.js / post-tool-recall.js honor QWEN_MEM_RUNTIME_DIR and
+    // wrote 78 of the 79 field markers; a launcher reading only QWEN_MEM_DIR
     // would look in the wrong place and never heal.
     const root = makeInstall('cml-launcher-nb-runtimedir');
     stubInstaller(root);
@@ -634,7 +634,7 @@ describe('hook-launcher native-binding self-heal (session-start)', () => {
       JSON.stringify({ reason: 'abi', ts: Date.now() }),
     );
 
-    const r = runLauncher(root, ['entry.mjs', 'session-start'], { CLAUDE_MEM_RUNTIME_DIR: altRuntime });
+    const r = runLauncher(root, ['entry.mjs', 'session-start'], { QWEN_MEM_RUNTIME_DIR: altRuntime });
     expect(r.status).toBe(0);
     expect(waitFor(() => existsSync(RAN(root)))).toBe(true);
   });

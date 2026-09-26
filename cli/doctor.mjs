@@ -1,4 +1,4 @@
-// cli/doctor.mjs — `claude-mem-lite doctor --benchmark|--metrics`.
+// cli/doctor.mjs — `qwen-mem-lite doctor --benchmark|--metrics`.
 // Extracted from mem-cli.mjs (v2.41, god-module split).
 //
 // `doctor` without flags is handled upstream by cli.mjs (routed to install.mjs
@@ -48,7 +48,7 @@ export async function cmdDoctor(db, args) {
     return;
   }
   if (args.includes('--metrics')) {
-    // v2.41: aggregate CLAUDE_MEM_METRICS=1 JSONL rows from last N days.
+    // v2.41: aggregate QWEN_MEM_METRICS=1 JSONL rows from last N days.
     // Read-side has no env gate — you can inspect whatever was recorded even
     // when metrics are currently off. Default window 7 days; --days N override.
     const { aggregateMetrics, formatSummary, DEFAULT_WINDOW_DAYS } = await import('../lib/metrics.mjs');

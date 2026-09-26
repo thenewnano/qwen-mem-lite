@@ -138,10 +138,10 @@ describe('cmdActivity CLI: --type validation', () => {
   function runCli(args) {
     const env = {
       ...process.env,
-      CLAUDE_MEM_DIR: dataDir,
+      QWEN_MEM_DIR: dataDir,
       CLAUDE_PROJECT_DIR: projectDir,
     };
-    delete env.CLAUDE_MEM_HOOK_RUNNING;
+    delete env.QWEN_MEM_HOOK_RUNNING;
     try {
       const stdout = execFileSync(process.execPath, [CLI_PATH, ...args], {
         timeout: 10000,
@@ -161,11 +161,11 @@ describe('cmdActivity CLI: --type validation', () => {
 
   function setupDir() {
     tmpHome = join(tmpdir(), `mem-activity-cli-${randomUUID().slice(0, 8)}`);
-    dataDir = join(tmpHome, '.claude-mem-lite');
+    dataDir = join(tmpHome, '.qwen-mem-lite');
     projectDir = join(tmpHome, 'parent', 'testproj');
     mkdirSync(projectDir, { recursive: true });
     mkdirSync(dataDir, { recursive: true });
-    const dbPath = join(dataDir, 'claude-mem-lite.db');
+    const dbPath = join(dataDir, 'qwen-mem-lite.db');
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = OFF');

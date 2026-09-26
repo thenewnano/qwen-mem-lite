@@ -1,4 +1,4 @@
-// claude-mem-lite shared database schema and initialization
+// qwen-mem-lite shared database schema and initialization
 // Used by both server.mjs (MCP process) and hook.mjs (hook process)
 // Ensures DB + tables exist regardless of which process starts first
 
@@ -370,7 +370,7 @@ const MIGRATIONS = [
   'ALTER TABLE observations ADD COLUMN cited_count INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE observations ADD COLUMN last_decided_session_id TEXT DEFAULT NULL',
   // v33 (citation-decay telemetry): timestamp of the most recent demote event.
-  // Powers `claude-mem-lite citation-stats`'s "Recently demoted" section.
+  // Powers `qwen-mem-lite citation-stats`'s "Recently demoted" section.
   // Set in applyCitationDecay's demote branch when streak hits threshold.
   // Single-shot (only the latest demote is preserved); use a decay_log table
   // if historical trend is ever needed.
@@ -400,7 +400,7 @@ const MIGRATIONS = [
   'ALTER TABLE observations ADD COLUMN last_cited_session_id TEXT DEFAULT NULL',
   // v44 (D#78 P3): lesson applicability scope — file | module | project |
   // environment, validated by lib/observation-write normalizeScope; NULL for
-  // legacy rows / manual saves / events. CLAUDE_MEM_SCOPE_FILTER=1 (opt-in)
+  // legacy rows / manual saves / events. QWEN_MEM_SCOPE_FILTER=1 (opt-in)
   // makes pre-tool-recall skip environment-scoped rows on file-triggered
   // injection; NULL always passes the filter.
   'ALTER TABLE observations ADD COLUMN scope TEXT DEFAULT NULL',
@@ -454,9 +454,9 @@ const MIGRATIONS = [
 export function initSchema(db) {
   // Fast path: skip all migrations if schema is already at current version.
   // Forward-incompat guard: if persisted version is NEWER than this build's
-  // CURRENT_SCHEMA_VERSION, a newer claude-mem-lite wrote it; the current
+  // CURRENT_SCHEMA_VERSION, a newer qwen-mem-lite wrote it; the current
   // (older) binary would silently re-apply old migrations over a newer layout.
-  // Throw loudly instead — `claude-mem-lite doctor` / reinstall is the path.
+  // Throw loudly instead — `qwen-mem-lite doctor` / reinstall is the path.
   try {
     const row = db.prepare('SELECT version FROM schema_version LIMIT 1').get();
     if (row && typeof row.version === 'number') {
@@ -482,8 +482,8 @@ export function initSchema(db) {
         // that actually hits this. lib/schema-skew.mjs turns the fields into a
         // shape-correct repair; see its header for the 2026-09-08 measurement.
         const err = new Error(
-          `DB schema is v${row.version} but this claude-mem-lite binary supports up to v${CURRENT_SCHEMA_VERSION}. ` +
-            `A newer version wrote this DB; upgrade claude-mem-lite (npm i -g github:thenewnano/qwen-mem-lite) or point CLAUDE_MEM_DIR to a fresh directory.`,
+          `DB schema is v${row.version} but this qwen-mem-lite binary supports up to v${CURRENT_SCHEMA_VERSION}. ` +
+            `A newer version wrote this DB; upgrade qwen-mem-lite (npm i -g github:thenewnano/qwen-mem-lite) or point QWEN_MEM_DIR to a fresh directory.`,
         );
         err.code = SCHEMA_SKEW_CODE;
         err.dbVersion = row.version;
@@ -923,7 +923,7 @@ export function initSchema(db) {
   // (B2) lesson_retry_stats — daily aggregate of hook-llm.mjs retry path
   // outcomes. attempts = times the bugfix/decision retry prompt was issued;
   // recovered = times the retry actually returned a non-low-signal lesson.
-  // Used by `claude-mem-lite stats --retry` to answer "is the extra Haiku
+  // Used by `qwen-mem-lite stats --retry` to answer "is the extra Haiku
   // call paying off?" — if recovered/attempts < 0.1 over a long window,
   // delete the retry path and save one LLM call per bugfix/decision.
   db.exec(`
@@ -977,7 +977,7 @@ export function initSchema(db) {
 
 // ─── Session-consistency audit (B1) ─────────────────────────────────────────
 //
-// Used by `claude-mem-lite doctor --session-audit` to surface dangling state
+// Used by `qwen-mem-lite doctor --session-audit` to surface dangling state
 // that the schema invariant trigger only catches at insert/update time. The
 // trigger is a forward-protection; this function detects historical drift.
 //
@@ -1251,7 +1251,8 @@ export function runDeferredCleanups(db) {
  * Returns an opened Database instance with WAL + busy_timeout configured.
  */
 export function ensureDb() {
-  // Auto-migrate unhidden dir (~/claude-mem-lite/ → ~/.claude-mem-lite/)
+  // Auto-migrate unhidden dir (~/claude-mem-lite/ → ~/.qwen-mem-lite/). The source keeps
+  // its pre-v0.5 name: that is the layout the old product shipped, not the current identity.
   // Check DB_PATH (not DB_DIR) because hook-shared.mjs module-level init may create DB_DIR early
   const oldUnhidden = join(homedir(), 'claude-mem-lite');
   if (existsSync(oldUnhidden) && !existsSync(DB_PATH)) {
@@ -1267,7 +1268,7 @@ export function ensureDb() {
 
   if (!existsSync(DB_DIR)) mkdirSync(DB_DIR, { recursive: true, mode: 0o700 });
 
-  // Auto-migrate old filename in same directory (claude-mem.db → claude-mem-lite.db)
+  // Auto-migrate old filename in same directory (claude-mem.db → qwen-mem-lite.db)
   const oldPath = join(DB_DIR, 'claude-mem.db');
   if (!existsSync(DB_PATH) && existsSync(oldPath)) {
     renameSync(oldPath, DB_PATH);

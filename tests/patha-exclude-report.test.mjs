@@ -209,13 +209,13 @@ describe('formatPathAReport', () => {
   it('says why there is nothing to read when metrics are off', () => {
     const text = formatPathAReport(aggregatePathAExclude([]), { days: 7, metricsEnabled: false });
     expect(text).toMatch(/SKIP/);
-    expect(text).toMatch(/CLAUDE_MEM_METRICS/);
+    expect(text).toMatch(/QWEN_MEM_METRICS/);
   });
 
   it('distinguishes metrics-on-but-empty from metrics-off', () => {
     const text = formatPathAReport(aggregatePathAExclude([]), { days: 7, metricsEnabled: true });
     expect(text).toMatch(/SKIP/);
-    expect(text).not.toMatch(/CLAUDE_MEM_METRICS/);
+    expect(text).not.toMatch(/QWEN_MEM_METRICS/);
   });
 
   it('states the population was not observed rather than claiming the repair is harmless', () => {

@@ -25,7 +25,7 @@ function makeTmpDir() {
 }
 function initDb(dataDir) {
   mkdirSync(dataDir, { recursive: true });
-  const db = new Database(join(dataDir, 'claude-mem-lite.db'));
+  const db = new Database(join(dataDir, 'qwen-mem-lite.db'));
   db.pragma('journal_mode = WAL');
   initSchema(db);
   return db;
@@ -37,9 +37,9 @@ function runCli(args, dataDir) {
       timeout: 15000,
       env: {
         ...process.env,
-        CLAUDE_MEM_DIR: dataDir,
+        QWEN_MEM_DIR: dataDir,
         CLAUDE_PROJECT_DIR: dataDir,
-        CLAUDE_MEM_HOOK_RUNNING: undefined,
+        QWEN_MEM_HOOK_RUNNING: undefined,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -77,7 +77,7 @@ describe('CLI write-path secret scrubbing', () => {
     const r = runCli(['update', String(id), '--concepts', `leaked ${SECRET} token`], dir);
     expect(r.exitCode).toBe(0);
 
-    const db2 = new Database(join(dir, 'claude-mem-lite.db'), { readonly: true });
+    const db2 = new Database(join(dir, 'qwen-mem-lite.db'), { readonly: true });
     const row = db2.prepare('SELECT concepts, text FROM observations WHERE id = ?').get(id);
     db2.close();
     expect(row.concepts).not.toContain(SECRET);
@@ -109,7 +109,7 @@ describe('CLI write-path secret scrubbing', () => {
     const r = runCli(['restore', bfile, '--project', 'rp'], dir);
     expect(r.exitCode).toBe(0);
 
-    const db = new Database(join(dir, 'claude-mem-lite.db'), { readonly: true });
+    const db = new Database(join(dir, 'qwen-mem-lite.db'), { readonly: true });
     const row = db
       .prepare(
         "SELECT subtitle, concepts, facts, search_aliases FROM observations WHERE title = 'restored row'",

@@ -10,11 +10,11 @@ import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 
 describe('normalize gate is per-scope (M-F3)', () => {
-  const savedEnv = process.env.CLAUDE_MEM_DIR;
+  const savedEnv = process.env.QWEN_MEM_DIR;
   let dir;
   afterEach(() => {
-    if (savedEnv === undefined) delete process.env.CLAUDE_MEM_DIR;
-    else process.env.CLAUDE_MEM_DIR = savedEnv;
+    if (savedEnv === undefined) delete process.env.QWEN_MEM_DIR;
+    else process.env.QWEN_MEM_DIR = savedEnv;
     vi.resetModules();
     if (dir) {
       try {
@@ -27,7 +27,7 @@ describe('normalize gate is per-scope (M-F3)', () => {
 
   it('a recent global run gates the unscoped normalize but NOT a project-scoped one', async () => {
     dir = join(tmpdir(), `mem-normgate-${randomUUID().slice(0, 8)}`);
-    process.env.CLAUDE_MEM_DIR = dir;
+    process.env.QWEN_MEM_DIR = dir;
     vi.resetModules(); // force RUNTIME_DIR (hook-shared) to recompute from the temp env
     const { shouldRunNormalize } = await import('../hook-optimize.mjs');
     const { RUNTIME_DIR } = await import('../hook-shared.mjs');

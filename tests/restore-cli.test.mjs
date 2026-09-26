@@ -1,6 +1,6 @@
 // D#25 — `restore` is the inverse of `export` (the backup/restore half README:690
 // promises). These tests run the real CLI as a subprocess against isolated
-// CLAUDE_MEM_DIR temp dirs, so export (DB-A) → restore (DB-B) exercises the true
+// QWEN_MEM_DIR temp dirs, so export (DB-A) → restore (DB-B) exercises the true
 // cross-DB round-trip the pre-fix codebase had no command for.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
@@ -22,7 +22,7 @@ function makeTmpDir() {
 
 function initDb(dataDir) {
   mkdirSync(dataDir, { recursive: true });
-  const db = new Database(join(dataDir, 'claude-mem-lite.db'));
+  const db = new Database(join(dataDir, 'qwen-mem-lite.db'));
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = OFF');
   initSchema(db);
@@ -37,9 +37,9 @@ function runCli(args, dataDir, extraEnv = {}) {
     timeout: 15000,
     env: {
       ...process.env,
-      CLAUDE_MEM_DIR: dataDir,
+      QWEN_MEM_DIR: dataDir,
       CLAUDE_PROJECT_DIR: dataDir,
-      CLAUDE_MEM_HOOK_RUNNING: undefined,
+      QWEN_MEM_HOOK_RUNNING: undefined,
       ...extraEnv,
     },
   });
@@ -98,7 +98,7 @@ describe('D#25 export → restore round-trip', () => {
     const r = runCli(['restore', expFile], dstDir);
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toMatch(/2 restored/);
-    const db = new Database(join(dstDir, 'claude-mem-lite.db'));
+    const db = new Database(join(dstDir, 'qwen-mem-lite.db'));
     const rows = db
       .prepare('SELECT title, type, importance FROM observations ORDER BY importance DESC')
       .all();
@@ -112,7 +112,7 @@ describe('D#25 export → restore round-trip', () => {
   it('preserves value-signals (access/cited/uncited/injection) + branch + created_at (full fidelity)', () => {
     writeFileSync(expFile, runCli(['export', '--format', 'jsonl'], srcDir).stdout);
     runCli(['restore', expFile], dstDir);
-    const db = new Database(join(dstDir, 'claude-mem-lite.db'));
+    const db = new Database(join(dstDir, 'qwen-mem-lite.db'));
     const row = db.prepare("SELECT * FROM observations WHERE title = 'auth token refresh crash'").get();
     db.close();
     expect(row.access_count).toBe(7);
@@ -126,14 +126,14 @@ describe('D#25 export → restore round-trip', () => {
 
   it('round-trips the v44 scope label (review D#78 — twin-drift guard)', () => {
     // Stamp a scope on the seeded bugfix row, then export → restore into a fresh DB.
-    const src = new Database(join(srcDir, 'claude-mem-lite.db'));
+    const src = new Database(join(srcDir, 'qwen-mem-lite.db'));
     src
       .prepare("UPDATE observations SET scope = 'environment' WHERE title = 'auth token refresh crash'")
       .run();
     src.close();
     writeFileSync(expFile, runCli(['export', '--format', 'jsonl'], srcDir).stdout);
     runCli(['restore', expFile], dstDir);
-    const db = new Database(join(dstDir, 'claude-mem-lite.db'));
+    const db = new Database(join(dstDir, 'qwen-mem-lite.db'));
     const scopes = db.prepare('SELECT title, scope FROM observations ORDER BY title').all();
     db.close();
     expect(scopes.find((r) => r.title === 'auth token refresh crash').scope).toBe('environment');
@@ -146,7 +146,7 @@ describe('D#25 export → restore round-trip', () => {
     runCli(['restore', expFile], dstDir);
     const second = runCli(['restore', expFile], dstDir);
     expect(second.stdout).toMatch(/0 restored, 2 duplicate/);
-    const db = new Database(join(dstDir, 'claude-mem-lite.db'));
+    const db = new Database(join(dstDir, 'qwen-mem-lite.db'));
     const count = db.prepare('SELECT COUNT(*) c FROM observations').get().c;
     db.close();
     expect(count).toBe(2); // no duplication
@@ -173,7 +173,7 @@ describe('D#25 export → restore round-trip', () => {
     writeFileSync(expFile, runCli(['export', '--format', 'jsonl'], srcDir + '-alias').stdout);
     runCli(['restore', expFile], dstDir);
 
-    const rdb = new Database(join(dstDir, 'claude-mem-lite.db'));
+    const rdb = new Database(join(dstDir, 'qwen-mem-lite.db'));
     const row = rdb
       .prepare("SELECT search_aliases FROM observations WHERE title = 'sqlite vtab cascade fix'")
       .get();
@@ -197,7 +197,7 @@ describe('D#25 export → restore round-trip', () => {
     expect(r.stdout).toMatch(/dry-run/);
     // Conditional wording: the preview must not claim past-tense work (tests/restore-dry-run-honesty).
     expect(r.stdout).toMatch(/2 would be restored/);
-    const db = new Database(join(dstDir, 'claude-mem-lite.db'));
+    const db = new Database(join(dstDir, 'qwen-mem-lite.db'));
     const count = db.prepare('SELECT COUNT(*) c FROM observations').get().c;
     db.close();
     expect(count).toBe(0); // nothing written
@@ -283,7 +283,7 @@ describe('D#25 export → restore round-trip', () => {
     const r = runCli(['restore', expFile], dstDir);
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toMatch(/2 restored/);
-    const db = new Database(join(dstDir, 'claude-mem-lite.db'));
+    const db = new Database(join(dstDir, 'qwen-mem-lite.db'));
     const count = db.prepare('SELECT COUNT(*) c FROM observations').get().c;
     db.close();
     expect(count).toBe(3); // 1 pre-existing + 2 restored, no collision

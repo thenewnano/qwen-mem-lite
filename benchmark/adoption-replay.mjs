@@ -9,7 +9,7 @@ const ID_RE = unanchoredInjectedIdRe();
 // v1 scope: path-A only ([mem] FYI via searchByFts, gated to UserPromptSubmit below). Path-B (<memory-context> / searchRelevantMemories) is intentionally excluded — no ranker-replay seam yet; do not "fix" a path-B miss by adding a memory-context marker here.
 const UPS_FTS_MARKER = /\[mem\]/;
 const IMP_MARKER = /Memory — a past lesson applies to THIS task\. You must:/;
-const SUBAGENT_MARKER = /surfaced by your operator's claude-mem-lite/;
+const SUBAGENT_MARKER = /surfaced by your operator's qwen-mem-lite/;
 
 function ids(text) {
   const s = new Set();

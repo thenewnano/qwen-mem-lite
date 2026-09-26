@@ -1,4 +1,4 @@
-// cli/fts-check.mjs — `claude-mem-lite fts-check <check|rebuild>`.
+// cli/fts-check.mjs — `qwen-mem-lite fts-check <check|rebuild>`.
 // Extracted from mem-cli.mjs (v2.41, god-module split).
 
 import { checkFTSIntegrity, rebuildFTS } from '../schema.mjs';
@@ -8,7 +8,7 @@ export function cmdFtsCheck(db, args) {
   const { positional } = parseArgs(args);
   const action = positional[0];
   if (!action) {
-    fail('[mem] Usage: claude-mem-lite fts-check <check|rebuild>');
+    fail('[mem] Usage: qwen-mem-lite fts-check <check|rebuild>');
     return;
   }
   if (!['check', 'rebuild'].includes(action)) {

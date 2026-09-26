@@ -2,8 +2,8 @@
 //
 // The flag is the only surface that tells a user their hooks are degraded — hook.mjs's
 // SessionStart dashboard reads `join(RUNTIME_DIR, '.deps-broken')`, and RUNTIME_DIR comes
-// from `hook-shared.mjs`, i.e. `resolveRuntimeDir(resolveDataDir(CLAUDE_MEM_DIR))`. setup.sh
-// hardcoded `$HOME/.claude-mem-lite` instead, so with CLAUDE_MEM_DIR set the writer and the
+// from `hook-shared.mjs`, i.e. `resolveRuntimeDir(resolveDataDir(QWEN_MEM_DIR))`. setup.sh
+// hardcoded `$HOME/.qwen-mem-lite` instead, so with QWEN_MEM_DIR set the writer and the
 // reader named two different directories and the banner never rendered. Measured 2026-09-14
 // before the fix, two arms: flag planted where setup.sh writes → banner rendered 0 times;
 // planted where hook.mjs reads → 1 time.
@@ -75,8 +75,8 @@ function runSetup({ home, dataDir }) {
       ...process.env,
       HOME: home,
       CLAUDE_PLUGIN_ROOT: makeHealthyRoot(),
-      CLAUDE_MEM_DIR: dataDir ?? '',
-      CLAUDE_MEM_RUNTIME_DIR: '',
+      QWEN_MEM_DIR: dataDir ?? '',
+      QWEN_MEM_RUNTIME_DIR: '',
       MEM_NO_AUTO_ADOPT: '1',
     },
   });
@@ -108,7 +108,7 @@ describe('setup.sh .deps-broken flag location', () => {
     // mark_deps_ok", NOT "the flag went to the wrong directory". The two have opposite fixes.
     const home = join(sandbox, 'home');
     mkdirSync(home, { recursive: true });
-    const flag = plantFlag(join(home, '.claude-mem-lite', 'runtime'));
+    const flag = plantFlag(join(home, '.qwen-mem-lite', 'runtime'));
 
     const r = runSetup({ home, dataDir: undefined });
 
@@ -116,7 +116,7 @@ describe('setup.sh .deps-broken flag location', () => {
     expect(existsSync(flag)).toBe(false);
   });
 
-  it('clears the flag in the RELOCATED runtime dir when CLAUDE_MEM_DIR is set', () => {
+  it('clears the flag in the RELOCATED runtime dir when QWEN_MEM_DIR is set', () => {
     const home = join(sandbox, 'home');
     const relocated = join(sandbox, 'relocated-data');
     mkdirSync(home, { recursive: true });
@@ -128,7 +128,7 @@ describe('setup.sh .deps-broken flag location', () => {
     expect(readerRuntimeDir).toBe(join(relocated, 'runtime'));
 
     const relocatedFlag = plantFlag(readerRuntimeDir);
-    const homeFlag = plantFlag(join(home, '.claude-mem-lite', 'runtime'));
+    const homeFlag = plantFlag(join(home, '.qwen-mem-lite', 'runtime'));
 
     const r = runSetup({ home, dataDir: relocated });
 
@@ -143,10 +143,10 @@ describe('setup.sh .deps-broken flag location', () => {
   // The two fallback arms of the same gate. Both matter more than they look: setup.sh runs
   // under `set -euo pipefail` as a SessionStart hook, so an arm that aborts does not merely
   // pick the wrong directory — it fails the user's session start.
-  it('falls back to the default dir, exit 0, when CLAUDE_MEM_DIR is invalid', () => {
+  it('falls back to the default dir, exit 0, when QWEN_MEM_DIR is invalid', () => {
     const home = join(sandbox, 'home');
     mkdirSync(home, { recursive: true });
-    const flag = plantFlag(join(home, '.claude-mem-lite', 'runtime'));
+    const flag = plantFlag(join(home, '.qwen-mem-lite', 'runtime'));
 
     // resolveDataDir THROWS on a relative value rather than resolving it against cwd.
     const r = runSetup({ home, dataDir: 'not/absolute' });
@@ -160,7 +160,7 @@ describe('setup.sh .deps-broken flag location', () => {
     const relocated = join(sandbox, 'relocated-data');
     mkdirSync(home, { recursive: true });
     mkdirSync(relocated, { recursive: true });
-    const flag = plantFlag(join(home, '.claude-mem-lite', 'runtime'));
+    const flag = plantFlag(join(home, '.qwen-mem-lite', 'runtime'));
 
     const root = makeHealthyRoot();
     rmSync(join(root, 'lib', 'resolve-data-dir.mjs'));
@@ -172,8 +172,8 @@ describe('setup.sh .deps-broken flag location', () => {
         ...process.env,
         HOME: home,
         CLAUDE_PLUGIN_ROOT: root,
-        CLAUDE_MEM_DIR: relocated,
-        CLAUDE_MEM_RUNTIME_DIR: '',
+        QWEN_MEM_DIR: relocated,
+        QWEN_MEM_RUNTIME_DIR: '',
         MEM_NO_AUTO_ADOPT: '1',
       },
     });
@@ -182,7 +182,7 @@ describe('setup.sh .deps-broken flag location', () => {
     expect(existsSync(flag)).toBe(false);
   });
 
-  it('honours CLAUDE_MEM_RUNTIME_DIR the same way hook-shared.mjs does', () => {
+  it('honours QWEN_MEM_RUNTIME_DIR the same way hook-shared.mjs does', () => {
     const home = join(sandbox, 'home');
     const runtimeOverride = join(sandbox, 'runtime-override');
     mkdirSync(home, { recursive: true });
@@ -196,8 +196,8 @@ describe('setup.sh .deps-broken flag location', () => {
         ...process.env,
         HOME: home,
         CLAUDE_PLUGIN_ROOT: makeHealthyRoot(),
-        CLAUDE_MEM_DIR: '',
-        CLAUDE_MEM_RUNTIME_DIR: runtimeOverride,
+        QWEN_MEM_DIR: '',
+        QWEN_MEM_RUNTIME_DIR: runtimeOverride,
         MEM_NO_AUTO_ADOPT: '1',
       },
     });

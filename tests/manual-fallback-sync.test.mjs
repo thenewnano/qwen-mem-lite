@@ -1,11 +1,11 @@
-// The manual recovery one-liner lives on FOUR surfaces and cannot be shared by import:
+// The manual recovery one-liner lives on THREE surfaces and cannot be shared by import:
 // scripts/hook-launcher.mjs is under a pure-`node:` charter (it must survive a broken
-// install), and the two READMEs are documentation. install.mjs owns the value; this pins
-// the other three to it, and fails if a fifth surface starts carrying its own.
+// install), and README.md is documentation. install.mjs owns the value; this pins the
+// other two to it, and fails if a fourth surface starts carrying its own.
 //
 // Same mechanism as tests/audit-r8-binding-repair-hint.test.mjs, for the same reason: a
 // string kept in sync by a comment is a string that drifts. It drifted here already — all
-// four carried `/tarball`, which serves the DEFAULT BRANCH (unreleased WIP), while the
+// of them carried `/tarball`, which serves the DEFAULT BRANCH (unreleased WIP), while the
 // prose beside two of them promised "in sync with the latest release".
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -39,7 +39,7 @@ describe('manual tarball fallback stays one string', () => {
     // because auto-installing that was the defect; printing it on failure handed the
     // behaviour back.
     expect(MANUAL_TARBALL_FALLBACK).toContain('/releases/latest');
-    expect(MANUAL_TARBALL_FALLBACK).not.toMatch(/claude-mem-lite\/tarball(?![/])/);
+    expect(MANUAL_TARBALL_FALLBACK).not.toMatch(/qwen-mem-lite\/tarball(?![/])/);
   });
 
   it('still runs the downloaded tree, not the local one', () => {
@@ -56,9 +56,8 @@ describe('manual tarball fallback stays one string', () => {
     expect(launcher).toBe(MANUAL_TARBALL_FALLBACK);
   });
 
-  it('is carried verbatim by both READMEs', () => {
+  it('is carried verbatim by README.md', () => {
     expect(read('README.md')).toContain(MANUAL_TARBALL_FALLBACK);
-    expect(read('README.zh-CN.md')).toContain(MANUAL_TARBALL_FALLBACK);
   });
 
   it('has no fifth surface carrying a divergent copy', () => {
@@ -71,7 +70,7 @@ describe('manual tarball fallback stays one string', () => {
     // Entity sweep, no file-type filter: the copies are spread across .mjs and .md, and a
     // type-filtered sweep is how an earlier retraction in this repo missed one.
     // Assembled, not written out: a literal here would make this file its own offender.
-    const oldForm = 'claude-mem-lite' + '/tarball';
+    const oldForm = 'qwen-mem-lite' + '/tarball';
     const newForm = 'releases/latest' + ' | grep -o'; // assembled: see oldForm
     const skipDirs = new Set(['node_modules', '.git', 'coverage', 'dist']);
     const offenders = [];

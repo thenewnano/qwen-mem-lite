@@ -35,7 +35,7 @@ const bothInOne = (blockId, imperativeId, lesson = 'stamp the guard on both dedu
   type: 'attachment',
   attachment: {
     type: 'hook_success',
-    command: 'node "/home/sds/.claude-mem-lite/hook.mjs" user-prompt',
+    command: 'node "/home/sds/.qwen-mem-lite/hook.mjs" user-prompt',
     stdout:
       `<memory-context relevance="high">\n- [decision] picked X | Lesson: Y (#${blockId})\n</memory-context>\n` +
       `${formatTaskImperative(lesson, imperativeId)}\n`,
@@ -93,7 +93,7 @@ describe('task_imperative surface', () => {
         type: 'attachment',
         attachment: {
           type: 'hook_success',
-          command: 'node "/home/sds/.claude-mem-lite/scripts/user-prompt-search.js"',
+          command: 'node "/home/sds/.qwen-mem-lite/scripts/user-prompt-search.js"',
           stdout: `${formatTaskImperative('quoted, not injected', 909)}\n`,
         },
       },

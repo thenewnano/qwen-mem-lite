@@ -27,8 +27,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  * Every file this package SHIPS, repo-relative. `package.json#files` is the manifest npm
  * actually packs, so it carries the bash hooks and the markdown that `walkShipped`'s
  * ".mjs/.js" walk cannot see. Directory entries are expanded; README* and LICENSE are added
- * because npm packs those whatever `files` says (measured on v6.1.0: README.zh-CN.md is in
- * the tarball and is not in `files`).
+ * because npm packs those whatever `files` says (measured on v6.1.0, when the repo still
+ * shipped a README.zh-CN.md: npm packed it despite `files`).
  */
 /**
  * Word-bounded on purpose: a bare /porter/i also matches **re**porter**, and the very line

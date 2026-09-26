@@ -5,7 +5,7 @@
  *
  * WHY THIS EXISTS ALONGSIDE THE TWO THINGS THAT LOOK LIKE IT.
  *
- *   `claude-mem-lite citation-stats` reads `citation_surface_log`, a table written at
+ *   `qwen-mem-lite citation-stats` reads `citation_surface_log`, a table written at
  *     Stop. That table is only as old as the METER, and the meter is routinely younger
  *     than the behaviour it measures. On 2026-08-25 it held n=8 over 2.1 days for
  *     `task_imperative` — which reads like "not enough data to decide" — while these
@@ -161,7 +161,7 @@ export function assertFaceCoverage(
 // ─── 1. Corpus ───────────────────────────────────────────────────────────────
 
 function projectDirs() {
-  const root = process.env.CLAUDE_MEM_TRANSCRIPT_ROOT || join(homedir(), '.claude', 'projects');
+  const root = process.env.QWEN_MEM_TRANSCRIPT_ROOT || join(homedir(), '.claude', 'projects');
   let dirs;
   try {
     dirs = readdirSync(root, { withFileTypes: true })
@@ -326,14 +326,14 @@ export function assertRulerCanSayNo(rows, { windowed = false, frozen = false } =
   const hits = rows.reduce((a, r) => a + r.hits, 0);
   if (!pairs) {
     // Name the likely cause rather than one fixed cause. The first version always said
-    // "point CLAUDE_MEM_TRANSCRIPT_ROOT at a real transcript root", which is irrelevant
+    // "point QWEN_MEM_TRANSCRIPT_ROOT at a real transcript root", which is irrelevant
     // advice under `--corpus` (the root was never walked) and wrong advice under a
     // `--since` that excludes everything.
     const why = windowed
       ? 'the --since/--until window excludes every session'
       : frozen
         ? `the frozen corpus passed to --corpus holds no injections`
-        : 'the shipped extractors matched nothing — point CLAUDE_MEM_TRANSCRIPT_ROOT at a real transcript root';
+        : 'the shipped extractors matched nothing — point QWEN_MEM_TRANSCRIPT_ROOT at a real transcript root';
     throw new Error(`ruler check: no injections in scope — ${why}. No number below would mean anything.`);
   }
   if (hits === pairs) {
@@ -633,7 +633,7 @@ function main() {
 
   if (has('--by-scope')) {
     console.log('\n─── per observations.scope (D#153) ───');
-    console.log('`pretool` IS the file-triggered face CLAUDE_MEM_SCOPE_FILTER gates. `(gone)` = the row');
+    console.log('`pretool` IS the file-triggered face QWEN_MEM_SCOPE_FILTER gates. `(gone)` = the row');
     console.log("left the table since injection; kept so the buckets still sum to the face's pair count.");
     console.table(byScope(inWindow, scopeLookup()));
   }
@@ -741,7 +741,7 @@ export function byScope(records, scopeOf) {
 
 /** id → scope bucket, read once from the live DB. */
 function scopeLookup() {
-  const db = new Database(join(resolveDataDir(), 'claude-mem-lite.db'), { readonly: true });
+  const db = new Database(join(resolveDataDir(), 'qwen-mem-lite.db'), { readonly: true });
   const map = new Map();
   try {
     for (const r of db.prepare('SELECT id, scope FROM observations').all()) {

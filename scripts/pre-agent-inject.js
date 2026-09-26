@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// claude-mem-lite: PreToolUse:Agent|Task hook — subagent dispatch-time memory injection.
+// qwen-mem-lite: PreToolUse:Agent|Task hook — subagent dispatch-time memory injection.
 // Subagents are memory-blind (plugin hooks do NOT fire inside them — #8848); this hook
 // injects ONE relevant project lesson into a dispatched subagent's prompt by mutating
 // tool_input.prompt via hookSpecificOutput.updatedInput. Verified live 2026-07-03
@@ -7,13 +7,12 @@
 // appended, attributed, reference-only block is adopted, whereas a raw imperative
 // prepend trips the subagent's own prompt-injection detector and is refused).
 //
-// DEFAULT OFF (CLAUDE_MEM_SUBAGENT_INJECT=on|1). The off path costs one env check and
+// DEFAULT OFF (QWEN_MEM_SUBAGENT_INJECT=on|1). The off path costs one env check and
 // returns — no stdin read, no DB, no heavy imports (schema/better-sqlite3 are dynamic,
 // loaded only on the enabled Agent path). Fail-open: never exits non-zero, never blocks
 // a dispatch (a thrown hook would abort the user's subagent).
 
-const ENABLED =
-  process.env.CLAUDE_MEM_SUBAGENT_INJECT === 'on' || process.env.CLAUDE_MEM_SUBAGENT_INJECT === '1';
+const ENABLED = process.env.QWEN_MEM_SUBAGENT_INJECT === 'on' || process.env.QWEN_MEM_SUBAGENT_INJECT === '1';
 
 // Telemetry via DYNAMIC import so the default-off fast path stays import-free
 // (the file's stated contract). Only ever reached on the enabled path's failure
@@ -29,7 +28,7 @@ async function recordFailure(scope, err, ctx) {
     // P1-14: the shared resolver, not a fourth hand-written `env || join(...)`. This is on
     // the error path, which already dynamic-imports, so the script's zero-import budget on
     // the HAPPY path is untouched.
-    recordHookError(scope, err, resolveRuntimeDir(resolveDataDir(process.env.CLAUDE_MEM_DIR)), ctx);
+    recordHookError(scope, err, resolveRuntimeDir(resolveDataDir(process.env.QWEN_MEM_DIR)), ctx);
   } catch {
     /* never */
   }
@@ -84,7 +83,7 @@ function readStdin() {
 
 async function main() {
   if (!ENABLED) return; // default: cheapest possible no-op
-  if (process.env.CLAUDE_MEM_HOOK_RUNNING) return; // recursion guard (background claude -p)
+  if (process.env.QWEN_MEM_HOOK_RUNNING) return; // recursion guard (background claude -p)
 
   const raw = await readStdin();
   let hook;

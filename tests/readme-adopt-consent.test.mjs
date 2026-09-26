@@ -4,7 +4,7 @@
 // Both READMEs said the plugin "writes the invited-memory sentinel into the project's
 // memdir" on "the first SessionStart". It writes a managed block into the project's own
 // `<cwd>/CLAUDE.md` — a file that normally goes into git — plus
-// `<cwd>/.claude/plugin_claude_mem_lite.md`, and it does so on EVERY SessionStart. Of all
+// `<cwd>/.claude/plugin_qwen_mem_lite.md`, and it does so on EVERY SessionStart. Of all
 // the sentences in an install guide, the one saying which of the user's files get written
 // is the one that has to be right.
 //
@@ -18,7 +18,6 @@ import { fileURLToPath } from 'url';
 
 const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 const EN = read('../README.md');
-const ZH = read('../README.zh-CN.md');
 const ADOPT_CLI = read('../adopt-cli.mjs');
 const CLAUDEMD = read('../claudemd.mjs');
 
@@ -50,7 +49,6 @@ describe('README auto-adopt description matches silentAutoAdopt', () => {
 
   for (const [name, src, claudeMd, cadence] of [
     ['README.md', () => EN, /<cwd>\/`?\*?\*?CLAUDE\.md/, /every\s+SessionStart/i],
-    ['README.zh-CN.md', () => ZH, /<cwd>\/`?\*?\*?CLAUDE\.md/, /每次\s*SessionStart/],
   ]) {
     it(`${name} names the real write target and the real cadence`, () => {
       const text = src();

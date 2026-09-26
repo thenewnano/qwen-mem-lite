@@ -178,8 +178,8 @@ export function formatPathAReport(agg, { days = DEFAULT_WINDOW_DAYS, metricsEnab
 
   if (agg.total === 0) {
     if (!metricsEnabled) {
-      L.push('  SKIP: no rows, and CLAUDE_MEM_METRICS is not 1 — the meter never ran.');
-      L.push('  Set CLAUDE_MEM_METRICS=1 and let UserPromptSubmit run for a few weeks.');
+      L.push('  SKIP: no rows, and QWEN_MEM_METRICS is not 1 — the meter never ran.');
+      L.push('  Set QWEN_MEM_METRICS=1 and let UserPromptSubmit run for a few weeks.');
     } else {
       L.push('  SKIP: metering is on but no patha_exclude row landed in this window.');
       L.push('  The meter only fires when the cross-hook marker actually carried ids.');
@@ -379,7 +379,7 @@ function main() {
   if (asJson) {
     console.log(JSON.stringify({ dbDir: DB_DIR, days, ...agg }, null, 2));
   } else {
-    console.log(formatPathAReport(agg, { days, metricsEnabled: process.env.CLAUDE_MEM_METRICS === '1' }));
+    console.log(formatPathAReport(agg, { days, metricsEnabled: process.env.QWEN_MEM_METRICS === '1' }));
   }
 }
 

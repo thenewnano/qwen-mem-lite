@@ -7,7 +7,7 @@
   "required": ["id", "startCommit", "project", "prompt", "capturedMemory", "regressionCheck"],
   "properties": {
     "id": { "type": "string", "description": "Stable kebab-case identifier." },
-    "repo": { "type": "string", "description": "Git URL or local path. Defaults to the claude-mem-lite repo root." },
+    "repo": { "type": "string", "description": "Git URL or local path. Defaults to the qwen-mem-lite repo root." },
     "startCommit": { "type": "string", "description": "SHA to check out the sandbox at — the state BEFORE the captured bug was fixed." },
     "project": { "type": "string", "description": "Project key the captured memory belongs to (must match how the host session infers it, so recall fires)." },
     "prompt": { "type": "string", "description": "The coding task handed to `claude -p`." },

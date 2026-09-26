@@ -170,7 +170,7 @@ describe('doctor says so when it cannot read the plugin cache', () => {
     // A FILE where doctor expects the version directory: `existsSync` says yes and
     // `readdirSync` throws ENOTDIR. Deterministic, and unlike `chmod 000` it still
     // reproduces when the suite runs as root.
-    const cacheBase = join(cacheParent, 'claude-mem-lite');
+    const cacheBase = join(cacheParent, 'qwen-mem-lite');
     writeFileSync(cacheBase, 'not a directory');
     let out;
     try {
@@ -178,8 +178,8 @@ describe('doctor says so when it cannot read the plugin cache', () => {
         env: {
           ...process.env,
           HOME: home,
-          CLAUDE_MEM_DIR: join(home, 'data'),
-          CLAUDE_MEM_SKIP_UPDATE: '1',
+          QWEN_MEM_DIR: join(home, 'data'),
+          QWEN_MEM_SKIP_UPDATE: '1',
           MEM_QUIET_HOOKS: '1',
           MEM_NO_AUTO_ADOPT: '1',
         },

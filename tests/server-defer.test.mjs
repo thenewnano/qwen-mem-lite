@@ -89,8 +89,8 @@ describe('mem_save closes_deferred MCP-side dedup-replay (parity with CLI)', () 
     // exercises the same db.transaction body.
     const dir = join(tmpdir(), 'mem-mcp-defer-replay-' + randomUUID().slice(0, 8));
     mkdirSync(dir, { recursive: true });
-    const env = { ...process.env, CLAUDE_MEM_DIR: dir, CLAUDE_PROJECT_DIR: '/tmp/proj-mcp-defer-replay' };
-    delete env.CLAUDE_MEM_HOOK_RUNNING;
+    const env = { ...process.env, QWEN_MEM_DIR: dir, CLAUDE_PROJECT_DIR: '/tmp/proj-mcp-defer-replay' };
+    delete env.QWEN_MEM_HOOK_RUNNING;
     try {
       const cli = join(process.cwd(), 'cli.mjs');
       // Add a deferred item

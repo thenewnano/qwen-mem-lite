@@ -45,7 +45,7 @@ const argOf = (f) => {
 };
 const NARROW = Number(argOf('--narrow') || 50);
 
-const dbPath = join(resolveDataDir(process.env.CLAUDE_MEM_DIR), 'claude-mem-lite.db');
+const dbPath = join(resolveDataDir(process.env.QWEN_MEM_DIR), 'qwen-mem-lite.db');
 let db;
 try {
   db = new Database(dbPath, { readonly: true, fileMustExist: true });
@@ -121,7 +121,7 @@ function populations() {
 // ─── real prompts, paired to their own project ───────────────────────────────
 
 function realPrompts() {
-  const root = process.env.CLAUDE_MEM_TRANSCRIPT_ROOT || join(homedir(), '.claude', 'projects');
+  const root = process.env.QWEN_MEM_TRANSCRIPT_ROOT || join(homedir(), '.claude', 'projects');
   const seen = new Set();
   const out = [];
   let dirs;

@@ -5,7 +5,7 @@
 // remote, not by cwd) called cmdAdopt with no target — and adopt-cli resolves its target
 // from CLAUDE_PROJECT_DIR ‖ PWD ‖ process.cwd(), where PWD was vitest's, the repo root.
 // Every `vitest run` rewrote the tracked CLAUDE.md managed block and
-// .claude/plugin_claude_mem_lite.md to the HEAD template, silently discarding any
+// .claude/plugin_qwen_mem_lite.md to the HEAD template, silently discarding any
 // uncommitted edit to them. R9 called this the "fourth trap" without finding the writer;
 // R10 P2-17 bisected 60 candidate files down to this one.
 //
@@ -26,7 +26,7 @@ import { execFileSync } from 'child_process';
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const INSTALL_PATH = join(REPO, 'install.mjs');
 const REPO_CLAUDE_MD = join(REPO, 'CLAUDE.md');
-const REPO_SIDECAR = join(REPO, '.claude', 'plugin_claude_mem_lite.md');
+const REPO_SIDECAR = join(REPO, '.claude', 'plugin_qwen_mem_lite.md');
 
 let root;
 
@@ -70,7 +70,7 @@ function runInstall(home, proj, extraEnv) {
       ...process.env,
       HOME: home,
       CLAUDE_PROJECT_DIR: proj,
-      CLAUDE_MEM_SKIP_REPOS: '1',
+      QWEN_MEM_SKIP_REPOS: '1',
       ...extraEnv,
     },
     cwd: proj,
@@ -117,7 +117,7 @@ describe('install never adopts a project the caller did not point it at', () => 
     expect(
       readFileSync(md, 'utf8'),
       'dogfood auto-adopt no longer reaches a project dir; the opt-out case below would pass vacuously',
-    ).toContain('claude-mem-lite:begin');
+    ).toContain('qwen-mem-lite:begin');
   });
 
   it('MEM_NO_AUTO_ADOPT=1 leaves the sandbox project byte-identical', () => {
@@ -125,7 +125,7 @@ describe('install never adopts a project the caller did not point it at', () => 
     const before = readFileSync(md, 'utf8');
     runInstall(home, proj, { MEM_NO_AUTO_ADOPT: '1' });
     expect(readFileSync(md, 'utf8'), 'install ignored the global auto-adopt opt-out').toBe(before);
-    expect(existsSync(join(proj, '.claude', 'plugin_claude_mem_lite.md'))).toBe(false);
+    expect(existsSync(join(proj, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(false);
   });
 
   it('leaves this repository CLAUDE.md and .claude sidecar byte-identical across an install', () => {

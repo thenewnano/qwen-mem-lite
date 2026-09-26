@@ -3,9 +3,9 @@
 // every session (adopt-cli.mjs silentAutoAdopt).
 //
 // P2-1 — getDetailDoc() embedded CLI_INVOKE, which resolves to
-//   `node /home/<user>/.claude/plugins/cache/thenewnano/claude-mem-lite/<VERSION>/cli.mjs`
+//   `node /home/<user>/.claude/plugins/cache/thenewnano/qwen-mem-lite/<VERSION>/cli.mjs`
 // on a plugin install: machine-specific AND version-pinned. Measured on the live tree, the
-// generated .claude/plugin_claude_mem_lite.md carried 24 occurrences of it. The sibling
+// generated .claude/plugin_qwen_mem_lite.md carried 24 occurrences of it. The sibling
 // generator buildClaudeMdBlock() deliberately avoids CLI_INVOKE and says why — "it would make
 // this committed/refreshed block churn across machines" — and the doc's exemption was written
 // as "(.claude/, gitignored)", which is only true of THIS repo (.gitignore:42), not of user
@@ -64,7 +64,7 @@ describe('R7 P2-1 — generated project files carry no machine-specific path', (
     });
 
     it(`${name} contains no plugin-cache version segment`, () => {
-      // `.../claude-mem-lite/3.95.0/cli.mjs` — the version is what made the file churn on
+      // `.../qwen-mem-lite/3.95.0/cli.mjs` — the version is what made the file churn on
       // every release even when the prose did not change.
       expect(gen()).not.toMatch(/plugins\/cache\//);
     });
@@ -89,7 +89,7 @@ describe('R7 P2-2 — unadopt preserves a symlinked CLAUDE.md', () => {
     const { proj, target } = symlinkedProject('');
     writeManaged(proj, opts());
     expect(lstatSync(join(proj, 'CLAUDE.md')).isSymbolicLink()).toBe(true);
-    expect(readFileSync(target, 'utf8')).toContain('claude-mem-lite:begin');
+    expect(readFileSync(target, 'utf8')).toContain('qwen-mem-lite:begin');
   });
 
   it('keeps the symlink when our block was the whole file', () => {
@@ -113,7 +113,7 @@ describe('R7 P2-2 — unadopt preserves a symlinked CLAUDE.md', () => {
     expect(lstatSync(join(proj, 'CLAUDE.md')).isSymbolicLink()).toBe(true);
     const left = readFileSync(target, 'utf8');
     expect(left).toContain('Hand-written rules.');
-    expect(left).not.toContain('claude-mem-lite:begin');
+    expect(left).not.toContain('qwen-mem-lite:begin');
   });
 
   it('PREMISE: a REGULAR file we created is still deleted, not left at 0 bytes', () => {

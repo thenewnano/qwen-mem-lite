@@ -60,25 +60,25 @@ describe('envNumber — the contract lib/cli-flags.mjs already has for CLI flags
     expect(envNumber(null, { name: 'X', defaultValue: 3, warn: c.warn })).toBe(3);
     expect(envNumber('', { name: 'X', defaultValue: 3, warn: c.warn })).toBe(3);
     expect(envNumber('   ', { name: 'X', defaultValue: 3, warn: c.warn })).toBe(3);
-    expect(c.seen, 'unset must not warn — `CLAUDE_MEM_X=` is how a shell clears it').toEqual([]);
+    expect(c.seen, 'unset must not warn — `QWEN_MEM_X=` is how a shell clears it').toEqual([]);
   });
 
   it('falls back LOUDLY on the values that used to become NaN', () => {
     for (const bad of ['abc', '2abc', 'NaN', 'Infinity', '-Infinity', 'null', '1,5']) {
       const c = capture();
       expect(
-        envNumber(bad, { name: 'CLAUDE_MEM_X', defaultValue: 3, warn: c.warn }),
+        envNumber(bad, { name: 'QWEN_MEM_X', defaultValue: 3, warn: c.warn }),
         `"${bad}" did not fall back`,
       ).toBe(3);
       expect(c.seen.length, `"${bad}" fell back without warning`).toBe(1);
-      expect(c.seen[0]).toContain('CLAUDE_MEM_X');
+      expect(c.seen[0]).toContain('QWEN_MEM_X');
       expect(c.seen[0]).toContain(bad);
     }
   });
 
   it('honours an explicit 0 — the `|| DEFAULT` idiom swallowed it', () => {
-    // CLAUDE_MEM_UPS_TOP_MIN=0 is the documented seed-mode kill switch for the
-    // absolute floors, and CLAUDE_MEM_CITE_NUDGE_MIN_INJECTED=0 means "no volume
+    // QWEN_MEM_UPS_TOP_MIN=0 is the documented seed-mode kill switch for the
+    // absolute floors, and QWEN_MEM_CITE_NUDGE_MIN_INJECTED=0 means "no volume
     // requirement". Both were unreachable through `Number(env || d)` / `Number(env) || d`.
     const c = capture();
     expect(envNumber('0', { name: 'X', defaultValue: 50, min: 0, warn: c.warn })).toBe(0);
@@ -179,7 +179,7 @@ export function stripComments(src) {
 }
 
 /** An env read, either syntactically or by this repo's env-name convention. */
-const ENV_READ_RE = /(^|[^A-Za-z0-9_$])env\s*[.[]|process\.env|\bCLAUDE_MEM_[A-Z0-9_]+|\bMEM_[A-Z][A-Z0-9_]*/;
+const ENV_READ_RE = /(^|[^A-Za-z0-9_$])env\s*[.[]|process\.env|\bQWEN_MEM_[A-Z0-9_]+|\bMEM_[A-Z][A-Z0-9_]*/;
 
 /**
  * The TERNARY form: `env.X !== undefined ? Number(env.X) : DEFAULT`. NaN-unsafe, and it is
@@ -188,7 +188,7 @@ const ENV_READ_RE = /(^|[^A-Za-z0-9_$])env\s*[.[]|process\.env|\bCLAUDE_MEM_[A-Z
  */
 const TERNARY_RES = [
   /(?:process\.env|(?:^|[^A-Za-z0-9_$])env)\s*[.[][A-Za-z0-9_$.'"[\]]{1,60}\s*!==\s*undefined\s*\?[\s\S]{0,160}?\b(?:Number|parseInt|parseFloat)\s*\(/g,
-  /\b(?:CLAUDE_MEM_[A-Z0-9_]+|MEM_[A-Z][A-Z0-9_]*)\s*!==\s*undefined\s*\?[\s\S]{0,160}?\b(?:Number|parseInt|parseFloat)\s*\(/g,
+  /\b(?:QWEN_MEM_[A-Z0-9_]+|MEM_[A-Z][A-Z0-9_]*)\s*!==\s*undefined\s*\?[\s\S]{0,160}?\b(?:Number|parseInt|parseFloat)\s*\(/g,
 ];
 
 /**
@@ -202,8 +202,8 @@ const TERNARY_RES = [
  *
  * Scans to the matching close paren rather than regexing the whole call, so a nested call
  * (`Number(foo(a || b))`) is measured on its real argument text. The env read is matched
- * syntactically OR by name convention (`CLAUDE_MEM_*` / `MEM_*`), which is what catches a
- * destructured `const { CLAUDE_MEM_X } = process.env`.
+ * syntactically OR by name convention (`QWEN_MEM_*` / `MEM_*`), which is what catches a
+ * destructured `const { QWEN_MEM_X } = process.env`.
  *
  * NOT caught, stated as the technique's ceiling rather than as a claim of completeness:
  * an env object aliased to a name this repo does not use (`const e = process.env;
@@ -239,7 +239,7 @@ export function findFoldedEnvParses(raw) {
 
   // Deduped by where the match ENDS (always just past the `Number(`), because the two
   // ternary patterns overlap by design: the syntactic one and the name-convention one both
-  // fire on `env.CLAUDE_MEM_X !== undefined ? Number(…)`. Reporting one offender twice is
+  // fire on `env.QWEN_MEM_X !== undefined ? Number(…)`. Reporting one offender twice is
   // not a false positive, but it makes the sweep's output lie about how many there are.
   const seen = new Set();
   for (const tre of TERNARY_RES) {
@@ -273,16 +273,16 @@ describe('no numeric env parse may fold its own fallback into the parse', () => 
     // lib/cite-back-hint.mjs's three sites to these two shapes and the whole tree stayed
     // green, so these are the shapes most likely to be written here again, not exotica.
     expect(
-      findFoldedEnvParses('const a = Number(process.env.CLAUDE_MEM_X) || 3;'),
+      findFoldedEnvParses('const a = Number(process.env.QWEN_MEM_X) || 3;'),
       'trailing-default form missed',
     ).toHaveLength(1);
-    expect(findFoldedEnvParses('const a = Number(env.CLAUDE_MEM_X) ?? 3;')).toHaveLength(1);
+    expect(findFoldedEnvParses('const a = Number(env.QWEN_MEM_X) ?? 3;')).toHaveLength(1);
     expect(
-      findFoldedEnvParses('const a = env.CLAUDE_MEM_X !== undefined ? Number(env.CLAUDE_MEM_X) : 3;'),
+      findFoldedEnvParses('const a = env.QWEN_MEM_X !== undefined ? Number(env.QWEN_MEM_X) : 3;'),
       'ternary form missed',
     ).toHaveLength(1);
     expect(
-      findFoldedEnvParses('const { CLAUDE_MEM_X } = process.env; const a = Number(CLAUDE_MEM_X || 3);'),
+      findFoldedEnvParses('const { QWEN_MEM_X } = process.env; const a = Number(QWEN_MEM_X || 3);'),
       'destructured env missed — name-convention arm not firing',
     ).toHaveLength(1);
   });
@@ -292,12 +292,11 @@ describe('no numeric env parse may fold its own fallback into the parse', () => 
     // string both contain a slash immediately followed by a star, and a regex-based
     // block-comment stripper read that as an opener and swallowed to the next star-slash.
     // Driven on the two real shapes, taken from vitest.config.mjs and secret-scrub.mjs.
-    const glob =
-      "const exclude = ['**/node_modules/**'];\nconst a = Number(process.env.CLAUDE_MEM_X || 3);\n";
+    const glob = "const exclude = ['**/node_modules/**'];\nconst a = Number(process.env.QWEN_MEM_X || 3);\n";
     expect(stripComments(glob).split('\n')[0], 'a glob line was blanked').toContain('node_modules');
     expect(findFoldedEnvParses(glob), 'offender after a glob line is invisible').toHaveLength(1);
 
-    const url = "const R = '$1://***';\nconst a = Number(process.env.CLAUDE_MEM_Y || 3);\n";
+    const url = "const R = '$1://***';\nconst a = Number(process.env.QWEN_MEM_Y || 3);\n";
     expect(stripComments(url).split('\n')[0]).toContain('***');
     expect(findFoldedEnvParses(url)).toHaveLength(1);
   });
@@ -349,7 +348,7 @@ const dirs = [];
 function seed() {
   const dir = mkdtempSync(join(tmpdir(), 'env-number-'));
   dirs.push(dir);
-  const db = new Database(join(dir, 'claude-mem-lite.db'));
+  const db = new Database(join(dir, 'qwen-mem-lite.db'));
   initSchema(db);
   db.prepare(
     `INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch)
@@ -387,10 +386,10 @@ function runHook(dir, extraEnv, sessionId) {
     const proc = spawn(process.execPath, [SCRIPT_PATH], {
       env: {
         ...process.env,
-        CLAUDE_MEM_DIR: dir,
+        QWEN_MEM_DIR: dir,
         CLAUDE_PROJECT_DIR: '/x/envnum',
         PWD: '/x/envnum',
-        CLAUDE_MEM_SKIP_UPDATE: '1',
+        QWEN_MEM_SKIP_UPDATE: '1',
         MEM_QUIET_HOOKS: '1',
         ...extraEnv,
       },
@@ -439,13 +438,13 @@ describe('a malformed numeric env must not silence the UserPromptSubmit face', (
     );
   });
 
-  it('still injects with CLAUDE_MEM_UPS_MAX_RESULTS set to garbage', async () => {
+  it('still injects with QWEN_MEM_UPS_MAX_RESULTS set to garbage', async () => {
     // Pre-fix this returned '' : NaN reached `rows.slice(0, MAX_RESULTS)`, which is
     // `slice(0, 0)`, and the face emitted nothing at all with no error anywhere.
     const { dir, targetId } = seed();
-    const { stdout, stderr } = await runHook(dir, { CLAUDE_MEM_UPS_MAX_RESULTS: 'abc' }, 'env-garbage');
+    const { stdout, stderr } = await runHook(dir, { QWEN_MEM_UPS_MAX_RESULTS: 'abc' }, 'env-garbage');
     expect(stdout, 'garbage cap silenced the face').toContain(`#${targetId}`);
-    expect(stderr, 'fell back without telling anyone').toContain('CLAUDE_MEM_UPS_MAX_RESULTS');
+    expect(stderr, 'fell back without telling anyone').toContain('QWEN_MEM_UPS_MAX_RESULTS');
   });
 
   it('still injects with every UPS numeric knob set to garbage at once', async () => {
@@ -453,13 +452,13 @@ describe('a malformed numeric env must not silence the UserPromptSubmit face', (
     const { stdout } = await runHook(
       dir,
       {
-        CLAUDE_MEM_UPS_MAX_RESULTS: 'abc',
-        CLAUDE_MEM_UPS_PROMPT_FALLBACK_LIMIT: 'abc',
-        CLAUDE_MEM_UPS_BM25_MIN: 'abc',
-        CLAUDE_MEM_UPS_BM25_MIN_FOLLOWUP: 'abc',
-        CLAUDE_MEM_UPS_TOP_MIN: 'abc',
-        CLAUDE_MEM_UPS_OR_BM25_MIN: 'abc',
-        CLAUDE_MEM_UPS_FLOOR_REF_CORPUS: 'abc',
+        QWEN_MEM_UPS_MAX_RESULTS: 'abc',
+        QWEN_MEM_UPS_PROMPT_FALLBACK_LIMIT: 'abc',
+        QWEN_MEM_UPS_BM25_MIN: 'abc',
+        QWEN_MEM_UPS_BM25_MIN_FOLLOWUP: 'abc',
+        QWEN_MEM_UPS_TOP_MIN: 'abc',
+        QWEN_MEM_UPS_OR_BM25_MIN: 'abc',
+        QWEN_MEM_UPS_FLOOR_REF_CORPUS: 'abc',
       },
       'env-garbage-all',
     );
@@ -478,9 +477,9 @@ describe('a malformed numeric env must not silence the UserPromptSubmit face', (
     const { stderr } = await runHook(
       dir,
       {
-        CLAUDE_MEM_UPS_FLOOR_REF_CORPUS: '1',
-        CLAUDE_MEM_UPS_PROMPT_FALLBACK_LIMIT: '0',
-        CLAUDE_MEM_UPS_MAX_RESULTS: '0',
+        QWEN_MEM_UPS_FLOOR_REF_CORPUS: '1',
+        QWEN_MEM_UPS_PROMPT_FALLBACK_LIMIT: '0',
+        QWEN_MEM_UPS_MAX_RESULTS: '0',
         // The POSITIVE premise, and it is load-bearing: every other assertion here is a
         // `not.toContain`, which a process that died before parsing any env satisfies just
         // as well as one that accepted all three. The pre-tag review proved it — with
@@ -488,18 +487,18 @@ describe('a malformed numeric env must not silence the UserPromptSubmit face', (
         // this one stayed green. A garbage knob cannot be swapped for one of the three above
         // (MAX_RESULTS='0' makes stdout empty by design, so stdout is no use here); a fourth
         // one that MUST warn is what shows the process reached env parsing at all.
-        CLAUDE_MEM_UPS_BM25_MIN: 'zzz',
+        QWEN_MEM_UPS_BM25_MIN: 'zzz',
       },
       'env-low',
     );
     expect(
       stderr,
       'the hook never reached env parsing — the negative assertions below are vacuous',
-    ).toContain('CLAUDE_MEM_UPS_BM25_MIN');
+    ).toContain('QWEN_MEM_UPS_BM25_MIN');
     for (const knob of [
-      'CLAUDE_MEM_UPS_FLOOR_REF_CORPUS',
-      'CLAUDE_MEM_UPS_PROMPT_FALLBACK_LIMIT',
-      'CLAUDE_MEM_UPS_MAX_RESULTS',
+      'QWEN_MEM_UPS_FLOOR_REF_CORPUS',
+      'QWEN_MEM_UPS_PROMPT_FALLBACK_LIMIT',
+      'QWEN_MEM_UPS_MAX_RESULTS',
     ]) {
       expect(stderr, `${knob} rejected a value the code documents as meaningful`).not.toContain(knob);
     }
@@ -508,8 +507,8 @@ describe('a malformed numeric env must not silence the UserPromptSubmit face', (
   it('an explicit 0 on the floor knob still means "kill the absolute floors"', async () => {
     // The documented seed-mode switch. Guards against a fix that treats 0 as invalid.
     const { dir, targetId } = seed();
-    const { stdout, stderr } = await runHook(dir, { CLAUDE_MEM_UPS_TOP_MIN: '0' }, 'env-zero');
+    const { stdout, stderr } = await runHook(dir, { QWEN_MEM_UPS_TOP_MIN: '0' }, 'env-zero');
     expect(stdout).toContain(`#${targetId}`);
-    expect(stderr, '0 is a valid value and must not warn').not.toContain('CLAUDE_MEM_UPS_TOP_MIN');
+    expect(stderr, '0 is a valid value and must not warn').not.toContain('QWEN_MEM_UPS_TOP_MIN');
   });
 });

@@ -1,6 +1,6 @@
 // Integration tests for feature ② — repeated-read guard in
 // scripts/pre-tool-recall.js. Two sequential Read subprocesses share the
-// session cooldown (same CLAUDE_MEM_DIR + session_id), so the second sees what
+// session cooldown (same QWEN_MEM_DIR + session_id), so the second sees what
 // the first recorded. Pins the WIRING: when the warning fires vs. stays silent.
 // The decision logic itself is unit-tested in tests/reread-guard.test.mjs.
 
@@ -18,7 +18,7 @@ const SCRIPT_PATH = resolve(import.meta.dirname, '../scripts/pre-tool-recall.js'
 function runScript(input, env = {}) {
   return new Promise((resolveP, reject) => {
     const child = spawn('node', [SCRIPT_PATH], {
-      env: { ...process.env, CLAUDE_MEM_HOOK_RUNNING: '', ...env },
+      env: { ...process.env, QWEN_MEM_HOOK_RUNNING: '', ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -47,7 +47,7 @@ describe('pre-tool-recall repeated-read guard (feature ②)', () => {
     projectDir = join(tmpRoot, 'parent', 'rereadtest');
     mkdirSync(projectDir, { recursive: true });
 
-    const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+    const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
     db.pragma('foreign_keys = OFF');
     initSchema(db);
     insertSession(db, { id: 'sess-reread', project: 'parent--rereadtest', memoryId: 'mem-reread' });
@@ -60,7 +60,7 @@ describe('pre-tool-recall repeated-read guard (feature ②)', () => {
     } catch {}
   });
 
-  const env = (extra = {}) => ({ CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir, ...extra });
+  const env = (extra = {}) => ({ QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir, ...extra });
   const read = (fp, sid, extra = {}) => ({
     tool_name: 'Read',
     session_id: sid,
@@ -111,12 +111,12 @@ describe('pre-tool-recall repeated-read guard (feature ②)', () => {
     expect(stdout).toBe('');
   });
 
-  it('is disabled by CLAUDE_MEM_REREAD_GUARD=0 on the second read', async () => {
+  it('is disabled by QWEN_MEM_REREAD_GUARD=0 on the second read', async () => {
     const fp = join(projectDir, 'optout.mjs');
     writeFileSync(fp, BIG_CONTENT);
 
     await runScript(read(fp, 's5'), env()); // guard on → records
-    const { stdout } = await runScript(read(fp, 's5'), env({ CLAUDE_MEM_REREAD_GUARD: '0' }));
+    const { stdout } = await runScript(read(fp, 's5'), env({ QWEN_MEM_REREAD_GUARD: '0' }));
     expect(stdout).toBe('');
   });
 });

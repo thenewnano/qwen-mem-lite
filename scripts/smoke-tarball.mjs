@@ -43,7 +43,7 @@ function sh(cmd, args, opts = {}) {
 
 const work = mkdtempSync(join(tmpdir(), 'mem-smoke-'));
 const installDir = join(work, 'install');
-const dataDir = join(work, 'data'); // sandboxed CLAUDE_MEM_DIR — never touches the real ~/.claude-mem-lite
+const dataDir = join(work, 'data'); // sandboxed QWEN_MEM_DIR — never touches the real ~/.qwen-mem-lite
 mkdirSync(installDir, { recursive: true });
 // CI npm-12 job sets this: REQUIRE the script block to occur and the shipped
 // heal to fire (see step 3b).
@@ -128,11 +128,11 @@ try {
     log('SMOKE_FORCE_NO_PREBUILDS=1 — removed prebuilds/ + build/ to stand in for an uncovered platform');
   }
 
-  const cli = join(installDir, 'node_modules', 'claude-mem-lite', 'cli.mjs');
+  const cli = join(installDir, 'node_modules', 'qwen-mem-lite', 'cli.mjs');
 
   // 3a. Entry point loads + package wiring is intact.
   const ver = sh('node', [cli, '--version'], { cwd: installDir }).trim();
-  if (!/^claude-mem-lite v\d+\.\d+\.\d+/.test(ver)) fail(`unexpected --version output: ${ver}`);
+  if (!/^qwen-mem-lite v\d+\.\d+\.\d+/.test(ver)) fail(`unexpected --version output: ${ver}`);
   log(`entry OK — ${ver}`);
 
   // 3b. Native binding works: resolve better-sqlite3 from the INSTALLED tree
@@ -185,7 +185,7 @@ try {
       'binding unusable after npm install (npm >= 12 script block or ABI drift) — exercising the shipped heal …',
     );
     const healSrc = [
-      `const m = await import(${JSON.stringify(pathToFileURL(join(installDir, 'node_modules', 'claude-mem-lite', 'lib', 'binding-probe.mjs')).href)});`,
+      `const m = await import(${JSON.stringify(pathToFileURL(join(installDir, 'node_modules', 'qwen-mem-lite', 'lib', 'binding-probe.mjs')).href)});`,
       `const r = await m.ensureBetterSqlite3Working(${JSON.stringify(installDir)});`,
       'if (!r.ok) { console.error(r.error); process.exit(1); }',
       'process.stdout.write(r.action);',
@@ -216,7 +216,7 @@ try {
   //     against a fresh sandboxed data dir. `stats` reads the DB and exits 0 on
   //     an empty one, creating the schema on first open (the import-+-open-DB
   //     check the audit asked for).
-  sh('node', [cli, 'stats'], { cwd: installDir, env: { ...process.env, CLAUDE_MEM_DIR: dataDir } });
+  sh('node', [cli, 'stats'], { cwd: installDir, env: { ...process.env, QWEN_MEM_DIR: dataDir } });
   log('runtime OK — cli stats initialised schema and opened DB on a fresh data dir');
 
   log('PASS — published tarball installs, rebuilds native, imports, and opens a DB');

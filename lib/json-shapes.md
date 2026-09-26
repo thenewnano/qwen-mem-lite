@@ -1,6 +1,6 @@
 # CLI `--json` shapes
 
-Reference for every `claude-mem-lite <cmd> --json` output. Shapes are designed
+Reference for every `qwen-mem-lite <cmd> --json` output. Shapes are designed
 to mirror the underlying MCP `mem_*` tool data so consumers can switch
 between `agent | jq` (CLI) and the MCP tool (programmatic) without rewriting.
 

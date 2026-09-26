@@ -1,11 +1,11 @@
 ---
 name: adopt
-description: "Use when: user asks to increase claude-mem-lite's tool-invocation rate in the current project, or to (re)install the steering block. Writes a sentinel-wrapped managed block into <cwd>/CLAUDE.md plus a <cwd>/.claude/plugin_claude_mem_lite.md detail doc, and migrates away any legacy memory-dir sentinel. Runs automatically on SessionStart; use this to force it now. Run /unadopt to remove."
+description: "Use when: user asks to increase qwen-mem-lite's tool-invocation rate in the current project, or to (re)install the steering block. Writes a sentinel-wrapped managed block into <cwd>/CLAUDE.md plus a <cwd>/.claude/plugin_qwen_mem_lite.md detail doc, and migrates away any legacy memory-dir sentinel. Runs automatically on SessionStart; use this to force it now. Run /unadopt to remove."
 ---
 
 # /adopt
 
-Install the claude-mem-lite **steering block** into the current project's
+Install the qwen-mem-lite **steering block** into the current project's
 `CLAUDE.md` (the canonical home for project instructions — loaded by Claude Code
 at system-prompt authority). This replaces the pre-v3.13 scheme that seeded the
 project's memory-dir `MEMORY.md`; that polluted an index meant for the user's own
@@ -16,18 +16,18 @@ force it immediately (e.g. after editing the block out by hand).
 
 ## What it writes
 
-1. **`<cwd>/CLAUDE.md`** — a concise `<!-- claude-mem-lite:begin v1 -->…<!-- :end -->`
+1. **`<cwd>/CLAUDE.md`** — a concise `<!-- qwen-mem-lite:begin v1 -->…<!-- :end -->`
    managed block (trigger table → `mem_recall` / `mem_save` / `mem_defer`).
    Slug-scoped: only this block is managed; the rest of your `CLAUDE.md` is
    preserved verbatim. Auto-refreshes when the shipped content drifts.
-2. **`<cwd>/.claude/plugin_claude_mem_lite.md`** — the full contract (tool tables,
+2. **`<cwd>/.claude/plugin_qwen_mem_lite.md`** — the full contract (tool tables,
    CLI cheatsheet, citation/decay + save discipline). First line is a
-   `<!-- managed-by: claude-mem-lite -->` marker. Not auto-loaded; the CLAUDE.md
+   `<!-- managed-by: qwen-mem-lite -->` marker. Not auto-loaded; the CLAUDE.md
    block points to it and Claude reads it on demand.
-3. **`<cwd>/.claude/.plugin_claude_mem_lite_state.json`** — drift-tracking sidecar.
+3. **`<cwd>/.claude/.plugin_qwen_mem_lite_state.json`** — drift-tracking sidecar.
 
 It also **migrates** this project's legacy memory-dir sentinel away (strips the
-`claude-mem-lite:*` block from `MEMORY.md` and deletes the old memory-dir detail
+`qwen-mem-lite:*` block from `MEMORY.md` and deletes the old memory-dir detail
 doc). Other plugins' blocks (e.g. `code-graph-mcp:*`) and your own prose survive.
 
 ## Flags
@@ -44,9 +44,9 @@ doc). Other plugins' blocks (e.g. `code-graph-mcp:*`) and your own prose survive
 ## Removal & opt-out
 
 - `/unadopt` removes the CLAUDE.md block + `.claude/` detail doc (your prose stays).
-- `claude-mem-lite adopt --disable` permanently stops auto-adopt for this project.
+- `qwen-mem-lite adopt --disable` permanently stops auto-adopt for this project.
 - `MEM_NO_AUTO_ADOPT=1` disables auto-adopt globally.
-- `CLAUDE_MEM_NO_TEMPLATE_REFRESH=1` freezes the block against drift-refresh
+- `QWEN_MEM_NO_TEMPLATE_REFRESH=1` freezes the block against drift-refresh
   (keeps your hand-edits to the managed block).
 
 ## Conservative layer still active

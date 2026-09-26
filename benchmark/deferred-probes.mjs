@@ -32,7 +32,7 @@ export const DEFERRED_FIXTURES = {
     },
     {
       title: '补充 vitest 全局 env 缺口',
-      detail: 'MEM_QUIET_HOOKS 与 CLAUDE_MEM_DIR 未在全局 setup 固定',
+      detail: 'MEM_QUIET_HOOKS 与 QWEN_MEM_DIR 未在全局 setup 固定',
       priority: 2,
     },
     {

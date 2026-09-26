@@ -1,7 +1,7 @@
-// SessionStart must not inject an EMPTY <claude-mem-context> wrapper.
+// SessionStart must not inject an EMPTY <qwen-mem-context> wrapper.
 //
 // On a brand-new install every context section is empty, and the hook still wrote
-// `<claude-mem-context>\n\n</claude-mem-context>` to stdout — which Claude Code injects
+// `<qwen-mem-context>\n\n</qwen-mem-context>` to stdout — which Claude Code injects
 // as a system-reminder. That block costs tokens and, worse, asserts a memory surface and
 // then shows nothing: "memory exists and is empty" is a reason NOT to reach for mem_*,
 // which is the opposite of what a first-run user needs.
@@ -35,14 +35,14 @@ function runSessionStart(sessionId) {
   }
 }
 
-describe('SessionStart <claude-mem-context> wrapper', () => {
+describe('SessionStart <qwen-mem-context> wrapper', () => {
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), 'mem-emptyctx-'));
     projDir = join(tmpHome, 'work', 'fresh');
     mkdirSync(projDir, { recursive: true });
-    const dbDir = join(tmpHome, '.claude-mem-lite');
+    const dbDir = join(tmpHome, '.qwen-mem-lite');
     mkdirSync(join(dbDir, 'runtime'), { recursive: true });
-    dbPath = join(dbDir, 'claude-mem-lite.db');
+    dbPath = join(dbDir, 'qwen-mem-lite.db');
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
     initSchema(db);
@@ -50,20 +50,20 @@ describe('SessionStart <claude-mem-context> wrapper', () => {
 
     env = { ...process.env };
     for (const k of Object.keys(env)) {
-      if (/^(CLAUDE_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete env[k];
+      if (/^(QWEN_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete env[k];
     }
     Object.assign(env, {
       CLAUDE_CODE_PATH: join(tmpHome, 'no-such-claude-binary'), // no LLM spend, no network
       ANTHROPIC_API_KEY: '',
       OPENROUTER_API_KEY: '',
-      CLAUDE_MEM_SKIP_UPDATE: '1',
-      CLAUDE_MEM_SKIP_EPISODE_LLM: '1',
-      CLAUDE_MEM_SKIP_COMPRESS: '1',
-      CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-      CLAUDE_MEM_SKIP_MAINTAIN: '1',
-      CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
-      CLAUDE_MEM_SKIP_REPOS: '1',
-      CLAUDE_MEM_NO_DELAY: '1',
+      QWEN_MEM_SKIP_UPDATE: '1',
+      QWEN_MEM_SKIP_EPISODE_LLM: '1',
+      QWEN_MEM_SKIP_COMPRESS: '1',
+      QWEN_MEM_SKIP_OPTIMIZE: '1',
+      QWEN_MEM_SKIP_MAINTAIN: '1',
+      QWEN_MEM_SKIP_SAVE_ENRICH: '1',
+      QWEN_MEM_SKIP_REPOS: '1',
+      QWEN_MEM_NO_DELAY: '1',
       MEM_NO_AUTO_ADOPT: '1',
     });
   });
@@ -78,10 +78,10 @@ describe('SessionStart <claude-mem-context> wrapper', () => {
 
   it('emits no wrapper at all when there is nothing to put in it', () => {
     const stdout = runSessionStart('cc-empty-1');
-    expect(stdout).not.toContain('<claude-mem-context>');
+    expect(stdout).not.toContain('<qwen-mem-context>');
     // The startup dashboard is a separate channel (JSON additionalContext) and is
     // allowed to speak; only the empty memory block must be gone.
-    expect(stdout).not.toContain('</claude-mem-context>');
+    expect(stdout).not.toContain('</qwen-mem-context>');
   });
 
   it('still emits the wrapper as soon as there is content', () => {
@@ -106,8 +106,8 @@ describe('SessionStart <claude-mem-context> wrapper', () => {
     db.close();
 
     const stdout = runSessionStart('cc-nonempty-1');
-    expect(stdout).toContain('<claude-mem-context>');
-    expect(stdout).toContain('</claude-mem-context>');
+    expect(stdout).toContain('<qwen-mem-context>');
+    expect(stdout).toContain('</qwen-mem-context>');
     expect(stdout).toContain('Retry budget was shared across shards');
   });
 });

@@ -1,4 +1,4 @@
-// claude-mem-lite shared project resolution
+// qwen-mem-lite shared project resolution
 // Extracted from server.mjs and mem-cli.mjs to eliminate duplication
 
 import { basename, dirname } from 'path';
@@ -14,7 +14,7 @@ const _cache = new Map();
  * Format: "parent--basename" with non-alphanumeric chars replaced by hyphens.
  *
  * Deliberately does NOT anchor on the git work-tree root. That was tried and reverted
- * before it shipped: it fixes `cd src/auth && claude-mem-lite recent` (session rooted at
+ * before it shipped: it fixes `cd src/auth && qwen-mem-lite recent` (session rooted at
  * the repo root, CLI run deeper) but BREAKS the mirror case, which is more common —
  * CLAUDE_PROJECT_DIR is the directory Claude Code was started in, not the repo root, so
  * `cd packages/api && claude` makes hooks write `packages--api` while a plain terminal in

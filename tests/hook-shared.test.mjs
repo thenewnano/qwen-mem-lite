@@ -48,7 +48,7 @@ vi.mock('../memdir.mjs', () => ({
 }));
 
 vi.mock('../adopt-content.mjs', () => ({
-  PLUGIN_SLUG: 'claude-mem-lite',
+  PLUGIN_SLUG: 'qwen-mem-lite',
 }));
 
 import { execFileSync } from 'child_process';

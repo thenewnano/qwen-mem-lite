@@ -63,13 +63,13 @@ const baseEnv = (extra = {}) => ({
   ...process.env,
   // Scrubbed, not inherited: a dev or CI shell that exports the opt-out would turn most
   // of this file red for a reason that has nothing to do with the code under test.
-  CLAUDE_MEM_SKIP_DEMOTE_PINNED: undefined,
-  CLAUDE_MEM_DIR: dir,
-  CLAUDE_MEM_SKIP_UPDATE: '1',
-  CLAUDE_MEM_SKIP_COMPRESS: '1',
-  CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-  CLAUDE_MEM_SKIP_EPISODE_LLM: '1',
-  CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
+  QWEN_MEM_SKIP_DEMOTE_PINNED: undefined,
+  QWEN_MEM_DIR: dir,
+  QWEN_MEM_SKIP_UPDATE: '1',
+  QWEN_MEM_SKIP_COMPRESS: '1',
+  QWEN_MEM_SKIP_OPTIMIZE: '1',
+  QWEN_MEM_SKIP_EPISODE_LLM: '1',
+  QWEN_MEM_SKIP_SAVE_ENRICH: '1',
   MEM_QUIET_HOOKS: '1',
   MEM_NO_AUTO_ADOPT: '1',
   ...extra,
@@ -84,7 +84,7 @@ function seedPinnedRow({
   importance = 2,
   accessCount = 9,
 } = {}) {
-  const db = new Database(join(dir, 'claude-mem-lite.db'));
+  const db = new Database(join(dir, 'qwen-mem-lite.db'));
   const now = Date.now();
   db.prepare(
     'INSERT OR IGNORE INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)' +
@@ -100,7 +100,7 @@ function seedPinnedRow({
 }
 
 function importanceOf(title = 'Pinned but never cited') {
-  const db = new Database(join(dir, 'claude-mem-lite.db'), { readonly: true });
+  const db = new Database(join(dir, 'qwen-mem-lite.db'), { readonly: true });
   try {
     return db.prepare('SELECT importance FROM observations WHERE title = ?').get(title).importance;
   } finally {
@@ -171,7 +171,7 @@ describe('demote_pinned: default op set and opt-out parsing (pure)', () => {
   });
 
   it('the opt-out drops demote_pinned from the default set and nothing else', () => {
-    expect(resolveDefaultMaintainOps({ CLAUDE_MEM_SKIP_DEMOTE_PINNED: '1' })).toEqual([
+    expect(resolveDefaultMaintainOps({ QWEN_MEM_SKIP_DEMOTE_PINNED: '1' })).toEqual([
       'cleanup',
       'decay',
       'boost',
@@ -183,14 +183,14 @@ describe('demote_pinned: default op set and opt-out parsing (pure)', () => {
     // First cut compared `=== '1'`, so `=true` silently got the new behaviour — the same
     // class of surprise the opt-out exists to prevent.
     for (const on of ['1', 'true', 'yes', ' 1 ', 'ON']) {
-      expect(resolveDefaultMaintainOps({ CLAUDE_MEM_SKIP_DEMOTE_PINNED: on })).toEqual([
+      expect(resolveDefaultMaintainOps({ QWEN_MEM_SKIP_DEMOTE_PINNED: on })).toEqual([
         'cleanup',
         'decay',
         'boost',
       ]);
     }
     for (const off of ['', '0', 'false', 'no', 'off']) {
-      expect(resolveDefaultMaintainOps({ CLAUDE_MEM_SKIP_DEMOTE_PINNED: off })).toEqual([
+      expect(resolveDefaultMaintainOps({ QWEN_MEM_SKIP_DEMOTE_PINNED: off })).toEqual([
         ...DEFAULT_MAINTAIN_OPS,
       ]);
     }
@@ -378,8 +378,8 @@ describe('demote_pinned is in the default maintenance set on all three faces', (
     expect(importanceOfPinnedRow()).toBe(1);
   });
 
-  it('CLAUDE_MEM_SKIP_DEMOTE_PINNED=1 leaves the row boosted to 3 on every face', () => {
-    const optOut = { CLAUDE_MEM_SKIP_DEMOTE_PINNED: '1' };
+  it('QWEN_MEM_SKIP_DEMOTE_PINNED=1 leaves the row boosted to 3 on every face', () => {
+    const optOut = { QWEN_MEM_SKIP_DEMOTE_PINNED: '1' };
     runCli(['maintain', 'execute'], optOut);
     // 3, not 2: boost still runs. Asserting "not 1" alone would also pass if the whole
     // maintain run had silently no-opped.
@@ -422,7 +422,7 @@ describe('demote_pinned is in the default maintenance set on all three faces', (
     // joined the default set. COMPRESSED_AUTO hides the row from every
     // `COALESCE(compressed_into,0)=0` read path — so it can never be injected, never
     // cited, and has no path back.
-    const db = new Database(join(dir, 'claude-mem-lite.db'));
+    const db = new Database(join(dir, 'qwen-mem-lite.db'));
     const old = Date.now() - 10 * 86400000;
     db.prepare(
       'INSERT INTO observations (memory_session_id, project, text, type, title, subtitle, narrative, concepts,' +
@@ -445,7 +445,7 @@ describe('demote_pinned is in the default maintenance set on all three faces', (
     }
     runAutoMaintain();
 
-    const check = new Database(join(dir, 'claude-mem-lite.db'), { readonly: true });
+    const check = new Database(join(dir, 'qwen-mem-lite.db'), { readonly: true });
     const row = check
       .prepare(
         "SELECT importance, compressed_into FROM observations WHERE title = 'Modified hook.mjs, server.mjs'",
@@ -481,7 +481,7 @@ describe('demote_pinned is in the default maintenance set on all three faces', (
     // "on every face". Deleting the hook's opt-out check — the ONE face that runs
     // unattended, and therefore the one a user setting this var actually needs — passed
     // all 4857 tests.
-    const optOut = { CLAUDE_MEM_SKIP_DEMOTE_PINNED: '1' };
+    const optOut = { QWEN_MEM_SKIP_DEMOTE_PINNED: '1' };
     runAutoMaintain(optOut);
     expect(importanceOfPinnedRow()).toBe(3);
 
@@ -493,7 +493,7 @@ describe('demote_pinned is in the default maintenance set on all three faces', (
   it('the opt-out does NOT gag an explicit --ops demote_pinned', () => {
     // An accepted value that silently means something else is worse than an
     // unsupported one — the opt-out scopes to the DEFAULT set only.
-    runCli(['maintain', 'execute', '--ops', 'demote_pinned'], { CLAUDE_MEM_SKIP_DEMOTE_PINNED: '1' });
+    runCli(['maintain', 'execute', '--ops', 'demote_pinned'], { QWEN_MEM_SKIP_DEMOTE_PINNED: '1' });
     expect(importanceOfPinnedRow()).toBe(1);
   });
 });

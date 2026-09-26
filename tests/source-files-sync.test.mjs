@@ -1,5 +1,5 @@
 // Regression test: hook-update.mjs's SOURCE_FILES must stay aligned with
-// install.mjs's SOURCE_FILES so auto-update never leaves a ~/.claude-mem-lite/
+// install.mjs's SOURCE_FILES so auto-update never leaves a ~/.qwen-mem-lite/
 // install missing a file that runtime entry points statically import.
 //
 // Historical bug (v2.32.x memory audit): hook-llm.mjs:18 `import './lib/activity.mjs'`
@@ -19,7 +19,7 @@ import { dirname, resolve, relative } from 'path';
 
 const ROOT = resolve(new URL('..', import.meta.url).pathname);
 
-// Modules that run from ~/.claude-mem-lite/ — every transitive static/dynamic
+// Modules that run from ~/.qwen-mem-lite/ — every transitive static/dynamic
 // import from any of these must be copied by install.mjs / hook-update.mjs.
 const ENTRY_MODULES = ['cli.mjs', 'hook.mjs', 'server.mjs', 'mem-cli.mjs', 'install.mjs'];
 

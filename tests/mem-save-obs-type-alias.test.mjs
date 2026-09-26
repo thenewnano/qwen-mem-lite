@@ -79,7 +79,7 @@ function call(args) {
 }
 
 function typesInDb() {
-  const db = new Database(join(dir, 'claude-mem-lite.db'), { readonly: true });
+  const db = new Database(join(dir, 'qwen-mem-lite.db'), { readonly: true });
   try {
     return db.prepare('SELECT id, type FROM observations ORDER BY id').all();
   } finally {
@@ -92,9 +92,9 @@ describe('mem_save — obs_type alias parity', () => {
     dir = mkdtempSync(join(tmpdir(), 'memsave-alias-'));
     env = {
       ...process.env,
-      CLAUDE_MEM_DIR: dir,
-      CLAUDE_MEM_SKIP_UPDATE: '1',
-      CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
+      QWEN_MEM_DIR: dir,
+      QWEN_MEM_SKIP_UPDATE: '1',
+      QWEN_MEM_SKIP_SAVE_ENRICH: '1',
       MEM_QUIET_HOOKS: '1',
       MEM_NO_AUTO_ADOPT: '1',
       CLAUDE_PROJECT_DIR: '/x/aliasproj',

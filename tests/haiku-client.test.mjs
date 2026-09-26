@@ -87,7 +87,7 @@ describe('haiku-client.mjs', () => {
     vi.stubEnv('OPENAI_API_KEY', '');
     vi.stubEnv('OPENAI_BASE_URL', '');
     vi.stubEnv('OPENAI_MODEL', '');
-    vi.stubEnv('CLAUDE_MEM_LLM_PROVIDER', '');
+    vi.stubEnv('QWEN_MEM_LLM_PROVIDER', '');
     // Proxy vars in the dev/CI shell would route the OpenRouter path through the
     // CONNECT tunnel (real network) instead of the mocked fetch - same #8608 trap:
     // an env-gated transport silently breaks tests that rely on the default path.
@@ -153,7 +153,7 @@ describe('haiku-client.mjs', () => {
           // R10 P2-13: NOT '/tmp'. Claude Code loads a project-level CLAUDE.md and
           // .claude/settings.json from its cwd, so a world-writable cwd is an instruction
           // injection surface on any shared host. Pinned by shape, not by the exact path,
-          // because the path is env-dependent (CLAUDE_MEM_DIR / CLAUDE_MEM_RUNTIME_DIR).
+          // because the path is env-dependent (QWEN_MEM_DIR / QWEN_MEM_RUNTIME_DIR).
           cwd: expect.stringMatching(/[/\\]cli-cwd$/),
           env: expect.objectContaining({ DISABLE_CLAUDEMD_HOOKS: '1' }),
         }),
@@ -357,9 +357,9 @@ describe('haiku-client.mjs', () => {
           // R10 P2-13: NOT '/tmp'. Claude Code loads a project-level CLAUDE.md and
           // .claude/settings.json from its cwd, so a world-writable cwd is an instruction
           // injection surface on any shared host. Pinned by shape, not by the exact path,
-          // because the path is env-dependent (CLAUDE_MEM_DIR / CLAUDE_MEM_RUNTIME_DIR).
+          // because the path is env-dependent (QWEN_MEM_DIR / QWEN_MEM_RUNTIME_DIR).
           cwd: expect.stringMatching(/[/\\]cli-cwd$/),
-          env: expect.objectContaining({ DISABLE_CLAUDEMD_HOOKS: '1', CLAUDE_MEM_HOOK_RUNNING: '1' }),
+          env: expect.objectContaining({ DISABLE_CLAUDEMD_HOOKS: '1', QWEN_MEM_HOOK_RUNNING: '1' }),
         }),
       );
     });
@@ -520,7 +520,7 @@ describe('haiku-client.mjs', () => {
           // R10 P2-13: NOT '/tmp'. Claude Code loads a project-level CLAUDE.md and
           // .claude/settings.json from its cwd, so a world-writable cwd is an instruction
           // injection surface on any shared host. Pinned by shape, not by the exact path,
-          // because the path is env-dependent (CLAUDE_MEM_DIR / CLAUDE_MEM_RUNTIME_DIR).
+          // because the path is env-dependent (QWEN_MEM_DIR / QWEN_MEM_RUNTIME_DIR).
           cwd: expect.stringMatching(/[/\\]cli-cwd$/),
           env: expect.objectContaining({ DISABLE_CLAUDEMD_HOOKS: '1' }),
         }),
@@ -872,10 +872,10 @@ describe('haiku-client.mjs', () => {
     // hardcoded 'haiku-api' log label. Two copies meant every proxy patch had to be
     // applied twice, on the code path where getting the proxy wrong costs 13.5s vs
     // 1.4s. Collapsing them is observable in exactly one place: under
-    // CLAUDE_MEM_MODEL=sonnet the failure log said `haiku-api` while calling Sonnet.
+    // QWEN_MEM_MODEL=sonnet the failure log said `haiku-api` while calling Sonnet.
     it('labels an API failure with the model actually called, not a hardcoded haiku', async () => {
       vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test-key');
-      vi.stubEnv('CLAUDE_MEM_MODEL', 'sonnet');
+      vi.stubEnv('QWEN_MEM_MODEL', 'sonnet');
       _resetMode();
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }));
       // debugLog is module-mocked at the top of this file, so assert on the mock's
@@ -1513,10 +1513,10 @@ describe('haiku-client.mjs', () => {
       expect(result).toBeNull();
     });
 
-    it('honors the CLAUDE_MEM_MODEL tier when routing to OpenRouter', async () => {
+    it('honors the QWEN_MEM_MODEL tier when routing to OpenRouter', async () => {
       vi.stubEnv('ANTHROPIC_API_KEY', '');
       vi.stubEnv('OPENROUTER_API_KEY', 'sk-or-key');
-      vi.stubEnv('CLAUDE_MEM_MODEL', 'sonnet');
+      vi.stubEnv('QWEN_MEM_MODEL', 'sonnet');
       _resetMode();
       const fetchMock = vi.fn().mockResolvedValue({
         ok: true,
@@ -1566,7 +1566,7 @@ describe('haiku-client.mjs', () => {
   });
 
   // ─── Deterministic temperature ───────────────────────────────────────────
-  // Every LLM call in claude-mem-lite is fixed-schema extraction / classification
+  // Every LLM call in qwen-mem-lite is fixed-schema extraction / classification
   // feeding deterministic downstream consumers (JSON.parse, MinHash dedup). The
   // request bodies pin temperature: 0 so the provider default (~1.0) does not
   // inject wording variance that defeats dedup or destabilizes JSON parsing.
@@ -1739,10 +1739,10 @@ describe('haiku-client.mjs', () => {
     // the tier. callHaikuJSON reaches the model through resolveModel() on ALL
     // three legs (callHaikuAPI / callOpenRouterAPI / callHaikuCLI), so pinning
     // silently downgrades registry enrichment for every user who set the
-    // documented CLAUDE_MEM_MODEL=sonnet knob.
-    it('callHaikuJSONAsync honors CLAUDE_MEM_MODEL, like its sync twin', async () => {
+    // documented QWEN_MEM_MODEL=sonnet knob.
+    it('callHaikuJSONAsync honors QWEN_MEM_MODEL, like its sync twin', async () => {
       vi.stubEnv('ANTHROPIC_API_KEY', '');
-      vi.stubEnv('CLAUDE_MEM_MODEL', 'sonnet');
+      vi.stubEnv('QWEN_MEM_MODEL', 'sonnet');
       _resetMode();
       vi.mocked(spawn).mockImplementation(() => {
         const child = makeFakeChild();
@@ -1763,7 +1763,7 @@ describe('haiku-client.mjs', () => {
     // sonnet, the assertion above is measuring the wrong contract.
     it('callHaikuJSON (sync twin) passes the same resolved model', async () => {
       vi.stubEnv('ANTHROPIC_API_KEY', '');
-      vi.stubEnv('CLAUDE_MEM_MODEL', 'sonnet');
+      vi.stubEnv('QWEN_MEM_MODEL', 'sonnet');
       _resetMode();
       vi.mocked(execFileSync).mockReturnValue('{"capability_summary":"x"}');
 

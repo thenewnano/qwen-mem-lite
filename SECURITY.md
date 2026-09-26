@@ -10,7 +10,7 @@ retroactively.
 | Version | Supported |
 | ------- | --------- |
 | latest release | ✅ |
-| anything older | ❌ (update: `claude-mem-lite self-update`, or reinstall) |
+| anything older | ❌ (update: `qwen-mem-lite self-update`, or reinstall) |
 
 ## Reporting a vulnerability
 
@@ -30,7 +30,7 @@ Include if you can:
 - the attack surface (CLI command, MCP tool, hook script, install/update path,
   release artifact),
 - a minimal reproduction,
-- the version (`claude-mem-lite --version` / `npm ls claude-mem-lite`).
+- the version (`qwen-mem-lite --version` / `npm ls qwen-mem-lite`).
 
 You can expect an acknowledgement within a few days. Fixes ship as a normal
 signed release; credit is given in the CHANGELOG unless you ask otherwise.
@@ -51,7 +51,7 @@ pins; new findings here are high-priority):
   scrubber before storage; a class of credential that survives scrubbing into
   the DB or logs is a vulnerability.
 - **Local data boundaries**: hooks and CLI must stay inside the data dir
-  (`~/.claude-mem-lite` or `CLAUDE_MEM_DIR`); path-traversal out of it via
+  (`~/.qwen-mem-lite` or `QWEN_MEM_DIR`); path-traversal out of it via
   crafted project names, import files, or release archives is a vulnerability.
 - **User-owned files**: the installer writes `~/.claude/settings.json`,
   `~/.claude.json` and an adopted project's `CLAUDE.md`. Losing, truncating or

@@ -32,10 +32,10 @@ const HOME = join(SBX, 'home');
 const PROJECT = join(SBX, 'work', 'my-app');
 const V_OLD = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
 const V_NEW = V_OLD.replace(/(\d+)$/, (m) => String(Number(m) + 1));
-const CACHE_BASE = join(HOME, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+const CACHE_BASE = join(HOME, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
 const OLD = join(CACHE_BASE, V_OLD);
 const NEW = join(CACHE_BASE, V_NEW);
-const DATA = join(HOME, '.claude-mem-lite');
+const DATA = join(HOME, '.qwen-mem-lite');
 const SESSION = 'cccccccc-1111-2222-3333-444444444444';
 
 // Every check this phase must run — see summary()'s doc.
@@ -50,7 +50,7 @@ execFileSync('git', ['init', '-q'], { cwd: PROJECT });
 writeFileSync(join(PROJECT, 'app.js'), 'export const answer = 42;\n');
 writeFileSync(
   join(HOME, '.claude', 'settings.json'),
-  JSON.stringify({ enabledPlugins: { 'claude-mem-lite@thenewnano': true } }, null, 2),
+  JSON.stringify({ enabledPlugins: { 'qwen-mem-lite@thenewnano': true } }, null, 2),
 );
 
 const envFor = (root) => sandboxEnv(HOME, { CLAUDE_PLUGIN_ROOT: root });
@@ -205,7 +205,7 @@ check('MCP from the new version answers with the old memory', () => {
 setPhase('C6: cache pruning keeps the latest 3');
 for (const v of ['3.60.0', '3.61.0', '3.62.0', '3.63.0']) {
   mkdirSync(join(CACHE_BASE, v), { recursive: true });
-  writeFileSync(join(CACHE_BASE, v, 'package.json'), JSON.stringify({ name: 'claude-mem-lite', version: v }));
+  writeFileSync(join(CACHE_BASE, v, 'package.json'), JSON.stringify({ name: 'qwen-mem-lite', version: v }));
 }
 r = runHook(`bash "${NEW}/scripts/setup.sh"`, {}, { env: envFor(NEW), cwd: PROJECT });
 check('setup.sh prunes to the latest 3 versions', () => {

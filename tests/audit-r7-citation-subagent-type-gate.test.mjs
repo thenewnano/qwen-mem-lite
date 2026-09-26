@@ -13,7 +13,7 @@
 //
 // Three downstream consumers made it more than a metering error:
 //   1. hook.mjs:1250 uses `sub.injected.size > 0` as a citation-decay ENTRY gate (with
-//      CLAUDE_MEM_SUBAGENT_DECAY defaulting on), so a phantom id starts a decay pass that
+//      QWEN_MEM_SUBAGENT_DECAY defaulting on), so a phantom id starts a decay pass that
 //      writes cited_count / uncited_streak / demoted_at on a session with no real injection.
 //   2. hook.mjs:1184 feeds `sub.injected` into buildCitationRelevanceSet, which is the
 //      allow-list for bumpCitationAccess → access_count → the `boost` maintain op → importance.
@@ -21,7 +21,7 @@
 //
 // Aggravating, and the reason the gate value had to be MEASURED rather than assumed: the
 // reader runs unconditionally (hook.mjs:1166) while the writer is default-off
-// (CLAUDE_MEM_SUBAGENT_INJECT, scripts/pre-agent-inject.js:16), so on a default install every
+// (QWEN_MEM_SUBAGENT_INJECT, scripts/pre-agent-inject.js:16), so on a default install every
 // id this extractor finds is a false positive by construction.
 //
 // GATE VALUE, MEASURED (2026-09-05, 11 real subagent transcripts under ~/.claude/projects):
@@ -45,7 +45,7 @@ import {
 // Verbatim shape emitted by scripts/pre-agent-inject.js (formatSubagentContext): a header
 // line carrying the marker, then one `  #NN — <lesson>` row per surfaced observation.
 const BLOCK = [
-  "[Project memory — surfaced by your operator's claude-mem-lite plugin]",
+  "[Project memory — surfaced by your operator's qwen-mem-lite plugin]",
   '  #9001 — SQL LIMIT upstream of a JS filter is a reachability bound.',
 ].join('\n');
 

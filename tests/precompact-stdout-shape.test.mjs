@@ -64,7 +64,7 @@ describe('handlePreCompact writes bare text, not an envelope', () => {
     }
   });
 
-  it('emits a bare <claude-mem-context> block that is not parseable as JSON', () => {
+  it('emits a bare <qwen-mem-context> block that is not parseable as JSON', () => {
     // Deferred work renders unconditionally, so this fixture does not depend on the
     // quiet/adopted gating that empties the Key Context sections under a real cwd.
     insertDeferred(db, { project: PROJECT, title: 'a carried-over item', priority: 2 });
@@ -78,7 +78,7 @@ describe('handlePreCompact writes bare text, not an envelope', () => {
     );
 
     const out = written.join('');
-    expect(out).toContain('<claude-mem-context>');
+    expect(out).toContain('<qwen-mem-context>');
     expect(
       out.trim().startsWith('{'),
       'stdout starts with { — the host would parse it as an envelope and hand the ' +

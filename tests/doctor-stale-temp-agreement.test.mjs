@@ -67,8 +67,8 @@ function runFace(face, { home, dataDir }) {
   const env = {
     ...process.env,
     HOME: home,
-    CLAUDE_MEM_DIR: dataDir,
-    CLAUDE_MEM_SKIP_UPDATE: '1',
+    QWEN_MEM_DIR: dataDir,
+    QWEN_MEM_SKIP_UPDATE: '1',
     MEM_QUIET_HOOKS: '1',
     MEM_NO_AUTO_ADOPT: '1',
   };

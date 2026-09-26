@@ -3,7 +3,7 @@
 // Found by CI, not locally: the v3.70.0 Release run reported `1 issue(s) found`
 // and exited 1 on a healthy plugin-only install because the legacy clause
 // `/claude-mem.*worker/` matched vitest's own worker —
-// `…/claude-mem-lite/node_modules/vitest/dist/workers/forks.js` — since GitHub
+// `…/qwen-mem-lite/node_modules/vitest/dist/workers/forks.js` — since GitHub
 // Actions checks the repo out into a directory named after the package. Every
 // other check was green. It was invisible on the dev machine only because that
 // checkout lives at a path with no `claude-mem` in it, which is exactly the kind
@@ -25,16 +25,16 @@ describe('isStaleMemProcess — legacy artifacts', () => {
 });
 
 describe('isStaleMemProcess — must NOT flag', () => {
-  it('vitest workers running from a checkout named claude-mem-lite (the CI false-red)', () => {
+  it('vitest workers running from a checkout named qwen-mem-lite (the CI false-red)', () => {
     const line =
       '12505 /opt/hostedtoolcache/node/22.23.2/x64/bin/node ' +
-      '--require /home/runner/work/claude-mem-lite/claude-mem-lite/node_modules/vitest/suppress-warnings.cjs ' +
-      '/home/runner/work/claude-mem-lite/claude-mem-lite/node_modules/vitest/dist/workers/forks.js';
+      '--require /home/runner/work/qwen-mem-lite/qwen-mem-lite/node_modules/vitest/suppress-warnings.cjs ' +
+      '/home/runner/work/qwen-mem-lite/qwen-mem-lite/node_modules/vitest/dist/workers/forks.js';
     expect(isStaleMemProcess(line, V)).toBe(false);
   });
 
-  it('any worker process merely living under a claude-mem-lite checkout', () => {
-    expect(isStaleMemProcess('777 node /src/claude-mem-lite/node_modules/foo/dist/worker.js', V)).toBe(false);
+  it('any worker process merely living under a qwen-mem-lite checkout', () => {
+    expect(isStaleMemProcess('777 node /src/qwen-mem-lite/node_modules/foo/dist/worker.js', V)).toBe(false);
   });
 
   it('a word that merely contains "chroma"', () => {
@@ -53,22 +53,22 @@ describe('isStaleMemProcess — must NOT flag', () => {
   });
 
   it('a shell whose arguments mention an old plugin-cache server path', () => {
-    const line = '3 /bin/zsh -c echo "…/claude-mem-lite/3.66.1/server.mjs is stale"';
+    const line = '3 /bin/zsh -c echo "…/qwen-mem-lite/3.66.1/server.mjs is stale"';
     expect(isStaleMemProcess(line, V)).toBe(false);
   });
 
   it('a grep searching for our own name', () => {
-    expect(isStaleMemProcess('4 grep -rn chroma /src/claude-mem-lite', V)).toBe(false);
+    expect(isStaleMemProcess('4 grep -rn chroma /src/qwen-mem-lite', V)).toBe(false);
   });
 
   it('an editor holding a file that talks about chroma', () => {
-    expect(isStaleMemProcess('5 /usr/bin/vim /src/claude-mem-lite/CHANGELOG.md', V)).toBe(false);
+    expect(isStaleMemProcess('5 /usr/bin/vim /src/qwen-mem-lite/CHANGELOG.md', V)).toBe(false);
   });
 
   it('the CURRENT plugin-cache launcher', () => {
     expect(
       isStaleMemProcess(
-        `999 node /home/u/.claude/plugins/cache/thenewnano/claude-mem-lite/${V}/scripts/launch.mjs`,
+        `999 node /home/u/.claude/plugins/cache/thenewnano/qwen-mem-lite/${V}/scripts/launch.mjs`,
         V,
       ),
     ).toBe(false);
@@ -82,7 +82,7 @@ describe('isStaleMemProcess — must NOT flag', () => {
   it('a path that merely CONTAINS an old server.mjs (a .bak, not an executed script)', () => {
     expect(
       isStaleMemProcess(
-        '999 node /home/u/.claude/plugins/cache/thenewnano/claude-mem-lite/3.66.1/server.mjs.bak',
+        '999 node /home/u/.claude/plugins/cache/thenewnano/qwen-mem-lite/3.66.1/server.mjs.bak',
         V,
       ),
     ).toBe(false);
@@ -97,7 +97,7 @@ describe('isStaleMemProcess — version-mismatched plugin cache', () => {
   it('flags an OLD cache version still serving the MCP server', () => {
     expect(
       isStaleMemProcess(
-        '999 node /home/u/.claude/plugins/cache/thenewnano/claude-mem-lite/3.66.1/server.mjs',
+        '999 node /home/u/.claude/plugins/cache/thenewnano/qwen-mem-lite/3.66.1/server.mjs',
         V,
       ),
     ).toBe(true);
@@ -106,7 +106,7 @@ describe('isStaleMemProcess — version-mismatched plugin cache', () => {
   it('flags an old cache launcher', () => {
     expect(
       isStaleMemProcess(
-        '999 node /home/u/.claude/plugins/cache/thenewnano/claude-mem-lite/3.66.1/scripts/launch.mjs',
+        '999 node /home/u/.claude/plugins/cache/thenewnano/qwen-mem-lite/3.66.1/scripts/launch.mjs',
         V,
       ),
     ).toBe(true);
@@ -115,7 +115,7 @@ describe('isStaleMemProcess — version-mismatched plugin cache', () => {
   it('cannot judge a mismatch when the running version is unknown', () => {
     expect(
       isStaleMemProcess(
-        '999 node /home/u/.claude/plugins/cache/thenewnano/claude-mem-lite/3.66.1/server.mjs',
+        '999 node /home/u/.claude/plugins/cache/thenewnano/qwen-mem-lite/3.66.1/server.mjs',
         '',
       ),
     ).toBe(false);

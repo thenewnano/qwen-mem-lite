@@ -1,4 +1,4 @@
-// claude-mem-lite: Background LLM workers for episode extraction and session summaries
+// qwen-mem-lite: Background LLM workers for episode extraction and session summaries
 // Extracted from hook.mjs for testability and reduced complexity
 
 import { basename, join } from 'path';
@@ -235,7 +235,7 @@ export function saveObservation(obs, projectOverride, sessionIdOverride, externa
 
     // P0: write-side noise block — LOW_SIGNAL title with no recoverable signal
     // (no lesson, importance<2, empty facts, thin narrative) is dropped before
-    // dedup/MinHash/vector work. Opt-out: CLAUDE_MEM_KEEP_LOW_SIGNAL=1.
+    // dedup/MinHash/vector work. Opt-out: QWEN_MEM_KEEP_LOW_SIGNAL=1.
     if (isNoiseObservation(obs)) {
       debugLog('DEBUG', 'saveObservation', `dropped noise: ${truncate(obs.title || '', 60)}`);
       return null;
@@ -898,7 +898,7 @@ export async function handleLLMEpisode() {
   }
 
   // Rate-limit background LLM calls to avoid competing with active sessions
-  if (!process.env.CLAUDE_MEM_NO_DELAY) {
+  if (!process.env.QWEN_MEM_NO_DELAY) {
     const sessionActive = existsSync(sessionFile());
     const delayMs = sessionActive ? 2000 + Math.random() * 3000 : 500 + Math.random() * 1000;
     debugLog(
@@ -1038,13 +1038,13 @@ ${actionList}`;
       // These types have the highest reuse value (~72.7% hit-rate vs change
       // ~16.5%), and Haiku's first pass writes NULL ~70% of the time for
       // curated observations. Retry budget: 1 extra callLLM per bugfix/decision
-      // episode. Opt-out: CLAUDE_MEM_NO_LESSON_RETRY=1.
+      // episode. Opt-out: QWEN_MEM_NO_LESSON_RETRY=1.
       let retryAttempted = false;
       let retryRecovered = false;
       if (
         isLessonLowSignal &&
         (parsed.type === 'bugfix' || parsed.type === 'decision') &&
-        !process.env.CLAUDE_MEM_NO_LESSON_RETRY
+        !process.env.QWEN_MEM_NO_LESSON_RETRY
       ) {
         retryAttempted = true;
         // The first callLLM released its slot in the finally above; this lesson
@@ -1079,7 +1079,7 @@ ${actionList}`;
       // v2.57.x B2: persist retry outcome counters. The retry path costs
       // 1 extra Haiku call per bugfix/decision episode; if recovered/attempts
       // ratio is consistently <10% over a long window, the path should be
-      // deleted to save the LLM cost. `claude-mem-lite stats --retry`
+      // deleted to save the LLM cost. `qwen-mem-lite stats --retry`
       // exposes the daily aggregate. Opens a short-lived db handle so the
       // counter survives even if the main `obs` build below fails (we want
       // the data point about the retry attempt, not just the success path).
@@ -1317,7 +1317,7 @@ ${actionList}`;
 // ─── Background: LLM Session Summary ────────────────────────────────────────
 
 export async function handleLLMSummary() {
-  const parsed = parseInt(process.env.CLAUDE_MEM_FLUSH_TIMEOUT, 10);
+  const parsed = parseInt(process.env.QWEN_MEM_FLUSH_TIMEOUT, 10);
   const flushTimeout = Number.isNaN(parsed) ? 15 : parsed;
 
   // Wait for a DEFINED SET of flush files, not for "the directory is empty" (audit

@@ -1,20 +1,20 @@
 ---
 name: unadopt
-description: "Use when: user wants to remove the claude-mem-lite steering block from the current project (or from every project Claude Code knows about with --all). Removes the <cwd>/CLAUDE.md managed block + <cwd>/.claude/plugin_claude_mem_lite.md and cleans any legacy memory-dir residue. User content outside the sentinel is preserved. Benign no-op when not adopted."
+description: "Use when: user wants to remove the qwen-mem-lite steering block from the current project (or from every project Claude Code knows about with --all). Removes the <cwd>/CLAUDE.md managed block + <cwd>/.claude/plugin_qwen_mem_lite.md and cleans any legacy memory-dir residue. User content outside the sentinel is preserved. Benign no-op when not adopted."
 ---
 
 # /unadopt
 
-Remove the claude-mem-lite steering block from the current project. Opposite of
+Remove the qwen-mem-lite steering block from the current project. Opposite of
 `/adopt`.
 
 ## What it removes
 
-1. The `<!-- claude-mem-lite:begin vN --> … <!-- claude-mem-lite:end -->` managed
+1. The `<!-- qwen-mem-lite:begin vN --> … <!-- qwen-mem-lite:end -->` managed
    block from `<cwd>/CLAUDE.md`. Everything else in the file is preserved
    byte-for-byte.
-2. `<cwd>/.claude/plugin_claude_mem_lite.md` detail doc.
-3. `<cwd>/.claude/.plugin_claude_mem_lite_state.json` sidecar (and an emptied
+2. `<cwd>/.claude/plugin_qwen_mem_lite.md` detail doc.
+3. `<cwd>/.claude/.plugin_qwen_mem_lite_state.json` sidecar (and an emptied
    `.claude/` dir).
 
 It also cleans any leftover **legacy** memory-dir sentinel + detail doc for this
@@ -34,7 +34,7 @@ project (slug-scoped — other plugins' blocks survive).
 ## Note: this does not stop auto-adopt
 
 `/unadopt` removes the block now, but the next SessionStart re-adopts unless you
-also disable it: `claude-mem-lite adopt --disable` (per-project) or
+also disable it: `qwen-mem-lite adopt --disable` (per-project) or
 `MEM_NO_AUTO_ADOPT=1` (global).
 
 ## Aftermath

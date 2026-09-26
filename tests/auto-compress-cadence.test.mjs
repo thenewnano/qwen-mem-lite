@@ -36,7 +36,7 @@ const COMPRESSED_AUTO = -1;
 let dataDir;
 
 const seed = () => {
-  const db = new Database(join(dataDir, 'claude-mem-lite.db'));
+  const db = new Database(join(dataDir, 'qwen-mem-lite.db'));
   const old = Date.now() - 10 * 86400000;
   const sess = db.prepare(
     "INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status) VALUES (?,?,?,?,?,'active')",
@@ -57,17 +57,17 @@ const runAutoMaintain = (project) =>
     cwd: REPO,
     env: {
       ...process.env,
-      CLAUDE_MEM_DIR: dataDir,
-      CLAUDE_MEM_SKIP_COMPRESS: '1',
-      CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-      CLAUDE_MEM_SKIP_EPISODE_LLM: '1',
+      QWEN_MEM_DIR: dataDir,
+      QWEN_MEM_SKIP_COMPRESS: '1',
+      QWEN_MEM_SKIP_OPTIMIZE: '1',
+      QWEN_MEM_SKIP_EPISODE_LLM: '1',
     },
     stdio: 'pipe',
     timeout: 60_000,
   });
 
 const markedCount = (project) => {
-  const db = new Database(join(dataDir, 'claude-mem-lite.db'), { readonly: true });
+  const db = new Database(join(dataDir, 'qwen-mem-lite.db'), { readonly: true });
   const row = db
     .prepare('SELECT COUNT(*) c FROM observations WHERE project = ? AND compressed_into = ?')
     .get(project, COMPRESSED_AUTO);
@@ -81,7 +81,7 @@ describe('auto-compress marking cadence across projects', () => {
     // Materialize the schema through the real path, then seed.
     execFileSync(process.execPath, [join(REPO, 'cli.mjs'), 'stats'], {
       cwd: REPO,
-      env: { ...process.env, CLAUDE_MEM_DIR: dataDir },
+      env: { ...process.env, QWEN_MEM_DIR: dataDir },
       stdio: 'pipe',
       timeout: 60_000,
     });

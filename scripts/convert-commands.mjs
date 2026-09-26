@@ -7,8 +7,8 @@ import { join, basename } from 'path';
 import { resolveDataDir } from '../lib/resolve-data-dir.mjs';
 import { parseFrontmatter } from '../lib/frontmatter.mjs';
 
-// D#29: honor CLAUDE_MEM_DIR (equals homedir when the env is unset).
-const MANAGED_DIR = join(resolveDataDir(process.env.CLAUDE_MEM_DIR), 'managed');
+// D#29: honor QWEN_MEM_DIR (equals homedir when the env is unset).
+const MANAGED_DIR = join(resolveDataDir(process.env.QWEN_MEM_DIR), 'managed');
 const AGENTS_DIR = join(MANAGED_DIR, 'agents');
 
 const DRY_RUN = process.argv.includes('--dry-run');

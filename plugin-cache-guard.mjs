@@ -17,7 +17,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 
 export const DEFAULT_MARKETPLACE = 'thenewnano';
-export const DEFAULT_PLUGIN = 'claude-mem-lite';
+export const DEFAULT_PLUGIN = 'qwen-mem-lite';
 
 function cacheBaseFor(opts) {
   const home = opts?.home || homedir();
@@ -169,7 +169,7 @@ function commandPaths(command) {
  * those entries itself. It is the wrong question for the SessionStart self-heal, whose
  * action is DESTRUCTIVE: clearing the plugin cache manifest is a dedup only while
  * settings.json really is the other registration. A user who installed globally, later
- * switched to the plugin, and removed `~/.claude-mem-lite` by hand (or by an
+ * switched to the plugin, and removed `~/.qwen-mem-lite` by hand (or by an
  * `npm uninstall -g` that never ran our `uninstall`) leaves entries that name a deleted
  * launcher. They fire nothing — and on that state the self-heal read them as a live
  * registration and emptied the ONE manifest that was working, on every single

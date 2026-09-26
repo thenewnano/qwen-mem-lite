@@ -40,7 +40,7 @@ afterAll(() => {
 function healthyHome() {
   const home = mkdtempSync(join(tmpdir(), 'doctor-branches-'));
   homes.push(home);
-  const installDir = join(home, '.claude-mem-lite');
+  const installDir = join(home, '.qwen-mem-lite');
   mkdirSync(join(installDir, 'lib'), { recursive: true });
   mkdirSync(join(installDir, 'runtime'), { recursive: true });
   for (const rel of ENTRIES) writeFileSync(join(installDir, rel), '// copy\n');
@@ -61,8 +61,8 @@ function doctorChecks(home) {
       env: {
         ...process.env,
         HOME: home,
-        CLAUDE_MEM_DIR: join(home, 'data'),
-        CLAUDE_MEM_SKIP_UPDATE: '1',
+        QWEN_MEM_DIR: join(home, 'data'),
+        QWEN_MEM_SKIP_UPDATE: '1',
         MEM_QUIET_HOOKS: '1',
       },
       encoding: 'utf8',

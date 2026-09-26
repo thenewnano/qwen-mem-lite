@@ -36,7 +36,7 @@ describe('shouldQueueSaveEnrich (trigger predicate)', () => {
   });
 
   it('respects the kill switch and the test-env gate', () => {
-    expect(shouldQueueSaveEnrich(saved, { CLAUDE_MEM_SKIP_SAVE_ENRICH: '1' })).toBe(false);
+    expect(shouldQueueSaveEnrich(saved, { QWEN_MEM_SKIP_SAVE_ENRICH: '1' })).toBe(false);
     // Without this gate every e2e save in vitest would spawn a REAL Haiku call
     // on dev machines with a logged-in claude CLI.
     expect(shouldQueueSaveEnrich(saved, { VITEST: 'true' })).toBe(false);

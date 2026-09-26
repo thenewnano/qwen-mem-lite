@@ -113,13 +113,13 @@ describe('install lifecycle checks', () => {
         join(claudeDir, 'settings.json'),
         JSON.stringify(
           {
-            enabledPlugins: { 'claude-mem-lite@thenewnano': true },
+            enabledPlugins: { 'qwen-mem-lite@thenewnano': true },
             hooks: {
               SessionStart: [
                 {
                   matcher: '*',
                   hooks: [
-                    { type: 'command', command: `node "${home}/.claude-mem-lite/hook.mjs" session-start` },
+                    { type: 'command', command: `node "${home}/.qwen-mem-lite/hook.mjs" session-start` },
                   ],
                 },
               ],
@@ -129,7 +129,7 @@ describe('install lifecycle checks', () => {
           2,
         ),
       );
-      const cacheVerDir = join(claudeDir, 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', '2.31.0');
+      const cacheVerDir = join(claudeDir, 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', '2.31.0');
       mkdirSync(join(cacheVerDir, 'hooks'), { recursive: true });
       writeFileSync(
         join(cacheVerDir, 'hooks', 'hooks.json'),
@@ -164,13 +164,13 @@ describe('install lifecycle checks', () => {
         join(claudeDir, 'settings.json'),
         JSON.stringify(
           {
-            enabledPlugins: { 'claude-mem-lite@thenewnano': true },
+            enabledPlugins: { 'qwen-mem-lite@thenewnano': true },
             hooks: {
               SessionStart: [
                 {
                   matcher: '*',
                   hooks: [
-                    { type: 'command', command: `node "${home}/.claude-mem-lite/hook.mjs" session-start` },
+                    { type: 'command', command: `node "${home}/.qwen-mem-lite/hook.mjs" session-start` },
                   ],
                 },
               ],
@@ -180,7 +180,7 @@ describe('install lifecycle checks', () => {
           2,
         ),
       );
-      const cacheVerDir = join(claudeDir, 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', '2.31.0');
+      const cacheVerDir = join(claudeDir, 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', '2.31.0');
       mkdirSync(join(cacheVerDir, 'hooks'), { recursive: true });
       writeFileSync(
         join(cacheVerDir, 'hooks', 'hooks.json'),
@@ -213,21 +213,19 @@ describe('install lifecycle checks', () => {
         join(claudeDir, 'settings.json'),
         JSON.stringify(
           {
-            enabledPlugins: { 'claude-mem-lite@thenewnano': false },
+            enabledPlugins: { 'qwen-mem-lite@thenewnano': false },
             hooks: {
               SessionStart: [
                 {
                   matcher: '*',
-                  hooks: [
-                    { type: 'command', command: 'node "/tmp/.claude-mem-lite/hook.mjs" session-start' },
-                  ],
+                  hooks: [{ type: 'command', command: 'node "/tmp/.qwen-mem-lite/hook.mjs" session-start' }],
                 },
               ],
               PostToolUse: [
                 {
                   matcher: '*',
                   hooks: [
-                    { type: 'command', command: 'bash "/tmp/.claude-mem-lite/scripts/post-tool-use.sh"' },
+                    { type: 'command', command: 'bash "/tmp/.qwen-mem-lite/scripts/post-tool-use.sh"' },
                   ],
                 },
               ],
@@ -248,7 +246,7 @@ describe('install lifecycle checks', () => {
     }
   });
 
-  it('cleanup-hooks removes only claude-mem-lite hooks and preserves other settings', () => {
+  it('cleanup-hooks removes only qwen-mem-lite hooks and preserves other settings', () => {
     const home = makeTmpDir();
     try {
       const claudeDir = join(home, '.claude');
@@ -258,14 +256,12 @@ describe('install lifecycle checks', () => {
         settingsPath,
         JSON.stringify(
           {
-            enabledPlugins: { 'claude-mem-lite@thenewnano': false, 'other@vendor': true },
+            enabledPlugins: { 'qwen-mem-lite@thenewnano': false, 'other@vendor': true },
             hooks: {
               SessionStart: [
                 {
                   matcher: '*',
-                  hooks: [
-                    { type: 'command', command: 'node "/tmp/.claude-mem-lite/hook.mjs" session-start' },
-                  ],
+                  hooks: [{ type: 'command', command: 'node "/tmp/.qwen-mem-lite/hook.mjs" session-start' }],
                 },
                 {
                   matcher: '*',
@@ -276,7 +272,7 @@ describe('install lifecycle checks', () => {
                 {
                   matcher: '*',
                   hooks: [
-                    { type: 'command', command: 'bash "/tmp/.claude-mem-lite/scripts/post-tool-use.sh"' },
+                    { type: 'command', command: 'bash "/tmp/.qwen-mem-lite/scripts/post-tool-use.sh"' },
                   ],
                 },
               ],
@@ -288,10 +284,10 @@ describe('install lifecycle checks', () => {
       );
 
       const output = runInstall('cleanup-hooks', home);
-      expect(output).toContain('Removed 2 claude-mem-lite hook configurations');
+      expect(output).toContain('Removed 2 qwen-mem-lite hook configurations');
 
       const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
-      expect(settings.enabledPlugins['claude-mem-lite@thenewnano']).toBe(false);
+      expect(settings.enabledPlugins['qwen-mem-lite@thenewnano']).toBe(false);
       expect(settings.enabledPlugins['other@vendor']).toBe(true);
       expect(settings.hooks.PostToolUse).toBeUndefined();
       expect(settings.hooks.SessionStart).toHaveLength(1);
@@ -306,13 +302,13 @@ describe('install lifecycle checks', () => {
   it('direct install clears stale disabled plugin flag without touching other plugin flags', () => {
     const settings = {
       enabledPlugins: {
-        'claude-mem-lite@thenewnano': false,
+        'qwen-mem-lite@thenewnano': false,
         'other@vendor': true,
       },
     };
 
     expect(clearPluginDisabledMarkerForDirectInstall(settings)).toBe(true);
-    expect(settings.enabledPlugins['claude-mem-lite@thenewnano']).toBeUndefined();
+    expect(settings.enabledPlugins['qwen-mem-lite@thenewnano']).toBeUndefined();
     expect(settings.enabledPlugins['other@vendor']).toBe(true);
   });
 
@@ -320,7 +316,7 @@ describe('install lifecycle checks', () => {
     expect(
       hasOtherMarketplacePlugins({
         plugins: {
-          'claude-mem-lite@thenewnano': {},
+          'qwen-mem-lite@thenewnano': {},
           'other-tool@thenewnano': {},
         },
       }),
@@ -329,7 +325,7 @@ describe('install lifecycle checks', () => {
     expect(
       hasOtherMarketplacePlugins({
         plugins: {
-          'claude-mem-lite@thenewnano': {},
+          'qwen-mem-lite@thenewnano': {},
           'other-tool@vendor': {},
         },
       }),
@@ -348,21 +344,19 @@ describe('install lifecycle checks', () => {
       // cache/<marketplace>/<plugin>/<version>/, never straight into cache/<marketplace>/.
       // The flat directory this fixture used to create meant uninstall's own-plugin cache
       // branch was never exercised here, so the two deletes could not be told apart.
-      mkdirSync(join(cacheDir, 'claude-mem-lite', '2.10.0'), { recursive: true });
-      mkdirSync(join(home, '.claude-mem-lite'), { recursive: true });
+      mkdirSync(join(cacheDir, 'qwen-mem-lite', '2.10.0'), { recursive: true });
+      mkdirSync(join(home, '.qwen-mem-lite'), { recursive: true });
       writeFileSync(
         join(claudeDir, 'settings.json'),
         JSON.stringify(
           {
-            enabledPlugins: { 'claude-mem-lite@thenewnano': true },
+            enabledPlugins: { 'qwen-mem-lite@thenewnano': true },
             extraKnownMarketplaces: { thenewnano: { url: 'https://example.com' } },
             hooks: {
               SessionStart: [
                 {
                   matcher: '*',
-                  hooks: [
-                    { type: 'command', command: 'node "/tmp/.claude-mem-lite/hook.mjs" session-start' },
-                  ],
+                  hooks: [{ type: 'command', command: 'node "/tmp/.qwen-mem-lite/hook.mjs" session-start' }],
                 },
               ],
             },
@@ -375,7 +369,7 @@ describe('install lifecycle checks', () => {
         join(pluginsDir, 'installed_plugins.json'),
         JSON.stringify(
           {
-            plugins: { 'claude-mem-lite@thenewnano': [{ version: '2.10.0' }] },
+            plugins: { 'qwen-mem-lite@thenewnano': [{ version: '2.10.0' }] },
           },
           null,
           2,
@@ -406,12 +400,12 @@ describe('install lifecycle checks', () => {
       expect(output).toContain('Data purged');
 
       const settings = JSON.parse(readFileSync(join(claudeDir, 'settings.json'), 'utf8'));
-      expect(settings.enabledPlugins?.['claude-mem-lite@thenewnano']).toBeUndefined();
+      expect(settings.enabledPlugins?.['qwen-mem-lite@thenewnano']).toBeUndefined();
       expect(settings.extraKnownMarketplaces?.thenewnano).toBeUndefined();
       expect(settings.hooks?.SessionStart).toBeUndefined();
       expect(existsSync(marketplaceDir)).toBe(false);
       expect(existsSync(cacheDir)).toBe(false);
-      expect(existsSync(join(home, '.claude-mem-lite'))).toBe(false);
+      expect(existsSync(join(home, '.qwen-mem-lite'))).toBe(false);
     } finally {
       try {
         rmSync(home, { recursive: true, force: true });
@@ -428,26 +422,26 @@ describe('install lifecycle checks', () => {
   it('uninstall reports both halves of what it leaves behind, split correctly', () => {
     const home = makeTmpDir();
     try {
-      const dataDir = join(home, '.claude-mem-lite');
+      const dataDir = join(home, '.qwen-mem-lite');
       mkdirSync(join(dataDir, 'node_modules', 'pkg'), { recursive: true });
       mkdirSync(join(home, '.claude'), { recursive: true });
       writeFileSync(join(home, '.claude', 'settings.json'), '{}');
       // 3 MiB of "memories" (DB + one snapshot, matching readSnapshots' prefix rule) and
       // 7 MiB of "rest" — distinct sizes so a swapped or merged number cannot read as pass.
-      writeFileSync(join(dataDir, 'claude-mem-lite.db'), Buffer.alloc(2 * 1024 * 1024));
-      writeFileSync(join(dataDir, 'claude-mem-lite.db.v1.bak'), Buffer.alloc(1024 * 1024));
+      writeFileSync(join(dataDir, 'qwen-mem-lite.db'), Buffer.alloc(2 * 1024 * 1024));
+      writeFileSync(join(dataDir, 'qwen-mem-lite.db.v1.bak'), Buffer.alloc(1024 * 1024));
       writeFileSync(join(dataDir, 'node_modules', 'pkg', 'big.bin'), Buffer.alloc(6 * 1024 * 1024));
       writeFileSync(join(dataDir, 'cli.mjs'), Buffer.alloc(1024 * 1024));
 
       const binDir = makeFakeClaudeBin(home);
       const output = runInstall('uninstall', home, [], { PATH: `${binDir}:${process.env.PATH}` });
 
-      expect(output).toMatch(/Data preserved: memories in .*\.claude-mem-lite \(3\.0MB\)/);
+      expect(output).toMatch(/Data preserved: memories in .*\.qwen-mem-lite \(3\.0MB\)/);
       expect(output).toMatch(/Also kept: the installed code \+ node_modules under .* \(7\.0MB\)/);
       expect(output).toContain('`uninstall --purge` removes the directory, memories included');
       // The claim the message makes about the memories has to be true.
-      expect(existsSync(join(dataDir, 'claude-mem-lite.db'))).toBe(true);
-      expect(existsSync(join(dataDir, 'claude-mem-lite.db.v1.bak'))).toBe(true);
+      expect(existsSync(join(dataDir, 'qwen-mem-lite.db'))).toBe(true);
+      expect(existsSync(join(dataDir, 'qwen-mem-lite.db.v1.bak'))).toBe(true);
     } finally {
       try {
         rmSync(home, { recursive: true, force: true });
@@ -521,9 +515,9 @@ describe('install lifecycle checks', () => {
       const logPath = join(home, 'claude-argv.log');
       mkdirSync(projectDir, { recursive: true });
       mkdirSync(binDir, { recursive: true });
-      mkdirSync(join(home, '.claude-mem-lite'), { recursive: true });
+      mkdirSync(join(home, '.qwen-mem-lite'), { recursive: true });
       // Real node_modules, so `install` has no npm work to do and the case stays fast.
-      symlinkSync(resolve('node_modules'), join(home, '.claude-mem-lite', 'node_modules'));
+      symlinkSync(resolve('node_modules'), join(home, '.qwen-mem-lite', 'node_modules'));
 
       const mcpPath = join(projectDir, '.mcp.json');
       const original = JSON.stringify(
@@ -625,8 +619,8 @@ describe('install lifecycle checks', () => {
   it('plugin setup clears stale MCP registrations and links dependencies from data dir', () => {
     const home = makeTmpDir();
     try {
-      const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+      const dataDir = join(home, '.qwen-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
       const marketplaceDir = join(home, '.claude', 'plugins', 'marketplaces', 'thenewnano');
       mkdirSync(dataDir, { recursive: true });
       mkdirSync(pluginRoot, { recursive: true });
@@ -682,8 +676,8 @@ describe('install lifecycle checks', () => {
   it('plugin setup re-clears stale global mem even if an older migration marker already exists', () => {
     const home = makeTmpDir();
     try {
-      const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+      const dataDir = join(home, '.qwen-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       mkdirSync(pluginRoot, { recursive: true });
       symlinkSync(resolve('node_modules'), join(dataDir, 'node_modules'));
@@ -727,8 +721,8 @@ describe('install lifecycle checks', () => {
     // intentionally lets it stand (next version-marker bump re-triggers).
     const home = makeTmpDir();
     try {
-      const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+      const dataDir = join(home, '.qwen-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       mkdirSync(pluginRoot, { recursive: true });
       symlinkSync(resolve('node_modules'), join(dataDir, 'node_modules'));
@@ -766,8 +760,8 @@ describe('install lifecycle checks', () => {
   it('plugin setup prunes old cache versions keeping latest 3', () => {
     const home = makeTmpDir();
     try {
-      const dataDir = join(home, '.claude-mem-lite');
-      const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+      const dataDir = join(home, '.qwen-mem-lite');
+      const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
       const pluginRoot = join(cacheBase, '2.21.0');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       symlinkSync(resolve('node_modules'), join(dataDir, 'node_modules'));
@@ -808,8 +802,8 @@ describe('install lifecycle checks', () => {
   it('plugin setup never prunes the version dir it is RUNNING from (marketplace rollback)', () => {
     const home = makeTmpDir();
     try {
-      const dataDir = join(home, '.claude-mem-lite');
-      const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+      const dataDir = join(home, '.qwen-mem-lite');
+      const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
       // Running from the OLDEST of four — rank 4 of 4, outside keep-latest-3.
       const pluginRoot = join(cacheBase, '3.90.0');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
@@ -850,8 +844,8 @@ describe('install lifecycle checks', () => {
   it('CONTROL: pruning still removes the surplus when the running root is inside keep-latest-3', () => {
     const home = makeTmpDir();
     try {
-      const dataDir = join(home, '.claude-mem-lite');
-      const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+      const dataDir = join(home, '.qwen-mem-lite');
+      const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
       const pluginRoot = join(cacheBase, '3.96.0');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       symlinkSync(resolve('node_modules'), join(dataDir, 'node_modules'));
@@ -879,13 +873,13 @@ describe('install lifecycle checks', () => {
   });
 });
 
-// ─── D#24: install layer honors CLAUDE_MEM_DIR for DATA ───────────────────────
+// ─── D#24: install layer honors QWEN_MEM_DIR for DATA ───────────────────────
 // Pre-fix install.mjs hardcoded DATA_DIR=homedir for everything while the runtime
-// (schema.mjs DB_DIR) honored CLAUDE_MEM_DIR — so under relocation the installer
+// (schema.mjs DB_DIR) honored QWEN_MEM_DIR — so under relocation the installer
 // wrote the DB/managed/registry to homedir but the runtime read the relocated dir
 // (preinstalled skills vanished, doctor read the wrong DB). Now DB/managed/registry/
 // runtime follow MEM_DATA_DIR (env-aware) while plugin CODE stays at homedir.
-describe('D#24 install layer honors CLAUDE_MEM_DIR for data', () => {
+describe('D#24 install layer honors QWEN_MEM_DIR for data', () => {
   function captureInstall(command, home, extraEnv = {}) {
     try {
       return runInstall(command, home, [], extraEnv);
@@ -895,7 +889,7 @@ describe('D#24 install layer honors CLAUDE_MEM_DIR for data', () => {
     }
   }
 
-  it('doctor reads the relocated DB (CLAUDE_MEM_DIR ≠ HOME), not the homedir code dir', () => {
+  it('doctor reads the relocated DB (QWEN_MEM_DIR ≠ HOME), not the homedir code dir', () => {
     const home = makeTmpDir();
     // Hold the PARENT: `join(makeTmpDir(), …)` discarded it, and the cleanup below removed
     // only the `relocated-mem` child — so every run of this file left one empty
@@ -903,11 +897,11 @@ describe('D#24 install layer honors CLAUDE_MEM_DIR for data', () => {
     const dataRoot = makeTmpDir();
     const dataDir = join(dataRoot, 'relocated-mem');
     mkdirSync(dataDir, { recursive: true });
-    const db = new Database(join(dataDir, 'claude-mem-lite.db'));
+    const db = new Database(join(dataDir, 'qwen-mem-lite.db'));
     initSchema(db); // creates observations_fts → doctor reports "FTS5 index: present"
     db.close();
     try {
-      const out = captureInstall('doctor', home, { CLAUDE_MEM_DIR: dataDir });
+      const out = captureInstall('doctor', home, { QWEN_MEM_DIR: dataDir });
       expect(out).toMatch(/FTS5 index: present/); // read the relocated DB's FTS table
     } finally {
       try {
@@ -919,7 +913,7 @@ describe('D#24 install layer honors CLAUDE_MEM_DIR for data', () => {
     }
   });
 
-  it('control: with no CLAUDE_MEM_DIR and an empty HOME, doctor finds no DB', () => {
+  it('control: with no QWEN_MEM_DIR and an empty HOME, doctor finds no DB', () => {
     const home = makeTmpDir();
     try {
       const out = captureInstall('doctor', home);

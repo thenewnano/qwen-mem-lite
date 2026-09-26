@@ -16,7 +16,7 @@ describe('formatErrorRecallHints (PostToolUse error-recall rendering)', () => {
 
   it('keeps the header + mem_get pointer line (back-compat with the tracked surface)', () => {
     const out = formatErrorRecallHints([{ id: 5, type: 'bugfix', title: 't', lesson_learned: null }]);
-    expect(out).toContain('[claude-mem-lite] Related memories found for this error');
+    expect(out).toContain('[qwen-mem-lite] Related memories found for this error');
     expect(out).toContain('→ Use mem_get(ids=[5]) for details.');
     expect(out.endsWith('\n')).toBe(true);
   });

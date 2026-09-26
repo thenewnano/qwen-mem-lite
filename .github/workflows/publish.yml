@@ -154,9 +154,8 @@ jobs:
         # variable NPM_PROVENANCE=true once the token is granular/automation-scoped
         # (the id-token: write permission above is harmless when provenance is OFF).
         #
-        # SKIPPED BY DEFAULT, and this fork wants it that way: the name in package.json
-        # (claude-mem-lite) is upstream's on the public registry, so this step cannot
-        # succeed here — and it is not harmless to let it fail, because the signing and
+        # SKIPPED BY DEFAULT, and this fork wants it that way: this fork ships signed GitHub
+        # releases, and it is not harmless to let an npm publish fail, because the signing and
         # GitHub-release steps run AFTER it. A dead npm publish leaves the tag with no
         # release and no signature, which is the one outcome the fork's updater cannot
         # install. Releases for this fork are GitHub releases. Set the repository variable

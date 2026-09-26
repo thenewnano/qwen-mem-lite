@@ -26,11 +26,11 @@ export const ARM_LIST = [ARMS.control, ARMS.treatment, ARMS.shuffled];
  */
 export function buildEnv(arm, { dbPath, runtimeDir }) {
   const base = {
-    CLAUDE_MEM_SKIP_UPDATE: '1',
-    CLAUDE_MEM_SKIP_OPTIMIZE: '1',
+    QWEN_MEM_SKIP_UPDATE: '1',
+    QWEN_MEM_SKIP_OPTIMIZE: '1',
     MEM_DISABLE_CITATION_DECAY: '1',
-    CLAUDE_MEM_HOOK_RUNNING: '',
+    QWEN_MEM_HOOK_RUNNING: '',
   };
   if (!arm.hooks) return base;
-  return { ...base, CLAUDE_MEM_DB_PATH: dbPath, CLAUDE_MEM_RUNTIME_DIR: runtimeDir };
+  return { ...base, QWEN_MEM_DB_PATH: dbPath, QWEN_MEM_RUNTIME_DIR: runtimeDir };
 }

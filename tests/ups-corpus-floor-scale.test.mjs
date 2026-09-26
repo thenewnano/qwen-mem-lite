@@ -98,7 +98,7 @@ describe('corpusFloorScale', () => {
   });
 
   it('treats a degenerate reference corpus as fully calibrated', async () => {
-    // CLAUDE_MEM_UPS_FLOOR_REF_CORPUS=2 or 3 makes the REFERENCE's own max IDF 0 or near
+    // QWEN_MEM_UPS_FLOOR_REF_CORPUS=2 or 3 makes the REFERENCE's own max IDF 0 or near
     // it, so the ratio would divide by zero (or explode). The `!(refIdf > 0)` guard returns
     // 1 instead — same posture as the `FLOOR_REF_CORPUS <= 1` short-circuit. Deleting that
     // guard left the whole file green before this case existed.
@@ -111,7 +111,7 @@ describe('corpusFloorScale', () => {
     // same cached instance, so `refTwo.corpusFloorScale` is the same function object.)
     // What still binds this case is the guard itself: both deleting `!(refIdf > 0)` and
     // re-freezing the reference at module load are killed by it.
-    const saved = process.env.CLAUDE_MEM_UPS_FLOOR_REF_CORPUS;
+    const saved = process.env.QWEN_MEM_UPS_FLOOR_REF_CORPUS;
     try {
       // Literal specifiers: Vite cannot analyse a template-literal dynamic import.
       //
@@ -122,18 +122,18 @@ describe('corpusFloorScale', () => {
       // is still 1, so the bug hides. At 0/0 it is NaN, which flows into
       // `TOP_REL_FLOOR * NaN` and makes every floor comparison false — both floors
       // silently off. That is the case worth pinning.
-      process.env.CLAUDE_MEM_UPS_FLOOR_REF_CORPUS = '2';
+      process.env.QWEN_MEM_UPS_FLOOR_REF_CORPUS = '2';
       const refTwo = await import('../scripts/user-prompt-search.js?ref=2');
       const degenerate = refTwo.corpusFloorScale(open(1));
       expect(Number.isNaN(degenerate), 'scale went NaN — floors silently disabled').toBe(false);
       expect(degenerate, 'ref=2 with a 1-row corpus (0/0)').toBe(1);
 
-      process.env.CLAUDE_MEM_UPS_FLOOR_REF_CORPUS = '3';
+      process.env.QWEN_MEM_UPS_FLOOR_REF_CORPUS = '3';
       const refThree = await import('../scripts/user-prompt-search.js?ref=3');
       expect(refThree.corpusFloorScale(open(10)), 'ref=3 (maxIdf near 0)').toBe(1);
     } finally {
-      if (saved === undefined) delete process.env.CLAUDE_MEM_UPS_FLOOR_REF_CORPUS;
-      else process.env.CLAUDE_MEM_UPS_FLOOR_REF_CORPUS = saved;
+      if (saved === undefined) delete process.env.QWEN_MEM_UPS_FLOOR_REF_CORPUS;
+      else process.env.QWEN_MEM_UPS_FLOOR_REF_CORPUS = saved;
     }
   });
 

@@ -22,7 +22,7 @@
 // PER-SURFACE STDOUT CONTRACT (asserted by expectHookStdout, per Claude Code's hook I/O
 // rules and the shapes tests/e2e.test.mjs + the source comments pin):
 //   hook.mjs session-start      EXACTLY ONE JSON envelope (hookEventName SessionStart),
-//                               carrying the dashboard, the <claude-mem-context> block and
+//                               carrying the dashboard, the <qwen-mem-context> block and
 //                               the update banner in additionalContext. Pre-v3.70 these were
 //                               three separate writes; the trailing raw prose made stdout
 //                               un-parseable as a JSON document and the host delivered the
@@ -35,7 +35,7 @@
 //   hook.mjs stop               SILENCE. Stop's schema rejects hookSpecificOutput at the root
 //                               (v2.33.4), so RECEIPT_EVENTS excludes it.
 //   hook.mjs user-prompt        plain text only (<memory-context> blocks).
-//   hook.mjs pre-compact        plain <claude-mem-context> only.
+//   hook.mjs pre-compact        plain <qwen-mem-context> only.
 //   background workers          SILENCE (spawnBackground gives them stdio:'ignore').
 //   PreToolUse scripts          one JSON envelope object (hookEventName PreToolUse).
 //   post-tool-recall.js         one JSON envelope object (hookEventName PostToolUse).
@@ -48,10 +48,10 @@
 // stack trace on stdout, and MUST still respect its envelope contract.
 //
 // ISOLATION CONTRACT (all five are load-bearing):
-//   1. CLAUDE_MEM_DIR → a mkdtempSync sandbox for EVERY spawned process. vitest.config.mjs
+//   1. QWEN_MEM_DIR → a mkdtempSync sandbox for EVERY spawned process. vitest.config.mjs
 //      sets it to '' for the runner, so a child that inherited it would resolve the LIVE
-//      ~/.claude-mem-lite DB. Load-bearing check: every DB assertion opens
-//      <sandbox>/claude-mem-lite.db directly — if the override ever leaked, that file would
+//      ~/.qwen-mem-lite DB. Load-bearing check: every DB assertion opens
+//      <sandbox>/qwen-mem-lite.db directly — if the override ever leaked, that file would
 //      have no `observations` table and the cases would fail loudly rather than pass while
 //      reading the real memory store.
 //   2. HOME → a sandbox home (second layer: hook-update, the plugin-disabled probe and
@@ -65,7 +65,7 @@
 //      haiku-client's CLI mode (its default with no API key) fails fast instead of spawning
 //      a real `claude`; the four background workers that exist to CALL the LLM opt in to
 //      scripts/mock-claude.mjs instead — a local deterministic stub, still no network.
-//      CLAUDE_MEM_SKIP_UPDATE=1 disables the GitHub release check on both the SessionStart
+//      QWEN_MEM_SKIP_UPDATE=1 disables the GitHub release check on both the SessionStart
 //      banner and the update-check worker.
 //   4. Nothing writes into this repo. SessionStart auto-adopts, which writes <cwd>/CLAUDE.md
 //      — the `hook.mjs session-start` case asserts that write landed in ITS sandbox dir, and
@@ -224,7 +224,7 @@ async function seedObs(cwd, text, flags = []) {
 
 /** Open the sandbox memory DB for verification independent of the hook's own read path. */
 function withDb(fn) {
-  const db = new Database(join(DATA_DIR, 'claude-mem-lite.db'));
+  const db = new Database(join(DATA_DIR, 'qwen-mem-lite.db'));
   try {
     return fn(db);
   } finally {
@@ -377,31 +377,31 @@ beforeAll(() => {
 
   BASE_ENV = { ...process.env };
   // Scrub the developer's OWN plugin flags before setting ours. A dev shell running this
-  // plugin exports CLAUDE_MEM_SUBAGENT_INJECT / CLAUDE_MEM_TASK_IMPERATIVE / MEM_QUIET_HOOKS
+  // plugin exports QWEN_MEM_SUBAGENT_INJECT / QWEN_MEM_TASK_IMPERATIVE / MEM_QUIET_HOOKS
   // etc., and `...process.env` hands every one of them to the spawned hook — which silently
   // flips default-OFF surfaces on (the #8608 leak class vitest.config.mjs scrubs for the
   // runner, but children get their env from here). Everything this sweep depends on is set
   // explicitly below; anything else must be at its shipped default.
   for (const k of Object.keys(BASE_ENV)) {
-    if (/^(CLAUDE_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete BASE_ENV[k];
+    if (/^(QWEN_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete BASE_ENV[k];
   }
   Object.assign(BASE_ENV, {
     HOME: HOME_DIR,
-    CLAUDE_MEM_DIR: DATA_DIR,
+    QWEN_MEM_DIR: DATA_DIR,
     // No reachable LLM by default: haiku-client's detectMode() falls back to 'cli' with no
     // API key and would spawn the real `claude`. The four worker cases that need an LLM
     // answer override this with scripts/mock-claude.mjs.
     CLAUDE_CODE_PATH: join(ROOT, 'no-such-claude-binary'),
     ANTHROPIC_API_KEY: '',
     OPENROUTER_API_KEY: '',
-    CLAUDE_MEM_SKIP_UPDATE: '1', // no GitHub release fetch (banner + update-check)
-    CLAUDE_MEM_SKIP_EPISODE_LLM: '1', // no detached llm-episode worker on a flush
-    CLAUDE_MEM_SKIP_COMPRESS: '1', // no detached auto-compress from SessionStart
-    CLAUDE_MEM_SKIP_OPTIMIZE: '1', // no detached llm-optimize from SessionStart
-    CLAUDE_MEM_SKIP_MAINTAIN: '1', // no detached auto-maintain from SessionStart
-    CLAUDE_MEM_SKIP_SAVE_ENRICH: '1', // no detached enrich-save from a CLI seed
-    CLAUDE_MEM_SKIP_REPOS: '1',
-    CLAUDE_MEM_NO_DELAY: '1', // background workers skip their 0.5-5s jitter
+    QWEN_MEM_SKIP_UPDATE: '1', // no GitHub release fetch (banner + update-check)
+    QWEN_MEM_SKIP_EPISODE_LLM: '1', // no detached llm-episode worker on a flush
+    QWEN_MEM_SKIP_COMPRESS: '1', // no detached auto-compress from SessionStart
+    QWEN_MEM_SKIP_OPTIMIZE: '1', // no detached llm-optimize from SessionStart
+    QWEN_MEM_SKIP_MAINTAIN: '1', // no detached auto-maintain from SessionStart
+    QWEN_MEM_SKIP_SAVE_ENRICH: '1', // no detached enrich-save from a CLI seed
+    QWEN_MEM_SKIP_REPOS: '1',
+    QWEN_MEM_NO_DELAY: '1', // background workers skip their 0.5-5s jitter
   });
   // See isolation contract #2: cwd must be the ONLY project source.
   delete BASE_ENV.CLAUDE_PROJECT_DIR;
@@ -410,7 +410,7 @@ beforeAll(() => {
 
 afterAll(async () => {
   // The Stop handler spawns a detached llm-summary worker; give it a moment to finish so it
-  // cannot recreate the data dir after rmSync (it would resolve CLAUDE_MEM_DIR and mkdir it).
+  // cannot recreate the data dir after rmSync (it would resolve QWEN_MEM_DIR and mkdir it).
   await new Promise((r) => setTimeout(r, 500));
   try {
     // Isolation contract #4: no hook fire may have touched this repo's own CLAUDE.md.
@@ -514,8 +514,8 @@ describe('hook feature sweep: hook.mjs foreground events', () => {
     // stdout-level toContain cannot tell the merged shape from the pre-v3.70 shape
     // where a second raw write made the envelope unparseable for the host.
     const ctx = envelopes[0].hookSpecificOutput.additionalContext;
-    expect(ctx).toContain('<claude-mem-context>');
-    expect(ctx).toContain('</claude-mem-context>');
+    expect(ctx).toContain('<qwen-mem-context>');
+    expect(ctx).toContain('</qwen-mem-context>');
     expect(ctx).toContain('Session start sweep event');
     expect(ctx).toContain('Fixed the widget cache invalidation race');
     // Nothing may ride outside the envelope on this surface.
@@ -533,7 +533,7 @@ describe('hook feature sweep: hook.mjs foreground events', () => {
     expect(existsSync(join(RUNTIME_DIR, `session-${project}`))).toBe(true);
     // SessionStart auto-adopts, which writes <cwd>/CLAUDE.md — here, and never the repo's
     // (afterAll asserts the negative half).
-    expect(readFileSync(join(cwd, 'CLAUDE.md'), 'utf8')).toContain('<!-- claude-mem-lite:begin');
+    expect(readFileSync(join(cwd, 'CLAUDE.md'), 'utf8')).toContain('<!-- qwen-mem-lite:begin');
 
     await expectMalformedResilience(
       'hook.mjs session-start',
@@ -820,8 +820,8 @@ describe('hook feature sweep: hook.mjs foreground events', () => {
     expect(r.code, `pre-compact exited ${r.code}\n${r.stderr}`).toBe(0);
     expectHookStdout(r.stdout, { event: null, plainAllowed: true, label: 'hook.mjs pre-compact' });
     // Functional: memory is re-emitted BEFORE compaction so the summarizer sees it.
-    expect(r.stdout.startsWith('<claude-mem-context>')).toBe(true);
-    expect(r.stdout.trimEnd().endsWith('</claude-mem-context>')).toBe(true);
+    expect(r.stdout.startsWith('<qwen-mem-context>')).toBe(true);
+    expect(r.stdout.trimEnd().endsWith('</qwen-mem-context>')).toBe(true);
     expect(r.stdout).toContain('Traced the retry backoff reset to every redirect hop');
 
     await expectMalformedResilience(
@@ -967,7 +967,7 @@ describe('hook flush: the reads-file is consumed, not accumulated (D#175)', () =
 //   default (v3.83.0: ON) — the fix. Reverting the reorder in flushEpisodeWithDb makes BOTH
 //     of its assertions fail (the file is gone after the insignificant flush, and the later
 //     row's files_read is empty). Verified by mutation, not by reading.
-//   CLAUDE_MEM_READS_CARRY=0 — the off switch, pinned against the OLD behavior. Without
+//   QWEN_MEM_READS_CARRY=0 — the off switch, pinned against the OLD behavior. Without
 //     this arm the switch is documentation: an off switch that silently stopped switching
 //     anything would keep the default arm green and nobody would know.
 //
@@ -1021,14 +1021,14 @@ describe('hook flush: an insignificant flush does not destroy accumulated Reads 
         .get(project, `%${schemaFile.split('/').pop()}%`),
     );
 
-  it('CLAUDE_MEM_READS_CARRY=0: the insignificant flush consumes and discards them (pre-D#178)', async () => {
+  it('QWEN_MEM_READS_CARRY=0: the insignificant flush consumes and discards them (pre-D#178)', async () => {
     const NAME = 'hs-readseat-off';
     const cwd = workDir(NAME);
     const project = projectOf(NAME);
     const readsFile = join(RUNTIME_DIR, `reads-${project}.txt`);
     const readA = join(cwd, 'alpha-config.mjs');
     const readB = join(cwd, 'beta-config.mjs');
-    const env = { CLAUDE_MEM_READS_CARRY: '0' };
+    const env = { QWEN_MEM_READS_CARRY: '0' };
 
     await seedReads(cwd, 'cc-off-1', [readA, readB]);
     expect(
@@ -1146,13 +1146,13 @@ describe('hook flush: an insignificant flush does not destroy accumulated Reads 
 });
 
 // ─── hook.mjs: the background workers (spawnBackground / detached) ──────────────────
-// These run under CLAUDE_MEM_HOOK_RUNNING=1 — the recursion guard exits every other event
+// These run under QWEN_MEM_HOOK_RUNNING=1 — the recursion guard exits every other event
 // immediately, so without it each case would assert "exit 0, no output" against a process
 // that never ran its handler. They are spawned with stdio:'ignore' in production, so their
 // stdout contract is silence.
 
 describe('hook feature sweep: hook.mjs background workers', () => {
-  const BG = { CLAUDE_MEM_HOOK_RUNNING: '1' };
+  const BG = { QWEN_MEM_HOOK_RUNNING: '1' };
   const WITH_MOCK_LLM = { ...BG, CLAUDE_CODE_PATH: MOCK_CLAUDE };
 
   /** Every worker: exit 0, silent stdout, no network signature. */
@@ -1459,7 +1459,7 @@ describe('hook feature sweep: hook.mjs background workers', () => {
     };
 
     // This event is spawned in production as `spawnBackground('update-check')`, i.e. with
-    // CLAUDE_MEM_HOOK_RUNNING=1. That used to kill it: `update-check` was missing from
+    // QWEN_MEM_HOOK_RUNNING=1. That used to kill it: `update-check` was missing from
     // hook.mjs's BG_EVENTS, so hook.mjs:116 exited the process before the dispatch switch,
     // which is why this case once stayed green with its handler deleted. Fixed as audit F6
     // (2026-08-14) — the production env is now pinned by
@@ -1467,27 +1467,26 @@ describe('hook feature sweep: hook.mjs background workers', () => {
     // the recursion guard"), which fires this event WITH the env var set. The arms below run
     // without BG and cover the handler's own behavior.
     //
-    // (a) Skip flag honored: CLAUDE_MEM_SKIP_UPDATE=1 (set for the whole sweep) must suppress
+    // (a) Skip flag honored: QWEN_MEM_SKIP_UPDATE=1 (set for the whole sweep) must suppress
     // the check — no release lookup at all, so no update-state.json and no banner.
-    // FAILS IF: the `isDevMode() || CLAUDE_MEM_SKIP_UPDATE` early return goes away — the stub
+    // FAILS IF: the `isDevMode() || QWEN_MEM_SKIP_UPDATE` early return goes away — the stub
     // then records the GitHub URLs and the state file appears.
     const r = await hookEvent('update-check', { cwd, stdin: '', env: OFFLINE, timeout: 60000 });
     expectSilentWorker('hook.mjs update-check', r);
     expect(
       existsSync(fetchLog),
-      'update-check attempted a release lookup despite CLAUDE_MEM_SKIP_UPDATE=1',
+      'update-check attempted a release lookup despite QWEN_MEM_SKIP_UPDATE=1',
     ).toBe(false);
-    expect(
-      existsSync(stateFile),
-      'update-check wrote update-state.json despite CLAUDE_MEM_SKIP_UPDATE=1',
-    ).toBe(false);
+    expect(existsSync(stateFile), 'update-check wrote update-state.json despite QWEN_MEM_SKIP_UPDATE=1').toBe(
+      false,
+    );
 
     // (b) The behavioral arm: flag CLEARED, so the handler runs its real no-release path.
     const live = await hookEvent('update-check', {
       cwd,
       stdin: '',
       timeout: 60000,
-      env: { ...OFFLINE, CLAUDE_MEM_SKIP_UPDATE: undefined }, // childEnv drops undefined keys
+      env: { ...OFFLINE, QWEN_MEM_SKIP_UPDATE: undefined }, // childEnv drops undefined keys
     });
     expectSilentWorker('hook.mjs update-check (offline)', live);
 
@@ -1513,7 +1512,7 @@ describe('hook feature sweep: hook.mjs background workers', () => {
     // No install may have been attempted off a failed lookup (the worker CAN install when it
     // is not in plugin mode, and this arm runs with CLAUDE_PLUGIN_ROOT unset).
     expect(
-      existsSync(join(HOME_DIR, '.claude-mem-lite', 'package.json')),
+      existsSync(join(HOME_DIR, '.qwen-mem-lite', 'package.json')),
       'a failed release lookup still touched the install dir',
     ).toBe(false);
 
@@ -1597,7 +1596,7 @@ describe('hook feature sweep: standalone hook scripts', () => {
       '--files',
       target,
     ]);
-    const BIND = { CLAUDE_MEM_SALIENCE: 'bind' };
+    const BIND = { QWEN_MEM_SALIENCE: 'bind' };
     const stdin = JSON.stringify({
       session_id: 'cc-hooksweep-bind',
       tool_name: 'Edit',
@@ -1637,7 +1636,7 @@ describe('hook feature sweep: standalone hook scripts', () => {
   });
 
   // Registered surface is the PREFILTER (audit P2-5): hooks.json names the .sh, which
-  // execs the .js only when CLAUDE_MEM_SUBAGENT_INJECT is on. Firing the .js directly here
+  // execs the .js only when QWEN_MEM_SUBAGENT_INJECT is on. Firing the .js directly here
   // would sweep a path Claude Code no longer invokes.
   itHook('scripts/pre-agent-inject.sh', async () => {
     const NAME = 'hs-agent';
@@ -1670,7 +1669,7 @@ describe('hook feature sweep: standalone hook scripts', () => {
     const r = await bashHook('pre-agent-inject.sh', {
       cwd,
       stdin,
-      env: { CLAUDE_MEM_SUBAGENT_INJECT: 'on' },
+      env: { QWEN_MEM_SUBAGENT_INJECT: 'on' },
     });
     expect(r.code, `pre-agent-inject exited ${r.code}\n${r.stderr}`).toBe(0);
     const [envelope] = expectHookStdout(r.stdout, {
@@ -1698,7 +1697,7 @@ describe('hook feature sweep: standalone hook scripts', () => {
         bashHook('pre-agent-inject.sh', {
           cwd: malCwd,
           stdin: stdinPayload,
-          env: { CLAUDE_MEM_SUBAGENT_INJECT: 'on' },
+          env: { QWEN_MEM_SUBAGENT_INJECT: 'on' },
         }),
     );
   });
@@ -1714,7 +1713,7 @@ describe('hook feature sweep: standalone hook scripts', () => {
     // with exactly one row — deterministic, and the arm the ramp exists for.
     const upsData = join(ROOT, 'data-ups');
     mkdirSync(upsData, { recursive: true });
-    const upsEnv = { CLAUDE_MEM_DIR: upsData };
+    const upsEnv = { QWEN_MEM_DIR: upsData };
     const LESSON = 'Invalidate the widget cache on write, never on read';
     // --files matters: the prompt below names widget-cache.mjs, and the row's file edge is
     // what carries it over this hook's relevance gate. The same row saved WITHOUT --files
@@ -1759,7 +1758,7 @@ describe('hook feature sweep: standalone hook scripts', () => {
     // prompt inside the dedup window do not re-inject the same rows.
     // D#120: the marker file is session-keyed — one file per CC session.
     const injected = JSON.parse(
-      readFileSync(join(upsData, 'runtime', `.claude-mem-injected-${project}-cc-hooksweep-ups`), 'utf8'),
+      readFileSync(join(upsData, 'runtime', `.qwen-mem-injected-${project}-cc-hooksweep-ups`), 'utf8'),
     );
     expect(injected.ids).toContain(id);
 
@@ -1776,7 +1775,7 @@ describe('hook feature sweep: standalone hook scripts', () => {
     const project = projectOf(NAME);
 
     // (a) Read: the ~5ms fast path records the file for episode context and returns without
-    // ever launching Node. The path lands in the SANDBOX runtime dir (CLAUDE_MEM_DIR-aware),
+    // ever launching Node. The path lands in the SANDBOX runtime dir (QWEN_MEM_DIR-aware),
     // under the project bash derives the same way inferProject() does.
     const read = await bashPrefilter({
       cwd,

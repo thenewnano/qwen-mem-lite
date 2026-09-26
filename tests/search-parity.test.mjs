@@ -193,14 +193,14 @@ function key(rows) {
  * @param {string[]} cliArgv equivalent CLI argv (positional query + flags)
  * @param {{ llm?: () => Function, autoDeep?: boolean, expectDeep?: boolean }} [opts]
  *   llm: factory returning a FRESH stub per surface (independent call counters);
- *   autoDeep: set CLAUDE_MEM_AUTO_DEEP=1 around the run (CLI opts into auto-escalation);
+ *   autoDeep: set QWEN_MEM_AUTO_DEEP=1 around the run (CLI opts into auto-escalation);
  *   expectDeep: assert BOTH surfaces took the deep path — guards the scenario against
  *   passing as a silent no-op (e.g. escalation that never fired).
  */
 function parity(name, mcpArgs, cliArgv, { llm = null, autoDeep = false, expectDeep = false } = {}) {
   test(name, async () => {
-    const prevEnv = process.env.CLAUDE_MEM_AUTO_DEEP;
-    if (autoDeep) process.env.CLAUDE_MEM_AUTO_DEEP = '1';
+    const prevEnv = process.env.QWEN_MEM_AUTO_DEEP;
+    if (autoDeep) process.env.QWEN_MEM_AUTO_DEEP = '1';
     try {
       const mcp = await runMcp(mcpArgs, llm ? llm() : null);
       const cli = await runCli(cliArgv, llm ? llm() : null);
@@ -226,8 +226,8 @@ function parity(name, mcpArgs, cliArgv, { llm = null, autoDeep = false, expectDe
       }
     } finally {
       if (autoDeep) {
-        if (prevEnv === undefined) delete process.env.CLAUDE_MEM_AUTO_DEEP;
-        else process.env.CLAUDE_MEM_AUTO_DEEP = prevEnv;
+        if (prevEnv === undefined) delete process.env.QWEN_MEM_AUTO_DEEP;
+        else process.env.QWEN_MEM_AUTO_DEEP = prevEnv;
       }
     }
   });
@@ -312,7 +312,7 @@ describe('CLI ↔ MCP search parity (audit P1-2 — one orchestrator)', () => {
   );
 
   // Auto-escalation: a 0-hit query over a >MIN_CORPUS corpus escalates on BOTH
-  // surfaces (MCP auto by default; CLI via CLAUDE_MEM_AUTO_DEEP=1) and fuses the same
+  // surfaces (MCP auto by default; CLI via QWEN_MEM_AUTO_DEEP=1) and fuses the same
   // variant set. The stub variant ('parity') hits the seeded corpus.
   parity('auto-escalation on a weak query', { query: 'zzznomatchqxz' }, ['zzznomatchqxz'], {
     llm: () => stubLLM({ variants: ['parity'] }),

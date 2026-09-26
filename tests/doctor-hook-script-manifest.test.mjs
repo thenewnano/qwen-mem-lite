@@ -2,7 +2,7 @@
 //
 // `checkDevDrift` classifies whatever the caller hands it, and install.mjs hands it
 // SOURCE_FILES — which holds zero `scripts/` entries. Hook scripts install from the
-// separate HOOK_SCRIPT_FILES manifest into `~/.claude-mem-lite/scripts/`, and every
+// separate HOOK_SCRIPT_FILES manifest into `~/.qwen-mem-lite/scripts/`, and every
 // settings.json hook command names one of those ABSOLUTE paths. So the failure
 // source-files.mjs documents — a tarball that shipped without `scripts/` — left every
 // hook dead while doctor printed an all-clear. That is the fatal-in-every-shape case
@@ -54,7 +54,7 @@ const HELPER_SCRIPT = 'prompt-search-utils.mjs';
 function doctorOn({ scriptsDir = 'copy', omitScripts = [], pluginOnly = false } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'doctor-hookscripts-'));
   homes.push(home);
-  const installDir = join(home, '.claude-mem-lite');
+  const installDir = join(home, '.qwen-mem-lite');
   mkdirSync(join(installDir, 'lib'), { recursive: true });
   mkdirSync(join(installDir, 'runtime'), { recursive: true });
   if (pluginOnly) {
@@ -67,7 +67,7 @@ function doctorOn({ scriptsDir = 'copy', omitScripts = [], pluginOnly = false } 
       'plugins',
       'cache',
       'thenewnano',
-      'claude-mem-lite',
+      'qwen-mem-lite',
       '3.72.0',
       'scripts',
     );
@@ -103,8 +103,8 @@ function doctorOn({ scriptsDir = 'copy', omitScripts = [], pluginOnly = false } 
       env: {
         ...process.env,
         HOME: home,
-        CLAUDE_MEM_DIR: join(home, 'data'),
-        CLAUDE_MEM_SKIP_UPDATE: '1',
+        QWEN_MEM_DIR: join(home, 'data'),
+        QWEN_MEM_SKIP_UPDATE: '1',
         MEM_QUIET_HOOKS: '1',
       },
       encoding: 'utf8',
@@ -253,7 +253,7 @@ describe('doctor — HOOK_SCRIPT_FILES manifest coverage', () => {
   });
 
   it('skips the check on a plugin-only install instead of prescribing a repair', () => {
-    // A plugin-only install never deploys into ~/.claude-mem-lite and runs its hooks from
+    // A plugin-only install never deploys into ~/.qwen-mem-lite and runs its hooks from
     // ${CLAUDE_PLUGIN_ROOT}, so grading it against that layout reports a broken install to a
     // correct one — the same false alarm the managed-files check already had to gate.
     // Nothing covered this branch: forcing skipScripts=false kept every test green.

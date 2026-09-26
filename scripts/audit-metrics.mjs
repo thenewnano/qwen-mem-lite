@@ -657,7 +657,7 @@ function headerOf(src) {
     .join(' ')
     .replace(/\|/g, '/')
     .replace(/\s+/g, ' ')
-    .replace(/^claude-mem-lite:?\s*/i, '')
+    .replace(/^qwen-mem-lite:?\s*/i, '')
     .replace(/^([\w./-]+\.m?js)\s*[—–-]+\s*/, '')
     .trim();
   if (!h) return '(no header comment)';

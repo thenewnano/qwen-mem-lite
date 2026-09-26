@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// claude-mem-lite CLI — lightweight command layer for direct memory access
+// qwen-mem-lite CLI — lightweight command layer for direct memory access
 // No MCP SDK or heavy deps — only imports schema.mjs and utils.mjs
 
 import { homedir } from 'os';
@@ -201,7 +201,7 @@ function emitRecallHint(db, query) {
     const n = countRecallableByFile(db, q);
     if (n > 0) {
       out(`[mem] ${n} observation(s) are linked to that file — search indexes text, not file paths.`);
-      out(`[mem] Try: claude-mem-lite recall "${queryLabel(q)}"`);
+      out(`[mem] Try: qwen-mem-lite recall "${queryLabel(q)}"`);
     }
   } catch {
     /* hint is best-effort; never break search */
@@ -220,7 +220,7 @@ async function cmdSearch(db, args, { llm } = {}) {
   if (query === null) return;
   if (!query) {
     fail(
-      '[mem] Usage: claude-mem-lite search <query> [--type TYPE] [--source SOURCE] [--limit N] [--project P] [--from DATE] [--to DATE] [--since DUR] [--importance N] [--branch B] [--offset N] [--sort relevance|time|importance] [--include-noise] [--deep] [--no-deep] [--rerank] — query may also be passed via --query "<query>"',
+      '[mem] Usage: qwen-mem-lite search <query> [--type TYPE] [--source SOURCE] [--limit N] [--project P] [--from DATE] [--to DATE] [--since DUR] [--importance N] [--branch B] [--offset N] [--sort relevance|time|importance] [--include-noise] [--deep] [--no-deep] [--rerank] — query may also be passed via --query "<query>"',
     );
     return;
   }
@@ -319,7 +319,7 @@ async function cmdSearch(db, args, { llm } = {}) {
     if (!wantDeferredTrailer) return;
     try {
       const rows = searchDeferredWork(db, query, project || cliProject(db));
-      for (const line of formatDeferredSearchTrailer(rows, 'claude-mem-lite get D#<id>')) out(line);
+      for (const line of formatDeferredSearchTrailer(rows, 'qwen-mem-lite get D#<id>')) out(line);
     } catch {
       /* trailer is best-effort; never break search */
     }
@@ -725,7 +725,7 @@ function cmdRecall(db, args) {
   if (file === null) return;
   if (!file) {
     fail(
-      '[mem] Usage: claude-mem-lite recall <file> [--limit N] [--include-noise] [--json] — file may also be passed via --file <file>',
+      '[mem] Usage: qwen-mem-lite recall <file> [--limit N] [--include-noise] [--json] — file may also be passed via --file <file>',
     );
     return;
   }
@@ -889,7 +889,7 @@ function cmdGet(db, args) {
   if (idStr === null) return;
   if (!idStr) {
     fail(
-      '[mem] Usage: claude-mem-lite get <id1,id2,...> [--source obs|session|prompt|event] [--fields f1,f2,...] — ids may also be passed via --ids 1,2\n' +
+      '[mem] Usage: qwen-mem-lite get <id1,id2,...> [--source obs|session|prompt|event] [--fields f1,f2,...] — ids may also be passed via --ids 1,2\n' +
         '        IDs accept prefix from search output: #123 (obs), P#123 (prompt), S#123 (session), E#123 (event), D#123 (deferred item, full detail).',
     );
     return;
@@ -999,7 +999,7 @@ function cmdGet(db, args) {
       bySrc.obs.length + bySrc.session.length + bySrc.prompt.length + bySrc.event.length === 0
     ) {
       fail(
-        `[mem] Deferred item(s) not found: ${deferredMissing.map((i) => `D#${i}`).join(', ')}. List open items: claude-mem-lite defer list`,
+        `[mem] Deferred item(s) not found: ${deferredMissing.map((i) => `D#${i}`).join(', ')}. List open items: qwen-mem-lite defer list`,
       );
       return;
     }
@@ -1210,7 +1210,7 @@ function cmdSave(db, args) {
   if (text === null) return;
   if (!text.trim()) {
     fail(
-      '[mem] Usage: claude-mem-lite save "<text>" [--type T] [--title T] [--importance N] [--project P] [--files f1,f2] [--lesson T] [--closes-deferred 1,D#42] [--supersedes 8754,E#10524] [--force] — content may also be passed via --text/--content "<text>"',
+      '[mem] Usage: qwen-mem-lite save "<text>" [--type T] [--title T] [--importance N] [--project P] [--files f1,f2] [--lesson T] [--closes-deferred 1,D#42] [--supersedes 8754,E#10524] [--force] — content may also be passed via --text/--content "<text>"',
     );
     return;
   }
@@ -1340,7 +1340,7 @@ function cmdSave(db, args) {
 
   if (result.kind === 'duplicate') {
     out(
-      `[mem] Skipped: similar to existing #${result.existingId}. Use "claude-mem-lite get ${result.existingId}" to review.`,
+      `[mem] Skipped: similar to existing #${result.existingId}. Use "qwen-mem-lite get ${result.existingId}" to review.`,
     );
     // D#201: the dedup swallowed the requested supersession too — say so here,
     // because this branch returns before the note below is ever reached.
@@ -1382,7 +1382,7 @@ function cmdDefer(db, args) {
       cmdDeferDrop(db, rest);
       break;
     default:
-      fail('[mem] Usage: claude-mem-lite defer <add|list|drop> ...');
+      fail('[mem] Usage: qwen-mem-lite defer <add|list|drop> ...');
       fail('[mem]   defer add "<title>" [--priority 1|2|3] [--detail T] [--files f1,f2] [--project P]');
       fail('[mem]   defer list [--project P] [--limit N]');
       fail('[mem]   defer drop <id-or-D#N> --reason "<reason>" [--project P]');
@@ -1401,7 +1401,7 @@ function cmdDeferAdd(db, args) {
   const title = resolvedTitle.trim();
   if (!title) {
     fail(
-      '[mem] Usage: claude-mem-lite defer add "<title>" [--priority 1|2|3] [--detail T] [--files f1,f2] [--project P] — title may also be passed via --title "<title>"',
+      '[mem] Usage: qwen-mem-lite defer add "<title>" [--priority 1|2|3] [--detail T] [--files f1,f2] [--project P] — title may also be passed via --title "<title>"',
     );
     return;
   }
@@ -1467,7 +1467,7 @@ function cmdDeferList(db, args) {
   if (staleHint) out(`  ${staleHint}`);
   // Affordance for the detail field — list stays title-only by design (it is
   // mirrored into the SessionStart dashboard, where detail would be noise).
-  out(`  Full detail: claude-mem-lite get D#<id>`);
+  out(`  Full detail: qwen-mem-lite get D#<id>`);
 }
 
 function cmdDeferDrop(db, args) {
@@ -1478,7 +1478,7 @@ function cmdDeferDrop(db, args) {
   if (idStr === null) return;
   if (!idStr.trim()) {
     fail(
-      '[mem] Usage: claude-mem-lite defer drop <id-or-D#N>[,id2,...] --reason "<reason>" [--project P] — id may also be passed via --id D#N',
+      '[mem] Usage: qwen-mem-lite defer drop <id-or-D#N>[,id2,...] --reason "<reason>" [--project P] — id may also be passed via --id D#N',
     );
     return;
   }
@@ -1650,11 +1650,11 @@ async function cmdStats(db, args) {
   // only (DB file + .bak aggregate), no recursive tree walk.
   let dbBytes = 0;
   try {
-    dbBytes = statSync(join(DB_DIR, 'claude-mem-lite.db')).size;
+    dbBytes = statSync(join(DB_DIR, 'qwen-mem-lite.db')).size;
   } catch {
     /* fresh */
   }
-  const snaps = listSnapshots(join(DB_DIR, 'claude-mem-lite.db'));
+  const snaps = listSnapshots(join(DB_DIR, 'qwen-mem-lite.db'));
   const backupBytes = snaps.reduce((s, x) => s + x.size, 0);
   const mb = (n) => (n / (1024 * 1024)).toFixed(1);
 
@@ -1700,7 +1700,7 @@ async function cmdStats(db, args) {
   }
 
   out(`[mem] Stats${project ? ` (${project})` : ''}:`);
-  // Env-aware data dir (CLAUDE_MEM_DIR || ~/.claude-mem-lite) — stated so any
+  // Env-aware data dir (QWEN_MEM_DIR || ~/.qwen-mem-lite) — stated so any
   // raw-db fallback can't guess a co-located-with-the-CLI path (D#92 chain).
   out(`Data dir: ${DB_DIR}`);
   out(
@@ -1740,13 +1740,13 @@ async function cmdStats(db, args) {
     `  Disk: DB ${mb(dbBytes)}MB | ${snaps.length} backup snapshot(s) ${mb(backupBytes)}MB${backupBytes > backupBudgetBytes() ? `  ← over the ${mb(backupBudgetBytes())}MB backup budget; next maintain/save snapshot evicts oldest (>7d old)` : ''}`,
   );
   // Tier-1 firing counters for ① file-intel + ② reread-guard (recorded by
-  // pre-tool-recall.js via lib/metrics.mjs; CLAUDE_MEM_METRICS=1 to enable).
+  // pre-tool-recall.js via lib/metrics.mjs; QWEN_MEM_METRICS=1 to enable).
   const featAgg = aggregateMetrics(DB_DIR, 7);
   const fiN = featAgg.file_intel?.count ?? 0;
   const rrN = featAgg.reread_warn?.count ?? 0;
-  const metricsOn = process.env.CLAUDE_MEM_METRICS === '1';
+  const metricsOn = process.env.QWEN_MEM_METRICS === '1';
   out(
-    `  Feature injections (7d): 📄 file-intel ${fiN} · 🔁 reread-warn ${rrN}${!metricsOn && fiN + rrN === 0 ? '  (set CLAUDE_MEM_METRICS=1 to record)' : ''}`,
+    `  Feature injections (7d): 📄 file-intel ${fiN} · 🔁 reread-warn ${rrN}${!metricsOn && fiN + rrN === 0 ? '  (set QWEN_MEM_METRICS=1 to record)' : ''}`,
   );
   // G13: surface the recall/enrich metering so "did the worker succeed" is
   // readable from stats, not just raw jsonl. enrich-save shows ok/total; the
@@ -1820,12 +1820,12 @@ function cmdContext(db, args) {
     out(JSON.stringify(result, null, 2));
   } else {
     // outVerbatim: `context` is the one CLI command that must EMIT a real
-    // <claude-mem-context> wrapper — it prints the same block the SessionStart hook
+    // <qwen-mem-context> wrapper — it prints the same block the SessionStart hook
     // injects, so `out`'s defang would strip the delimiters this command exists to
     // produce (the CLI twin of why <skill-loaded> is excluded from CONTEXT_DELIMITER_RE).
     // The untrusted half is already neutralized one layer up: buildSessionContextLines
     // defangs every row it renders, so only the trusted wrapper is written raw here.
-    outVerbatim(`<claude-mem-context>\n${block}\n</claude-mem-context>`);
+    outVerbatim(`<qwen-mem-context>\n${block}\n</qwen-mem-context>`);
   }
 }
 
@@ -1926,7 +1926,7 @@ function cmdDelete(db, args) {
   if (idStr === null) return;
   if (!idStr) {
     fail(
-      '[mem] Usage: claude-mem-lite delete <id1,id2,...> [--confirm] — ids may also be passed via --ids 1,2',
+      '[mem] Usage: qwen-mem-lite delete <id1,id2,...> [--confirm] — ids may also be passed via --ids 1,2',
     );
     return;
   }
@@ -1941,7 +1941,7 @@ function cmdDelete(db, args) {
   if (nonObs.length > 0) {
     fail(
       `[mem] delete only works on observations. Rejected: ${nonObs.join(', ')}. ` +
-        `Prompts, sessions, and events are not deletable here — inspect with \`claude-mem-lite get P#N --source prompt\` / \`--source session\` / \`--source event\`.`,
+        `Prompts, sessions, and events are not deletable here — inspect with \`qwen-mem-lite get P#N --source prompt\` / \`--source session\` / \`--source event\`.`,
     );
     return;
   }
@@ -2009,7 +2009,7 @@ function cmdUpdate(db, args) {
   const id = parsed && parsed.source === null ? parsed.id : NaN;
   if (!id || isNaN(id)) {
     fail(
-      '[mem] Usage: claude-mem-lite update <id> [--title T] [--type T] [--importance N] [--lesson T] [--narrative T] [--concepts T] — id may also be passed via --id N',
+      '[mem] Usage: qwen-mem-lite update <id> [--title T] [--type T] [--importance N] [--lesson T] [--narrative T] [--concepts T] — id may also be passed via --id N',
     );
     return;
   }
@@ -2225,7 +2225,7 @@ function cmdExport(db, args) {
   // outVerbatim, NOT out: `out` neutralizes structural context delimiters (cli/common.mjs)
   // because CLI stdout is model context — but this stream is a BACKUP that `restore` reads
   // back, so defanging it would silently rewrite any row whose text legitimately contains
-  // `<system-reminder>`/`</claude-mem-context>` and persist the rewrite on restore. Mirrors
+  // `<system-reminder>`/`</qwen-mem-context>` and persist the rewrite on restore. Mirrors
   // safeHandler(mem_export, { verbatim: true }) on the MCP side (audit 2026-08-14 A1).
   if (format === 'jsonl') {
     for (const r of rows) outVerbatim(JSON.stringify(r));
@@ -2261,7 +2261,7 @@ function cmdRestore(db, argv) {
   const { positional, flags } = parseArgs(argv);
   const file = positional[0];
   if (!file) {
-    fail('[mem] Usage: claude-mem-lite restore <file> [--project P] [--dry-run]');
+    fail('[mem] Usage: qwen-mem-lite restore <file> [--project P] [--dry-run]');
     return;
   }
   let raw;
@@ -2424,7 +2424,7 @@ function cmdRestore(db, argv) {
       restored++;
     } catch (e) {
       malformed++;
-      if (process.env.CLAUDE_MEM_DEBUG) process.stderr.write(`[mem] restore row failed: ${e.message}\n`);
+      if (process.env.QWEN_MEM_DEBUG) process.stderr.write(`[mem] restore row failed: ${e.message}\n`);
     }
   }
   // Fold JSONL per-line syntax failures into the malformed tally and the
@@ -2475,7 +2475,7 @@ function cmdCompress(db, args) {
   // a silent preview; fail fast pointing at the right flag. --execute still wins if both.
   if ((flags.run === true || flags.run === 'true') && flags.execute !== true && flags.execute !== 'true') {
     fail(
-      "[mem] compress executes with --execute, not --run (--run is optimize's flag). Re-run: claude-mem-lite compress --execute",
+      "[mem] compress executes with --execute, not --run (--run is optimize's flag). Re-run: qwen-mem-lite compress --execute",
     );
     return;
   }
@@ -2558,7 +2558,7 @@ function cmdMaintain(db, args) {
   const action = positional[0];
   if (!action || !['scan', 'execute'].includes(action)) {
     fail(
-      "[mem] Usage: claude-mem-lite maintain <scan|execute> [--ops cleanup,decay,boost,demote_pinned,dedup,purge_stale,vacuum] [--project P] [--retain-days N] [--merge-ids keepId:removeId,...] — 'scan' previews, 'execute' applies.",
+      "[mem] Usage: qwen-mem-lite maintain <scan|execute> [--ops cleanup,decay,boost,demote_pinned,dedup,purge_stale,vacuum] [--project P] [--retain-days N] [--merge-ids keepId:removeId,...] — 'scan' previews, 'execute' applies.",
     );
     return;
   }
@@ -2605,7 +2605,7 @@ function cmdMaintain(db, args) {
     out(`  Broken (no title/narrative): ${stats.broken}`);
     out(`  Boostable (accessed>3, imp<3): ${stats.boostable}`);
     out(
-      `  Pinned-but-uncited (inj>=${PINNED_INJ_THRESHOLD}, cited=0, above floor): ${stats.pinned} — floored by the default maintain set since v3.76.0, no lesson → 1, lesson → 2 (opt out: CLAUDE_MEM_SKIP_DEMOTE_PINNED=1)`,
+      `  Pinned-but-uncited (inj>=${PINNED_INJ_THRESHOLD}, cited=0, above floor): ${stats.pinned} — floored by the default maintain set since v3.76.0, no lesson → 1, lesson → 2 (opt out: QWEN_MEM_SKIP_DEMOTE_PINNED=1)`,
     );
     out(formatPendingPurgeLine(stats.pendingPurge));
     if (duplicates.length > 0) {
@@ -2626,7 +2626,7 @@ function cmdMaintain(db, args) {
           const remove = keep === d.a ? d.b : d.a;
           return `${keep.id}:${remove.id}`;
         });
-        out(`  Ready-to-use: claude-mem-lite maintain execute --ops dedup --merge-ids ${mergeIds.join(',')}`);
+        out(`  Ready-to-use: qwen-mem-lite maintain execute --ops dedup --merge-ids ${mergeIds.join(',')}`);
       }
 
       if (manualReview.length > 0) {
@@ -2825,8 +2825,8 @@ function _reportSidechainCiteRecall({ days, json }) {
   );
   if (sidechain.files > 0 && sidechain.injected === 0) {
     out('  → subagent transcripts exist but none carried a detectable memory injection in');
-    out('    this window. claude-mem-lite hooks do NOT fire inside subagents; the dispatch-');
-    out('    time surface (pre-agent-inject.js, CLAUDE_MEM_SUBAGENT_INJECT) prompt-injects');
+    out('    this window. qwen-mem-lite hooks do NOT fire inside subagents; the dispatch-');
+    out('    time surface (pre-agent-inject.js, QWEN_MEM_SUBAGENT_INJECT) prompt-injects');
     out('    a lesson when enabled — a 0 here means it was off or selected none for these.');
   } else if (sidechain.files === 0) {
     out('  → no subagent transcripts in window.');
@@ -3037,7 +3037,7 @@ function cmdCitationStats(db, args) {
     // created, `no such table` swallowed into the debug log) read as "no data
     // yet" for as long as the surface stayed unmetered.
     out(`  (UNAVAILABLE — the per-face table could not be read: ${surfaceFunnel.unavailable})`);
-    out('  this is a failure, not an empty window: run `claude-mem-lite fts-check` to repair the schema');
+    out('  this is a failure, not an empty window: run `qwen-mem-lite fts-check` to repair the schema');
   } else if (surfaceFunnel.surfaces.length === 0) {
     out('  (no rows in this window yet — rows accrue at Stop, one per injection face per session)');
   } else {
@@ -3090,7 +3090,7 @@ function cmdCitationStats(db, args) {
 // ─── Help ────────────────────────────────────────────────────────────────────
 
 function cmdHelp() {
-  out(`claude-mem-lite CLI
+  out(`qwen-mem-lite CLI
 
 Commands:
   search <query>        FTS5 search across observations, sessions, and prompts
@@ -3223,7 +3223,7 @@ Commands:
                         row keeps eligibility on every importance>=2 injection face).
                         In the default set since v3.76.0; runs AFTER boost, which would
                         otherwise hand the row straight back. Opt out of the DEFAULT with
-                        CLAUDE_MEM_SKIP_DEMOTE_PINNED=1 — an explicit --ops demote_pinned
+                        QWEN_MEM_SKIP_DEMOTE_PINNED=1 — an explicit --ops demote_pinned
                         still runs.
                         vacuum: reclaim freelist dead space (whole-DB, ignores --project)
 
@@ -3238,13 +3238,13 @@ Commands:
                          aliases, never rewrites title/narrative/lesson)
                         (scopes: backfill the applicability label observations.scope
                          on rows that lack it — writes ONLY that column, never stamps
-                         optimized_at; feeds CLAUDE_MEM_SCOPE_FILTER)
+                         optimized_at; feeds QWEN_MEM_SCOPE_FILTER)
     --project P         Limit to a single project (.|current = the current project)
     --verbose / -v      Preview also dumps cluster contents + re-enrich samples
 
   doctor                Environment diagnostics and benchmarks
     --benchmark         Run perf benchmark and emit JSON
-    --metrics           Summarize the recorded metrics window (CLAUDE_MEM_METRICS=1)
+    --metrics           Summarize the recorded metrics window (QWEN_MEM_METRICS=1)
     --session-audit     Audit session/episode state for orphans and drift
     --json              Machine-readable output (plain doctor run)
 
@@ -3293,8 +3293,8 @@ Commands:
     --files (plural, comma-split) preferred; --file (singular) kept for back-compat.
     Use /lesson or /bug slash commands for faster capture (T8).
 
-  adopt                 Write the claude-mem-lite managed block into this project's
-                        CLAUDE.md + a plugin_claude_mem_lite.md detail doc under
+  adopt                 Write the qwen-mem-lite managed block into this project's
+                        CLAUDE.md + a plugin_qwen_mem_lite.md detail doc under
                         .claude/ (loaded as project instructions). Runs automatically
                         on each SessionStart; use this to force it now.
     --all               Legacy sweep: strip old memory-dir (MEMORY.md) sentinels from
@@ -3304,7 +3304,7 @@ Commands:
     --dry-run           Print intended writes without touching disk
     --status            List adopted projects + version
 
-  unadopt               Precise removal of the sentinel block + plugin_claude_mem_lite.md.
+  unadopt               Precise removal of the sentinel block + plugin_qwen_mem_lite.md.
     --all               Unadopt every project
     --status            Read-only: list adopted projects (same as adopt --status)
     --dry-run           Preview what would be removed; no filesystem writes
@@ -3324,7 +3324,7 @@ async function cmdImportJsonl(db, argv) {
   const { positional, flags } = parseArgs(argv);
   const target = positional[0];
   if (!target) {
-    fail('[mem] Usage: claude-mem-lite import-jsonl <file-or-dir> [--project <name>]');
+    fail('[mem] Usage: qwen-mem-lite import-jsonl <file-or-dir> [--project <name>]');
     return;
   }
 
@@ -3412,7 +3412,7 @@ async function cmdImportJsonl(db, argv) {
     // totalObs (lib/import-jsonl.mjs), so they already count as "something was imported"
     // — an orphan-only first import must not fall through to the "already imported"
     // no-op branch below.
-    out(`[mem] Try: claude-mem-lite recent 5 --project ${project}`);
+    out(`[mem] Try: qwen-mem-lite recent 5 --project ${project}`);
   } else if (totalRecognized > 0) {
     // Lines WERE Claude Code transcript events but produced no new rows — the file
     // was already imported (idempotent re-run) or carried no extractable content.
@@ -3459,7 +3459,7 @@ async function cmdOptimize(db, args) {
   const hasExecuteFlag = args.some((a) => a === '--execute' || a.startsWith('--execute='));
   if (hasExecuteFlag && !run && !runAll) {
     fail(
-      "[mem] optimize executes with --run, not --execute (--execute is compress's flag). Re-run: claude-mem-lite optimize --run",
+      "[mem] optimize executes with --run, not --execute (--execute is compress's flag). Re-run: qwen-mem-lite optimize --run",
     );
     return;
   }
@@ -3687,7 +3687,7 @@ async function runDispatch(argv) {
     process.stderr.write(
       suggestion
         ? `[mem] Unknown flag --${flag}; did you mean --${suggestion}?\n`
-        : `[mem] Unknown flag --${flag} — ignored, it had no effect. Run "claude-mem-lite help" for this command's flags.\n`,
+        : `[mem] Unknown flag --${flag} — ignored, it had no effect. Run "qwen-mem-lite help" for this command's flags.\n`,
     );
   }
 
@@ -3893,7 +3893,7 @@ async function runDispatch(argv) {
         break;
       default:
         out(`[mem] Unknown command: ${cmd}`);
-        out('[mem] Run "claude-mem-lite help" for usage');
+        out('[mem] Run "qwen-mem-lite help" for usage');
         process.exitCode = 1;
     }
   } catch (e) {
@@ -3916,7 +3916,7 @@ async function runDispatch(argv) {
     }
     // R10 P3-17: everything else used to be re-thrown, so the terminal — and, when the
     // agent runs the CLI, the model's context — got a raw Node stack trace. Print the
-    // message, keep the stack behind CLAUDE_MEM_DEBUG for whoever is actually debugging.
+    // message, keep the stack behind QWEN_MEM_DEBUG for whoever is actually debugging.
     process.stderr.write(`[mem] ${cmd || 'command'} failed: ${(e && e.message) || e}\n`);
     // A damaged FTS5 index reaches here as SQLITE_CORRUPT_VTAB from the first MATCH.
     // `fts-check` and `doctor` touch the index too — and both already explain themselves —
@@ -3924,7 +3924,7 @@ async function runDispatch(argv) {
     // `recall` / `browse` / `context` / `stats` never read the index and keep working.
     // The remedy is lossless (see FTS_CORRUPTION_REMEDY); the exit code stays 1.
     if (isFtsCorruptionError(e)) process.stderr.write(`[mem] ${FTS_CORRUPTION_REMEDY}\n`);
-    if (process.env.CLAUDE_MEM_DEBUG) process.stderr.write(`${(e && e.stack) || ''}\n`);
+    if (process.env.QWEN_MEM_DEBUG) process.stderr.write(`${(e && e.stack) || ''}\n`);
     process.exitCode = 1;
   } finally {
     try {

@@ -13,7 +13,7 @@
 // real WAL semantics at all; the first test below pins that contrast explicitly.
 //
 // server.mjs opens its DB at module scope (import = execute), so every case here drives
-// it as a spawned process against a real on-disk CLAUDE_MEM_DIR, like tests/mcp-protocol.
+// it as a spawned process against a real on-disk QWEN_MEM_DIR, like tests/mcp-protocol.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, execFileSync } from 'child_process';
@@ -23,12 +23,12 @@ import { join, resolve } from 'path';
 import Database from 'better-sqlite3';
 
 const SERVER_PATH = resolve(import.meta.dirname, '../server.mjs');
-const DB_NAME = 'claude-mem-lite.db';
+const DB_NAME = 'qwen-mem-lite.db';
 
-// schema.mjs resolves DB_DIR from CLAUDE_MEM_DIR at import time, so point it at a
-// throwaway sandbox BEFORE the dynamic import (vitest.config forces CLAUDE_MEM_DIR='').
+// schema.mjs resolves DB_DIR from QWEN_MEM_DIR at import time, so point it at a
+// throwaway sandbox BEFORE the dynamic import (vitest.config forces QWEN_MEM_DIR='').
 const SANDBOX = mkdtempSync(join(tmpdir(), 'mem-wal-sandbox-'));
-process.env.CLAUDE_MEM_DIR = SANDBOX;
+process.env.QWEN_MEM_DIR = SANDBOX;
 const { ensureDb, DB_PATH, CURRENT_SCHEMA_VERSION } = await import('../schema.mjs');
 
 const fixtures = [];
@@ -69,7 +69,7 @@ function walChecksum(buf, s0, s1, bigEndian) {
 }
 
 /**
- * Build `<dir>/claude-mem-lite.db` + a `-wal` whose page-1 frame is checksum-valid but
+ * Build `<dir>/qwen-mem-lite.db` + a `-wal` whose page-1 frame is checksum-valid but
  * carries a corrupt page image. Main DB file is byte-identical to the pristine baseline,
  * so deleting the WAL is genuinely the right repair — the case the branch exists for.
  */
@@ -121,14 +121,14 @@ function runServer(dir, { timeoutMs = 20000 } = {}) {
     const child = spawn(process.execPath, [SERVER_PATH], {
       env: {
         ...process.env,
-        CLAUDE_MEM_DIR: dir,
+        QWEN_MEM_DIR: dir,
         CLAUDE_PROJECT_DIR: '/test/wal-project',
         PWD: '/test/wal-project',
-        CLAUDE_MEM_SKIP_MAINTAIN: '1',
-        CLAUDE_MEM_AUTO_DEEP: '0',
+        QWEN_MEM_SKIP_MAINTAIN: '1',
+        QWEN_MEM_AUTO_DEEP: '0',
         // Un-gate the recovery-arm debugLog lines (server.mjs:86,91) so the stderr
         // markers below deterministically distinguish which arm ran.
-        CLAUDE_MEM_DEBUG: '1',
+        QWEN_MEM_DEBUG: '1',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -185,7 +185,7 @@ describe('file-backed WAL semantics', () => {
          db.close();
        })`,
       ],
-      { env: { ...process.env, CLAUDE_MEM_DIR: dir }, encoding: 'utf8' },
+      { env: { ...process.env, QWEN_MEM_DIR: dir }, encoding: 'utf8' },
     );
     expect(out.trim()).toBe('wal');
     expect(existsSync(join(dir, DB_NAME))).toBe(true);
@@ -233,7 +233,7 @@ describe('corruption recovery branch', () => {
   // prove server.mjs matched the signature and ran the recovery arm (deleted -wal/-shm,
   // retried ensureDb) rather than the transient fail-fast arm:
   //   present: "DB corruption detected, attempting WAL recovery" (the recovery-arm log,
-  //            surfaced by the CLAUDE_MEM_DEBUG=1 that runServer sets)
+  //            surfaced by the QWEN_MEM_DEBUG=1 that runServer sets)
   //   absent:  "Left WAL/SHM intact" (the fail-fast arm's banner)
   // Deliberately NOT asserted: the post-run -wal/-shm existence (a failed retry reopens in
   // WAL mode and recreates a 0-byte -wal), and whether the server ultimately serves —
@@ -329,7 +329,7 @@ describe('non-corruption open failure', () => {
 // (openDb → silent null) and the CLI (raw throw) left a corrupt WAL in place
 // until the next MCP server start. Now schema.mjs owns ensureDbWithWalRecovery
 // and all three openers route through it. Child processes because schema.mjs
-// freezes DB_PATH from CLAUDE_MEM_DIR at import time.
+// freezes DB_PATH from QWEN_MEM_DIR at import time.
 
 describe('shared WAL recovery (schema.ensureDbWithWalRecovery / hook openDb)', () => {
   it('ensureDbWithWalRecovery enters the recovery arm and tags a failed retry', () => {
@@ -350,7 +350,7 @@ describe('shared WAL recovery (schema.ensureDbWithWalRecovery / hook openDb)', (
          }
        })`,
       ],
-      { env: { ...process.env, CLAUDE_MEM_DIR: dir }, encoding: 'utf8' },
+      { env: { ...process.env, QWEN_MEM_DIR: dir }, encoding: 'utf8' },
     );
     const r = JSON.parse(out.trim());
     expect(r.msgs.some((m) => m.includes('DB corruption detected, attempting WAL recovery'))).toBe(true);
@@ -381,7 +381,7 @@ describe('shared WAL recovery (schema.ensureDbWithWalRecovery / hook openDb)', (
          }));
        })`,
       ],
-      { env: { ...process.env, CLAUDE_MEM_DIR: dir }, encoding: 'utf8' },
+      { env: { ...process.env, QWEN_MEM_DIR: dir }, encoding: 'utf8' },
     );
     const r = JSON.parse(out.trim());
     // Contract unchanged for callers: unrecoverable → null, hooks degrade.

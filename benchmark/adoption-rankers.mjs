@@ -17,14 +17,14 @@ import { envNumber } from '../lib/env-number.mjs';
 // Same parse as the live ranker's, through the same helper — a ruler that read a
 // malformed knob as NaN would score `cand.filter(c => c.runningVar >= NaN)` = [] and
 // report a face as producing nothing, which is a measurement, not a crash.
-const MAX_RESULTS = envNumber(process.env.CLAUDE_MEM_UPS_MAX_RESULTS, {
-  name: 'CLAUDE_MEM_UPS_MAX_RESULTS',
+const MAX_RESULTS = envNumber(process.env.QWEN_MEM_UPS_MAX_RESULTS, {
+  name: 'QWEN_MEM_UPS_MAX_RESULTS',
   defaultValue: 3,
   min: 0,
   integer: true,
 });
-const TOP_REL_FLOOR = envNumber(process.env.CLAUDE_MEM_UPS_TOP_MIN, {
-  name: 'CLAUDE_MEM_UPS_TOP_MIN',
+const TOP_REL_FLOOR = envNumber(process.env.QWEN_MEM_UPS_TOP_MIN, {
+  name: 'QWEN_MEM_UPS_TOP_MIN',
   defaultValue: 50,
   min: 0,
 });

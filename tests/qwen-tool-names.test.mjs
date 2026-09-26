@@ -34,7 +34,7 @@ const PRE_RECALL = join(REPO, 'scripts', 'pre-tool-recall.js');
 function runScript(script, input, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [script], {
-      env: { ...process.env, CLAUDE_MEM_HOOK_RUNNING: '', ...env },
+      env: { ...process.env, QWEN_MEM_HOOK_RUNNING: '', ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -118,7 +118,7 @@ describe('Qwen payloads reach the hook entry points translated', () => {
     mkdirSync(projectDir, { recursive: true });
     writeFileSync(join(projectDir, 'target.mjs'), 'export const x = 1;\n');
 
-    const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+    const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
     db.pragma('foreign_keys = OFF');
     initSchema(db);
     insertSession(db, { id: 'sess-qwen', project: 'parent--qwenproj', memoryId: 'mem-qwen' });
@@ -144,7 +144,7 @@ describe('Qwen payloads reach the hook entry points translated', () => {
         session_id: 'qwen-read',
         tool_input: { file_path: join(projectDir, 'target.mjs') },
       },
-      { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+      { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
     );
     expect(cooldownFor('qwen-read')[join(projectDir, 'target.mjs')].mode).toBe('read');
   });
@@ -157,7 +157,7 @@ describe('Qwen payloads reach the hook entry points translated', () => {
         session_id: 'qwen-write',
         tool_input: { file_path: join(projectDir, 'target.mjs') },
       },
-      { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+      { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
     );
     expect(cooldownFor('qwen-write')[join(projectDir, 'target.mjs')].mode).toBe('edit');
   });
@@ -172,7 +172,7 @@ describe('Qwen payloads reach the hook entry points translated', () => {
         session_id: 'qwen-edit',
         tool_input: { file_path: join(projectDir, 'target.mjs') },
       },
-      { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+      { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
     );
     const errors = join(tmpRoot, 'runtime', 'hook-errors');
     let logged = '';

@@ -4,7 +4,7 @@
 // cli.mjs is a sibling of this module at the package root, so import.meta.url
 // resolves it correctly on EVERY install shape: plugin cache, `npm i -g`
 // symlink farm, and manual/dev checkout. The pre-v3.1.1 hardcoded
-// `~/.claude-mem-lite/cli.mjs` only existed on direct-install symlink farms —
+// `~/.qwen-mem-lite/cli.mjs` only existed on direct-install symlink farms —
 // on a plugin-only install setup.sh provisions the data dir but never
 // materializes source there, so that path is a module-not-found. See the
 // 2026-06-20 code review, findings #1/#2/#3/#13.

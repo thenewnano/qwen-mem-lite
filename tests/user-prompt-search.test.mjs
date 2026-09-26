@@ -237,7 +237,7 @@ describe('detectMemOverride', () => {
     // — they reference the memory system but are not user overrides.
     expect(detectMemOverride('check MEM-1234 and the linked PR')).toBe(false);
     expect(detectMemOverride('see <memory-context> in hook.mjs')).toBe(false);
-    expect(detectMemOverride('claude-mem-lite v2.59.0 release notes')).toBe(false);
+    expect(detectMemOverride('qwen-mem-lite v2.59.0 release notes')).toBe(false);
   });
 });
 
@@ -563,8 +563,8 @@ describe('extractTechIdentifiers', () => {
       'sanitizeftsquery',
       'saveobservation',
     ]);
-    expect(extractTechIdentifiers('set CLAUDE_MEM_DIR and OR_TOP_BM25_FLOOR')).toEqual([
-      'claude_mem_dir',
+    expect(extractTechIdentifiers('set QWEN_MEM_DIR and OR_TOP_BM25_FLOOR')).toEqual([
+      'qwen_mem_dir',
       'or_top_bm25_floor',
     ]);
     expect(extractTechIdentifiers('the pre-tool-use launcher')).toEqual(['pre-tool-use']);
@@ -685,7 +685,7 @@ function cleanupTestFiles() {
 
 /**
  * Run the user-prompt-search script with piped JSON input.
- * Uses CLAUDE_MEM_DIR env to point at test DB.
+ * Uses QWEN_MEM_DIR env to point at test DB.
  *
  * Implementation note: this uses spawn() with manual stdin piping rather than
  * execFile()+`input` option. The `input` option is only supported by the SYNC
@@ -704,19 +704,19 @@ function runScript(hookData, extraEnv = {}) {
     const proc = spawn(process.execPath, [SCRIPT_PATH], {
       env: {
         ...process.env,
-        CLAUDE_MEM_DIR: testDir,
+        QWEN_MEM_DIR: testDir,
         CLAUDE_PROJECT_DIR: '/test/project',
         PWD: '/test/project',
         // v2.34.3: default the top-|rel| gate off for integration tests so
         // fixtures seeding 1–2 observations (FTS score magnitudes can't reach
         // production-calibrated floor of 50 on sparse corpora) still exercise
         // their pre-gate semantics. Tests that exercise the gate itself pass
-        // explicit CLAUDE_MEM_UPS_TOP_MIN overrides.
-        CLAUDE_MEM_UPS_TOP_MIN: '0',
+        // explicit QWEN_MEM_UPS_TOP_MIN overrides.
+        QWEN_MEM_UPS_TOP_MIN: '0',
         // Pin the identifier bypass OFF for integration tests so the production default
         // (ON since v3.26.0) doesn't leak into floor/gate fixtures — same isolation
-        // rationale as CLAUDE_MEM_UPS_TOP_MIN above. Bypass-specific tests pass '1'.
-        CLAUDE_MEM_UPS_IDENTIFIER_BYPASS: '0',
+        // rationale as QWEN_MEM_UPS_TOP_MIN above. Bypass-specific tests pass '1'.
+        QWEN_MEM_UPS_IDENTIFIER_BYPASS: '0',
         ...extraEnv,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -769,7 +769,7 @@ describe('user-prompt-search subprocess integration', () => {
       rmSync(testDir, { recursive: true, force: true });
     } catch {}
     mkdirSync(testDir, { recursive: true });
-    const dbPath = join(testDir, 'claude-mem-lite.db');
+    const dbPath = join(testDir, 'qwen-mem-lite.db');
     db = createFileDb(dbPath);
     insertSession(db, { id: 's1', project: 'test--project', memoryId: 'mem-s1' });
   });
@@ -818,10 +818,10 @@ describe('user-prompt-search subprocess integration', () => {
     expect(stdout).toBe('');
   });
 
-  it('skips when CLAUDE_MEM_HOOK_RUNNING is set', async () => {
+  it('skips when QWEN_MEM_HOOK_RUNNING is set', async () => {
     const { stdout } = await runScript(
       { prompt: 'How do I fix the authentication error in the login module?' },
-      { CLAUDE_MEM_HOOK_RUNNING: '1' },
+      { QWEN_MEM_HOOK_RUNNING: '1' },
     );
     expect(stdout).toBe('');
   });
@@ -845,7 +845,7 @@ describe('user-prompt-search subprocess integration', () => {
     // Directly pipe invalid JSON — script should JSON.parse fail and return silently
     const { stdout } = await new Promise((resolvePromise) => {
       const proc = spawn(process.execPath, [SCRIPT_PATH], {
-        env: { ...process.env, CLAUDE_MEM_DIR: testDir },
+        env: { ...process.env, QWEN_MEM_DIR: testDir },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       let stdout = '';
@@ -882,7 +882,7 @@ describe('user-prompt-search subprocess integration', () => {
     for (const payload of ['null', '42', '"x"']) {
       const { stdout, stderr, code } = await new Promise((resolvePromise) => {
         const proc = spawn(process.execPath, [SCRIPT_PATH], {
-          env: { ...process.env, CLAUDE_MEM_DIR: testDir },
+          env: { ...process.env, QWEN_MEM_DIR: testDir },
           stdio: ['pipe', 'pipe', 'pipe'],
         });
         let stdout = '';
@@ -987,7 +987,7 @@ describe('user-prompt-search subprocess integration', () => {
   // gates the entire FTS set. Noise prompts produce OR-fallback leakage where
   // every hit shares one tangential stem — per-row filtering leaves them all.
   // When the BEST match is weak, the whole prompt is probably noise. Tests
-  // exercise env-var wiring (CLAUDE_MEM_UPS_TOP_MIN); the empirical default
+  // exercise env-var wiring (QWEN_MEM_UPS_TOP_MIN); the empirical default
   // of 50 is justified in CHANGELOG against measured distribution.
   it('v2.34.3 top-|rel| gate: fires when floor exceeds top relevance', async () => {
     insertObs(db, {
@@ -1007,7 +1007,7 @@ describe('user-prompt-search subprocess integration', () => {
       // collapse to 0 and no gate can fire. That relaxation is the cold-start fix
       // (tests/ups-cold-start-injection.test.mjs); this test is about the gate mechanism,
       // so it asks for the calibrated scale explicitly instead of relying on corpus size.
-      { CLAUDE_MEM_UPS_TOP_MIN: '1e9', CLAUDE_MEM_UPS_FLOOR_REF_CORPUS: '1' },
+      { QWEN_MEM_UPS_TOP_MIN: '1e9', QWEN_MEM_UPS_FLOOR_REF_CORPUS: '1' },
     );
     expect(stdout).toBe('');
   });
@@ -1024,7 +1024,7 @@ describe('user-prompt-search subprocess integration', () => {
     db.pragma('wal_checkpoint(FULL)');
     const { stdout } = await runScript(
       { prompt: 'how do I fix the authentication middleware token expiry validation' },
-      { CLAUDE_MEM_UPS_TOP_MIN: '0' },
+      { QWEN_MEM_UPS_TOP_MIN: '0' },
     );
     expect(stdout).toContain('Resolved authentication middleware token expiry');
   });
@@ -1045,7 +1045,7 @@ describe('user-prompt-search subprocess integration', () => {
     db.pragma('wal_checkpoint(FULL)');
     const { stdout } = await runScript(
       { prompt: 'what changed in auth-config.mjs recently please explain' },
-      { CLAUDE_MEM_UPS_TOP_MIN: '1e9' },
+      { QWEN_MEM_UPS_TOP_MIN: '1e9' },
     );
     expect(stdout).toContain('Touched auth-config.mjs settings');
   });
@@ -1057,7 +1057,7 @@ describe('user-prompt-search subprocess integration', () => {
   // new OR_TOP_BM25_FLOOR (default 30) gates on raw bm25() magnitude and
   // fires only when TOP_REL_FLOOR is nonzero (test override semantic).
   it('v2.43.x OR-bm25 gate: disabled when TOP_REL_FLOOR=0 (test-harness default)', async () => {
-    // runScript defaults CLAUDE_MEM_UPS_TOP_MIN='0' for sparse-corpus tests.
+    // runScript defaults QWEN_MEM_UPS_TOP_MIN='0' for sparse-corpus tests.
     // Under that default, the OR-bm25 gate must also be disabled — otherwise
     // every seed-small fixture that relies on OR fallback would silently stop
     // emitting. Seed one obs whose text lacks the prompt's intent stem
@@ -1078,7 +1078,7 @@ describe('user-prompt-search subprocess integration', () => {
   it('v2.43.x OR-bm25 gate: explicit env override to 0 disables the gate', async () => {
     // Production-like: TOP_REL_FLOOR nonzero but OR-bm25 floor explicitly
     // disabled. On sparse test corpora |bm25| ≈ 4e-6; both gates must be off
-    // for the row to survive. Proves CLAUDE_MEM_UPS_OR_BM25_MIN=0 works as
+    // for the row to survive. Proves QWEN_MEM_UPS_OR_BM25_MIN=0 works as
     // an independent kill switch when needed.
     insertObs(db, {
       sessionId: 'mem-s1',
@@ -1091,7 +1091,7 @@ describe('user-prompt-search subprocess integration', () => {
     db.pragma('wal_checkpoint(FULL)');
     const { stdout } = await runScript(
       { prompt: 'how do I fix the OAuth token refresh double-redirect' },
-      { CLAUDE_MEM_UPS_TOP_MIN: '0.0000001', CLAUDE_MEM_UPS_OR_BM25_MIN: '0' },
+      { QWEN_MEM_UPS_TOP_MIN: '0.0000001', QWEN_MEM_UPS_OR_BM25_MIN: '0' },
     );
     expect(stdout).toContain('OAuth token refresh');
   });
@@ -1112,9 +1112,9 @@ describe('user-prompt-search subprocess integration', () => {
     db.pragma('wal_checkpoint(FULL)');
     const { stdout } = await runScript(
       { prompt: 'how do I fix the OAuth token refresh double-redirect' },
-      // CLAUDE_MEM_UPS_FLOOR_REF_CORPUS=1 pins the corpus ramp off — see the top-|rel|
+      // QWEN_MEM_UPS_FLOOR_REF_CORPUS=1 pins the corpus ramp off — see the top-|rel|
       // gate test above for why a 1-row fixture otherwise has both floors at 0.
-      { CLAUDE_MEM_UPS_TOP_MIN: '0.0000001', CLAUDE_MEM_UPS_FLOOR_REF_CORPUS: '1' },
+      { QWEN_MEM_UPS_TOP_MIN: '0.0000001', QWEN_MEM_UPS_FLOOR_REF_CORPUS: '1' },
     );
     expect(stdout).toBe('');
   });
@@ -1273,7 +1273,7 @@ describe('user-prompt-search subprocess integration', () => {
     seedIdentifierBypassCorpus();
     const { stdout } = await runScript(
       { prompt: 'why does the zqx_widget_cache invalidation keep racing under concurrent writes' },
-      { CLAUDE_MEM_UPS_IDENTIFIER_BYPASS: '1', CLAUDE_MEM_UPS_TOP_MIN: '1e9' },
+      { QWEN_MEM_UPS_IDENTIFIER_BYPASS: '1', QWEN_MEM_UPS_TOP_MIN: '1e9' },
     );
     expect(stdout, 'identifier row unreachable — bypass still bounded by the main LIMIT').not.toBe('');
     expect(stdout).toContain('zqx_widget_cache');
@@ -1293,7 +1293,7 @@ describe('user-prompt-search subprocess integration', () => {
     seedIdentifierBypassCorpus();
     const { stdout } = await runScript(
       { prompt: 'why does the invalidation keep racing under concurrent writes here' },
-      { CLAUDE_MEM_UPS_IDENTIFIER_BYPASS: '1', CLAUDE_MEM_UPS_TOP_MIN: '1e9' },
+      { QWEN_MEM_UPS_IDENTIFIER_BYPASS: '1', QWEN_MEM_UPS_TOP_MIN: '1e9' },
     );
     expect(stdout).toBe('');
   });
@@ -1348,7 +1348,7 @@ describe('user-prompt-search subprocess integration', () => {
     db.pragma('wal_checkpoint(FULL)');
     const { stdout } = await runScript(
       { prompt: '分页接口的边界问题怎么处理' },
-      { CLAUDE_MEM_UPS_REQUIRE_SIGNAL: '0' },
+      { QWEN_MEM_UPS_REQUIRE_SIGNAL: '0' },
     );
     expect(stdout, 'prompt-fallback silenced by a filter running downstream of LIMIT 1').not.toBe('');
     expect(stdout).toContain('分页 接口');
@@ -1391,7 +1391,7 @@ describe('user-prompt-search subprocess integration', () => {
     db.pragma('wal_checkpoint(FULL)');
     const { stdout } = await runScript(
       { prompt: '分页接口的边界问题怎么处理' },
-      { CLAUDE_MEM_UPS_REQUIRE_SIGNAL: '0' },
+      { QWEN_MEM_UPS_REQUIRE_SIGNAL: '0' },
     );
     expect(stdout, 'all three rows pass the filter — the face must not go silent').not.toBe('');
     expect(
@@ -1685,30 +1685,30 @@ describe('result-dedup cooldown', () => {
   });
 
   it('skips injection when >80% overlap with previously injected', () => {
-    const injectedFile = join(testDir, '.claude-mem-injected-dedup1');
+    const injectedFile = join(testDir, '.qwen-mem-injected-dedup1');
     writeFileSync(injectedFile, JSON.stringify({ ids: [1, 2, 3, 4, 5], ts: Date.now() }));
     expect(shouldSkipByDedup([1, 2, 3, 4, 6], injectedFile)).toBe(true);
   });
 
   it('allows injection when ≤80% overlap', () => {
-    const injectedFile = join(testDir, '.claude-mem-injected-dedup2');
+    const injectedFile = join(testDir, '.qwen-mem-injected-dedup2');
     writeFileSync(injectedFile, JSON.stringify({ ids: [1, 2, 3, 4, 5], ts: Date.now() }));
     expect(shouldSkipByDedup([1, 2, 6, 7, 8], injectedFile)).toBe(false);
   });
 
   it('allows injection when no previous injections exist', () => {
-    const injectedFile = join(testDir, '.claude-mem-injected-nonexistent');
+    const injectedFile = join(testDir, '.qwen-mem-injected-nonexistent');
     expect(shouldSkipByDedup([1, 2, 3], injectedFile)).toBe(false);
   });
 
   it('allows injection when previous injections are stale (>5min)', () => {
-    const injectedFile = join(testDir, '.claude-mem-injected-stale');
+    const injectedFile = join(testDir, '.qwen-mem-injected-stale');
     writeFileSync(injectedFile, JSON.stringify({ ids: [1, 2, 3, 4, 5], ts: Date.now() - 400_000 }));
     expect(shouldSkipByDedup([1, 2, 3, 4, 5], injectedFile)).toBe(false);
   });
 
   it('skips when session injection limit reached', () => {
-    const injectedFile = join(testDir, '.claude-mem-injected-limit');
+    const injectedFile = join(testDir, '.qwen-mem-injected-limit');
     // `upsCount`, not `count`: R12 B-5 moved the cap onto a counter only this face
     // charges, because the shared one is bumped by pre-tool-recall too.
     // `upsCount` + `upsTs`, not `count`: the cap is charged to this face and judged on
@@ -1724,18 +1724,18 @@ describe('result-dedup cooldown', () => {
     // The B-5 defect, at this face's own call site: `count` at the ceiling with the UPS
     // face never having injected. Complements the case above — together they say the cap
     // still exists AND is charged to the right spender.
-    const injectedFile = join(testDir, '.claude-mem-injected-otherface');
+    const injectedFile = join(testDir, '.qwen-mem-injected-otherface');
     writeFileSync(injectedFile, JSON.stringify({ ids: ['E7'], ts: Date.now(), count: 15 }));
     expect(shouldSkipByDedup([1, 2, 3], injectedFile)).toBe(false);
   });
 
   it('dedups across hooks despite number-vs-string id types', () => {
-    // Both hooks share runtime/.claude-mem-injected-<project>. pre-tool-recall's
+    // Both hooks share runtime/.qwen-mem-injected-<project>. pre-tool-recall's
     // mergeCrossHookInjected persists ids as STRINGS (.map(String)); UPS's
     // shouldSkipByDedup passes obs ids as NUMBERS. Without normalization Set.has(2)
     // misses "2" → cross-hook dedup never fires → the same lesson double-injects
     // within the 5-min window. (readCrossHookInjected already String-normalizes.)
-    const injectedFile = join(testDir, '.claude-mem-injected-xhook');
+    const injectedFile = join(testDir, '.qwen-mem-injected-xhook');
     writeFileSync(injectedFile, JSON.stringify({ ids: ['1', '2', '3', '4', '5'], ts: Date.now() }));
     expect(shouldSkipByDedup([1, 2, 3, 4, 6], injectedFile)).toBe(true);
   });
@@ -1747,7 +1747,7 @@ describe('result-dedup cooldown', () => {
 // docs/plans/2026-04-14-mem-v2.31-mvp.md.
 //
 // Implementation note: `runScript()` (defined above) hardcodes
-// CLAUDE_MEM_DIR = '.tmp-prompt-search-dir'. We mirror that path exactly so the
+// QWEN_MEM_DIR = '.tmp-prompt-search-dir'. We mirror that path exactly so the
 // subprocess reads the same DB we seed here, rather than opening a different
 // file. An earlier draft used a separate '.tmp-ups-t3-dir' and every test
 // vacuously saw empty stdout because the subprocess was opening an empty DB.
@@ -1765,7 +1765,7 @@ describe('user-prompt-search T3: BM25 threshold + prompt-length gate', () => {
       rmSync(testDir, { recursive: true, force: true });
     } catch {}
     mkdirSync(testDir, { recursive: true });
-    const dbPath = join(testDir, 'claude-mem-lite.db');
+    const dbPath = join(testDir, 'qwen-mem-lite.db');
     db = createFileDb(dbPath);
     insertSession(db, { id: 's1', project: 'test--project', memoryId: 'mem-s1' });
   });
@@ -1919,7 +1919,7 @@ describe('D#N deferred-detail injection (subprocess)', () => {
       rmSync(testDir, { recursive: true, force: true });
     } catch {}
     mkdirSync(join(testDir, 'runtime'), { recursive: true });
-    db = createFileDb(join(testDir, 'claude-mem-lite.db'));
+    db = createFileDb(join(testDir, 'qwen-mem-lite.db'));
     insertSession(db, { id: 's1', project: 'test--project', memoryId: 'mem-s1' });
     insertDeferred(db, {
       project: 'test--project',
@@ -2047,8 +2047,8 @@ describe('oversized UserPromptSubmit payload leaves a trace (R12 B-3)', () => {
 
   function runWithRuntime(hookData) {
     return runScript(hookData, {
-      CLAUDE_MEM_DIR: tmpRoot,
-      CLAUDE_MEM_RUNTIME_DIR: runtimeDir,
+      QWEN_MEM_DIR: tmpRoot,
+      QWEN_MEM_RUNTIME_DIR: runtimeDir,
     });
   }
 

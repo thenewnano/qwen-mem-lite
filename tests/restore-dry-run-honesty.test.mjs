@@ -23,7 +23,7 @@ let dir, backup, env;
 
 function cli(args, dataDir) {
   return execFileSync(process.execPath, [CLI, ...args], {
-    env: { ...env, CLAUDE_MEM_DIR: dataDir },
+    env: { ...env, QWEN_MEM_DIR: dataDir },
     encoding: 'utf8',
   });
 }
@@ -71,7 +71,7 @@ describe('restore --dry-run — reports a preview, not an outcome', () => {
     backup = join(dir, 'backup.json');
     env = {
       ...process.env,
-      CLAUDE_MEM_SKIP_UPDATE: '1',
+      QWEN_MEM_SKIP_UPDATE: '1',
       MEM_QUIET_HOOKS: '1',
       MEM_NO_AUTO_ADOPT: '1',
       CLAUDE_PROJECT_DIR: '/x/proj',

@@ -84,10 +84,10 @@ function runInstall(command, home, args = [], extraEnv = {}) {
       ...process.env,
       HOME: home,
       // Skip managed repo cloning by suppressing git commands
-      CLAUDE_MEM_SKIP_REPOS: '1',
+      QWEN_MEM_SKIP_REPOS: '1',
       // R10 P2-17: without this, install.mjs's dogfood branch (it detects THIS repo by
       // git remote) ran cmdAdopt against the inherited PWD — the repository root — and
-      // rewrote the tracked CLAUDE.md managed block plus .claude/plugin_claude_mem_lite.md
+      // rewrote the tracked CLAUDE.md managed block plus .claude/plugin_qwen_mem_lite.md
       // on every `vitest run`. HOME is sandboxed here; the adopt target was not.
       MEM_NO_AUTO_ADOPT: '1',
       ...extraEnv,
@@ -109,7 +109,7 @@ describe('E2E: Plugin install mode', () => {
 
   it('plugin.json has required fields for Claude Code plugin system', () => {
     const plugin = readJson('.claude-plugin/plugin.json');
-    expect(plugin.name).toBe('claude-mem-lite');
+    expect(plugin.name).toBe('qwen-mem-lite');
     expect(plugin.version).toBeTruthy();
     expect(plugin.repository).toContain('github.com');
     expect(plugin.license).toBe('MIT');
@@ -119,7 +119,7 @@ describe('E2E: Plugin install mode', () => {
     const pkg = readJson('package.json');
     const marketplace = readJson('.claude-plugin/marketplace.json');
     expect(marketplace.plugins).toHaveLength(1);
-    expect(marketplace.plugins[0].name).toBe('claude-mem-lite');
+    expect(marketplace.plugins[0].name).toBe('qwen-mem-lite');
     expect(marketplace.plugins[0].version).toBe(pkg.version);
     expect(marketplace.plugins[0].source).toBe('./');
   });
@@ -210,8 +210,8 @@ describe('E2E: Plugin install mode', () => {
   it('plugin setup.sh creates node_modules symlink and clears stale MCP', () => {
     const home = makeTmpDir();
     try {
-      const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+      const dataDir = join(home, '.qwen-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
       mkdirSync(dataDir, { recursive: true });
       mkdirSync(pluginRoot, { recursive: true });
       // Pre-create node_modules symlink (simulating previous install)
@@ -264,7 +264,7 @@ describe('E2E: Direct install mode (git clone / npx)', () => {
   it('install creates data directory and deploys source files', () => {
     runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
 
-    const dataDir = join(home, '.claude-mem-lite');
+    const dataDir = join(home, '.qwen-mem-lite');
     expect(existsSync(dataDir)).toBe(true);
 
     // Core source files present
@@ -331,11 +331,11 @@ describe('E2E: Direct install mode (git clone / npx)', () => {
     expect(state).toContain('user:mem');
   });
 
-  it('install hook paths point to ~/.claude-mem-lite/ data directory', () => {
+  it('install hook paths point to ~/.qwen-mem-lite/ data directory', () => {
     runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
 
     const settings = readJson(join(home, '.claude', 'settings.json'));
-    const dataDir = join(home, '.claude-mem-lite');
+    const dataDir = join(home, '.qwen-mem-lite');
 
     // All hook commands should reference the data dir
     const allCommands = [];
@@ -357,12 +357,12 @@ describe('E2E: Direct install mode (git clone / npx)', () => {
     // Simulate prior marketplace install: cache dirs contain populated hooks.json
     // that Claude Code runtime would read, causing hooks to register twice
     // (once from cache, once from settings.json written by install.mjs).
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
     const marketplaceDir = join(home, '.claude', 'plugins', 'marketplaces', 'thenewnano');
     mkdirSync(marketplaceDir, { recursive: true });
 
     const populatedHooks = {
-      description: 'claude-mem-lite memory system hooks',
+      description: 'qwen-mem-lite memory system hooks',
       hooks: {
         UserPromptSubmit: [
           {
@@ -409,14 +409,14 @@ describe('E2E: Direct install mode (git clone / npx)', () => {
   it('uninstall removes hooks and MCP but preserves data', () => {
     runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
 
-    const dataDir = join(home, '.claude-mem-lite');
+    const dataDir = join(home, '.qwen-mem-lite');
     expect(existsSync(dataDir)).toBe(true);
 
     runInstall('uninstall', home, [], { PATH: `${binDir}:${process.env.PATH}` });
 
     // Hooks should be removed from settings
     const settings = readJson(join(home, '.claude', 'settings.json'));
-    const hasMemHook = JSON.stringify(settings.hooks || {}).includes('claude-mem-lite');
+    const hasMemHook = JSON.stringify(settings.hooks || {}).includes('qwen-mem-lite');
     expect(hasMemHook).toBe(false);
 
     // Data directory preserved
@@ -426,7 +426,7 @@ describe('E2E: Direct install mode (git clone / npx)', () => {
   it('uninstall --purge removes data directory', () => {
     runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
 
-    const dataDir = join(home, '.claude-mem-lite');
+    const dataDir = join(home, '.qwen-mem-lite');
     expect(existsSync(dataDir)).toBe(true);
 
     runInstall('uninstall', home, ['--purge'], { PATH: `${binDir}:${process.env.PATH}` });
@@ -452,7 +452,7 @@ describe('E2E: Dev install mode (git clone --dev)', () => {
   it('--dev creates symlinks instead of copies', () => {
     runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
 
-    const dataDir = join(home, '.claude-mem-lite');
+    const dataDir = join(home, '.qwen-mem-lite');
 
     // Core files should be symlinks to project dir
     const serverLink = join(dataDir, 'server.mjs');
@@ -467,11 +467,11 @@ describe('E2E: Dev install mode (git clone --dev)', () => {
     expect(existsSync(nmLink)).toBe(true);
   });
 
-  it('--dev hooks point to ~/.claude-mem-lite/ (via symlinks)', () => {
+  it('--dev hooks point to ~/.qwen-mem-lite/ (via symlinks)', () => {
     runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
 
     const settings = readJson(join(home, '.claude', 'settings.json'));
-    const dataDir = join(home, '.claude-mem-lite');
+    const dataDir = join(home, '.qwen-mem-lite');
 
     // Hooks should reference the data dir, not the project dir
     const sessionHook = settings.hooks.SessionStart?.[0]?.hooks?.[0]?.command || '';
@@ -506,7 +506,7 @@ describe('E2E: Smart invocation scripts deployed', () => {
     try {
       runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
 
-      const dataDir = join(home, '.claude-mem-lite');
+      const dataDir = join(home, '.qwen-mem-lite');
       // --dev mode creates a scripts symlink → all scripts accessible
       expect(existsSync(join(dataDir, 'scripts'))).toBe(true);
       // Verify the smart invocation scripts exist in the project
@@ -629,7 +629,7 @@ describe('E2E: Install prune stale modules and zero-byte DBs (v2.48 P1-4)', () =
     const tmpDir = makeTmpDir();
     try {
       // Whitelist entries (always preserve, even if 0 bytes — WAL/SHM transients)
-      writeFileSync(join(tmpDir, 'claude-mem-lite.db'), '');
+      writeFileSync(join(tmpDir, 'qwen-mem-lite.db'), '');
       writeFileSync(join(tmpDir, 'resource-registry.db'), 'non-empty-data');
       // Stale 0-byte DB files from older versions (mem.db, memory.db, registry.db)
       writeFileSync(join(tmpDir, 'mem.db'), '');
@@ -643,7 +643,7 @@ describe('E2E: Install prune stale modules and zero-byte DBs (v2.48 P1-4)', () =
       expect(removedNames).toEqual(['mem.db', 'memory.db', 'registry.db']);
 
       // Whitelist intact, non-empty stale preserved
-      expect(existsSync(join(tmpDir, 'claude-mem-lite.db'))).toBe(true);
+      expect(existsSync(join(tmpDir, 'qwen-mem-lite.db'))).toBe(true);
       expect(existsSync(join(tmpDir, 'resource-registry.db'))).toBe(true);
       expect(existsSync(join(tmpDir, 'ghost.db'))).toBe(true);
     } finally {
@@ -712,13 +712,13 @@ describe('E2E: Migration from older versions', () => {
       });
       expect(output).toMatch(/backed up|backup/i);
 
-      const newDir = join(home, '.claude-mem-lite');
+      const newDir = join(home, '.qwen-mem-lite');
       // Legacy DB must NOT be reused as the new DB — schema is incompatible.
-      expect(existsSync(join(newDir, 'claude-mem-lite.db'))).toBe(false);
+      expect(existsSync(join(newDir, 'qwen-mem-lite.db'))).toBe(false);
       // A timestamped backup must exist for recovery.
       const backups = readdirSync(newDir).filter((f) => f.includes('legacy-backup'));
       expect(backups.length).toBeGreaterThan(0);
-      expect(backups.some((f) => /^claude-mem-lite\.db\.legacy-backup-\d+$/.test(f))).toBe(true);
+      expect(backups.some((f) => /^qwen-mem-lite\.db\.legacy-backup-\d+$/.test(f))).toBe(true);
       // Legacy file moved (renamed), not copied.
       expect(existsSync(join(oldDir, 'claude-mem.db'))).toBe(false);
     } finally {
@@ -726,12 +726,12 @@ describe('E2E: Migration from older versions', () => {
     }
   });
 
-  it('renames claude-mem.db to claude-mem-lite.db in data dir', () => {
+  it('renames claude-mem.db to qwen-mem-lite.db in data dir', () => {
     const home = makeTmpDir();
     const binDir = makeFakeClaudeBin(home);
     try {
       // Pre-create data dir with old db name
-      const dataDir = join(home, '.claude-mem-lite');
+      const dataDir = join(home, '.qwen-mem-lite');
       mkdirSync(dataDir, { recursive: true });
       writeFileSync(join(dataDir, 'claude-mem.db'), 'old-name-db');
 
@@ -740,7 +740,7 @@ describe('E2E: Migration from older versions', () => {
       });
       expect(output).toContain('renamed');
 
-      expect(existsSync(join(dataDir, 'claude-mem-lite.db'))).toBe(true);
+      expect(existsSync(join(dataDir, 'qwen-mem-lite.db'))).toBe(true);
       expect(existsSync(join(dataDir, 'claude-mem.db'))).toBe(false);
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -768,7 +768,7 @@ describe('E2E: plugin-cache launch.mjs sync is version-gated (R10-P2-11)', () =>
     // The whole block is inside `if (existsSync(pluginDir))` — without the marketplace
     // clone this test would pass by never running the code it claims to guard.
     mkdirSync(join(home, '.claude', 'plugins', 'marketplaces', MARKETPLACE_KEY), { recursive: true });
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', MARKETPLACE_KEY, 'claude-mem-lite');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', MARKETPLACE_KEY, 'qwen-mem-lite');
     for (const ver of [OLD_VER, selfVersion]) {
       mkdirSync(join(cacheBase, ver, 'scripts'), { recursive: true });
       writeFileSync(join(cacheBase, ver, 'scripts', 'launch.mjs'), SENTINEL(ver));

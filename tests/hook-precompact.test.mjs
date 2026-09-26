@@ -13,7 +13,7 @@ describe('handlePreCompact', () => {
     });
   });
 
-  it('emits a <claude-mem-context> block on stdout when memory is non-empty', () => {
+  it('emits a <qwen-mem-context> block on stdout when memory is non-empty', () => {
     db.prepare(
       `INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
                 VALUES (?, ?, ?, ?, ?, 'active')`,
@@ -36,8 +36,8 @@ describe('handlePreCompact', () => {
     handlePreCompact({ db, project: 'p1', sessionId: 's1' });
 
     const out = stdout.join('');
-    expect(out).toContain('<claude-mem-context>');
-    expect(out).toContain('</claude-mem-context>');
+    expect(out).toContain('<qwen-mem-context>');
+    expect(out).toContain('</qwen-mem-context>');
     expect(out).toMatch(/Auth: jose over jsonwebtoken/);
   });
 

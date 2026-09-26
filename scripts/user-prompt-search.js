@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// claude-mem-lite: Auto-search memory on user prompt
+// qwen-mem-lite: Auto-search memory on user prompt
 // Runs as UserPromptSubmit hook — injects relevant memories before Claude sees the prompt
 // Lightweight: only imports schema.mjs and utils.mjs, no MCP SDK
 
@@ -55,7 +55,7 @@ import { envNumber } from '../lib/env-number.mjs';
 // EVERY runtime path in this file goes through this constant, including the two
 // below. They used to be `join(DB_DIR, 'runtime', …)`, which reproduced the exact
 // defect P1-14 closed one seam over: this file's RUNTIME_DIR honoured the override
-// while its MARKER did not, so under `CLAUDE_MEM_RUNTIME_DIR` the `fyi` face wrote
+// while its MARKER did not, so under `QWEN_MEM_RUNTIME_DIR` the `fyi` face wrote
 // the shared cross-hook marker to <data>/runtime while `pre-tool-recall` (`pretool`)
 // wrote it to the override and `hook.mjs` (`ups`) read the override. Caught by the
 // v3.93.0 pre-tag test-effectiveness review, from a surviving mutation.
@@ -76,8 +76,8 @@ const injectedIdsFileFor = (sessionId) => join(RUNTIME_DIR, injectedIdsFileName(
 // "inject nothing" — a legitimate way to turn this face off, so it is accepted rather
 // than warned back up to 3 (falling back would INJECT for a user who asked for silence).
 // What is screened is NaN, which produced the same silence from a typo, unasked.
-const MAX_RESULTS = envNumber(process.env.CLAUDE_MEM_UPS_MAX_RESULTS, {
-  name: 'CLAUDE_MEM_UPS_MAX_RESULTS',
+const MAX_RESULTS = envNumber(process.env.QWEN_MEM_UPS_MAX_RESULTS, {
+  name: 'QWEN_MEM_UPS_MAX_RESULTS',
   defaultValue: 3,
   min: 0,
   integer: true,
@@ -93,8 +93,8 @@ const LOOKBACK_MS = 60 * DAY_MS; // 60 days
 // Integer, min 0: bound directly into a SQL `LIMIT ?`, where better-sqlite3 rejects a
 // non-integer outright (`SqliteError: datatype mismatch`). `LIMIT 0` is valid and means
 // "disable the prompt-fallback path", so 0 stays a usable setting.
-const PROMPT_FALLBACK_LIMIT = envNumber(process.env.CLAUDE_MEM_UPS_PROMPT_FALLBACK_LIMIT, {
-  name: 'CLAUDE_MEM_UPS_PROMPT_FALLBACK_LIMIT',
+const PROMPT_FALLBACK_LIMIT = envNumber(process.env.QWEN_MEM_UPS_PROMPT_FALLBACK_LIMIT, {
+  name: 'QWEN_MEM_UPS_PROMPT_FALLBACK_LIMIT',
   defaultValue: 1,
   min: 0,
   integer: true,
@@ -120,8 +120,8 @@ const PROMPT_FALLBACK_POOL_MAX = 25;
 // is weak.
 // min 0, non-integer: a magnitude floor compared with `Math.abs(relevance) >= …`.
 // NaN here makes that comparison always false, i.e. it drops every row.
-const BM25_MIN_SCORE = envNumber(process.env.CLAUDE_MEM_UPS_BM25_MIN, {
-  name: 'CLAUDE_MEM_UPS_BM25_MIN',
+const BM25_MIN_SCORE = envNumber(process.env.QWEN_MEM_UPS_BM25_MIN, {
+  name: 'QWEN_MEM_UPS_BM25_MIN',
   defaultValue: 1e-5,
   min: 0,
 });
@@ -139,8 +139,8 @@ const PROMPT_MIN_LENGTH = 15;
 // memory at least once, relax gates so short follow-ups still get recall.
 // Detection: injected-ids marker count > 0 within DEDUP_STALE_MS window.
 const FOLLOWUP_PROMPT_MIN_LENGTH = 8;
-const FOLLOWUP_BM25_MIN_SCORE = envNumber(process.env.CLAUDE_MEM_UPS_BM25_MIN_FOLLOWUP, {
-  name: 'CLAUDE_MEM_UPS_BM25_MIN_FOLLOWUP',
+const FOLLOWUP_BM25_MIN_SCORE = envNumber(process.env.QWEN_MEM_UPS_BM25_MIN_FOLLOWUP, {
+  name: 'QWEN_MEM_UPS_BM25_MIN_FOLLOWUP',
   defaultValue: 5e-6,
   min: 0,
 });
@@ -169,13 +169,13 @@ const FOLLOWUP_BM25_MIN_SCORE = envNumber(process.env.CLAUDE_MEM_UPS_BM25_MIN_FO
 //
 // It has ALWAYS worked, and a first draft of this comment claimed otherwise on a false
 // premise worth recording: `process.env.X` is always a STRING, and `'0'` is truthy — only
-// `''` is falsy. So `Number(env || 50)` with `CLAUDE_MEM_UPS_TOP_MIN='0'` was already 0,
+// `''` is falsy. So `Number(env || 50)` with `QWEN_MEM_UPS_TOP_MIN='0'` was already 0,
 // which is why `tests/user-prompt-search.test.mjs` has been green with `'0'` as runScript's
 // default. The idiom that genuinely swallows a 0 is the OTHER one — `Number(env.X) || D`,
 // parse first then fall back — which is what lib/cite-back-hint.mjs used. Caught by the
 // v3.94.0 pre-tag correctness review. What changed here is NaN screening, nothing else.
-const TOP_REL_FLOOR = envNumber(process.env.CLAUDE_MEM_UPS_TOP_MIN, {
-  name: 'CLAUDE_MEM_UPS_TOP_MIN',
+const TOP_REL_FLOOR = envNumber(process.env.QWEN_MEM_UPS_TOP_MIN, {
+  name: 'QWEN_MEM_UPS_TOP_MIN',
   defaultValue: 50,
   min: 0,
 });
@@ -198,7 +198,7 @@ const TOP_REL_FLOOR = envNumber(process.env.CLAUDE_MEM_UPS_TOP_MIN, {
 // and there are legitimate AND hits (GOOD-narrow probe: bm25_raw=19.3,
 // rel=81) that we must not drop.
 //
-// CLAUDE_MEM_UPS_TOP_MIN=0 disables this too: on small test corpora (1–2
+// QWEN_MEM_UPS_TOP_MIN=0 disables this too: on small test corpora (1–2
 // seeded obs) absolute BM25 magnitudes collapse to near-zero (observed
 // |bm25|≈4e-6) because FTS5 IDF normalization needs a real document
 // distribution. The existing TOP_REL_FLOOR knob already encodes the
@@ -207,8 +207,8 @@ const TOP_REL_FLOOR = envNumber(process.env.CLAUDE_MEM_UPS_TOP_MIN, {
 const OR_TOP_BM25_FLOOR =
   TOP_REL_FLOOR === 0
     ? 0
-    : envNumber(process.env.CLAUDE_MEM_UPS_OR_BM25_MIN, {
-        name: 'CLAUDE_MEM_UPS_OR_BM25_MIN',
+    : envNumber(process.env.QWEN_MEM_UPS_OR_BM25_MIN, {
+        name: 'QWEN_MEM_UPS_OR_BM25_MIN',
         defaultValue: 30,
         min: 0,
       });
@@ -260,7 +260,7 @@ function isFollowUpSession(injectedIdsFile) {
 // injection. PreToolUse file-keyed hook is independent (94% recall track,
 // fires on Edit/Read/Write file paths) — not affected.
 //
-// Env override: CLAUDE_MEM_UPS_REQUIRE_SIGNAL=0 restores always-search.
+// Env override: QWEN_MEM_UPS_REQUIRE_SIGNAL=0 restores always-search.
 // Default ON.
 //
 // Note for OR-fallback gate (#8144) interaction: this gate is upstream of
@@ -275,7 +275,7 @@ function isFollowUpSession(injectedIdsFile) {
 // Five-arm tightening:
 //   • snake_case      — requires `_` between lowercase tokens
 //   • CONST_CASE      — requires `_` between uppercase tokens (catches
-//                       MAX_RESULTS, CLAUDE_MEM_DIR, OBS_BM25)
+//                       MAX_RESULTS, QWEN_MEM_DIR, OBS_BM25)
 //   • ACRONYM_w_digit — bare 2+-cap run with at least one digit (catches
 //                       FTS5, MD5, HTML5, OAUTH2, HTTP2; rejects IBM/NPM/
 //                       THE/BSD/ASCII which never carry digits in prose)
@@ -323,7 +323,7 @@ const IDENTIFIER_STOPWORDS = new Set([
 const CJK_CHAR_RE = /[一-鿿぀-ヿ]/;
 const CJK_MIN_EFFECTIVE_LEN = 8;
 
-const REQUIRE_EXPLICIT_SIGNAL = process.env.CLAUDE_MEM_UPS_REQUIRE_SIGNAL !== '0';
+const REQUIRE_EXPLICIT_SIGNAL = process.env.QWEN_MEM_UPS_REQUIRE_SIGNAL !== '0';
 
 export function hasExplicitSignal(text, { errSig, files, intent } = {}) {
   if (!text) return false;
@@ -342,7 +342,7 @@ export function hasExplicitSignal(text, { errSig, files, intent } = {}) {
 
 // ─── Identifier-exact-match precision bypass (default ON since v3.26.0) ──────
 //
-// Set CLAUDE_MEM_UPS_IDENTIFIER_BYPASS=0 to disable. Rationale: the score-floors below
+// Set QWEN_MEM_UPS_IDENTIFIER_BYPASS=0 to disable. Rationale: the score-floors below
 // (OR_TOP_BM25_FLOOR / TOP_REL_FLOOR) drop the WHOLE FTS set when the top row's
 // magnitude is weak. But a rare code identifier (camelCase / snake_case / CONST_CASE
 // / kebab≥3) match has high *semantic* precision even at modest BM25 — a df=1 term
@@ -362,7 +362,7 @@ export function hasExplicitSignal(text, { errSig, files, intent } = {}) {
 // hook this same event fires. v3.75.0 capped this face only; a second copy of the
 // constants here is what would let them drift apart again.
 
-export const IDENTIFIER_BYPASS = process.env.CLAUDE_MEM_UPS_IDENTIFIER_BYPASS !== '0';
+export const IDENTIFIER_BYPASS = process.env.QWEN_MEM_UPS_IDENTIFIER_BYPASS !== '0';
 // How far past the main LIMIT the bypass may look, and how many rows it may pull from
 // there (ALGO-2). These size the CANDIDATE POOL only — the injected set is still capped
 // by MAX_RESULTS downstream, so neither widens the injection budget. Kept small on
@@ -697,7 +697,7 @@ function formatPromptResults(rows) {
 
 async function main() {
   // Prevent recursion from background claude -p calls
-  if (process.env.CLAUDE_MEM_HOOK_RUNNING) return;
+  if (process.env.QWEN_MEM_HOOK_RUNNING) return;
 
   // Both swallows below record first. They were this file's only silent ones, and
   // they sit on the *entry* of the face: past MAX_UPS_PROMPT_BYTES the read hands
@@ -894,7 +894,7 @@ async function main() {
       intent,
     });
     // Identifier tokens the prompt names (for the precision bypass below). Empty only
-    // when CLAUDE_MEM_UPS_IDENTIFIER_BYPASS=0 (bypass is default-on), then it is a no-op.
+    // when QWEN_MEM_UPS_IDENTIFIER_BYPASS=0 (bypass is default-on), then it is a no-op.
     const promptIdentifiers = IDENTIFIER_BYPASS ? extractTechIdentifiers(promptText) : [];
 
     // Recall intent ("之前 / previously / 记得 …") used to short-circuit straight to

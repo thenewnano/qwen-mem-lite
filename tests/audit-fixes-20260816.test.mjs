@@ -18,8 +18,8 @@
 //
 // Every case names, in a comment, the input that made it fail pre-fix.
 //
-// ISOLATION: every spawned process gets HOME / CLAUDE_MEM_DIR / CLAUDE_MEM_RUNTIME_DIR
-// pointed at a mkdtemp sandbox; nothing touches the live ~/.claude-mem-lite.
+// ISOLATION: every spawned process gets HOME / QWEN_MEM_DIR / QWEN_MEM_RUNTIME_DIR
+// pointed at a mkdtemp sandbox; nothing touches the live ~/.qwen-mem-lite.
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { spawn, execFileSync } from 'child_process';
@@ -54,20 +54,20 @@ beforeAll(() => {
   // Strip the developer's own plugin flags so no default-OFF surface flips on in
   // children (the #8608 leak class); everything needed is set explicitly per case.
   for (const k of Object.keys(BASE_ENV)) {
-    if (/^(CLAUDE_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete BASE_ENV[k];
+    if (/^(QWEN_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete BASE_ENV[k];
   }
   Object.assign(BASE_ENV, {
     CLAUDE_CODE_PATH: join(ROOT, 'no-such-claude-binary'), // no LLM spend, no network
     ANTHROPIC_API_KEY: '',
     OPENROUTER_API_KEY: '',
-    CLAUDE_MEM_SKIP_UPDATE: '1',
-    CLAUDE_MEM_SKIP_EPISODE_LLM: '1',
-    CLAUDE_MEM_SKIP_COMPRESS: '1',
-    CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-    CLAUDE_MEM_SKIP_MAINTAIN: '1',
-    CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
-    CLAUDE_MEM_SKIP_REPOS: '1',
-    CLAUDE_MEM_NO_DELAY: '1',
+    QWEN_MEM_SKIP_UPDATE: '1',
+    QWEN_MEM_SKIP_EPISODE_LLM: '1',
+    QWEN_MEM_SKIP_COMPRESS: '1',
+    QWEN_MEM_SKIP_OPTIMIZE: '1',
+    QWEN_MEM_SKIP_MAINTAIN: '1',
+    QWEN_MEM_SKIP_SAVE_ENRICH: '1',
+    QWEN_MEM_SKIP_REPOS: '1',
+    QWEN_MEM_NO_DELAY: '1',
     MEM_QUIET_HOOKS: '1',
     MEM_NO_AUTO_ADOPT: '1',
   });
@@ -157,7 +157,7 @@ describe('H-1 — exact auto-dedup superseded filters (hook.mjs auto-maintain)',
           ...BASE_ENV,
           HOME: tmpHome,
           CLAUDE_PROJECT_DIR: projDir,
-          CLAUDE_MEM_HOOK_RUNNING: undefined,
+          QWEN_MEM_HOOK_RUNNING: undefined,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -170,9 +170,9 @@ describe('H-1 — exact auto-dedup superseded filters (hook.mjs auto-maintain)',
     tmpHome = mkdtempSync(join(tmpdir(), 'mem-h1-dedup-'));
     projDir = join(tmpHome, 'audit', 't4');
     mkdirSync(projDir, { recursive: true });
-    const dbDir = join(tmpHome, '.claude-mem-lite');
+    const dbDir = join(tmpHome, '.qwen-mem-lite');
     mkdirSync(join(dbDir, 'runtime'), { recursive: true });
-    dbPath = join(dbDir, 'claude-mem-lite.db');
+    dbPath = join(dbDir, 'qwen-mem-lite.db');
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
     initSchema(db);
@@ -374,7 +374,7 @@ describe('M-1b — error-recall clamps a future created_at (hook.mjs triggerErro
   it('the strong on-topic lesson stays inlined ahead of a future-dated decoy', async () => {
     const dataDir = sandboxDir('m1b-data');
     const cwd = sandboxDir('m1b-work');
-    const env = { CLAUDE_MEM_DIR: dataDir, HOME: sandboxDir('m1b-home') };
+    const env = { QWEN_MEM_DIR: dataDir, HOME: sandboxDir('m1b-home') };
     const run = (args) => fire(process.execPath, [CLI_PATH, ...args], { cwd, env });
 
     const strong = await run([
@@ -403,7 +403,7 @@ describe('M-1b — error-recall clamps a future created_at (hook.mjs triggerErro
     const decoyId = Number(decoy.stdout.match(/#(\d+)/)[1]);
 
     // Backdate the decoy INTO THE FUTURE — the state restore/import-jsonl can produce.
-    const raw = new Database(join(dataDir, 'claude-mem-lite.db'));
+    const raw = new Database(join(dataDir, 'qwen-mem-lite.db'));
     try {
       raw
         .prepare('UPDATE observations SET created_at_epoch = ? WHERE id = ?')
@@ -453,7 +453,7 @@ describe('M-5 — hook-script telemetry on the previously-blind surfaces', () =>
   it('user-prompt-search records ups:db-open when the DB cannot open', async () => {
     const dataDir = sandboxDir('m5-ups-data');
     const runtime = sandboxDir('m5-ups-rt');
-    mkdirSync(join(dataDir, 'claude-mem-lite.db'), { recursive: true }); // dir-as-db → open throws
+    mkdirSync(join(dataDir, 'qwen-mem-lite.db'), { recursive: true }); // dir-as-db → open throws
 
     const r = await fire(process.execPath, [UPS_PATH], {
       cwd: sandboxDir('m5-ups-work'),
@@ -462,7 +462,7 @@ describe('M-5 — hook-script telemetry on the previously-blind surfaces', () =>
         prompt:
           'investigate why the registry cache warms twice on cold start and fix the retry logic in the loader',
       }),
-      env: { CLAUDE_MEM_DIR: dataDir, CLAUDE_MEM_RUNTIME_DIR: runtime, HOME: sandboxDir('m5-ups-home') },
+      env: { QWEN_MEM_DIR: dataDir, QWEN_MEM_RUNTIME_DIR: runtime, HOME: sandboxDir('m5-ups-home') },
     });
     expect(r.code, `hook must still exit 0 (never block a prompt)\n${r.stderr}`).toBe(0);
     const scopes = hookErrorRecords(runtime).map((x) => x.scope);
@@ -471,7 +471,7 @@ describe('M-5 — hook-script telemetry on the previously-blind surfaces', () =>
 
   // FAILS IF: the post-recall:cooldown-parse record is removed — a torn cooldown file
   // (the M-6 concurrent-write shape) turns bind-salience into a zero-trace no-op.
-  it('post-tool-recall records a corrupt cooldown file under CLAUDE_MEM_SALIENCE=bind', async () => {
+  it('post-tool-recall records a corrupt cooldown file under QWEN_MEM_SALIENCE=bind', async () => {
     const runtime = sandboxDir('m5-ptr-rt');
     const watched = join(sandboxDir('m5-ptr-work'), 'edited.mjs');
     writeFileSync(watched, 'export const x = 1;\n');
@@ -480,7 +480,7 @@ describe('M-5 — hook-script telemetry on the previously-blind surfaces', () =>
     const r = await fire(process.execPath, [POST_RECALL_PATH], {
       cwd: dirname(watched),
       stdin: JSON.stringify({ session_id: 'cc-m5-ptr', tool_input: { file_path: watched } }),
-      env: { CLAUDE_MEM_SALIENCE: 'bind', CLAUDE_MEM_RUNTIME_DIR: runtime, HOME: sandboxDir('m5-ptr-home') },
+      env: { QWEN_MEM_SALIENCE: 'bind', QWEN_MEM_RUNTIME_DIR: runtime, HOME: sandboxDir('m5-ptr-home') },
     });
     expect(r.code).toBe(0);
     const scopes = hookErrorRecords(runtime).map((x) => x.scope);
@@ -494,15 +494,15 @@ describe('M-5 — hook-script telemetry on the previously-blind surfaces', () =>
   it('pre-agent-inject records agent-inject:db-open when enabled and the DB cannot open', async () => {
     const dataDir = sandboxDir('m5-pai-data');
     const runtime = sandboxDir('m5-pai-rt');
-    mkdirSync(join(dataDir, 'claude-mem-lite.db'), { recursive: true }); // dir-as-db → open throws
+    mkdirSync(join(dataDir, 'qwen-mem-lite.db'), { recursive: true }); // dir-as-db → open throws
 
     const r = await fire(process.execPath, [AGENT_INJECT_PATH], {
       cwd: sandboxDir('m5-pai-work'),
       stdin: JSON.stringify({ tool_name: 'Agent', tool_input: { prompt: 'do the thing' } }),
       env: {
-        CLAUDE_MEM_SUBAGENT_INJECT: 'on',
-        CLAUDE_MEM_DIR: dataDir,
-        CLAUDE_MEM_RUNTIME_DIR: runtime,
+        QWEN_MEM_SUBAGENT_INJECT: 'on',
+        QWEN_MEM_DIR: dataDir,
+        QWEN_MEM_RUNTIME_DIR: runtime,
         HOME: sandboxDir('m5-pai-home'),
       },
     });
@@ -515,7 +515,7 @@ describe('M-5 — hook-script telemetry on the previously-blind surfaces', () =>
 });
 
 // ─── M-6 — the shared injected-ids marker is session-keyed ─────────────────────────
-// `.claude-mem-injected-<project>` is keyed by PROJECT: two concurrent CC sessions in
+// `.qwen-mem-injected-<project>` is keyed by PROJECT: two concurrent CC sessions in
 // one project shared suppression state — session A's injections deduped session B's,
 // and B inherited A's MAX_SESSION_INJECTIONS count. The payload now carries the CC
 // session id; a mismatched session never suppresses.
@@ -698,9 +698,9 @@ describe('M-8 — restore rejects compressed members instead of reviving them', 
     const cwd = sandboxDir('m8-work');
     const home = sandboxDir('m8-home');
     const runSrc = (args) =>
-      fire(process.execPath, [CLI_PATH, ...args], { cwd, env: { CLAUDE_MEM_DIR: srcDir, HOME: home } });
+      fire(process.execPath, [CLI_PATH, ...args], { cwd, env: { QWEN_MEM_DIR: srcDir, HOME: home } });
     const runDst = (args) =>
-      fire(process.execPath, [CLI_PATH, ...args], { cwd, env: { CLAUDE_MEM_DIR: dstDir, HOME: home } });
+      fire(process.execPath, [CLI_PATH, ...args], { cwd, env: { QWEN_MEM_DIR: dstDir, HOME: home } });
 
     const live = await runSrc(['save', 'M8 live survivor row', '--type', 'bugfix']);
     expect(live.code, live.stderr).toBe(0);
@@ -712,7 +712,7 @@ describe('M-8 — restore rejects compressed members instead of reviving them', 
     // hook-llm's weekly compression produces. D#122: a POSITIVE keeper id, not -2 —
     // COMPRESSED_PENDING_PURGE rows have no keeper and must restore live (below).
     const liveId = Number(live.stdout.match(/#(\d+)/)[1]);
-    const raw = new Database(join(srcDir, 'claude-mem-lite.db'));
+    const raw = new Database(join(srcDir, 'qwen-mem-lite.db'));
     try {
       raw.prepare('UPDATE observations SET compressed_into = ? WHERE id = ?').run(liveId, memberId);
     } finally {
@@ -733,7 +733,7 @@ describe('M-8 — restore rejects compressed members instead of reviving them', 
     expect(res.code, res.stderr).toBe(0);
     expect(res.stdout).toMatch(/1 compressed member\(s\) rejected/);
 
-    const dst = new Database(join(dstDir, 'claude-mem-lite.db'), { readonly: true });
+    const dst = new Database(join(dstDir, 'qwen-mem-lite.db'), { readonly: true });
     try {
       const titles = dst
         .prepare('SELECT title FROM observations')
@@ -755,14 +755,14 @@ describe('M-8 — restore rejects compressed members instead of reviving them', 
     const cwd = sandboxDir('m8b-work');
     const home = sandboxDir('m8b-home');
     const runSrc = (args) =>
-      fire(process.execPath, [CLI_PATH, ...args], { cwd, env: { CLAUDE_MEM_DIR: srcDir, HOME: home } });
+      fire(process.execPath, [CLI_PATH, ...args], { cwd, env: { QWEN_MEM_DIR: srcDir, HOME: home } });
     const runDst = (args) =>
-      fire(process.execPath, [CLI_PATH, ...args], { cwd, env: { CLAUDE_MEM_DIR: dstDir, HOME: home } });
+      fire(process.execPath, [CLI_PATH, ...args], { cwd, env: { QWEN_MEM_DIR: dstDir, HOME: home } });
 
     const pending = await runSrc(['save', 'M8b purge-pending row', '--type', 'bugfix']);
     expect(pending.code, pending.stderr).toBe(0);
     const pendingId = Number(pending.stdout.match(/#(\d+)/)[1]);
-    const raw = new Database(join(srcDir, 'claude-mem-lite.db'));
+    const raw = new Database(join(srcDir, 'qwen-mem-lite.db'));
     try {
       raw.prepare('UPDATE observations SET compressed_into = -2 WHERE id = ?').run(pendingId);
     } finally {
@@ -780,7 +780,7 @@ describe('M-8 — restore rejects compressed members instead of reviving them', 
       /compressed member\(s\) rejected/,
     );
 
-    const dst = new Database(join(dstDir, 'claude-mem-lite.db'), { readonly: true });
+    const dst = new Database(join(dstDir, 'qwen-mem-lite.db'), { readonly: true });
     try {
       const titles = dst
         .prepare('SELECT title FROM observations')
@@ -804,13 +804,13 @@ describe('M-9 — enforceBackupBudget', () => {
   // typically weeks old (the 360MB shape), and grace protection is pinned separately.
   function makeSnaps(dirName, sizes, { ageDaysStart = 30 } = {}) {
     const dir = sandboxDir(dirName);
-    const dbPath = join(dir, 'claude-mem-lite.db');
+    const dbPath = join(dir, 'qwen-mem-lite.db');
     writeFileSync(dbPath, 'x'.repeat(100));
     return {
       dbPath,
       paths: sizes.map((size, i) => {
         // Distinct one-shot tags — exactly the shape per-tag retention can never age out.
-        const p = join(dir, `claude-mem-lite.db.tag${i}-2026-0${i + 1}-01T00-00-00-000Z-1-0.bak`);
+        const p = join(dir, `qwen-mem-lite.db.tag${i}-2026-0${i + 1}-01T00-00-00-000Z-1-0.bak`);
         writeFileSync(p, 'b'.repeat(size));
         const t = new Date(Date.now() - (ageDaysStart - i) * DAY);
         utimesSync(p, t, t); // deterministic mtime order: index 0 oldest
@@ -855,7 +855,7 @@ describe('M-9 — enforceBackupBudget', () => {
   // `cp db db.before-upgrade.bak` in the data dir gets auto-unlinked silently.
   it('a hand-made .bak that is not a canonical snapshot is never deleted', () => {
     const { dbPath, paths } = makeSnaps('m9-foreign', [10000, 10000]);
-    const foreign = join(dirname(dbPath), 'claude-mem-lite.db.before-upgrade.bak');
+    const foreign = join(dirname(dbPath), 'qwen-mem-lite.db.before-upgrade.bak');
     writeFileSync(foreign, 'f'.repeat(50000));
     const old = new Date(Date.now() - 40 * DAY);
     utimesSync(foreign, old, old); // oldest file in the dir — first eviction candidate
@@ -914,7 +914,7 @@ describe('P-2 — declaration files in RELEASE_SIGNED_FILES', () => {
 });
 
 // ─── D#120 — the injected-ids marker FILE is session-keyed ─────────────────────────
-// M-6 session-keyed the PAYLOAD of `.claude-mem-injected-<project>` but kept ONE file
+// M-6 session-keyed the PAYLOAD of `.qwen-mem-injected-<project>` but kept ONE file
 // per project. Two concurrent CC windows then full-replace each other's marker: each
 // writer sees the OTHER session's payload, discards it, and starts over — so within-
 // session dedup never survives an interleaved write and `count` resets on every
@@ -931,7 +931,7 @@ describe('D#120 — per-session injected-ids file survives interleaved sessions'
     mkdirSync(join(dataDir, 'runtime'), { recursive: true });
     project = 'parent--d120';
 
-    const db = new Database(join(dataDir, 'claude-mem-lite.db'));
+    const db = new Database(join(dataDir, 'qwen-mem-lite.db'));
     initSchema(db);
     const ins = db.prepare(
       "INSERT INTO deferred_work (project, title, detail, priority, status, created_at_epoch) VALUES (?, ?, ?, 2, 'open', ?)",
@@ -951,7 +951,7 @@ describe('D#120 — per-session injected-ids file survives interleaved sessions'
     return fire(process.execPath, [UPS_PATH], {
       cwd: workDir,
       stdin: JSON.stringify({ session_id: sessionId, prompt }),
-      env: { CLAUDE_MEM_DIR: dataDir, HOME: dataDir },
+      env: { QWEN_MEM_DIR: dataDir, HOME: dataDir },
     });
   }
 
@@ -982,7 +982,7 @@ describe('D#120 — per-session injected-ids file survives interleaved sessions'
     await ups('cc-d120-b', `D#${defA} 继续`);
     await ups('cc-d120-a', `D#${defB} 继续`);
 
-    const marker = join(dataDir, 'runtime', `.claude-mem-injected-${project}-cc-d120-a`);
+    const marker = join(dataDir, 'runtime', `.qwen-mem-injected-${project}-cc-d120-a`);
     expect(existsSync(marker), `expected session-keyed marker at ${marker}`).toBe(true);
     const state = JSON.parse(readFileSync(marker, 'utf8'));
     expect(state.count, 'session A made 2 injections — count must not reset on alternation').toBe(2);

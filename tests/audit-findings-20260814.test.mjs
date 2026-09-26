@@ -14,8 +14,8 @@
 // Every case states, in a comment, the input that makes it fail — an assertion whose
 // failing input nobody can name is not a test.
 //
-// ISOLATION: every spawned process gets CLAUDE_MEM_DIR + HOME pointed at a mkdtemp
-// sandbox, and a cwd inside it, so nothing can reach the live ~/.claude-mem-lite DB or
+// ISOLATION: every spawned process gets QWEN_MEM_DIR + HOME pointed at a mkdtemp
+// sandbox, and a cwd inside it, so nothing can reach the live ~/.qwen-mem-lite DB or
 // write into this repo. The sandbox is removed in an afterAll `finally`.
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
@@ -47,21 +47,21 @@ beforeAll(() => {
   // The developer's own plugin flags would otherwise flip default-OFF surfaces on in the
   // child (the #8608 leak class). Everything needed is set explicitly below.
   for (const k of Object.keys(BASE_ENV)) {
-    if (/^(CLAUDE_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete BASE_ENV[k];
+    if (/^(QWEN_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete BASE_ENV[k];
   }
   Object.assign(BASE_ENV, {
     HOME: HOME_DIR,
     CLAUDE_CODE_PATH: join(ROOT, 'no-such-claude-binary'), // no LLM spend, no network
     ANTHROPIC_API_KEY: '',
     OPENROUTER_API_KEY: '',
-    CLAUDE_MEM_SKIP_UPDATE: '1',
-    CLAUDE_MEM_SKIP_EPISODE_LLM: '1',
-    CLAUDE_MEM_SKIP_COMPRESS: '1',
-    CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-    CLAUDE_MEM_SKIP_MAINTAIN: '1',
-    CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
-    CLAUDE_MEM_SKIP_REPOS: '1',
-    CLAUDE_MEM_NO_DELAY: '1',
+    QWEN_MEM_SKIP_UPDATE: '1',
+    QWEN_MEM_SKIP_EPISODE_LLM: '1',
+    QWEN_MEM_SKIP_COMPRESS: '1',
+    QWEN_MEM_SKIP_OPTIMIZE: '1',
+    QWEN_MEM_SKIP_MAINTAIN: '1',
+    QWEN_MEM_SKIP_SAVE_ENRICH: '1',
+    QWEN_MEM_SKIP_REPOS: '1',
+    QWEN_MEM_NO_DELAY: '1',
   });
   delete BASE_ENV.CLAUDE_PROJECT_DIR; // cwd is the only project source
   delete BASE_ENV.PWD;
@@ -118,8 +118,8 @@ function fire(cmd, args, { cwd, stdin = '', env = {}, timeout = 30000 } = {}) {
  * `cwd` as its only project source. Caller closes both handles.
  */
 async function startMcp(dataDir, cwd) {
-  const env = { ...BASE_ENV, CLAUDE_MEM_DIR: dataDir, MEM_QUIET_HOOKS: '1', CLAUDE_MEM_AUTO_DEEP: '0' };
-  delete env.CLAUDE_MEM_HOOK_RUNNING;
+  const env = { ...BASE_ENV, QWEN_MEM_DIR: dataDir, MEM_QUIET_HOOKS: '1', QWEN_MEM_AUTO_DEEP: '0' };
+  delete env.QWEN_MEM_HOOK_RUNNING;
   for (const k of Object.keys(env)) if (env[k] === undefined) delete env[k];
   const transport = new StdioClientTransport({ command: process.execPath, args: [SERVER_PATH], cwd, env });
   const client = new Client({ name: 'mem-audit0814-client', version: '0.0.0' });
@@ -141,12 +141,12 @@ const textOf = (res) =>
 // by level. 11 other call sites in the same file already passed three.
 
 describe('F4 — write-side noise-gate diagnostics log at a real level with a real message', () => {
-  const DEBUG_LINE = /^\[claude-mem-lite\] \[[^\]]+\] \[(DEBUG|WARN|ERROR)\] ([^:]+): (.+)$/;
+  const DEBUG_LINE = /^\[qwen-mem-lite\] \[[^\]]+\] \[(DEBUG|WARN|ERROR)\] ([^:]+): (.+)$/;
   let db, errSpy, prevDebug;
 
   beforeEach(() => {
-    prevDebug = process.env.CLAUDE_MEM_DEBUG;
-    process.env.CLAUDE_MEM_DEBUG = '1'; // debugLog is gated on this
+    prevDebug = process.env.QWEN_MEM_DEBUG;
+    process.env.QWEN_MEM_DEBUG = '1'; // debugLog is gated on this
     db = createTestDb();
     insertSession(db, { id: 'sess-f4', project: 'test' });
     errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -155,8 +155,8 @@ describe('F4 — write-side noise-gate diagnostics log at a real level with a re
   afterEach(() => {
     errSpy.mockRestore();
     db.close();
-    if (prevDebug === undefined) delete process.env.CLAUDE_MEM_DEBUG;
-    else process.env.CLAUDE_MEM_DEBUG = prevDebug;
+    if (prevDebug === undefined) delete process.env.QWEN_MEM_DEBUG;
+    else process.env.QWEN_MEM_DEBUG = prevDebug;
   });
 
   /** The one line the given drop produced, split into level / context / message. */
@@ -254,7 +254,7 @@ describe('F5 — a non-string tool_name is recorded, not thrown-and-swallowed', 
     fire(process.execPath, [HOOK_PATH, 'post-tool-use'], {
       cwd,
       stdin: JSON.stringify(payload),
-      env: { CLAUDE_MEM_DIR: dataDir },
+      env: { QWEN_MEM_DIR: dataDir },
     });
 
   beforeEach(() => {
@@ -341,7 +341,7 @@ describe('F3 — an attached file is not rendered as a modification', () => {
   const run = (args) =>
     fire(process.execPath, [CLI_PATH, ...args], {
       cwd,
-      env: { CLAUDE_MEM_DIR: dataDir },
+      env: { QWEN_MEM_DIR: dataDir },
     });
 
   beforeEach(() => {
@@ -439,7 +439,7 @@ describe('F2 — the optimize preview reads the same on the CLI and over MCP', (
     ]) {
       const r = await fire(process.execPath, [CLI_PATH, 'save', text, '--type', 'bugfix'], {
         cwd,
-        env: { CLAUDE_MEM_DIR: dataDir },
+        env: { QWEN_MEM_DIR: dataDir },
       });
       expect(r.code, r.stderr).toBe(0);
     }
@@ -466,7 +466,7 @@ describe('F2 — the optimize preview reads the same on the CLI and over MCP', (
   it('both surfaces label the preview identically, using the `candidates` spelling', async () => {
     const cliRun = await fire(process.execPath, [CLI_PATH, 'optimize'], {
       cwd,
-      env: { CLAUDE_MEM_DIR: dataDir },
+      env: { QWEN_MEM_DIR: dataDir },
     });
     expect(cliRun.code, cliRun.stderr).toBe(0);
     const mcpRun = textOf(await client.callTool({ name: 'mem_optimize', arguments: { action: 'preview' } }));
@@ -504,7 +504,7 @@ describe('F2 — the optimize preview reads the same on the CLI and over MCP', (
 
 // ─── F6 — the detached update-check worker exited before its handler ───────────────
 // hook.mjs:1432 spawns `update-check` via spawnBackground(), which sets
-// CLAUDE_MEM_HOOK_RUNNING=1 on the child (hook-shared.mjs:212). The recursion guard at
+// QWEN_MEM_HOOK_RUNNING=1 on the child (hook-shared.mjs:212). The recursion guard at
 // hook.mjs:116 exits every event that is not in BG_EVENTS — and `update-check` was not in
 // it, so the worker died before the dispatch case at :1790. isUpdateCheckDue() reads the
 // update-state.json that worker was supposed to write, so every SessionStart respawned a
@@ -573,13 +573,13 @@ describe('F6 — update-check reaches its handler under the recursion guard', ()
   // FAILS IF: 'update-check' is dropped from BG_EVENTS again — hook.mjs:116 then exits before
   // the dispatch case, so NO fetch is recorded and update-state.json is never written (that is
   // exactly the pre-fix reading: 0 URLs, no state file).
-  it('the detached worker performs the release lookup with CLAUDE_MEM_HOOK_RUNNING=1', async () => {
+  it('the detached worker performs the release lookup with QWEN_MEM_HOOK_RUNNING=1', async () => {
     const r = await fire(process.execPath, [HOOK_PATH, 'update-check'], {
       cwd,
       env: {
-        CLAUDE_MEM_DIR: dataDir,
-        CLAUDE_MEM_HOOK_RUNNING: '1', // what spawnBackground sets on the child
-        CLAUDE_MEM_SKIP_UPDATE: undefined, // BASE_ENV sets it; drop it so the handler runs
+        QWEN_MEM_DIR: dataDir,
+        QWEN_MEM_HOOK_RUNNING: '1', // what spawnBackground sets on the child
+        QWEN_MEM_SKIP_UPDATE: undefined, // BASE_ENV sets it; drop it so the handler runs
         ...offlineEnv(fetchLog),
       },
       timeout: 60000,
@@ -602,13 +602,13 @@ describe('F6 — update-check reaches its handler under the recursion guard', ()
     ).toBeLessThan(120000);
     // A failed lookup must not have tried to install anything.
     expect(
-      existsSync(join(HOME_DIR, '.claude-mem-lite', 'package.json')),
+      existsSync(join(HOME_DIR, '.qwen-mem-lite', 'package.json')),
       'a failed release lookup still touched the install dir',
     ).toBe(false);
   }, 60000);
 
   // The counter-case: the fix must not be "delete the recursion guard". A foreground event
-  // under CLAUDE_MEM_HOOK_RUNNING=1 still has to die before doing any work.
+  // under QWEN_MEM_HOOK_RUNNING=1 still has to die before doing any work.
   // FAILS IF: hook.mjs:116 is removed, or BG_EVENTS is widened to everything — the guarded
   // arm then captures the episode entry the unguarded arm proves this payload produces.
   it('a non-background event under the same env is still refused', async () => {
@@ -626,12 +626,12 @@ describe('F6 — update-check reaches its handler under the recursion guard', ()
     const guarded = await fire(process.execPath, [HOOK_PATH, 'post-tool-use'], {
       cwd: guardedCwd,
       stdin: JSON.stringify(payload(guardedCwd)),
-      env: { CLAUDE_MEM_DIR: guardedData, CLAUDE_MEM_HOOK_RUNNING: '1' },
+      env: { QWEN_MEM_DIR: guardedData, QWEN_MEM_HOOK_RUNNING: '1' },
     });
     expect(guarded.code, guarded.stderr).toBe(0);
     expect(
       existsSync(episodeFile(guardedData, guardedCwd)),
-      'post-tool-use ran its handler under CLAUDE_MEM_HOOK_RUNNING=1 — the recursion guard is gone',
+      'post-tool-use ran its handler under QWEN_MEM_HOOK_RUNNING=1 — the recursion guard is gone',
     ).toBe(false);
 
     // Same payload, guard env removed: proof the "no episode file" above is the guard's doing
@@ -641,7 +641,7 @@ describe('F6 — update-check reaches its handler under the recursion guard', ()
     const open = await fire(process.execPath, [HOOK_PATH, 'post-tool-use'], {
       cwd: openCwd,
       stdin: JSON.stringify(payload(openCwd)),
-      env: { CLAUDE_MEM_DIR: openData },
+      env: { QWEN_MEM_DIR: openData },
     });
     expect(open.code, open.stderr).toBe(0);
     const episode = JSON.parse(readFileSync(episodeFile(openData, openCwd), 'utf8'));
@@ -652,7 +652,7 @@ describe('F6 — update-check reaches its handler under the recursion guard', ()
   // new detached spawn must be added to, and the failure mode (silent exit 0) is invisible.
   // Both detached spawners are scanned — spawnBackground() in hook.mjs and the direct
   // `spawn(node, [HOOK_PATH, '<event>'])` in lib/save-enrich.mjs — since both set
-  // CLAUDE_MEM_HOOK_RUNNING=1 on the child.
+  // QWEN_MEM_HOOK_RUNNING=1 on the child.
   // FAILS IF: any event is spawned detached without being listed (the F6 defect itself:
   // pre-fix this reds with ['update-check']).
   it('every detached worker event is listed in BG_EVENTS', () => {
@@ -674,7 +674,7 @@ describe('F6 — update-check reaches its handler under the recursion guard', ()
     ).toBeGreaterThanOrEqual(6);
     expect(
       [...spawned].filter((e) => !listed.has(e)),
-      'these events are spawned detached (CLAUDE_MEM_HOOK_RUNNING=1) but absent from BG_EVENTS, so hook.mjs:116 exits them before dispatch',
+      'these events are spawned detached (QWEN_MEM_HOOK_RUNNING=1) but absent from BG_EVENTS, so hook.mjs:116 exits them before dispatch',
     ).toEqual([]);
   });
 });
@@ -686,7 +686,7 @@ describe('F6 — update-check reaches its handler under the recursion guard', ()
 // `allowInstall = options.allowInstall ?? !pluginMode` — so on a direct / settings.json
 // install (no CLAUDE_PLUGIN_ROOT) allowInstall defaults to TRUE and the path proceeds into
 // downloadAndInstall: curl the tarball, `npm install` in staging, per-file renameSync swap
-// of ~/.claude-mem-lite. Fixing F6 would therefore switch a ten-week-dormant self-installer
+// of ~/.qwen-mem-lite. Fixing F6 would therefore switch a ten-week-dormant self-installer
 // back on for every direct-install user in the same release that resurrects it.
 // Staged instead (user decision): this release restores the CHECK + banner only, by passing
 // `allowInstall: false` at this ONE dispatch. hook-update.mjs's own default and the
@@ -707,9 +707,9 @@ describe('F6b — the restored update-check checks for a release but does not in
   const lines = (f) => (existsSync(f) ? readFileSync(f, 'utf8').trim().split('\n').filter(Boolean) : []);
   /** Child env: a DIRECT install (no CLAUDE_PLUGIN_ROOT ⇒ allowInstall defaults to true). */
   const childEnv = (extra = {}) => ({
-    CLAUDE_MEM_DIR: dataDir,
-    CLAUDE_MEM_HOOK_RUNNING: '1', // what spawnBackground sets on the detached child
-    CLAUDE_MEM_SKIP_UPDATE: undefined, // BASE_ENV sets it; drop it so the handler runs
+    QWEN_MEM_DIR: dataDir,
+    QWEN_MEM_HOOK_RUNNING: '1', // what spawnBackground sets on the detached child
+    QWEN_MEM_SKIP_UPDATE: undefined, // BASE_ENV sets it; drop it so the handler runs
     CLAUDE_PLUGIN_ROOT: undefined, // the install shape where the installer was reachable
     AUDIT_FETCH_LOG: fetchLog,
     AUDIT_CURL_LOG: curlLog,
@@ -825,7 +825,7 @@ describe('F6b — the restored update-check checks for a release but does not in
     expect(lines(curlLog), 'the dispatched update-check entered the self-replacing installer').toEqual([]);
     // Nothing was staged or swapped into the install dir either.
     expect(
-      existsSync(join(HOME_DIR, '.claude-mem-lite', 'package.json')),
+      existsSync(join(HOME_DIR, '.qwen-mem-lite', 'package.json')),
       'the update path wrote into the install dir',
     ).toBe(false);
   }, 60000);
@@ -852,7 +852,7 @@ describe('F6b — the restored update-check checks for a release but does not in
           AUDIT_UPDATE_MODULE: join(REPO, 'hook-update.mjs'),
           AUDIT_CURL_LOG: explicitLog,
           AUDIT_FETCH_LOG: join(ROOT, 'f6b-fetches-explicit.txt'),
-          CLAUDE_MEM_DIR: explicitData,
+          QWEN_MEM_DIR: explicitData,
         }),
         timeout: 60000,
       },

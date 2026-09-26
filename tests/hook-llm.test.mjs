@@ -265,7 +265,7 @@ describe('handleLLMEpisode', () => {
     tmpFile = join(tmpdir(), `hook-llm-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
     filesToCleanup.push(tmpFile);
     process.argv[3] = tmpFile;
-    process.env.CLAUDE_MEM_NO_DELAY = '1';
+    process.env.QWEN_MEM_NO_DELAY = '1';
 
     db = createTestDb();
     // Prevent handleLLMEpisode from closing our test DB
@@ -293,7 +293,7 @@ describe('handleLLMEpisode', () => {
   afterEach(() => {
     if (db?._realClose) db._realClose();
     process.argv[3] = originalArgv3;
-    delete process.env.CLAUDE_MEM_NO_DELAY;
+    delete process.env.QWEN_MEM_NO_DELAY;
     while (filesToCleanup.length) {
       try {
         rmSync(filesToCleanup.pop(), { force: true });
@@ -815,8 +815,8 @@ describe('handleLLMEpisode', () => {
     expect(obsRows[0].lesson_learned).toContain('BM25 score sign flipped');
   });
 
-  it('v2.56.0 #1 opt-out: CLAUDE_MEM_KEEP_LOW_SIGNAL=1 disables drop', async () => {
-    vi.stubEnv('CLAUDE_MEM_KEEP_LOW_SIGNAL', '1');
+  it('v2.56.0 #1 opt-out: QWEN_MEM_KEEP_LOW_SIGNAL=1 disables drop', async () => {
+    vi.stubEnv('QWEN_MEM_KEEP_LOW_SIGNAL', '1');
     callLLM.mockReturnValueOnce(
       JSON.stringify({
         type: 'change',
@@ -846,8 +846,8 @@ describe('handleLLMEpisode', () => {
     expect(obsRows.length).toBe(1);
   });
 
-  it('P3 opt-out: CLAUDE_MEM_NO_LESSON_RETRY=1 skips retry for bugfix', async () => {
-    vi.stubEnv('CLAUDE_MEM_NO_LESSON_RETRY', '1');
+  it('P3 opt-out: QWEN_MEM_NO_LESSON_RETRY=1 skips retry for bugfix', async () => {
+    vi.stubEnv('QWEN_MEM_NO_LESSON_RETRY', '1');
     callLLM.mockReturnValueOnce(
       JSON.stringify({
         type: 'bugfix',
@@ -1076,8 +1076,8 @@ describe('handleLLMEpisode', () => {
     expect(obs.length).toBe(0);
   });
 
-  it('P0 opt-out: CLAUDE_MEM_KEEP_LOW_SIGNAL=1 preserves pre-v2.36 fallback save', async () => {
-    vi.stubEnv('CLAUDE_MEM_KEEP_LOW_SIGNAL', '1');
+  it('P0 opt-out: QWEN_MEM_KEEP_LOW_SIGNAL=1 preserves pre-v2.36 fallback save', async () => {
+    vi.stubEnv('QWEN_MEM_KEEP_LOW_SIGNAL', '1');
     acquireLLMSlot.mockResolvedValueOnce(false);
 
     const episode = {
@@ -1845,7 +1845,7 @@ describe('handleLLMSummary', () => {
   beforeEach(() => {
     process.argv[3] = 'test-session';
     process.argv[4] = 'test-proj';
-    process.env.CLAUDE_MEM_FLUSH_TIMEOUT = '0';
+    process.env.QWEN_MEM_FLUSH_TIMEOUT = '0';
 
     db = createTestDb();
     db._realClose = db.close;
@@ -1867,7 +1867,7 @@ describe('handleLLMSummary', () => {
     if (db?._realClose) db._realClose();
     process.argv[3] = originalArgv3;
     process.argv[4] = originalArgv4;
-    delete process.env.CLAUDE_MEM_FLUSH_TIMEOUT;
+    delete process.env.QWEN_MEM_FLUSH_TIMEOUT;
     vi.clearAllMocks();
   });
 
@@ -2090,7 +2090,7 @@ describe('session summary structured knowledge', () => {
     const origArgv4 = process.argv[4];
     process.argv[3] = 'lessons-sess';
     process.argv[4] = 'test-proj';
-    process.env.CLAUDE_MEM_FLUSH_TIMEOUT = '0';
+    process.env.QWEN_MEM_FLUSH_TIMEOUT = '0';
 
     openDb.mockReturnValue(db);
     callLLM.mockReturnValue(
@@ -2123,7 +2123,7 @@ describe('session summary structured knowledge', () => {
 
     process.argv[3] = origArgv3;
     process.argv[4] = origArgv4;
-    delete process.env.CLAUDE_MEM_FLUSH_TIMEOUT;
+    delete process.env.QWEN_MEM_FLUSH_TIMEOUT;
     db._realClose();
   });
 
@@ -2136,7 +2136,7 @@ describe('session summary structured knowledge', () => {
     const origArgv4 = process.argv[4];
     process.argv[3] = 'no-lessons-sess';
     process.argv[4] = 'test-proj';
-    process.env.CLAUDE_MEM_FLUSH_TIMEOUT = '0';
+    process.env.QWEN_MEM_FLUSH_TIMEOUT = '0';
 
     openDb.mockReturnValue(db);
     callLLM.mockReturnValue(
@@ -2169,7 +2169,7 @@ describe('session summary structured knowledge', () => {
 
     process.argv[3] = origArgv3;
     process.argv[4] = origArgv4;
-    delete process.env.CLAUDE_MEM_FLUSH_TIMEOUT;
+    delete process.env.QWEN_MEM_FLUSH_TIMEOUT;
     db._realClose();
   });
 });
@@ -2244,7 +2244,7 @@ describe('lesson_learned and search_aliases extraction', () => {
     filesToCleanup.push(tmpFile2);
     const origArgv3 = process.argv[3];
     process.argv[3] = tmpFile2;
-    process.env.CLAUDE_MEM_NO_DELAY = '1';
+    process.env.QWEN_MEM_NO_DELAY = '1';
 
     writeFileSync(
       tmpFile2,
@@ -2291,7 +2291,7 @@ describe('lesson_learned and search_aliases extraction', () => {
     filesToCleanup.push(tmpFile2);
     const origArgv3 = process.argv[3];
     process.argv[3] = tmpFile2;
-    process.env.CLAUDE_MEM_NO_DELAY = '1';
+    process.env.QWEN_MEM_NO_DELAY = '1';
 
     writeFileSync(
       tmpFile2,
@@ -2352,7 +2352,7 @@ describe('lesson_learned and search_aliases extraction', () => {
       filesToCleanup.push(tmpFile2);
       const origArgv3 = process.argv[3];
       process.argv[3] = tmpFile2;
-      process.env.CLAUDE_MEM_NO_DELAY = '1';
+      process.env.QWEN_MEM_NO_DELAY = '1';
 
       writeFileSync(
         tmpFile2,
@@ -2403,7 +2403,7 @@ describe('lesson_learned and search_aliases extraction', () => {
     filesToCleanup.push(tmpFile2);
     const origArgv3 = process.argv[3];
     process.argv[3] = tmpFile2;
-    process.env.CLAUDE_MEM_NO_DELAY = '1';
+    process.env.QWEN_MEM_NO_DELAY = '1';
 
     writeFileSync(
       tmpFile2,

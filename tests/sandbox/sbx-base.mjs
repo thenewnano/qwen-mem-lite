@@ -14,7 +14,7 @@
 // The two are the same sentence in a Claude Code session, where `$TMPDIR` is set to
 // `~/.claude/tmp/claude-<uid>` — so the DOCUMENTED DEFAULT violates the documented rule,
 // and it does so silently: `/home/<user>/node_modules` here holds both `better-sqlite3`
-// and `claude-mem-lite`, so every check still passes while measuring the wrong tree.
+// and `qwen-mem-lite`, so every check still passes while measuring the wrong tree.
 // Found by running the harness, not by reading it, which is the whole argument for
 // running it.
 //
@@ -63,7 +63,7 @@ export function isInside(parent, child) {
  *
  * The two are not the same set, and the gap is a path this repo uses daily: the v3.90.0
  * review pointed a sandbox at `<repo>/tmp/sbx`, which is nowhere near HOME, passed the
- * HOME check unchanged, and resolved `better-sqlite3` AND `claude-mem-lite` straight out
+ * HOME check unchanged, and resolved `better-sqlite3` AND `qwen-mem-lite` straight out
  * of the package under test — precisely the fake isolation the guard exists to prevent.
  * @param {string} base
  * @returns {string|null}
@@ -95,7 +95,7 @@ export function resolveSandboxBase({ sbxBase, tmp, home } = {}) {
     throw new Error(
       `[sandbox] refusing to build a sandbox at ${resolve(base)}: it is under HOME (${resolve(h)}).\n` +
         `  Node resolves node_modules up the directory tree, so a root here silently borrows\n` +
-        `  the home tree's better-sqlite3 / claude-mem-lite and every check passes against the\n` +
+        `  the home tree's better-sqlite3 / qwen-mem-lite and every check passes against the\n` +
         `  wrong install. Set SBX_BASE to a path outside HOME, e.g. SBX_BASE=/tmp/claude/sbx.\n` +
         `  (In a Claude Code session $TMPDIR is itself under HOME, which is how the default gets here.)`,
     );

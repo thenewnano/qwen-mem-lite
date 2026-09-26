@@ -165,9 +165,9 @@ describe('install.mjs cleanup --dry-run', () => {
     const { mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync } = await import('fs');
     const { tmpdir } = await import('os');
 
-    // Sandboxed HOME so we don't touch the real ~/.claude-mem-lite/.
+    // Sandboxed HOME so we don't touch the real ~/.qwen-mem-lite/.
     const home = mkdtempSync(join(tmpdir(), 'cleanup-dryrun-'));
-    const installDir = join(home, '.claude-mem-lite');
+    const installDir = join(home, '.qwen-mem-lite');
     const stale = join(installDir, '.update-staging-fake-dryrun');
     mkdirSync(stale, { recursive: true });
     writeFileSync(join(stale, 'marker.txt'), 'placeholder');

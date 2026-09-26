@@ -17,9 +17,9 @@ import { tmpdir } from 'os';
 
 const SCRIPT_PATH = resolve(import.meta.dirname, '../scripts/pre-tool-recall.js');
 
-// Default sandbox for tests that don't override CLAUDE_MEM_DIR. Without it,
+// Default sandbox for tests that don't override QWEN_MEM_DIR. Without it,
 // negative-path tests (invalid JSON, missing file_path) write hook-error
-// telemetry to the real ~/.claude-mem-lite/runtime/hook-errors/ — cite #8447:
+// telemetry to the real ~/.qwen-mem-lite/runtime/hook-errors/ — cite #8447:
 // fast-path scripts must mirror schema.mjs env-var convention, and tests must
 // honor it too.
 const DEFAULT_SANDBOX = mkdtempSync(join(tmpdir(), 'pre-recall-sandbox-'));
@@ -31,9 +31,9 @@ function runScriptRaw(inputStr, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('node', [SCRIPT_PATH], {
       // Order matters: process.env first, then DEFAULT_SANDBOX overrides any
-      // dev-shell CLAUDE_MEM_DIR, then explicit `env` overrides the sandbox
+      // dev-shell QWEN_MEM_DIR, then explicit `env` overrides the sandbox
       // for tests that need their own RUNTIME_DIR.
-      env: { ...process.env, CLAUDE_MEM_DIR: DEFAULT_SANDBOX, ...env },
+      env: { ...process.env, QWEN_MEM_DIR: DEFAULT_SANDBOX, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -55,15 +55,15 @@ function runScriptRaw(inputStr, env = {}) {
   });
 }
 
-// Helper: run script with JSON input and CLAUDE_MEM_HOOK_RUNNING cleared
+// Helper: run script with JSON input and QWEN_MEM_HOOK_RUNNING cleared
 async function runScript(input, env = {}) {
-  return runScriptRaw(JSON.stringify(input), { CLAUDE_MEM_HOOK_RUNNING: '', ...env });
+  return runScriptRaw(JSON.stringify(input), { QWEN_MEM_HOOK_RUNNING: '', ...env });
 }
 
 describe('pre-tool-recall', () => {
   describe('input parsing', () => {
     it('exits silently on invalid JSON', async () => {
-      const { stdout } = await runScriptRaw('not json', { CLAUDE_MEM_HOOK_RUNNING: '' });
+      const { stdout } = await runScriptRaw('not json', { QWEN_MEM_HOOK_RUNNING: '' });
       expect(stdout).toBe('');
     });
 
@@ -72,10 +72,10 @@ describe('pre-tool-recall', () => {
       expect(stdout).toBe('');
     });
 
-    it('exits silently when CLAUDE_MEM_HOOK_RUNNING is set', async () => {
+    it('exits silently when QWEN_MEM_HOOK_RUNNING is set', async () => {
       const { stdout } = await runScriptRaw(
         JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: '/foo.mjs' } }),
-        { CLAUDE_MEM_HOOK_RUNNING: '1' },
+        { QWEN_MEM_HOOK_RUNNING: '1' },
       );
       expect(stdout).toBe('');
     });
@@ -259,7 +259,7 @@ describe('pre-tool-recall', () => {
 
   // R-4: when no lessons match, emit a short backfill reminder so Claude (a) knows the
   // system tried and (b) gets nudged to save a lesson after a non-obvious bug solve.
-  // Enabled by CLAUDE_MEM_DB_PATH + CLAUDE_MEM_RUNTIME_DIR env overrides for test isolation.
+  // Enabled by QWEN_MEM_DB_PATH + QWEN_MEM_RUNTIME_DIR env overrides for test isolation.
   describe('backfill reminder (R-4)', () => {
     let tmpRoot;
     let dbPath;
@@ -292,13 +292,13 @@ describe('pre-tool-recall', () => {
 
     function runWithEnv(input, extraEnv = {}) {
       return runScript(input, {
-        CLAUDE_MEM_DB_PATH: dbPath,
-        CLAUDE_MEM_RUNTIME_DIR: runtimeDir,
+        QWEN_MEM_DB_PATH: dbPath,
+        QWEN_MEM_RUNTIME_DIR: runtimeDir,
         CLAUDE_PROJECT_DIR: projectDir,
         // The no-prior-lessons backfill reminder is opt-in (default off) since the
         // cross-project audit. These tests exercise that reminder + the cooldown
         // mechanism it doubles as a probe for, so enable it here.
-        CLAUDE_MEM_PRETOOL_NUDGE: '1',
+        QWEN_MEM_PRETOOL_NUDGE: '1',
         ...extraEnv,
       });
     }
@@ -309,7 +309,7 @@ describe('pre-tool-recall', () => {
           tool_name: 'Edit',
           tool_input: { file_path: join(projectDir, 'no-nudge.py') },
         },
-        { CLAUDE_MEM_PRETOOL_NUDGE: '' },
+        { QWEN_MEM_PRETOOL_NUDGE: '' },
       );
       expect(stdout).toBe('');
     });
@@ -682,11 +682,11 @@ describe('pre-tool-recall', () => {
 
     function runWithEnv(input) {
       return runScript(input, {
-        CLAUDE_MEM_DB_PATH: dbPath,
-        CLAUDE_MEM_RUNTIME_DIR: runtimeDir,
+        QWEN_MEM_DB_PATH: dbPath,
+        QWEN_MEM_RUNTIME_DIR: runtimeDir,
         CLAUDE_PROJECT_DIR: projectDir,
         // Backfill reminder is opt-in (default off) post-audit; these blocks test it.
-        CLAUDE_MEM_PRETOOL_NUDGE: '1',
+        QWEN_MEM_PRETOOL_NUDGE: '1',
       });
     }
 
@@ -765,11 +765,11 @@ describe('pre-tool-recall', () => {
 
     function runWithEnv(input) {
       return runScript(input, {
-        CLAUDE_MEM_DB_PATH: dbPath,
-        CLAUDE_MEM_RUNTIME_DIR: runtimeDir,
+        QWEN_MEM_DB_PATH: dbPath,
+        QWEN_MEM_RUNTIME_DIR: runtimeDir,
         CLAUDE_PROJECT_DIR: projectDir,
         // Backfill reminder is opt-in (default off) post-audit; these blocks test it.
-        CLAUDE_MEM_PRETOOL_NUDGE: '1',
+        QWEN_MEM_PRETOOL_NUDGE: '1',
       });
     }
 
@@ -928,13 +928,13 @@ describe('pre-tool-recall', () => {
     });
   });
 
-  // Regression: pre-tool-recall used to honor only CLAUDE_MEM_DB_PATH /
-  // CLAUDE_MEM_RUNTIME_DIR, while schema.mjs / main CLI honor CLAUDE_MEM_DIR.
-  // A user / test setting only CLAUDE_MEM_DIR for sandbox isolation got the
-  // CLI redirected but cooldown writes still leaked to ~/.claude-mem-lite/runtime/.
-  // The hook now derives both paths from CLAUDE_MEM_DIR by default; the
+  // Regression: pre-tool-recall used to honor only QWEN_MEM_DB_PATH /
+  // QWEN_MEM_RUNTIME_DIR, while schema.mjs / main CLI honor QWEN_MEM_DIR.
+  // A user / test setting only QWEN_MEM_DIR for sandbox isolation got the
+  // CLI redirected but cooldown writes still leaked to ~/.qwen-mem-lite/runtime/.
+  // The hook now derives both paths from QWEN_MEM_DIR by default; the
   // narrower per-component overrides remain for tests that need to mix.
-  describe('CLAUDE_MEM_DIR alignment with main CLI', () => {
+  describe('QWEN_MEM_DIR alignment with main CLI', () => {
     let tmpRoot;
     let projectDir;
 
@@ -944,7 +944,7 @@ describe('pre-tool-recall', () => {
       projectDir = join(tmpRoot, 'parent', 'memdirtest');
       mkdirSync(projectDir, { recursive: true });
 
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       insertSession(db, { id: 'sess-memdir', project: 'parent--memdirtest', memoryId: 'mem-memdir' });
@@ -966,7 +966,7 @@ describe('pre-tool-recall', () => {
       } catch {}
     });
 
-    it('CLAUDE_MEM_DIR alone redirects DB read', async () => {
+    it('QWEN_MEM_DIR alone redirects DB read', async () => {
       const { stdout } = await runScript(
         {
           tool_name: 'Edit',
@@ -974,7 +974,7 @@ describe('pre-tool-recall', () => {
           session_id: 'sess-memdir-1',
         },
         {
-          CLAUDE_MEM_DIR: tmpRoot,
+          QWEN_MEM_DIR: tmpRoot,
           CLAUDE_PROJECT_DIR: projectDir,
         },
       );
@@ -984,7 +984,7 @@ describe('pre-tool-recall', () => {
       );
     });
 
-    it('CLAUDE_MEM_DIR alone redirects cooldown writes (no leak to ~/.claude-mem-lite/runtime)', async () => {
+    it('QWEN_MEM_DIR alone redirects cooldown writes (no leak to ~/.qwen-mem-lite/runtime)', async () => {
       // First call seeds cooldown; second call should be silent.
       await runScript(
         {
@@ -992,7 +992,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'target.mjs') },
           session_id: 'sess-memdir-2',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
 
       const { existsSync } = await import('fs');
@@ -1004,12 +1004,12 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'target.mjs') },
           session_id: 'sess-memdir-2',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
       expect(stdout).toBe('');
     });
 
-    it('CLAUDE_MEM_DB_PATH still overrides when set (per-component override preserved)', async () => {
+    it('QWEN_MEM_DB_PATH still overrides when set (per-component override preserved)', async () => {
       const altDb = join(tmpRoot, 'alt.db');
       const db = new Database(altDb);
       db.pragma('foreign_keys = OFF');
@@ -1021,7 +1021,7 @@ describe('pre-tool-recall', () => {
         type: 'bugfix',
         importance: 2,
         title: 'override marker',
-        lessonLearned: 'Sourced from CLAUDE_MEM_DB_PATH override, not CLAUDE_MEM_DIR default',
+        lessonLearned: 'Sourced from QWEN_MEM_DB_PATH override, not QWEN_MEM_DIR default',
         filesModified: `["${join(projectDir, 'target.mjs')}"]`,
       });
       db.close();
@@ -1033,15 +1033,13 @@ describe('pre-tool-recall', () => {
           session_id: 'sess-memdir-3',
         },
         {
-          CLAUDE_MEM_DIR: tmpRoot,
-          CLAUDE_MEM_DB_PATH: altDb,
+          QWEN_MEM_DIR: tmpRoot,
+          QWEN_MEM_DB_PATH: altDb,
           CLAUDE_PROJECT_DIR: projectDir,
         },
       );
       const parsed = JSON.parse(stdout);
-      expect(parsed.hookSpecificOutput.additionalContext).toContain(
-        'Sourced from CLAUDE_MEM_DB_PATH override',
-      );
+      expect(parsed.hookSpecificOutput.additionalContext).toContain('Sourced from QWEN_MEM_DB_PATH override');
       expect(parsed.hookSpecificOutput.additionalContext).not.toContain(
         'A specific lesson visible only when DB is correctly sandboxed',
       );
@@ -1060,7 +1058,7 @@ describe('pre-tool-recall', () => {
           session_id: 'sess-memdir-pwd',
         },
         {
-          CLAUDE_MEM_DIR: tmpRoot,
+          QWEN_MEM_DIR: tmpRoot,
           CLAUDE_PROJECT_DIR: '',
           PWD: projectDir,
         },
@@ -1086,7 +1084,7 @@ describe('pre-tool-recall', () => {
       projectDir = join(tmpRoot, 'parent', 'citeback');
       mkdirSync(projectDir, { recursive: true });
 
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       insertSession(db, { id: 'sess-cb', project: 'parent--citeback', memoryId: 'mem-cb' });
@@ -1116,7 +1114,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'foo.mjs') },
           session_id: 'sess-cb-1',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
 
       const cooldown = JSON.parse(
@@ -1137,7 +1135,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'no-lessons.mjs') },
           session_id: 'sess-cb-2',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
 
       const cooldown = JSON.parse(
@@ -1152,7 +1150,7 @@ describe('pre-tool-recall', () => {
     // OBSERVATION ids — events share the same numeric id space, and an event id
     // fed into observation_files edge updates could hit an unrelated obs edge.
     it('writes obsIds with observation-sourced ids only (events excluded)', async () => {
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       db.prepare(
@@ -1175,7 +1173,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'foo.mjs') },
           session_id: 'sess-cb-obsids',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
 
       const cooldown = JSON.parse(
@@ -1203,7 +1201,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: targetFile },
           session_id: 'sess-cb-legacy',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
       expect(stdout).toBe('');
     });
@@ -1223,7 +1221,7 @@ describe('pre-tool-recall', () => {
       mkdirSync(projectDir, { recursive: true });
       mkdirSync(join(tmpRoot, 'runtime'), { recursive: true });
 
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       insertSession(db, { id: 'sess-a15', project: 'parent--a15test', memoryId: 'mem-a15' });
@@ -1237,7 +1235,7 @@ describe('pre-tool-recall', () => {
     });
 
     it('Edit: prefers the heavily-cited older lesson over the never-cited newer one', async () => {
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       // Older (60d ago) but cited 5 times — proven helpful.
@@ -1272,7 +1270,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'shared.mjs') },
           session_id: 'sess-a15-1',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
 
       const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
@@ -1285,7 +1283,7 @@ describe('pre-tool-recall', () => {
     });
 
     it('Read (obsLimit=1): surfaces the cited lesson, drops the never-cited fresh one', async () => {
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       insertObs(db, {
@@ -1318,7 +1316,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'shared.mjs') },
           session_id: 'sess-a15-2',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
 
       const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
@@ -1327,7 +1325,7 @@ describe('pre-tool-recall', () => {
     });
 
     it('Edit: demotes the uncited-streak lesson below the fresh one', async () => {
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       // Newer but accumulating uncited streak — agent has been declining it.
@@ -1361,7 +1359,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'shared.mjs') },
           session_id: 'sess-a15-3',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
 
       const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
@@ -1381,7 +1379,7 @@ describe('pre-tool-recall', () => {
   // ('#NN applied' / '#NN n/a — <reason>'); (2) Read→Edit on the same file no
   // longer goes fully silent — the Edit emits a compact ack nudge naming the IDs
   // shown at Read time (the old behavior injected only at Read, the most passive
-  // point, and NOTHING at the actual edit). CLAUDE_MEM_SALIENCE=legacy opts out.
+  // point, and NOTHING at the actual edit). QWEN_MEM_SALIENCE=legacy opts out.
   describe('salience forcing-function (v2.98)', () => {
     let tmpRoot;
     let projectDir;
@@ -1392,7 +1390,7 @@ describe('pre-tool-recall', () => {
       projectDir = join(tmpRoot, 'parent', 'saltest');
       mkdirSync(projectDir, { recursive: true });
 
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       insertSession(db, { id: 'sess-sal', project: 'parent--saltest', memoryId: 'mem-sal' });
@@ -1416,7 +1414,7 @@ describe('pre-tool-recall', () => {
     });
 
     const envFor = (extra = {}) => ({
-      CLAUDE_MEM_DIR: tmpRoot,
+      QWEN_MEM_DIR: tmpRoot,
       CLAUDE_PROJECT_DIR: projectDir,
       ...extra,
     });
@@ -1436,14 +1434,14 @@ describe('pre-tool-recall', () => {
       expect(ctx).toContain("'#NN n/a — <reason>'");
     });
 
-    it('Edit: CLAUDE_MEM_SALIENCE=legacy restores the passive block (no directive)', async () => {
+    it('Edit: QWEN_MEM_SALIENCE=legacy restores the passive block (no directive)', async () => {
       const { stdout } = await runScript(
         {
           tool_name: 'Edit',
           tool_input: { file_path: join(projectDir, 'maintain.mjs') },
           session_id: 'sess-sal-2',
         },
-        envFor({ CLAUDE_MEM_SALIENCE: 'legacy' }),
+        envFor({ QWEN_MEM_SALIENCE: 'legacy' }),
       );
       const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
       expect(ctx).toContain('[mem] Lessons for maintain.mjs:');
@@ -1545,7 +1543,7 @@ describe('pre-tool-recall', () => {
       expect(stdout).toBe('');
     });
 
-    it('Read→Edit ack nudge suppressed under CLAUDE_MEM_SALIENCE=legacy (old full-dedup)', async () => {
+    it('Read→Edit ack nudge suppressed under QWEN_MEM_SALIENCE=legacy (old full-dedup)', async () => {
       const filePath = join(projectDir, 'maintain.mjs');
       const session = 'sess-sal-7';
       await runScript(
@@ -1554,7 +1552,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: filePath },
           session_id: session,
         },
-        envFor({ CLAUDE_MEM_SALIENCE: 'legacy' }),
+        envFor({ QWEN_MEM_SALIENCE: 'legacy' }),
       );
       const { stdout } = await runScript(
         {
@@ -1562,7 +1560,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: filePath },
           session_id: session,
         },
-        envFor({ CLAUDE_MEM_SALIENCE: 'legacy' }),
+        envFor({ QWEN_MEM_SALIENCE: 'legacy' }),
       );
       expect(stdout).toBe('');
     });
@@ -1619,7 +1617,7 @@ describe('pre-tool-recall', () => {
   });
 
   // ─── A3 (v2.83): cross-hook ID dedup ──────────────────────────────────────
-  // UPS writes `INJECTED_IDS_FILE` at `<DB_DIR>/runtime/.claude-mem-injected-<project>`
+  // UPS writes `INJECTED_IDS_FILE` at `<DB_DIR>/runtime/.qwen-mem-injected-<project>`
   // with `{ids, ts, count}`. Pre-tool-recall reads it; if a lesson row was
   // already injected by UPS within the DEDUP_STALE_MS window, drop it from
   // PreToolUse output (the agent already has the citation in context).
@@ -1634,7 +1632,7 @@ describe('pre-tool-recall', () => {
       mkdirSync(projectDir, { recursive: true });
       mkdirSync(join(tmpRoot, 'runtime'), { recursive: true });
 
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       insertSession(db, { id: 'sess-a3', project: 'parent--a3test', memoryId: 'mem-a3' });
@@ -1661,7 +1659,7 @@ describe('pre-tool-recall', () => {
       // Path mirrors user-prompt-search.js injectedIdsFileFor construction —
       // D#120: session-keyed file name, so the seed must carry the same session
       // id the script receives on stdin or the read side derives another path.
-      const file = join(tmpRoot, 'runtime', `.claude-mem-injected-parent--a3test-${sessionId}`);
+      const file = join(tmpRoot, 'runtime', `.qwen-mem-injected-parent--a3test-${sessionId}`);
       writeFileSync(
         file,
         JSON.stringify({ ids: ids.map(String), ts: Date.now() - ageMs, count: 1, session: sessionId }),
@@ -1677,7 +1675,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'shared.mjs') },
           session_id: 'sess-a3-1',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
 
       // Lesson dropped → either empty stdout (no other rows) or the no-prior
@@ -1698,7 +1696,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'shared.mjs') },
           session_id: 'sess-a3-2',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
 
       const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
@@ -1713,7 +1711,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'shared.mjs') },
           session_id: 'sess-a3-3',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
 
       const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
@@ -1729,10 +1727,10 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'shared.mjs') },
           session_id: 'sess-a3-4',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
 
-      const file = join(tmpRoot, 'runtime', `.claude-mem-injected-parent--a3test-sess-a3-4`);
+      const file = join(tmpRoot, 'runtime', `.qwen-mem-injected-parent--a3test-sess-a3-4`);
       const state = JSON.parse(readFileSync(file, 'utf8'));
       const idStrings = (state.ids || []).map(String);
       expect(idStrings).toContain(String(lessonObsId));
@@ -1761,7 +1759,7 @@ describe('pre-tool-recall', () => {
       mkdirSync(projectDir, { recursive: true });
       mkdirSync(join(tmpRoot, 'runtime'), { recursive: true });
 
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       insertSession(db, { id: 'sess-d188', project: 'parent--d188', memoryId: 'mem-d188' });
@@ -1795,7 +1793,7 @@ describe('pre-tool-recall', () => {
 
     function seedSeen(ids, sessionId) {
       writeFileSync(
-        join(tmpRoot, 'runtime', `.claude-mem-injected-parent--d188-${sessionId}`),
+        join(tmpRoot, 'runtime', `.qwen-mem-injected-parent--d188-${sessionId}`),
         JSON.stringify({ ids: ids.map(String), ts: Date.now(), count: 1, session: sessionId }),
       );
     }
@@ -1807,7 +1805,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'evt-only.mjs') },
           session_id: sessionId,
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
       if (!stdout) return '';
       return JSON.parse(stdout).hookSpecificOutput?.additionalContext || '';
@@ -1833,7 +1831,7 @@ describe('pre-tool-recall', () => {
       // against a numeric row id. That inertness is D#193, not this test's subject.)
       await runOnEventFile('sess-d188-3');
       const state = JSON.parse(
-        readFileSync(join(tmpRoot, 'runtime', '.claude-mem-injected-parent--d188-sess-d188-3'), 'utf8'),
+        readFileSync(join(tmpRoot, 'runtime', '.qwen-mem-injected-parent--d188-sess-d188-3'), 'utf8'),
       );
       const written = (state.ids || []).map(String);
       expect(written).toContain(`E${collidingId}`);
@@ -1858,7 +1856,7 @@ describe('pre-tool-recall', () => {
       mkdirSync(projectDir, { recursive: true });
       mkdirSync(join(tmpRoot, 'runtime'), { recursive: true });
 
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       insertSession(db, { id: 'sess-a4', project: 'parent--algo4', memoryId: 'mem-a4' });
@@ -1920,7 +1918,7 @@ describe('pre-tool-recall', () => {
       // VERIFIED RED: reverting `obsLimit` to `(isRead ? 1 : 2)` makes this assertion
       // fail — stdout carries no `#<id>` for any of the four rows (measured
       // 2026-09-01, same fixture).
-      const file = join(tmpRoot, 'runtime', '.claude-mem-injected-parent--algo4-sess-a4-1');
+      const file = join(tmpRoot, 'runtime', '.qwen-mem-injected-parent--algo4-sess-a4-1');
       writeFileSync(
         file,
         JSON.stringify({
@@ -1937,7 +1935,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'shared.mjs') },
           session_id: 'sess-a4-1',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
 
       // Assert the emptiness FIRST and by name: the pre-fix behaviour is that the
@@ -1964,7 +1962,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'shared.mjs') },
           session_id: 'sess-a4-2',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
 
       const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
@@ -1979,7 +1977,7 @@ describe('pre-tool-recall', () => {
       // 1, `mergeCap` 1, so ONE dedup hit empties the whole face) while both cases above
       // drive Edit. Testing the arm the headline is about, not the neighbouring one.
       // VERIFIED RED: reverting `obsLimit` to `(isRead ? 1 : 2)` empties stdout.
-      const file = join(tmpRoot, 'runtime', '.claude-mem-injected-parent--algo4-sess-a4-4');
+      const file = join(tmpRoot, 'runtime', '.qwen-mem-injected-parent--algo4-sess-a4-4');
       writeFileSync(
         file,
         JSON.stringify({
@@ -1996,7 +1994,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'shared.mjs') },
           session_id: 'sess-a4-4',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
 
       expect(stdout, 'Read path silenced: obsLimit 1 minus one dedup hit left zero rows').not.toBe('');
@@ -2019,7 +2017,7 @@ describe('pre-tool-recall', () => {
       // Seeding bare numbers here would no longer suppress anything — and note this
       // fixture's obs and event ids genuinely collide (both tables auto-number from 1),
       // which is exactly the machine-wide condition D#188 measured at 90.1%.
-      const file = join(tmpRoot, 'runtime', '.claude-mem-injected-parent--algo4-sess-a4-3');
+      const file = join(tmpRoot, 'runtime', '.qwen-mem-injected-parent--algo4-sess-a4-3');
       writeFileSync(
         file,
         JSON.stringify({
@@ -2036,7 +2034,7 @@ describe('pre-tool-recall', () => {
           tool_input: { file_path: join(projectDir, 'events-only.mjs') },
           session_id: 'sess-a4-3',
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
 
       expect(stdout, 'events source was truncated to nothing by the dedup').not.toBe('');
@@ -2051,7 +2049,7 @@ describe('pre-tool-recall', () => {
   // A (lesson,file) edge whose miss_streak reached K consecutive uncited
   // injections stops firing — the lesson body stays alive for every other
   // surface (search / UPS / error-recall). Enforcement is OPT-IN via
-  // CLAUDE_MEM_EDGE_DECAY=1 (shadow-first discipline: P1 counting is always on,
+  // QWEN_MEM_EDGE_DECAY=1 (shadow-first discipline: P1 counting is always on,
   // the filter flips only after real-DB cite-rate evidence).
   describe('edge-level decay enforcement (P2 D#78)', () => {
     let tmpRoot;
@@ -2063,7 +2061,7 @@ describe('pre-tool-recall', () => {
       projectDir = join(tmpRoot, 'parent', 'p2test');
       mkdirSync(projectDir, { recursive: true });
 
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       insertSession(db, { id: 'sess-p2', project: 'parent--p2test', memoryId: 'mem-p2' });
@@ -2087,7 +2085,7 @@ describe('pre-tool-recall', () => {
     });
 
     function setStreak(streak) {
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.prepare('UPDATE observation_files SET miss_streak = ? WHERE obs_id = ?').run(streak, obsId);
       db.close();
     }
@@ -2099,13 +2097,13 @@ describe('pre-tool-recall', () => {
           session_id: session,
           tool_input: { file_path: join(projectDir, 'edgy.mjs') },
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir, ...env },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir, ...env },
       );
     }
 
     it('flag ON: an edge at the default threshold (3 misses) stops firing', async () => {
       setStreak(3);
-      const { stdout } = await editFile('sess-p2-off', { CLAUDE_MEM_EDGE_DECAY: '1' });
+      const { stdout } = await editFile('sess-p2-off', { QWEN_MEM_EDGE_DECAY: '1' });
       if (stdout) {
         const ctx = JSON.parse(stdout).hookSpecificOutput?.additionalContext || '';
         expect(ctx).not.toContain('lesson behind a decaying edge');
@@ -2114,7 +2112,7 @@ describe('pre-tool-recall', () => {
 
     it('flag ON: an edge below the threshold still fires', async () => {
       setStreak(2);
-      const { stdout } = await editFile('sess-p2-under', { CLAUDE_MEM_EDGE_DECAY: '1' });
+      const { stdout } = await editFile('sess-p2-under', { QWEN_MEM_EDGE_DECAY: '1' });
       const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
       expect(ctx).toContain('lesson behind a decaying edge');
     });
@@ -2126,11 +2124,11 @@ describe('pre-tool-recall', () => {
       expect(ctx).toContain('lesson behind a decaying edge');
     });
 
-    it('flag ON: threshold is tunable via CLAUDE_MEM_EDGE_DECAY_K', async () => {
+    it('flag ON: threshold is tunable via QWEN_MEM_EDGE_DECAY_K', async () => {
       setStreak(1);
       const { stdout } = await editFile('sess-p2-k1', {
-        CLAUDE_MEM_EDGE_DECAY: '1',
-        CLAUDE_MEM_EDGE_DECAY_K: '1',
+        QWEN_MEM_EDGE_DECAY: '1',
+        QWEN_MEM_EDGE_DECAY_K: '1',
       });
       if (stdout) {
         const ctx = JSON.parse(stdout).hookSpecificOutput?.additionalContext || '';
@@ -2141,8 +2139,8 @@ describe('pre-tool-recall', () => {
     it('flag ON: explicit K=0 clamps to the declared minimum 1, not the default 3 (falsy trap)', async () => {
       setStreak(1);
       const { stdout } = await editFile('sess-p2-k0', {
-        CLAUDE_MEM_EDGE_DECAY: '1',
-        CLAUDE_MEM_EDGE_DECAY_K: '0',
+        QWEN_MEM_EDGE_DECAY: '1',
+        QWEN_MEM_EDGE_DECAY_K: '0',
       });
       if (stdout) {
         const ctx = JSON.parse(stdout).hookSpecificOutput?.additionalContext || '';
@@ -2165,7 +2163,7 @@ describe('pre-tool-recall', () => {
       projectDir = join(tmpRoot, 'parent', 'p0test');
       mkdirSync(projectDir, { recursive: true });
 
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       insertSession(db, { id: 'sess-p0', project: 'parent--p0test', memoryId: 'mem-p0' });
@@ -2179,7 +2177,7 @@ describe('pre-tool-recall', () => {
     });
 
     function seedObs(filesModified, lesson, title = 'seed') {
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       insertObs(db, {
@@ -2201,7 +2199,7 @@ describe('pre-tool-recall', () => {
           session_id: session,
           tool_input: { file_path: join(projectDir, name) },
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
     }
 
@@ -2267,7 +2265,7 @@ describe('pre-tool-recall', () => {
       projectDir = join(tmpRoot, 'parent', 'p0evtest');
       mkdirSync(projectDir, { recursive: true });
 
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       insertSession(db, { id: 'sess-p0ev', project: 'parent--p0evtest', memoryId: 'mem-p0ev' });
@@ -2281,7 +2279,7 @@ describe('pre-tool-recall', () => {
     });
 
     function seedEvent({ title, body, files, epochOffset = 0 }) {
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       db.prepare(
@@ -2300,7 +2298,7 @@ describe('pre-tool-recall', () => {
           session_id: session,
           tool_input: { file_path: join(projectDir, name) },
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
     }
 
@@ -2372,7 +2370,7 @@ describe('pre-tool-recall', () => {
       projectDir = join(tmpRoot, 'parent', 'livetest');
       mkdirSync(projectDir, { recursive: true });
 
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       insertSession(db, { id: 'sess-live', project: 'parent--livetest', memoryId: 'mem-live' });
@@ -2386,7 +2384,7 @@ describe('pre-tool-recall', () => {
     });
 
     function seedObs(file, lesson, extra = {}) {
-      const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
       insertObs(db, {
@@ -2409,7 +2407,7 @@ describe('pre-tool-recall', () => {
           session_id: session,
           tool_input: { file_path: join(projectDir, name) },
         },
-        { CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
       );
     }
 
@@ -2511,8 +2509,8 @@ describe('pre-tool-recall', () => {
 
     function runWithEnv(input) {
       return runScript(input, {
-        CLAUDE_MEM_DB_PATH: dbPath,
-        CLAUDE_MEM_RUNTIME_DIR: runtimeDir,
+        QWEN_MEM_DB_PATH: dbPath,
+        QWEN_MEM_RUNTIME_DIR: runtimeDir,
         CLAUDE_PROJECT_DIR: projectDir,
       });
     }

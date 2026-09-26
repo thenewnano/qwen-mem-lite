@@ -35,7 +35,7 @@ describe('R10 P2-19 — every doc tool count matches tool-schemas.mjs', () => {
   });
 
   // Each entry: file, and the numbers that must appear near the word "tools" in it.
-  for (const rel of ['README.md', 'README.zh-CN.md', 'llms.txt', 'docs/ARCHITECTURE.md']) {
+  for (const rel of ['README.md', 'llms.txt', 'docs/ARCHITECTURE.md']) {
     it(`${rel} states no tool count that contradicts the schema`, () => {
       const src = read(rel);
       // Any "<n> tools" / "<n> 个工具" / "<n> listed" / "<n> hidden" claim must be one of
@@ -77,7 +77,7 @@ describe('R10 P2-19 — every doc tool count matches tool-schemas.mjs', () => {
 
   it('no doc still advertises a tool that no longer exists', () => {
     const live = new Set(defs.map((d) => d.name));
-    for (const rel of ['README.md', 'README.zh-CN.md', 'llms.txt', 'docs/ARCHITECTURE.md']) {
+    for (const rel of ['README.md', 'llms.txt', 'docs/ARCHITECTURE.md']) {
       const src = read(rel);
       // Strict on purpose: a backticked `mem_*` in a doc reads as a tool you can call. If
       // you need to name a REMOVED tool as history, write it without backticks — that is

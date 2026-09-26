@@ -26,10 +26,10 @@
  *   node benchmark/error-recall-live-replay.mjs --shapes f.json # reuse an extraction
  *   node benchmark/error-recall-live-replay.mjs --dump f.json   # save the extraction
  *   node benchmark/error-recall-live-replay.mjs --host-failures # the D#151 population
- *   CLAUDE_MEM_ERROR_RECALL_RERANK=off node …                   # the pre-D#167 ordering
+ *   QWEN_MEM_ERROR_RECALL_RERANK=off node …                   # the pre-D#167 ordering
  *
  * A/B IT BY FLIPPING THE SWITCH, not by editing this file: run once with the rerank on
- * and once with `CLAUDE_MEM_ERROR_RECALL_RERANK=off`, and diff the two headlines.
+ * and once with `QWEN_MEM_ERROR_RECALL_RERANK=off`, and diff the two headlines.
  *
  * THE TWO POPULATIONS ARE DISJOINT AND BOTH SHIP. Claude Code splits tool outcomes
  * across two hook events, and this surface is now registered on both:
@@ -67,7 +67,7 @@ const MIN_PROJECT_ROWS = Number(argOf('--min-rows') || 20);
 
 /** Transcript roots. One level of project dirs, each holding *.jsonl — no deeper walk. */
 function transcriptDirs() {
-  const root = process.env.CLAUDE_MEM_TRANSCRIPT_ROOT || join(homedir(), '.claude', 'projects');
+  const root = process.env.QWEN_MEM_TRANSCRIPT_ROOT || join(homedir(), '.claude', 'projects');
   try {
     return readdirSync(root, { withFileTypes: true })
       .filter((d) => d.isDirectory())
@@ -175,7 +175,7 @@ function extractShapes() {
 
 // ─── 2. Corpus ───────────────────────────────────────────────────────────────
 
-const dbPath = join(resolveDataDir(process.env.CLAUDE_MEM_DIR), 'claude-mem-lite.db');
+const dbPath = join(resolveDataDir(process.env.QWEN_MEM_DIR), 'qwen-mem-lite.db');
 let db;
 try {
   db = new Database(dbPath, { readonly: true, fileMustExist: true });
@@ -266,7 +266,7 @@ function main() {
   if (dump) writeFileSync(dump, JSON.stringify(shapes, null, 1));
 
   if (!shapes.length) {
-    console.error('no real failures found — point CLAUDE_MEM_TRANSCRIPT_ROOT at a transcript dir.');
+    console.error('no real failures found — point QWEN_MEM_TRANSCRIPT_ROOT at a transcript dir.');
     process.exit(2);
   }
   assertRulerCanSayNo();
@@ -342,7 +342,7 @@ function main() {
     `shapes ${shapes.length} (fired ${fired}, gated silent ${gated})  ·  projects ${projects.length}`,
   );
   console.log(
-    `rerank: ${process.env.CLAUDE_MEM_ERROR_RECALL_RERANK === 'off' ? 'OFF (pre-D#167 flat OR)' : 'on (default)'}`,
+    `rerank: ${process.env.QWEN_MEM_ERROR_RECALL_RERANK === 'off' ? 'OFF (pre-D#167 flat OR)' : 'on (default)'}`,
   );
   console.log('');
   console.log(`firing cases : ${cases}`);

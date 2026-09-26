@@ -16,7 +16,7 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vites
 
 // hook-update resolves STATE_DIR from DB_DIR at MODULE LOAD, and the 403/429 arm
 // below calls saveState(). Without this, that arm wrote {"rateLimited":true}
-// into the DEVELOPER'S REAL ~/.claude-mem-lite/runtime/update-state.json —
+// into the DEVELOPER'S REAL ~/.qwen-mem-lite/runtime/update-state.json —
 // verified: the file did not exist before this suite and appeared, with that
 // content, after a run. Hoisted so the env is set before the import below.
 const MEM_DIR = await vi.hoisted(async () => {
@@ -24,7 +24,7 @@ const MEM_DIR = await vi.hoisted(async () => {
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const dir = mkdtempSync(join(tmpdir(), 'mem-proxy-wiring-'));
-  process.env.CLAUDE_MEM_DIR = dir;
+  process.env.QWEN_MEM_DIR = dir;
   return dir;
 });
 

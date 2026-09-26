@@ -19,7 +19,7 @@ import {
 } from '../claudemd.mjs';
 import { memdirPath, writePluginSection, writePluginDoc, isAdopted as memdirIsAdopted } from '../memdir.mjs';
 
-const SLUG = 'claude-mem-lite';
+const SLUG = 'qwen-mem-lite';
 const BLOCK = '## test block\n\nline one\nline two';
 const DOC = '# detail\n\nbody';
 const V = 'v2';
@@ -165,7 +165,7 @@ describe('migrateLegacyMemoryDir', () => {
     const r = migrateLegacyMemoryDir(cwd, SLUG);
     expect(r.action).toBe('removed');
     expect(memdirIsAdopted(md, SLUG)).toBe(false);
-    expect(existsSync(join(md, 'plugin_claude_mem_lite.md'))).toBe(false);
+    expect(existsSync(join(md, 'plugin_qwen_mem_lite.md'))).toBe(false);
   });
 
   it('is a no-op when there is no legacy residue', () => {
@@ -243,11 +243,11 @@ describe('claudemd robustness (review C1/H2/M3)', () => {
     // sentinel present but NO state sidecar → not provably plugin-written
     writeFileSync(
       join(md, 'MEMORY.md'),
-      '<!-- claude-mem-lite:begin v1 -->\n## 插件契约\n- x\n<!-- claude-mem-lite:end -->\n',
+      '<!-- qwen-mem-lite:begin v1 -->\n## 插件契约\n- x\n<!-- qwen-mem-lite:end -->\n',
     );
-    writeFileSync(join(md, 'plugin_claude_mem_lite.md'), '# looks user-pasted');
+    writeFileSync(join(md, 'plugin_qwen_mem_lite.md'), '# looks user-pasted');
     const r = migrateLegacyMemoryDir(cwd, SLUG); // force=false
     expect(r.action).toBe('skipped-foreign');
-    expect(existsSync(join(md, 'plugin_claude_mem_lite.md'))).toBe(true); // NOT deleted
+    expect(existsSync(join(md, 'plugin_qwen_mem_lite.md'))).toBe(true); // NOT deleted
   });
 });

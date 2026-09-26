@@ -162,7 +162,7 @@ export function readMemoryIndex(memdir, slug) {
  *
  * @param {string} memdir Absolute path to the memory directory.
  * @param {object} opts
- * @param {string} opts.slug Plugin slug (e.g. 'claude-mem-lite').
+ * @param {string} opts.slug Plugin slug (e.g. 'qwen-mem-lite').
  * @param {string} opts.version Contract version, e.g. 'v1'.
  * @param {string} opts.contentLine Single-line index entry (≤150 chars).
  * @param {boolean} [opts.force=false] Override UserEditedError.

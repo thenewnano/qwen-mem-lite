@@ -92,7 +92,7 @@ function reachablePackages(entry) {
  * plugin-cache install lands in when Claude Code materializes a new version.
  */
 function nodeModulesFreeTree() {
-  const dir = fixtures.track(mkdtempSync(join(tmpdir(), 'claude-mem-repair-probe-')));
+  const dir = fixtures.track(mkdtempSync(join(tmpdir(), 'qwen-mem-repair-probe-')));
   // Premise: Node resolves node_modules UP the tree, so a stray one above the fixture would
   // hand the probe a working driver and every assertion below would pass vacuously.
   for (let p = dir; p !== dirname(p); p = dirname(p)) {

@@ -5,7 +5,7 @@
 // to a SEPARATE file — <session>/subagents/agent-*.jsonl — NOT inline in the parent
 // transcript. Across 60 real parent transcripts there were 0 isSidechain records;
 // the 158 subagent files carry isSidechain=true but — critically — contained ZERO
-// claude-mem-lite hook injections (no pre-tool-recall / error-recall / memory-context).
+// qwen-mem-lite hook injections (no pre-tool-recall / error-recall / memory-context).
 // So thread is keyed by FILE LOCATION, and the live reading is "subagents get no
 // memory injection at all." These tests cover the mechanism (so it lights up IF a
 // future surface injects into subagents) + model the real all-zero case.

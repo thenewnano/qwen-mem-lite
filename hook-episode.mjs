@@ -1,4 +1,4 @@
-// claude-mem-lite episode buffer management
+// qwen-mem-lite episode buffer management
 // Handles file-based episode storage with advisory locking and pending entry recovery
 
 import { join } from 'path';
@@ -397,7 +397,7 @@ const RESEARCH_ENTRY_THRESHOLD = 8;
  *
  * PAST TENSE SINCE v3.83.0: D#178 is FIXED. `flushEpisodeWithDb` now decides significance
  * before it touches the file, and an insignificant flush leaves it in place for the next
- * saving one (`CLAUDE_MEM_READS_CARRY=0` restores the old order). Two numbers in the
+ * saving one (`QWEN_MEM_READS_CARRY=0` restores the old order). Two numbers in the
  * paragraph above were also wrong and are corrected here rather than left to be re-quoted:
  * the significant share is ~59%, not "~4-8%" — the `episode_significance` meter reads 40.7%
  * INsignificant over n=938 across three active days — and the 92-96% figure D#178 was filed

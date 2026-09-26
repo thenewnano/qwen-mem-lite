@@ -273,7 +273,7 @@ describe('R10 P1-8 — a settings.json that is not valid JSON is never overwritt
     const args = cmd === 'install' ? [cmd, '--dev'] : [cmd];
     return execFileSync(process.execPath, [INSTALL_PATH, ...args], {
       encoding: 'utf8',
-      env: { ...process.env, HOME: home, CLAUDE_MEM_SKIP_REPOS: '1', MEM_NO_AUTO_ADOPT: '1' },
+      env: { ...process.env, HOME: home, QWEN_MEM_SKIP_REPOS: '1', MEM_NO_AUTO_ADOPT: '1' },
       cwd: root,
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 60000,
@@ -341,8 +341,8 @@ describe('R10 P2-10 — cleanup does not delete an in-flight update rollback cop
       env: {
         ...process.env,
         HOME: join(root, 'home'),
-        CLAUDE_MEM_DIR: data,
-        CLAUDE_MEM_SKIP_REPOS: '1',
+        QWEN_MEM_DIR: data,
+        QWEN_MEM_SKIP_REPOS: '1',
         MEM_NO_AUTO_ADOPT: '1',
       },
       cwd: root,

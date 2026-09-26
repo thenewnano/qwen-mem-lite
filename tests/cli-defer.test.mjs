@@ -1,8 +1,8 @@
-// E2E tests for `claude-mem-lite defer add | list | drop` and the
-// `claude-mem-lite save --closes-deferred` round-trip.
+// E2E tests for `qwen-mem-lite defer add | list | drop` and the
+// `qwen-mem-lite save --closes-deferred` round-trip.
 //
 // Mirrors tests/cli-e2e.test.mjs idioms: subprocess via execFileSync,
-// CLAUDE_MEM_DIR isolation, project pinned via CLAUDE_PROJECT_DIR.
+// QWEN_MEM_DIR isolation, project pinned via CLAUDE_PROJECT_DIR.
 //
 // Test coverage (5 tests):
 //   1. defer add → D#N + ordinal in stdout
@@ -30,7 +30,7 @@ function makeTmpDir() {
 
 function initTestDb(dataDir) {
   mkdirSync(dataDir, { recursive: true });
-  const dbPath = join(dataDir, 'claude-mem-lite.db');
+  const dbPath = join(dataDir, 'qwen-mem-lite.db');
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = OFF');
@@ -46,9 +46,9 @@ let db;
 function runCli(args, { env = {} } = {}) {
   const mergedEnv = {
     ...process.env,
-    CLAUDE_MEM_DIR: dataDir,
+    QWEN_MEM_DIR: dataDir,
     CLAUDE_PROJECT_DIR: projectDir,
-    CLAUDE_MEM_HOOK_RUNNING: undefined,
+    QWEN_MEM_HOOK_RUNNING: undefined,
     ...env,
   };
   for (const k of Object.keys(mergedEnv)) {
@@ -73,7 +73,7 @@ function runCli(args, { env = {} } = {}) {
 
 beforeEach(() => {
   tmpHome = makeTmpDir();
-  dataDir = join(tmpHome, '.claude-mem-lite');
+  dataDir = join(tmpHome, '.qwen-mem-lite');
   // CLAUDE_PROJECT_DIR drives inferProject() → "parent--testproj"
   projectDir = join(tmpHome, 'parent', 'testproj');
   mkdirSync(projectDir, { recursive: true });
@@ -93,7 +93,7 @@ afterEach(() => {
   }
 });
 
-describe('claude-mem-lite defer CLI', () => {
+describe('qwen-mem-lite defer CLI', () => {
   it('defer add prints D#N + ordinal', () => {
     const { stdout, exitCode } = runCli(['defer', 'add', 'test item one', '--priority', '3']);
     expect(exitCode).toBe(0);

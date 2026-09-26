@@ -59,7 +59,7 @@ describe('lib/release-digest', () => {
   it('buildReleaseManifest lists only existing files with their sha256, sorted', () => {
     const dir = makeReleaseTree();
     const m = buildReleaseManifest(dir, [...FILES, 'does-not-exist.mjs'], '3.7.1');
-    expect(m.name).toBe('claude-mem-lite');
+    expect(m.name).toBe('qwen-mem-lite');
     expect(m.version).toBe('3.7.1');
     expect(m.algo).toBe('sha256');
     expect(Object.keys(m.files)).toEqual(['cli.mjs', 'lib/x.mjs', 'server.mjs']); // sorted, missing dropped

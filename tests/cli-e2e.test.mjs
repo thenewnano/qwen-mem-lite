@@ -1,6 +1,6 @@
-// E2E test suite for claude-mem-lite CLI commands
+// E2E test suite for qwen-mem-lite CLI commands
 // Tests the actual CLI entry point (node cli.mjs <cmd>) as a subprocess
-// Isolation via CLAUDE_MEM_DIR env var → redirects DB to temp dir
+// Isolation via QWEN_MEM_DIR env var → redirects DB to temp dir
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'child_process';
@@ -23,7 +23,7 @@ function makeTmpDir() {
 
 function initTestDb(dataDir) {
   mkdirSync(dataDir, { recursive: true });
-  const dbPath = join(dataDir, 'claude-mem-lite.db');
+  const dbPath = join(dataDir, 'qwen-mem-lite.db');
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = OFF');
@@ -34,9 +34,9 @@ function initTestDb(dataDir) {
 function runCli(args, { env = {} } = {}) {
   const mergedEnv = {
     ...process.env,
-    CLAUDE_MEM_DIR: dataDir,
+    QWEN_MEM_DIR: dataDir,
     CLAUDE_PROJECT_DIR: projectDir,
-    CLAUDE_MEM_HOOK_RUNNING: undefined,
+    QWEN_MEM_HOOK_RUNNING: undefined,
     ...env,
   };
   for (const k of Object.keys(mergedEnv)) {
@@ -69,7 +69,7 @@ let db;
 
 beforeEach(() => {
   tmpHome = makeTmpDir();
-  dataDir = join(tmpHome, '.claude-mem-lite');
+  dataDir = join(tmpHome, '.qwen-mem-lite');
   projectDir = join(tmpHome, 'parent', 'testproj');
   mkdirSync(projectDir, { recursive: true });
   db = initTestDb(dataDir);
@@ -920,7 +920,7 @@ describe('CLI E2E: --json output for listing commands (Tier 2)', () => {
 describe('CLI E2E: help and errors', () => {
   it('shows help with help command', () => {
     const helpResult = runCli(['help']);
-    expect(helpResult.stdout).toContain('claude-mem-lite CLI');
+    expect(helpResult.stdout).toContain('qwen-mem-lite CLI');
     expect(helpResult.stdout).toContain('Commands:');
     expect(helpResult.stdout).toContain('search');
     expect(helpResult.stdout).toContain('save');
@@ -929,7 +929,7 @@ describe('CLI E2E: help and errors', () => {
   it('shows help with -h flag', () => {
     // cli.mjs short-circuits --help / -h to mem-cli.mjs run(['help']).
     const { stdout } = runCli(['help']);
-    expect(stdout).toContain('claude-mem-lite CLI');
+    expect(stdout).toContain('qwen-mem-lite CLI');
   });
 
   it('reports unknown command', () => {
@@ -945,7 +945,7 @@ describe('CLI E2E: help and errors', () => {
 });
 
 // Regression: v2.32.3 shipped cli.mjs with 'adopt' and 'unadopt' missing from
-// CLI_COMMANDS, so `claude-mem-lite adopt` fell through to the unknown-command
+// CLI_COMMANDS, so `qwen-mem-lite adopt` fell through to the unknown-command
 // branch and `/adopt` was broken for installed users. Lock this via E2E.
 describe('CLI E2E: adopt / unadopt routing', () => {
   it('adopt is routed by cli.mjs (not unknown-command)', () => {
@@ -975,7 +975,7 @@ describe('CLI E2E: adopt / unadopt routing', () => {
 });
 
 // Regression: v2.71.0 shipped cli.mjs without 'import-jsonl' in CLI_COMMANDS,
-// so `claude-mem-lite import-jsonl …` fell through to the unknown-command
+// so `qwen-mem-lite import-jsonl …` fell through to the unknown-command
 // branch even though help and the mem-cli switch case both existed (#8414).
 // tests/import-jsonl.test.mjs invokes importJsonl() directly and missed it.
 // Lock CLI routing here.
@@ -1057,7 +1057,7 @@ describe('CLI E2E: context', () => {
 
   it('generates context block live from DB, ignoring any CLAUDE.md file', () => {
     // Seed DB with a session summary for the default E2E project
-    const db = new Database(join(dataDir, 'claude-mem-lite.db'));
+    const db = new Database(join(dataDir, 'qwen-mem-lite.db'));
     const now = Date.now();
     const sessionId = `cli-e2e-ctx-${randomUUID().slice(0, 8)}`;
     db.prepare(
@@ -1078,15 +1078,15 @@ describe('CLI E2E: context', () => {
     const claudeMd = `# Project
 Some content
 
-<claude-mem-context>
+<qwen-mem-context>
 ### Last Session
 Stale file-derived data that MUST NOT appear
-</claude-mem-context>
+</qwen-mem-context>
 `;
     writeFileSync(join(projectDir, 'CLAUDE.md'), claudeMd);
 
     const { stdout } = runCli(['context', '--project', 'mem-cli-e2e-ctx']);
-    expect(stdout).toContain('<claude-mem-context>');
+    expect(stdout).toContain('<qwen-mem-context>');
     expect(stdout).toContain('DB-derived request');
     expect(stdout).toContain('DB-derived completed');
     expect(stdout).not.toContain('Stale file-derived data');
@@ -1127,7 +1127,7 @@ describe('import-jsonl all-skipped warning (Round2-P2)', () => {
 });
 
 describe('CLI E2E: version alias', () => {
-  // `claude-mem-lite version` is what a user types before they know the flag exists, and
+  // `qwen-mem-lite version` is what a user types before they know the flag exists, and
   // it is far enough from every real command that the edit-distance suggester fell through
   // to the generic "run help / run install" line — the CLI refusing a question it can
   // answer. The flag forms must keep working byte-identically.
@@ -1135,7 +1135,7 @@ describe('CLI E2E: version alias', () => {
     it(`\`${arg}\` prints the package version and exits 0`, () => {
       const { stdout, exitCode } = runCli([arg]);
       expect(exitCode).toBe(0);
-      expect(stdout.trim()).toMatch(/^claude-mem-lite v\d+\.\d+\.\d+/);
+      expect(stdout.trim()).toMatch(/^qwen-mem-lite v\d+\.\d+\.\d+/);
     });
   }
 });

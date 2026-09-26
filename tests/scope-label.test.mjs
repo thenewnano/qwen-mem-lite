@@ -4,7 +4,7 @@
 // APPLIES, decoupling it from which files the episode happened to touch
 // (89% of lessons never mention their attached file — the edges are
 // "touched during", not "about"). environment-scoped lessons are the
-// D#65 top-bypassed class; CLAUDE_MEM_SCOPE_FILTER=1 (opt-in) excludes
+// D#65 top-bypassed class; QWEN_MEM_SCOPE_FILTER=1 (opt-in) excludes
 // them from file-triggered pre-tool injection at READ time (edges kept,
 // reversible).
 
@@ -191,7 +191,7 @@ describe('episode prompts instruct Haiku to emit scope', () => {
   });
 });
 
-describe('pre-tool-recall CLAUDE_MEM_SCOPE_FILTER (opt-in)', () => {
+describe('pre-tool-recall QWEN_MEM_SCOPE_FILTER (opt-in)', () => {
   const SCRIPT_PATH = resolve(import.meta.dirname, '../scripts/pre-tool-recall.js');
   let tmpRoot;
   let projectDir;
@@ -201,8 +201,8 @@ describe('pre-tool-recall CLAUDE_MEM_SCOPE_FILTER (opt-in)', () => {
       const child = spawn('node', [SCRIPT_PATH], {
         env: {
           ...process.env,
-          CLAUDE_MEM_HOOK_RUNNING: '',
-          CLAUDE_MEM_DIR: tmpRoot,
+          QWEN_MEM_HOOK_RUNNING: '',
+          QWEN_MEM_DIR: tmpRoot,
           CLAUDE_PROJECT_DIR: projectDir,
           ...env,
         },
@@ -228,7 +228,7 @@ describe('pre-tool-recall CLAUDE_MEM_SCOPE_FILTER (opt-in)', () => {
     projectDir = join(tmpRoot, 'parent', 'scopetest');
     mkdirSync(projectDir, { recursive: true });
 
-    const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+    const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
     db.pragma('foreign_keys = OFF');
     initSchema(db);
     insertSession(db, { id: 'sess-sc', project: 'parent--scopetest', memoryId: 'mem-sc' });
@@ -242,7 +242,7 @@ describe('pre-tool-recall CLAUDE_MEM_SCOPE_FILTER (opt-in)', () => {
   });
 
   function seed(scope, lesson, fname) {
-    const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+    const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
     db.pragma('foreign_keys = OFF');
     initSchema(db);
     const id = insertObservationRow(db, {
@@ -269,7 +269,7 @@ describe('pre-tool-recall CLAUDE_MEM_SCOPE_FILTER (opt-in)', () => {
         session_id: 's1',
         tool_input: { file_path: join(projectDir, 'envy.mjs') },
       },
-      { CLAUDE_MEM_SCOPE_FILTER: '1' },
+      { QWEN_MEM_SCOPE_FILTER: '1' },
     );
     if (stdout) {
       const ctx = JSON.parse(stdout).hookSpecificOutput?.additionalContext || '';
@@ -286,7 +286,7 @@ describe('pre-tool-recall CLAUDE_MEM_SCOPE_FILTER (opt-in)', () => {
         session_id: 's2',
         tool_input: { file_path: join(projectDir, 'filey.mjs') },
       },
-      { CLAUDE_MEM_SCOPE_FILTER: '1' },
+      { QWEN_MEM_SCOPE_FILTER: '1' },
     );
     expect(JSON.parse(out1).hookSpecificOutput.additionalContext).toContain('file-scoped lesson body');
     const out2 = await runScript(
@@ -295,7 +295,7 @@ describe('pre-tool-recall CLAUDE_MEM_SCOPE_FILTER (opt-in)', () => {
         session_id: 's3',
         tool_input: { file_path: join(projectDir, 'nully.mjs') },
       },
-      { CLAUDE_MEM_SCOPE_FILTER: '1' },
+      { QWEN_MEM_SCOPE_FILTER: '1' },
     );
     expect(JSON.parse(out2).hookSpecificOutput.additionalContext).toContain('legacy null-scope lesson body');
   });

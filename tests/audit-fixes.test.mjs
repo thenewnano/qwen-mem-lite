@@ -36,7 +36,7 @@ const SERVER_PATH = resolve(new URL('..', import.meta.url).pathname, 'server.mjs
 
 function startServer(memDir) {
   const proc = spawn(process.execPath, [SERVER_PATH], {
-    env: { ...process.env, CLAUDE_MEM_DIR: memDir, MEM_QUIET_HOOKS: '1' },
+    env: { ...process.env, QWEN_MEM_DIR: memDir, MEM_QUIET_HOOKS: '1' },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   proc.stderr.on('data', () => {});
@@ -82,11 +82,11 @@ async function initialize(proc) {
   });
 }
 
-// Seed a DB at `{dir}/claude-mem-lite.db` with N observations that all match the same
+// Seed a DB at `{dir}/qwen-mem-lite.db` with N observations that all match the same
 // FTS query ("AUDITKW") but at spaced-out epochs and different importances so sort
 // variants can be distinguished.
 function seedDb(dir, projectName = 'audit--probe') {
-  const dbPath = join(dir, 'claude-mem-lite.db');
+  const dbPath = join(dir, 'qwen-mem-lite.db');
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = OFF');
@@ -128,7 +128,7 @@ vi.mock('../schema.mjs', async (importOriginal) => {
     });
   // Stub EVERY exported opener, not just ensureDb: mem-cli routes through
   // ensureDbWithWalRecovery since the WAL-recovery hoist, and an unstubbed
-  // opener silently escapes to the REAL ~/.claude-mem-lite DB (this exact
+  // opener silently escapes to the REAL ~/.qwen-mem-lite DB (this exact
   // hole let a test run write to and purge the developer's live DB).
   return { ...original, ensureDb: stub, ensureDbWithWalRecovery: stub };
 });
@@ -438,7 +438,7 @@ describe('P2-5: memTimelineSchema documents anchor/query precedence', () => {
 //   T2-P1-D CLI  optimize --task only accepted a single task; MCP took an array.
 
 function seedDbWithPurgeable(dir, projectName = 'audit--probe') {
-  const dbPath = join(dir, 'claude-mem-lite.db');
+  const dbPath = join(dir, 'qwen-mem-lite.db');
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = OFF');
@@ -517,7 +517,7 @@ describe('MCP T2 audit fixes (stdio)', () => {
     expect(text).toMatch(/re-run with confirm=true/);
 
     // Verify the DB still has all 4 rows (3 purgeable + 1 live).
-    const db = new Database(join(tmp, 'claude-mem-lite.db'));
+    const db = new Database(join(tmp, 'qwen-mem-lite.db'));
     const count = db.prepare('SELECT COUNT(*) AS c FROM observations').get().c;
     db.close();
     expect(count).toBe(4);
@@ -533,7 +533,7 @@ describe('MCP T2 audit fixes (stdio)', () => {
     const text = resp.result?.content?.[0]?.text || '';
     expect(text).toMatch(/Purged 3 stale observations/);
 
-    const db = new Database(join(tmp, 'claude-mem-lite.db'));
+    const db = new Database(join(tmp, 'qwen-mem-lite.db'));
     const remaining = db.prepare('SELECT title FROM observations').all();
     db.close();
     expect(remaining).toHaveLength(1);
@@ -578,7 +578,7 @@ describe('MCP T2 audit fixes (stdio)', () => {
     expect(text, 'decay must run despite the unconfirmed purge').toMatch(/Decayed \d+ stale/);
 
     // Nothing was deleted: cleanup had no broken rows to remove, purge only previewed.
-    const db = new Database(join(tmp, 'claude-mem-lite.db'));
+    const db = new Database(join(tmp, 'qwen-mem-lite.db'));
     const count = db.prepare('SELECT COUNT(*) AS c FROM observations').get().c;
     db.close();
     expect(count).toBe(4);
@@ -845,12 +845,12 @@ const HOOK_PATH = resolve(new URL('..', import.meta.url).pathname, 'hook.mjs');
 const DAY_MS = 86_400_000;
 const PENDING_PURGE_MARKER = -2; // COMPRESSED_PENDING_PURGE
 
-// Init a DB under `{home}/.claude-mem-lite/claude-mem-lite.db` with initSchema.
+// Init a DB under `{home}/.qwen-mem-lite/qwen-mem-lite.db` with initSchema.
 function initHomeDb(home) {
-  const dbDir = join(home, '.claude-mem-lite');
+  const dbDir = join(home, '.qwen-mem-lite');
   mkdirSync(dbDir, { recursive: true });
   mkdirSync(join(dbDir, 'runtime'), { recursive: true });
-  const dbPath = join(dbDir, 'claude-mem-lite.db');
+  const dbPath = join(dbDir, 'qwen-mem-lite.db');
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = OFF');
@@ -870,16 +870,16 @@ function runHookCmd(event, { home, stdin = '', cwd = home }) {
         ...process.env,
         HOME: home,
         CLAUDE_PROJECT_DIR: cwd,
-        CLAUDE_MEM_SKIP_UPDATE: '1',
-        CLAUDE_MEM_SKIP_COMPRESS: '1',
-        CLAUDE_MEM_SKIP_OPTIMIZE: '1',
+        QWEN_MEM_SKIP_UPDATE: '1',
+        QWEN_MEM_SKIP_COMPRESS: '1',
+        QWEN_MEM_SKIP_OPTIMIZE: '1',
         // MED-4: maintenance moved to the detached auto-maintain worker. Skip the
         // SessionStart spawn so tests deterministically drive it via an explicit
         // runHookCmd('auto-maintain', ...) call instead of racing a background proc.
-        CLAUDE_MEM_SKIP_MAINTAIN: '1',
+        QWEN_MEM_SKIP_MAINTAIN: '1',
         MEM_NO_AUTO_ADOPT: '1',
         MEM_QUIET_HOOKS: '1',
-        CLAUDE_MEM_HOOK_RUNNING: undefined,
+        QWEN_MEM_HOOK_RUNNING: undefined,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -1116,7 +1116,7 @@ describe('Fuzzy auto-dedup (hook auto-maintain)', () => {
     }
   });
 
-  it('respects CLAUDE_MEM_SKIP_AUTO_DEDUP_FUZZY env opt-out', () => {
+  it('respects QWEN_MEM_SKIP_AUTO_DEDUP_FUZZY env opt-out', () => {
     const { db, dbPath } = initHomeDb(tmpHome);
     const now = Date.now();
     db.prepare(
@@ -1147,13 +1147,13 @@ describe('Fuzzy auto-dedup (hook auto-maintain)', () => {
           ...process.env,
           HOME: tmpHome,
           CLAUDE_PROJECT_DIR: projDir,
-          CLAUDE_MEM_SKIP_UPDATE: '1',
-          CLAUDE_MEM_SKIP_COMPRESS: '1',
-          CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-          CLAUDE_MEM_SKIP_AUTO_DEDUP_FUZZY: '1',
+          QWEN_MEM_SKIP_UPDATE: '1',
+          QWEN_MEM_SKIP_COMPRESS: '1',
+          QWEN_MEM_SKIP_OPTIMIZE: '1',
+          QWEN_MEM_SKIP_AUTO_DEDUP_FUZZY: '1',
           MEM_NO_AUTO_ADOPT: '1',
           MEM_QUIET_HOOKS: '1',
-          CLAUDE_MEM_HOOK_RUNNING: undefined,
+          QWEN_MEM_HOOK_RUNNING: undefined,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -1183,7 +1183,7 @@ describe('T4-P2-B: handleStop fast summary dedup', () => {
 
   afterEach(() => {
     // D#2. Still 1 dir per run, and that is the designed outcome: removal SUCCEEDS, then
-    // a detached worker of the handleStop subprocess recreates `.claude-mem-lite/` and
+    // a detached worker of the handleStop subprocess recreates `.qwen-mem-lite/` and
     // `.claude/` under the HOME it was handed — this now-deleted path. `audit/t4` never
     // comes back, which is how the shape is identified. lib/tmp-fixture-sweep.mjs`s `mem-` prefix (:24) + its 1h age gate (:51)
     // absorbs that class at the next run past its 1h age gate. The shared helper is used
@@ -1220,7 +1220,7 @@ describe('T4-P2-B: handleStop fast summary dedup', () => {
 
     // Write session file so hook.mjs getSessionId() returns the same id on both runs.
     writeFileSync(
-      join(tmpHome, '.claude-mem-lite', 'runtime', `session-audit--t4`),
+      join(tmpHome, '.qwen-mem-lite', 'runtime', `session-audit--t4`),
       JSON.stringify({ id: sessId, project: 'audit--t4', startedAt: now }),
     );
 
@@ -1228,7 +1228,7 @@ describe('T4-P2-B: handleStop fast summary dedup', () => {
     runHookCmd('stop', { home: tmpHome, cwd: projDir, stdin });
     // Re-write the session file (Stop deletes it) so the second call can find the same id.
     writeFileSync(
-      join(tmpHome, '.claude-mem-lite', 'runtime', `session-audit--t4`),
+      join(tmpHome, '.qwen-mem-lite', 'runtime', `session-audit--t4`),
       JSON.stringify({ id: sessId, project: 'audit--t4', startedAt: now }),
     );
     runHookCmd('stop', { home: tmpHome, cwd: projDir, stdin });
@@ -1440,7 +1440,7 @@ describe('MCP T3 audit fixes (stdio)', () => {
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), 'mem-audit-t3-'));
-    const dbPath = join(tmp, 'claude-mem-lite.db');
+    const dbPath = join(tmp, 'qwen-mem-lite.db');
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = OFF');
@@ -1576,7 +1576,7 @@ describe('MCP T3 audit fixes (stdio)', () => {
 // restores CLI↔MCP parity per #8050 and unblocks the paste-from-search flow.
 
 function seedPrefixAnchorDb(dir) {
-  const dbPath = join(dir, 'claude-mem-lite.db');
+  const dbPath = join(dir, 'qwen-mem-lite.db');
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = OFF');

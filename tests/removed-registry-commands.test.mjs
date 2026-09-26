@@ -23,7 +23,7 @@ function run(args) {
       encoding: 'utf8',
       timeout: 20000,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, MEM_QUIET_HOOKS: '1', CLAUDE_MEM_SKIP_UPDATE: '1' },
+      env: { ...process.env, MEM_QUIET_HOOKS: '1', QWEN_MEM_SKIP_UPDATE: '1' },
     });
   } catch (e) {
     // The router exits non-zero on an unknown command; the message is on stderr.

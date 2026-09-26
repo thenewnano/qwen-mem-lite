@@ -69,7 +69,7 @@ function mockDeps() {
 async function buildDeps(args) {
   if (!args.live) return mockDeps();
   const { realDeps } = await import('./lib/real-deps.mjs');
-  return realDeps({ repoRoot: REPO_ROOT, shuffledPool: loadShuffledPool(args.corpus), model: process.env.CLAUDE_MEM_EXPERIMENT_MODEL || 'sonnet' });
+  return realDeps({ repoRoot: REPO_ROOT, shuffledPool: loadShuffledPool(args.corpus), model: process.env.QWEN_MEM_EXPERIMENT_MODEL || 'sonnet' });
 }
 
 function loadShuffledPool(corpusDir) {

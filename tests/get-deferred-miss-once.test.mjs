@@ -32,10 +32,10 @@ function run(args) {
     env: {
       ...process.env,
       HOME: join(sandbox, 'home'),
-      CLAUDE_MEM_DIR: join(sandbox, 'home', '.claude-mem-lite'),
+      QWEN_MEM_DIR: join(sandbox, 'home', '.qwen-mem-lite'),
       CLAUDE_PROJECT_DIR: join(sandbox, 'proj'),
       MEM_NO_AUTO_ADOPT: '1',
-      CLAUDE_MEM_SKIP_UPDATE: '1',
+      QWEN_MEM_SKIP_UPDATE: '1',
     },
   });
   return (r.stdout || '') + (r.stderr || '');
@@ -45,7 +45,7 @@ const missCount = (out) => out.split('Deferred item(s) not found').length - 1;
 
 beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), 'mem-get-deferred-'));
-  mkdirSync(join(sandbox, 'home', '.claude-mem-lite'), { recursive: true });
+  mkdirSync(join(sandbox, 'home', '.qwen-mem-lite'), { recursive: true });
   mkdirSync(join(sandbox, 'proj'), { recursive: true });
 });
 

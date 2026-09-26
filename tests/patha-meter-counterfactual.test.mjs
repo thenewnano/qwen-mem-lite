@@ -111,13 +111,13 @@ describe('counterfactual: true — arm B leaves no trace in the store', () => {
 
 describe('counterfactual: true — arm B emits no `inject` metric row', () => {
   let dir;
-  const prev = process.env.CLAUDE_MEM_METRICS;
+  const prev = process.env.QWEN_MEM_METRICS;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'patha-cf-'));
   });
   afterEach(() => {
-    if (prev === undefined) delete process.env.CLAUDE_MEM_METRICS;
-    else process.env.CLAUDE_MEM_METRICS = prev;
+    if (prev === undefined) delete process.env.QWEN_MEM_METRICS;
+    else process.env.QWEN_MEM_METRICS = prev;
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -126,12 +126,12 @@ describe('counterfactual: true — arm B emits no `inject` metric row', () => {
   // counterfactual call must add no row to whatever sink is configured. Counting the
   // sink's rows before and after keeps this independent of where that sink is.
   it('adds no metric row where a delivered call adds one', () => {
-    process.env.CLAUDE_MEM_METRICS = '1';
+    process.env.QWEN_MEM_METRICS = '1';
     const { db } = seed();
     const q = 'sqlite fts5 rowid match trap';
 
     // The SAME DB_DIR `hook-memory.mjs` binds at import, not a guess from the env — a
-    // first version guessed `CLAUDE_MEM_DIR`, found nothing, and passed vacuously with
+    // first version guessed `QWEN_MEM_DIR`, found nothing, and passed vacuously with
     // 0 === 0. The premise assertion below is what exposed that.
     const sink = join(DB_DIR, 'metrics');
     const linesIn = () => {

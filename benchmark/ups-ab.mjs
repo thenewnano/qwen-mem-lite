@@ -86,7 +86,7 @@ function injectedFor(prompt, bypass) {
       cwd: ROOT,
       encoding: 'utf8',
       timeout: 10000,
-      env: { ...process.env, CLAUDE_MEM_UPS_IDENTIFIER_BYPASS: bypass ? '1' : '0' },
+      env: { ...process.env, QWEN_MEM_UPS_IDENTIFIER_BYPASS: bypass ? '1' : '0' },
     });
   } catch (e) {
     out = e.stdout || '';

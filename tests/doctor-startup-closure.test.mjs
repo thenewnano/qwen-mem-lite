@@ -39,7 +39,7 @@ function buildCopyInstall(root) {
   }
   const pkgDir = join(root, 'node_modules', 'better-sqlite3');
   mkdirSync(pkgDir, { recursive: true });
-  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'claude-mem-lite', version: '9.9.9' }));
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'qwen-mem-lite', version: '9.9.9' }));
   writeFileSync(
     join(pkgDir, 'package.json'),
     JSON.stringify({ name: 'better-sqlite3', version: '12.10.0', main: 'index.js' }),
@@ -55,7 +55,7 @@ function runDoctor(root) {
   try {
     const stdout = execFileSync(process.execPath, [join(root, 'install.mjs'), 'doctor'], {
       encoding: 'utf8',
-      env: { ...process.env, HOME: home, MEM_NO_AUTO_ADOPT: '1', CLAUDE_MEM_DIR: join(home, 'data') },
+      env: { ...process.env, HOME: home, MEM_NO_AUTO_ADOPT: '1', QWEN_MEM_DIR: join(home, 'data') },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     return { stdout, stderr: '', code: 0 };
@@ -94,7 +94,7 @@ describe('doctor starts on the broken install it exists to diagnose', () => {
     // A file SQLite will refuse: right name, wrong bytes.
     const dataDir = join(home, 'data');
     mkdirSync(dataDir, { recursive: true });
-    writeFileSync(join(dataDir, 'claude-mem-lite.db'), 'this is not a database');
+    writeFileSync(join(dataDir, 'qwen-mem-lite.db'), 'this is not a database');
 
     const { stdout, stderr } = runDoctor(root);
     expect(stderr).not.toMatch(/ERR_MODULE_NOT_FOUND/);
@@ -169,7 +169,7 @@ describe('the CLI entry explains a broken install instead of stack-tracing', () 
     try {
       const stdout = execFileSync(process.execPath, [join(root, 'cli.mjs'), ...args], {
         encoding: 'utf8',
-        env: { ...process.env, HOME: cliHome, MEM_NO_AUTO_ADOPT: '1', CLAUDE_MEM_DIR: join(cliHome, 'data') },
+        env: { ...process.env, HOME: cliHome, MEM_NO_AUTO_ADOPT: '1', QWEN_MEM_DIR: join(cliHome, 'data') },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       return { stdout, stderr: '', code: 0 };

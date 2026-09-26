@@ -1,7 +1,34 @@
 # Changelog
 
-All notable changes to claude-mem-lite are documented in this file.
+All notable changes to qwen-mem-lite are documented in this file.
 
+## v7.0.0 - renamed to qwen-mem-lite, Qwen Code first, Claude Code still supported
+
+The project is now **qwen-mem-lite**. The rename covers the package/plugin name, the CLI,
+the data store and the environment prefix; Claude Code keeps working from the same code and
+the same store. Upstream attribution and every historical entry below are untouched.
+
+**Upgrade notes for 6.12.1 installs:**
+
+- **Install name changed.** The Claude Code plugin is `qwen-mem-lite@thenewnano` - re-add the
+  marketplace from `thenewnano/qwen-mem-lite` and reinstall. The Qwen Code extension is
+  `thenewnano:qwen-mem-lite`. An install from the old marketplace name is no longer
+  recognised by this build's plugin checks.
+- **The store moved**, with no automatic migration: `~/.claude-mem-lite/` →
+  `~/.qwen-mem-lite/`, and the database file `claude-mem-lite.db` → `qwen-mem-lite.db`.
+  Move the files manually to keep the old memories (plugin installs keep their code in the
+  plugin cache; npm-managed installs should re-run the installer afterwards).
+- **Environment prefix renamed**: every `CLAUDE_MEM_*` variable is now `QWEN_MEM_*`.
+  The `MEM_*` variables (`MEM_NO_AUTO_ADOPT`) are unchanged.
+- **Project steering blocks migrate on the next SessionStart.** The `claude-mem-lite` block
+  in a project's `CLAUDE.md`/`QWEN.md` is replaced in place by the `qwen-mem-lite` block,
+  and the old detail doc + state sidecar are removed. User text outside the block is
+  untouched.
+- Auto-update keeps reading this repository's signed releases and the install path stays
+  fail-closed on a valid `release-manifest.json` + `.sig` pair.
+
+Also in this release: the MCP server key stays `mem-lite` and the `mem_*` tool names are
+unchanged, so adopted contracts and transcripts keep their meaning.
 ## v6.12.1 — the fork runs on Qwen Code, updates from itself, and signs with its own key
 
 Forked from upstream v6.11.0. Everything upstream shipped is here; this entry covers what the

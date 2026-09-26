@@ -37,7 +37,7 @@ afterEach(() => {
 function corruptDataDir({ withSnapshot = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'dbbad-'));
   fixtures.push(dir);
-  const dbPath = join(dir, 'claude-mem-lite.db');
+  const dbPath = join(dir, 'qwen-mem-lite.db');
   if (withSnapshot) {
     // A real snapshot beside it, so the remedy is "restore" rather than "set aside".
     const db = new Database(`${dbPath}.v1.bak`);
@@ -60,15 +60,15 @@ function run(args, dataDir, { stdin = '{}', ...extraEnv } = {}) {
     env: {
       ...process.env,
       HOME: home,
-      CLAUDE_MEM_DIR: dataDir,
-      CLAUDE_MEM_SKIP_UPDATE: '1',
-      CLAUDE_MEM_SKIP_COMPRESS: '1',
-      CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-      CLAUDE_MEM_SKIP_MAINTAIN: '1',
+      QWEN_MEM_DIR: dataDir,
+      QWEN_MEM_SKIP_UPDATE: '1',
+      QWEN_MEM_SKIP_COMPRESS: '1',
+      QWEN_MEM_SKIP_OPTIMIZE: '1',
+      QWEN_MEM_SKIP_MAINTAIN: '1',
       MEM_NO_AUTO_ADOPT: '1',
       ANTHROPIC_API_KEY: undefined,
       OPENROUTER_API_KEY: undefined,
-      CLAUDE_MEM_HOOK_RUNNING: undefined,
+      QWEN_MEM_HOOK_RUNNING: undefined,
       ...extraEnv,
     },
   });
@@ -92,7 +92,7 @@ describe('SessionStart speaks when the database cannot be opened at all', () => 
     expect(hookErrorLines(dataDir).some((e) => /not a database/i.test(e.msg))).toBe(true);
 
     expect(r.stdout).toMatch(/Memory is OFF/);
-    expect(r.stdout, 'must name the file the user has to act on').toContain('claude-mem-lite.db');
+    expect(r.stdout, 'must name the file the user has to act on').toContain('qwen-mem-lite.db');
     // A hook must never take the host session down with it.
     expect(r.status).toBe(0);
   });
@@ -128,7 +128,7 @@ describe('SessionStart speaks when the database cannot be opened at all', () => 
     const model = envelope.hookSpecificOutput.additionalContext;
     expect(model, 'no shell command reaches the model').not.toMatch(/rm -f|\bcp\b|\bmv\b/);
     expect(model, 'it still learns memory is off').toMatch(/Memory is OFF/);
-    expect(model).toMatch(/claude-mem-lite doctor/);
+    expect(model).toMatch(/qwen-mem-lite doctor/);
     // The premise: the human channel really does carry the command the model must not get.
     expect(envelope.systemMessage).toMatch(/rm -f/);
     expect(envelope.systemMessage).toContain('.v1.bak');

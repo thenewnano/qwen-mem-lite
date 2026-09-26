@@ -9,7 +9,7 @@
 // model env floored every arm and read like a real 0/8 result).
 //
 //   inject                 — seed the lesson sandbox (vs an empty control sandbox)
-//   salience               — value for CLAUDE_MEM_SALIENCE ('' = unset = current default)
+//   salience               — value for QWEN_MEM_SALIENCE ('' = unset = current default)
 //   appendRequirement      — arm T spells the genuine fix into the task (positive control)
 //   appendImperativeLesson — arm U appends the lesson at the task-prompt position wrapped
 //                            in the imperative template — channel-isolation vs T (same

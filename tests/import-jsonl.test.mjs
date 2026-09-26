@@ -227,8 +227,8 @@ describe('import-jsonl — the CLI summary reports what was written', () => {
     dir = mkdtempSync(join(tmpdir(), 'import-cli-'));
     env = {
       ...process.env,
-      CLAUDE_MEM_DIR: dir,
-      CLAUDE_MEM_SKIP_UPDATE: '1',
+      QWEN_MEM_DIR: dir,
+      QWEN_MEM_SKIP_UPDATE: '1',
       MEM_QUIET_HOOKS: '1',
       MEM_NO_AUTO_ADOPT: '1',
       CLAUDE_PROJECT_DIR: '/x/importcli',
@@ -260,7 +260,7 @@ describe('import-jsonl — the CLI summary reports what was written', () => {
     expect(out).toMatch(/\+1 observations \(1 from unpaired tool_use\)/);
     expect(out).not.toMatch(/\+0 observations/);
     // The "something landed, go look" hint must fire — an orphan-only import is not a no-op.
-    expect(out).toMatch(/Try: claude-mem-lite recent/);
+    expect(out).toMatch(/Try: qwen-mem-lite recent/);
     expect(out).not.toMatch(/Nothing new/);
   });
 
@@ -277,7 +277,7 @@ describe('import-jsonl — the CLI summary reports what was written', () => {
     );
     const out = execFileSync(process.execPath, [CLI, 'import-jsonl', file], { env, encoding: 'utf8' });
     expect(out).toMatch(/0 prompts, 1 observations \(1 from unpaired tool_use\)/);
-    expect(out).toMatch(/Try: claude-mem-lite recent/);
+    expect(out).toMatch(/Try: qwen-mem-lite recent/);
     expect(out).not.toMatch(/Nothing new/);
   });
 
@@ -290,7 +290,7 @@ describe('import-jsonl — the CLI summary reports what was written', () => {
     execFileSync(process.execPath, [CLI, 'import-jsonl', file], { env, encoding: 'utf8' });
     const second = execFileSync(process.execPath, [CLI, 'import-jsonl', file], { env, encoding: 'utf8' });
     expect(second).toMatch(/Nothing new/);
-    expect(second).not.toMatch(/Try: claude-mem-lite recent/);
+    expect(second).not.toMatch(/Try: qwen-mem-lite recent/);
   });
 });
 

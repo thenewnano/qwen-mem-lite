@@ -18,8 +18,8 @@ const HOOK = join(import.meta.dirname, '..', 'scripts', 'pre-tool-recall.js');
 const PROJECT = 'proj--myapp';
 
 function seed(tmpRoot, filePath) {
-  // Hook derives DB_PATH as join(CLAUDE_MEM_DIR, 'claude-mem-lite.db').
-  const db = initSchema(new Database(join(tmpRoot, 'claude-mem-lite.db')));
+  // Hook derives DB_PATH as join(QWEN_MEM_DIR, 'qwen-mem-lite.db').
+  const db = initSchema(new Database(join(tmpRoot, 'qwen-mem-lite.db')));
   db.pragma('foreign_keys = OFF');
   insertSession(db, { id: 's-bridge', project: PROJECT });
   insertObs(db, {
@@ -51,8 +51,8 @@ function runHook(tmpRoot, projectDir, env) {
     timeout: 5000,
     env: {
       ...process.env,
-      CLAUDE_MEM_HOOK_RUNNING: '',
-      CLAUDE_MEM_DIR: tmpRoot,
+      QWEN_MEM_HOOK_RUNNING: '',
+      QWEN_MEM_DIR: tmpRoot,
       CLAUDE_PROJECT_DIR: projectDir,
       ...env,
     },
@@ -79,18 +79,18 @@ describe('pre-tool-recall bridge mode', () => {
   });
 
   it('bridge mode emits the bound check when the bridge returns a usable line', () => {
-    // CLAUDE_MEM_BRIDGE_FAKE is a test seam (Step 3) that short-circuits callLLM.
+    // QWEN_MEM_BRIDGE_FAKE is a test seam (Step 3) that short-circuits callLLM.
     const out = runHook(tmpRoot, projectDir, {
-      CLAUDE_MEM_SALIENCE: 'bridge',
-      CLAUDE_MEM_BRIDGE_FAKE: 'null-check recoverChildrenOf first',
+      QWEN_MEM_SALIENCE: 'bridge',
+      QWEN_MEM_BRIDGE_FAKE: 'null-check recoverChildrenOf first',
     });
     expect(out).toContain('→ this edit must: null-check recoverChildrenOf first');
   });
 
   it('bridge mode falls back to the ack line when the bridge abstains (N/A)', () => {
     const out = runHook(tmpRoot, projectDir, {
-      CLAUDE_MEM_SALIENCE: 'bridge',
-      CLAUDE_MEM_BRIDGE_FAKE: 'N/A',
+      QWEN_MEM_SALIENCE: 'bridge',
+      QWEN_MEM_BRIDGE_FAKE: 'N/A',
     });
     expect(out).not.toContain('→ this edit must:');
     expect(out.toLowerCase()).toContain('apply each lesson'); // ACK_DIRECTIVE text

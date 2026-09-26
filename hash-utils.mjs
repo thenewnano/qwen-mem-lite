@@ -1,4 +1,4 @@
-// claude-mem-lite: Hashing and similarity utilities
+// qwen-mem-lite: Hashing and similarity utilities
 // Extracted from utils.mjs for focused responsibility
 
 /**

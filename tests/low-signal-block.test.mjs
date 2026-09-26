@@ -2,7 +2,7 @@
 //
 // Contract: low-signal-titled observations are blocked at insert time when they
 // carry NO downstream signal (no lesson, importance<2, empty facts, thin narrative).
-// Substantive titles pass unchanged. Env CLAUDE_MEM_KEEP_LOW_SIGNAL=1 opts out.
+// Substantive titles pass unchanged. Env QWEN_MEM_KEEP_LOW_SIGNAL=1 opts out.
 
 import { describe, it, expect } from 'vitest';
 import { isNoiseObservation, capNoiseImportance, isLowYieldChangeObs } from '../lib/low-signal-patterns.mjs';
@@ -179,7 +179,7 @@ describe('isNoiseObservation — P0 write-side filter', () => {
     ).toBe(false);
   });
 
-  it('respects CLAUDE_MEM_KEEP_LOW_SIGNAL=1 opt-out (pre-P0 behavior)', () => {
+  it('respects QWEN_MEM_KEEP_LOW_SIGNAL=1 opt-out (pre-P0 behavior)', () => {
     expect(
       isNoiseObservation(
         {
@@ -188,7 +188,7 @@ describe('isNoiseObservation — P0 write-side filter', () => {
           narrative: '',
           importance: 1,
         },
-        { CLAUDE_MEM_KEEP_LOW_SIGNAL: '1' },
+        { QWEN_MEM_KEEP_LOW_SIGNAL: '1' },
       ),
     ).toBe(false);
   });
@@ -613,7 +613,7 @@ describe('isLowYieldChangeObs — v2.56.0 #1 paired DROP', () => {
     ).toBe(false);
   });
 
-  it('respects CLAUDE_MEM_KEEP_LOW_SIGNAL=1 opt-out (parity with isNoiseObservation)', () => {
+  it('respects QWEN_MEM_KEEP_LOW_SIGNAL=1 opt-out (parity with isNoiseObservation)', () => {
     expect(
       isLowYieldChangeObs(
         {
@@ -622,7 +622,7 @@ describe('isLowYieldChangeObs — v2.56.0 #1 paired DROP', () => {
           lessonLearned: null,
           importance: 1,
         },
-        { CLAUDE_MEM_KEEP_LOW_SIGNAL: '1' },
+        { QWEN_MEM_KEEP_LOW_SIGNAL: '1' },
       ),
     ).toBe(false);
   });

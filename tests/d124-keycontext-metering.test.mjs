@@ -215,7 +215,7 @@ describe('the Stop handler wires Key Context as promotion-only', () => {
     expect(call, 'extractInjectedFromKeyContext call site not found').not.toBeNull();
     for (const arg of ['runtimeDir', 'project', 'sessionId']) {
       // sessionId was unpinned in v3.66.0: dropping it makes the reader look for
-      // `.claude-mem-keyctx-<project>` while the writer wrote `...-<session>`,
+      // `.qwen-mem-keyctx-<project>` while the writer wrote `...-<session>`,
       // so the face silently returns empty forever.
       expect(call[0], `missing ${arg}`).toContain(arg);
     }

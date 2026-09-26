@@ -25,7 +25,7 @@ function makeTmpDir() {
 }
 function initDb(dataDir) {
   mkdirSync(dataDir, { recursive: true });
-  const db = new Database(join(dataDir, 'claude-mem-lite.db'));
+  const db = new Database(join(dataDir, 'qwen-mem-lite.db'));
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = OFF');
   initSchema(db);
@@ -38,9 +38,9 @@ function runCli(args, dataDir) {
       timeout: 15000,
       env: {
         ...process.env,
-        CLAUDE_MEM_DIR: dataDir,
+        QWEN_MEM_DIR: dataDir,
         CLAUDE_PROJECT_DIR: dataDir,
-        CLAUDE_MEM_HOOK_RUNNING: undefined,
+        QWEN_MEM_HOOK_RUNNING: undefined,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -76,7 +76,7 @@ describe('R4 CLI update — explicit empty string does not blank content fields'
   });
 
   function field(name) {
-    const db = new Database(join(dir, 'claude-mem-lite.db'));
+    const db = new Database(join(dir, 'qwen-mem-lite.db'));
     const row = db.prepare('SELECT narrative, lesson_learned, concepts FROM observations WHERE id = 1').get();
     db.close();
     return row[name];

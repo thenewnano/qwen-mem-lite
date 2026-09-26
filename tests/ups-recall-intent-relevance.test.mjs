@@ -64,7 +64,7 @@ const dirs = [];
 function seedCorpus(n = 600) {
   const dir = mkdtempSync(join(tmpdir(), 'ups-recall-'));
   dirs.push(dir);
-  const db = new Database(join(dir, 'claude-mem-lite.db'));
+  const db = new Database(join(dir, 'qwen-mem-lite.db'));
   initSchema(db);
   db.prepare(
     `INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch)
@@ -103,10 +103,10 @@ function runHook(dir, prompt, sessionId) {
     const proc = spawn(process.execPath, [SCRIPT_PATH], {
       env: {
         ...process.env,
-        CLAUDE_MEM_DIR: dir,
+        QWEN_MEM_DIR: dir,
         CLAUDE_PROJECT_DIR: '/x/recallintent',
         PWD: '/x/recallintent',
-        CLAUDE_MEM_SKIP_UPDATE: '1',
+        QWEN_MEM_SKIP_UPDATE: '1',
         MEM_QUIET_HOOKS: '1',
       },
       stdio: ['pipe', 'pipe', 'pipe'],

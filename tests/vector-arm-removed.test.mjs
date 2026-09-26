@@ -13,7 +13,7 @@
 // WHY THERE IS NO BEHAVIOURAL "the env var changes nothing" CASE HERE. One was written
 // and DELETED rather than counted: at unit scale the arm cannot be made to engage
 // through the shipped save path, so any pass would be vacuous. Measured while building
-// it, on this tree — 12 saves of deliberately distinct rows with CLAUDE_MEM_VECTORS=1
+// it, on this tree — 12 saves of deliberately distinct rows with QWEN_MEM_VECTORS=1
 // land 12 observations but **N = 1** for buildVocabulary, because the three-tier dedup
 // in saveObservation marks the other 11 superseded and liveObsFilterSql('') hides them;
 // with one live document every term has df = 1, the `freq >= 2` filter empties the
@@ -42,7 +42,7 @@ const ROOT = join(__dirname, '..');
 
 // The env var, the CLI op and the two tables are all PUBLISHED surfaces, so their names
 // are the contract being removed.
-const REMOVED_ENV = 'CLAUDE_MEM_VECTORS';
+const REMOVED_ENV = 'QWEN_MEM_VECTORS';
 const REMOVED_OP = 'rebuild_vectors';
 const REMOVED_TABLES = ['observation_vectors', 'vocab_state'];
 const REMOVED_SYMBOLS = [
@@ -77,11 +77,11 @@ const REMOVED_SYMBOLS = [
 // arm in any of those left the whole suite green. `package.json#files` IS the definition of
 // shipped, so the list cannot drift from it again.
 //
-// npm implicitly adds README* on top of `files[]`; both READMEs are the product's front page,
-// so they are added here explicitly rather than relied on.
+// npm implicitly adds README* on top of `files[]`; the README is the product's front page,
+// so it is added here explicitly rather than relied on.
 function shippedFiles(exts) {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
-  const entries = [...(pkg.files || []), 'README.md', 'README.zh-CN.md'];
+  const entries = [...(pkg.files || []), 'README.md'];
   const out = new Set();
   const take = (full) => {
     if (exts.some((e) => full.endsWith(e))) out.add(full);
@@ -140,21 +140,20 @@ describe('Phase-2: the TF-IDF vector arm is removed', () => {
     else process.env[REMOVED_ENV] = prev;
   });
 
-  it('both READMEs carry the fenced upgrade note, and it names what was removed', () => {
+  it('README.md carries the fenced upgrade note, and it names what was removed', () => {
     // Premise for the exemption above. Without this, deleting the note (or letting the fence
     // drift off it) would silently turn the exemption into a hole that protects nothing while
     // still suppressing whatever sits between the sentinels.
-    for (const f of ['README.md', 'README.zh-CN.md']) {
-      const text = readFileSync(join(ROOT, f), 'utf8');
-      const fenced = text.match(NOTE_FENCE);
-      expect(fenced, `${f} must carry a fenced vector-arm removal note`).toHaveLength(1);
-      const note = fenced[0];
-      expect(note, `${f} note must name the env var`).toContain(REMOVED_ENV);
-      expect(note, `${f} note must name the removed maintain op`).toContain(REMOVED_OP);
-      for (const t of REMOVED_TABLES) expect(note, `${f} note must name ${t}`).toContain(t);
-      // ...and it must say the migration is one-way, which is the part a user acts on.
-      expect(note).toMatch(/v48|forward-incompat|5\.6\.0/);
-    }
+    const f = 'README.md';
+    const text = readFileSync(join(ROOT, f), 'utf8');
+    const fenced = text.match(NOTE_FENCE);
+    expect(fenced, `${f} must carry a fenced vector-arm removal note`).toHaveLength(1);
+    const note = fenced[0];
+    expect(note, `${f} note must name the env var`).toContain(REMOVED_ENV);
+    expect(note, `${f} note must name the removed maintain op`).toContain(REMOVED_OP);
+    for (const t of REMOVED_TABLES) expect(note, `${f} note must name ${t}`).toContain(t);
+    // ...and it must say the migration is one-way, which is the part a user acts on.
+    expect(note).toMatch(/v48|forward-incompat|5\.6\.0/);
   });
 
   it('initSchema creates neither vector table', () => {
@@ -170,11 +169,11 @@ describe('Phase-2: the TF-IDF vector arm is removed', () => {
     db.close();
   });
 
-  it('no shipped module reads the CLAUDE_MEM_VECTORS env var', () => {
+  it('no shipped module reads the QWEN_MEM_VECTORS env var', () => {
     // Stripped code, not raw text, for the same reason the symbol sweep below strips: a
     // comment that NAMES the removed env var is history. Forbidding the name outright made
     // this guard forbid documenting its own removal, which it did on the first run. The
-    // check keeps all its teeth, because a live read is `process.env.CLAUDE_MEM_VECTORS`
+    // check keeps all its teeth, because a live read is `process.env.QWEN_MEM_VECTORS`
     // in code and survives comment-stripping untouched.
     const offenders = shippedTextFiles().filter((f) => strippedCode(f).includes(REMOVED_ENV));
     expect(offenders.map((f) => relative(ROOT, f))).toEqual([]);

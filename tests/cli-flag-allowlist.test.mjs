@@ -1,10 +1,10 @@
-// KNOWN_CLI_FLAGS must contain only flags a `claude-mem-lite` subcommand actually reads.
+// KNOWN_CLI_FLAGS must contain only flags a `qwen-mem-lite` subcommand actually reads.
 //
 // suggestUnknownFlags() warns on EVERY flag outside the allowlist ("--x — ignored, it
 // had no effect"). So a bogus allowlist entry does not merely fail to help — it
 // SUPPRESSES the one signal the user would get. `out` sat in the list until the 2026-08-17
 // e2e round, having been catalogued from `benchmark/longmemeval-rerank.mjs --out`, which is not a
-// CLI flag: `claude-mem-lite export --out backup.json` dumped the whole export to
+// CLI flag: `qwen-mem-lite export --out backup.json` dumped the whole export to
 // stdout, wrote no file, and printed no warning.
 //
 // The guard is derived, not a hand-maintained second copy of the list: it re-reads the
@@ -17,7 +17,7 @@ import { KNOWN_CLI_FLAGS } from '../cli/common.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..');
 
-// Every file that can consume a `claude-mem-lite <cmd>` flag. Deliberately excludes
+// Every file that can consume a `qwen-mem-lite <cmd>` flag. Deliberately excludes
 // benchmark/ and scripts/ — a flag only those read is NOT a CLI flag, which is the
 // exact confusion this suite exists to catch.
 function cliSources() {

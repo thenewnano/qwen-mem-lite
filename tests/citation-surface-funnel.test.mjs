@@ -40,7 +40,7 @@ const PTR_ATT = {
   type: 'attachment',
   attachment: {
     type: 'hook_success',
-    command: 'node "/home/sds/.claude-mem-lite/scripts/pre-tool-recall.js"',
+    command: 'node "/home/sds/.qwen-mem-lite/scripts/pre-tool-recall.js"',
     stdout: '[mem] Lessons for utils.mjs:\n  #101 [bugfix] boundary match beats suffix LIKE\n',
   },
 };
@@ -48,7 +48,7 @@ const UPS_ATT = {
   type: 'attachment',
   attachment: {
     type: 'hook_success',
-    command: 'node "/home/sds/.claude-mem-lite/hook.mjs" user-prompt',
+    command: 'node "/home/sds/.qwen-mem-lite/hook.mjs" user-prompt',
     stdout:
       '<memory-context relevance="high">\n- [decision] picked X | Lesson: Y (#202)\n</memory-context>\n',
   },
@@ -57,16 +57,15 @@ const ERR_ATT = {
   type: 'attachment',
   attachment: {
     type: 'hook_success',
-    command: 'bash "/home/sds/.claude-mem-lite/scripts/post-tool-use.sh"',
-    stdout:
-      '[claude-mem-lite] Related memories found for this error:\n  #303 [bugfix] EPIPE on forced exit\n',
+    command: 'bash "/home/sds/.qwen-mem-lite/scripts/post-tool-use.sh"',
+    stdout: '[qwen-mem-lite] Related memories found for this error:\n  #303 [bugfix] EPIPE on forced exit\n',
   },
 };
 const FYI_ATT = {
   type: 'attachment',
   attachment: {
     type: 'hook_success',
-    command: 'node "/home/sds/.claude-mem-lite/scripts/user-prompt-search.js"',
+    command: 'node "/home/sds/.qwen-mem-lite/scripts/user-prompt-search.js"',
     stdout: '[mem] FYI — Related memories (continue your task):\n#404 🔴 superseded invariant reopened\n',
   },
 };
@@ -150,7 +149,7 @@ describe('extractInjectedBySurface', () => {
         type: 'attachment',
         attachment: {
           type: 'hook_success',
-          command: 'node "/home/sds/.claude-mem-lite/hook.mjs" user-prompt',
+          command: 'node "/home/sds/.qwen-mem-lite/hook.mjs" user-prompt',
           stdout: '[mem] some other user-prompt output\n- [decision] not a memory line (#777)\n',
         },
       },

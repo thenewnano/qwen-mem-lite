@@ -1,5 +1,5 @@
 {
-  "description": "claude-mem-lite memory system hooks",
+  "description": "qwen-mem-lite memory system hooks",
   "hooks": {
     "SessionStart": [
       {

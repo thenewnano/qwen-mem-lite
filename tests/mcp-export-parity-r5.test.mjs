@@ -29,7 +29,7 @@ function makeTmpDir() {
 }
 function initDb(dataDir) {
   mkdirSync(dataDir, { recursive: true });
-  const db = new Database(join(dataDir, 'claude-mem-lite.db'));
+  const db = new Database(join(dataDir, 'qwen-mem-lite.db'));
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = OFF');
   initSchema(db);
@@ -42,9 +42,9 @@ function runCli(args, dataDir) {
       timeout: 15000,
       env: {
         ...process.env,
-        CLAUDE_MEM_DIR: dataDir,
+        QWEN_MEM_DIR: dataDir,
         CLAUDE_PROJECT_DIR: dataDir,
-        CLAUDE_MEM_HOOK_RUNNING: undefined,
+        QWEN_MEM_HOOK_RUNNING: undefined,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -116,7 +116,7 @@ describe('MCP mem_export ↔ CLI export parity (v3.42 HIGH-2)', () => {
     });
 
     it('MCP export carries the body + aliases; restore keeps the row searchable', async () => {
-      const db = new Database(join(srcDir, 'claude-mem-lite.db'));
+      const db = new Database(join(srcDir, 'qwen-mem-lite.db'));
       const res = await handleExportForTest(db, { format: 'jsonl', include_compressed: false });
       db.close();
       const text = res.content[0].text;
@@ -135,7 +135,7 @@ describe('MCP mem_export ↔ CLI export parity (v3.42 HIGH-2)', () => {
       expect(restore.stdout.toLowerCase()).toContain('restore');
 
       // Body preserved (not collapsed to the bare title) …
-      const dst = new Database(join(dstDir, 'claude-mem-lite.db'));
+      const dst = new Database(join(dstDir, 'qwen-mem-lite.db'));
       const row = dst.prepare("SELECT text FROM observations WHERE title = 'Bash: run tests'").get();
       dst.close();
       expect(row?.text).toContain('UNIQUEMCPBODY');

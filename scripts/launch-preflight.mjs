@@ -5,7 +5,7 @@
 // missing) and the resulting ERR_MODULE_NOT_FOUND has no actionable message.
 // We can't fix every cause (mirror lag / interrupted download / npm cache
 // corruption / permission) on the user side, but we can detect the broken
-// state and either fall back to ~/.claude-mem-lite/ (which hook-update.mjs
+// state and either fall back to ~/.qwen-mem-lite/ (which hook-update.mjs
 // keeps healthy) or print a clear repair command instead of a Node stack.
 //
 // Pure module — no I/O at import time, all deps injected. Tested in isolation;
@@ -59,7 +59,7 @@ export function resolveLaunchEntry({ primaryRoot, fallbackRoot, warn = () => {} 
     const fallbackMissing = detectMissingImports(fallbackRoot);
     if (fallbackMissing.length === 0) {
       warn(
-        `[claude-mem-lite] Primary install incomplete at ${primaryRoot} ` +
+        `[qwen-mem-lite] Primary install incomplete at ${primaryRoot} ` +
           `(missing: ${primaryMissing.join(', ')}). Falling back to ${fallbackRoot}.`,
       );
       return {
@@ -72,10 +72,10 @@ export function resolveLaunchEntry({ primaryRoot, fallbackRoot, warn = () => {} 
 
   const repairCmd = 'npm install -g github:thenewnano/qwen-mem-lite --force';
   const err = new Error(
-    `[claude-mem-lite] Install incomplete at ${primaryRoot}\n` +
-      `[claude-mem-lite]   Missing: ${primaryMissing.join(', ')}\n` +
-      `[claude-mem-lite] Repair: ${repairCmd}\n` +
-      `[claude-mem-lite] Or via Claude Code: /plugin uninstall claude-mem-lite && /plugin install claude-mem-lite@thenewnano`,
+    `[qwen-mem-lite] Install incomplete at ${primaryRoot}\n` +
+      `[qwen-mem-lite]   Missing: ${primaryMissing.join(', ')}\n` +
+      `[qwen-mem-lite] Repair: ${repairCmd}\n` +
+      `[qwen-mem-lite] Or via Claude Code: /plugin uninstall qwen-mem-lite && /plugin install qwen-mem-lite@thenewnano`,
   );
   err.code = 'INSTALL_INCOMPLETE';
   err.missing = primaryMissing;

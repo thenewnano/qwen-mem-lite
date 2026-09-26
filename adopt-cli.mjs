@@ -1,9 +1,9 @@
 // CLAUDE.md-steering plan (v3.13): CLI handlers for
-//   claude-mem-lite adopt   [--all] [--force] [--dry-run] [--status] [--disable|--enable]
-//   claude-mem-lite unadopt [--all] [--force] [--dry-run] [--status]
+//   qwen-mem-lite adopt   [--all] [--force] [--dry-run] [--status] [--disable|--enable]
+//   qwen-mem-lite unadopt [--all] [--force] [--dry-run] [--status]
 //
 // adopt   = write the managed block into <cwd>/CLAUDE.md + drop
-//           <cwd>/.claude/plugin_claude_mem_lite.md, and migrate this project's
+//           <cwd>/.claude/plugin_qwen_mem_lite.md, and migrate this project's
 //           legacy memory-dir sentinel away.
 // unadopt = remove the CLAUDE.md block + detail doc (and clean any legacy residue).
 //
@@ -34,7 +34,13 @@ import {
   hasLegacyMemdirSentinel,
   contextTargets,
 } from './claudemd.mjs';
-import { PLUGIN_SLUG, CURRENT_SENTINEL_VERSION, buildClaudeMdBlock, getDetailDoc } from './adopt-content.mjs';
+import {
+  PLUGIN_SLUG,
+  LEGACY_PLUGIN_SLUG,
+  CURRENT_SENTINEL_VERSION,
+  buildClaudeMdBlock,
+  getDetailDoc,
+} from './adopt-content.mjs';
 
 function log(msg) {
   console.log(msg);
@@ -96,8 +102,8 @@ function hasFlag(args, flag) {
 // `<memdir>/.mem-no-auto-adopt` is the durable, project-scoped escape hatch.
 // Survives marker deletion, sentinel removal, and plugin reinstalls — that's
 // the point: "user said no for this project" should not be reversible by
-// `rm ~/.claude-mem-lite/runtime/.auto-adopt-*`. Managed via
-// `claude-mem-lite adopt --disable` / `--enable`. silentAutoAdopt checks it
+// `rm ~/.qwen-mem-lite/runtime/.auto-adopt-*`. Managed via
+// `qwen-mem-lite adopt --disable` / `--enable`. silentAutoAdopt checks it
 // at entry and skips WITHOUT writing the runtime marker, so toggling
 // `--enable` re-arms auto-adopt on the next SessionStart. Kept in the memdir
 // (not the project tree) so it survives `unadopt` cleaning out .claude/.
@@ -132,6 +138,16 @@ export function cmdAdopt(args = []) {
   adoptOne(cwd, { force, dryRun });
 }
 
+/**
+ * One-time migration of the pre-rename steering block: strip the `claude-mem-lite`
+ * block + detail doc + state sidecar from this project before the `qwen-mem-lite`
+ * block is written. Idempotent; a no-op in projects that never ran the old slug.
+ */
+function migrateLegacySlug(cwd) {
+  if (!claudeMdHasResidue(cwd, LEGACY_PLUGIN_SLUG)) return { action: 'absent' };
+  return removeManaged(cwd, LEGACY_PLUGIN_SLUG);
+}
+
 function adoptOne(cwd, { force, dryRun }) {
   const block = buildClaudeMdBlock();
   const doc = getDetailDoc();
@@ -146,13 +162,20 @@ function adoptOne(cwd, { force, dryRun }) {
     if (hasLegacyMemdirSentinel(cwd, PLUGIN_SLUG)) {
       log(`  legacy migrate:   would strip memory-dir sentinel @ ${memdirPath(cwd)}`);
     }
+    if (claudeMdHasResidue(cwd, LEGACY_PLUGIN_SLUG)) {
+      log(`  legacy block:     would migrate ${LEGACY_PLUGIN_SLUG} -> ${PLUGIN_SLUG}`);
+    }
     return { action: 'dry-run' };
   }
 
   try {
+    const legacy = migrateLegacySlug(cwd);
     const mig = migrateLegacyMemoryDir(cwd, PLUGIN_SLUG, { force });
     const r = writeManaged(cwd, { slug: PLUGIN_SLUG, version, block, doc });
-    const migNote = mig.action === 'removed' ? ' (+migrated legacy memdir)' : '';
+    const notes = [];
+    if (mig.action === 'removed') notes.push('migrated legacy memdir');
+    if (legacy.action === 'removed') notes.push('migrated legacy block');
+    const migNote = notes.length ? ` (+${notes.join(', ')})` : '';
     log(`[adopt] ${cwd} → ${r.action}${migNote}`);
     return r;
   } catch (e) {
@@ -163,7 +186,7 @@ function adoptOne(cwd, { force, dryRun }) {
 }
 
 /**
- * migrateAll — `claude-mem-lite adopt --all`: legacy-cleanup sweep. Strips the
+ * migrateAll — `qwen-mem-lite adopt --all`: legacy-cleanup sweep. Strips the
  * old memory-dir sentinel + detail doc from every memdir. Does NOT write any
  * CLAUDE.md block (target paths are unrecoverable) — that happens per-project on
  * the next SessionStart. Respects the foreign-content guard unless --force.
@@ -216,9 +239,10 @@ function migrateAll(args) {
  * Called every plugin-mode SessionStart (NOT gated by the one-shot marker, so
  * existing users whose marker predates v3.13 still migrate). Order:
  *   1. respect per-project `.mem-no-auto-adopt` opt-out → skip.
- *   2. migrate legacy memory-dir sentinel away (idempotent; no-op once gone).
+ *   2. migrate the legacy memory-dir sentinel AND the pre-rename (claude-mem-lite)
+ *      CLAUDE.md block + detail doc away (idempotent; no-op once gone).
  *   3. adopt the CLAUDE.md scheme if absent; else refresh if shipped content
- *      drifted (unless CLAUDE_MEM_NO_TEMPLATE_REFRESH=1).
+ *      drifted (unless QWEN_MEM_NO_TEMPLATE_REFRESH=1).
  * Silent: never logs, never throws. Returns { ok, action, reason } for debugLog.
  */
 export function silentAutoAdopt({ cwd, markerDir, markerKey }) {
@@ -228,6 +252,7 @@ export function silentAutoAdopt({ cwd, markerDir, markerKey }) {
       return { ok: true, action: 'disabled', reason: 'disabled-by-sentinel' };
     }
     migrateLegacyMemoryDir(cwd, PLUGIN_SLUG);
+    migrateLegacySlug(cwd);
 
     const block = buildClaudeMdBlock();
     const doc = getDetailDoc();
@@ -238,7 +263,7 @@ export function silentAutoAdopt({ cwd, markerDir, markerKey }) {
       writeManaged(cwd, { slug: PLUGIN_SLUG, version, block, doc });
       action = 'adopted';
     } else if (
-      process.env.CLAUDE_MEM_NO_TEMPLATE_REFRESH !== '1' &&
+      process.env.QWEN_MEM_NO_TEMPLATE_REFRESH !== '1' &&
       needsRefresh(cwd, { slug: PLUGIN_SLUG, version, block, doc })
     ) {
       writeManaged(cwd, { slug: PLUGIN_SLUG, version, block, doc });
@@ -267,7 +292,7 @@ export function hasAutoAdoptMarker(markerDir, markerKey) {
 }
 
 /**
- * cmdDisable — `claude-mem-lite adopt --disable [--all]`.
+ * cmdDisable — `qwen-mem-lite adopt --disable [--all]`.
  * Writes `<memdir>/.mem-no-auto-adopt` so SessionStart auto-adopt skips this
  * project permanently. Does NOT remove an existing block — pair with `unadopt`.
  */
@@ -301,7 +326,7 @@ function cmdDisable(args) {
 }
 
 /**
- * cmdEnable — `claude-mem-lite adopt --enable [--all]`. Removes the
+ * cmdEnable — `qwen-mem-lite adopt --enable [--all]`. Removes the
  * `.mem-no-auto-adopt` sentinel so the next SessionStart can auto-adopt again.
  */
 function cmdEnable(args) {
@@ -377,7 +402,7 @@ function statusAll() {
     `[adopt --status] scanned ${dirs.length} memdir(s): ${legacy} with legacy sentinel (await migration), ${disabled} auto-adopt-disabled.`,
   );
   if (legacy > 0)
-    log('[adopt --status] run `claude-mem-lite adopt --all` to sweep legacy memory-dir sentinels now.');
+    log('[adopt --status] run `qwen-mem-lite adopt --all` to sweep legacy memory-dir sentinels now.');
 
   const known = listKnownProjectDirs();
   let adoptedCount = 0;
@@ -386,7 +411,7 @@ function statusAll() {
     `[adopt --status] known projects (~/.claude.json): ${known.length} scanned, ${adoptedCount} with a CLAUDE.md managed block or partial residue (detail doc/state).`,
   );
   if (adoptedCount > 0)
-    log('[adopt --status] run `claude-mem-lite unadopt --all` to remove every CLAUDE.md block.');
+    log('[adopt --status] run `qwen-mem-lite unadopt --all` to remove every CLAUDE.md block.');
 
   const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ? 'set' : 'unset';
   const noAutoAdopt = process.env.MEM_NO_AUTO_ADOPT === '1' ? '1 (opt-out)' : 'unset';
@@ -396,7 +421,7 @@ function statusAll() {
     `  CLAUDE_PLUGIN_ROOT  = ${pluginRoot}  (any install path is consent; gate is the per-project opt-out below)`,
   );
   log(`  MEM_NO_AUTO_ADOPT   = ${noAutoAdopt}  (global escape hatch)`);
-  log('Per-project opt-out: `claude-mem-lite adopt --disable` (run --enable to re-arm).');
+  log('Per-project opt-out: `qwen-mem-lite adopt --disable` (run --enable to re-arm).');
 }
 
 /**
@@ -406,7 +431,7 @@ function statusAll() {
  * can't be located from the lossy slug). Idempotent: exit code stays 0.
  */
 /**
- * unadoptAll — `claude-mem-lite unadopt --all`. Removes the CLAUDE.md managed
+ * unadoptAll — `qwen-mem-lite unadopt --all`. Removes the CLAUDE.md managed
  * block + detail doc from EVERY adopted project Claude Code knows about (real
  * paths from ~/.claude.json `projects`), then sweeps the legacy memory-dir
  * residue across all memdirs. removeManaged is slug-scoped, so user content and
@@ -475,7 +500,7 @@ function unadoptAll(args) {
   );
   if (projectDirs.length === 0) {
     log(
-      '[unadopt --all] no known projects found in ~/.claude.json — if a project was adopted but never opened in Claude Code, run `claude-mem-lite unadopt` from inside it.',
+      '[unadopt --all] no known projects found in ~/.claude.json — if a project was adopted but never opened in Claude Code, run `qwen-mem-lite unadopt` from inside it.',
     );
   }
 }
@@ -497,15 +522,23 @@ export function cmdUnadopt(args = []) {
     const legacy = hasLegacyMemdirSentinel(cwd, PLUGIN_SLUG)
       ? 'would-clean legacy memory-dir sentinel'
       : 'no legacy residue';
+    const legacyBlock = claudeMdHasResidue(cwd, LEGACY_PLUGIN_SLUG)
+      ? 'would-remove legacy claude-mem-lite block'
+      : 'no legacy block';
     log(`[unadopt --dry-run] ${cwd}`);
     log(`  ${blockState}`);
+    log(`  ${legacyBlock}`);
     log(`  ${legacy}`);
     return;
   }
 
   const r = removeManaged(cwd, PLUGIN_SLUG);
+  const legacyR = migrateLegacySlug(cwd);
   const mig = migrateLegacyMemoryDir(cwd, PLUGIN_SLUG, { force });
-  const migNote = mig.action === 'removed' ? ' (+cleaned legacy memdir)' : '';
+  const notes = [];
+  if (mig.action === 'removed') notes.push('cleaned legacy memdir');
+  if (legacyR.action === 'removed') notes.push('cleaned legacy block');
+  const migNote = notes.length ? ` (+${notes.join(', ')})` : '';
   log(`[unadopt] ${cwd} → ${r.action}${migNote}`);
   // 'partial' is the outcome that used to print as 'absent': the sidecar files are gone but
   // an unpaired sentinel still holds steering text in the user's CLAUDE.md, and only they can

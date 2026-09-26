@@ -85,11 +85,11 @@ describe('ruler-can-say-no guard', () => {
   });
 
   it('names the LIKELY CAUSE of an empty scope rather than one fixed cause', () => {
-    // The message used to always say "point CLAUDE_MEM_TRANSCRIPT_ROOT at a real
+    // The message used to always say "point QWEN_MEM_TRANSCRIPT_ROOT at a real
     // transcript root" — irrelevant under --corpus, where the root is never walked, and
     // wrong under a --since that excludes everything. Advice that does not fit the run
     // sends the reader to check the one thing that is not the problem.
-    expect(() => assertRulerCanSayNo(rows(0, 0))).toThrow(/CLAUDE_MEM_TRANSCRIPT_ROOT/);
+    expect(() => assertRulerCanSayNo(rows(0, 0))).toThrow(/QWEN_MEM_TRANSCRIPT_ROOT/);
     expect(() => assertRulerCanSayNo(rows(0, 0), { windowed: true })).toThrow(/--since\/--until window/);
     expect(() => assertRulerCanSayNo(rows(0, 0), { frozen: true })).toThrow(/--corpus/);
     // …and the three are actually different, not one string with a decorative branch.
@@ -293,7 +293,7 @@ beforeAll(() => {
       // error_recall
       attach(
         'bash /x/scripts/post-tool-use.sh',
-        '[claude-mem-lite] Related memories found for this error:\n  #501 [bugfix] boom',
+        '[qwen-mem-lite] Related memories found for this error:\n  #501 [bugfix] boom',
         T,
       ),
       // A sidechain-flagged attachment INSIDE the main transcript. The attachment faces
@@ -339,7 +339,7 @@ beforeAll(() => {
           content: [
             {
               type: 'text',
-              text: `[Project memory — surfaced by your operator's claude-mem-lite]\n  #${id} — a lesson.`,
+              text: `[Project memory — surfaced by your operator's qwen-mem-lite]\n  #${id} — a lesson.`,
             },
           ],
         },
@@ -374,7 +374,7 @@ afterAll(() => {
 
 function run(extra = []) {
   const out = execFileSync(process.execPath, [SCRIPT, '--json', ...extra], {
-    env: { ...process.env, CLAUDE_MEM_TRANSCRIPT_ROOT: root },
+    env: { ...process.env, QWEN_MEM_TRANSCRIPT_ROOT: root },
     encoding: 'utf8',
   });
   const parsed = JSON.parse(out);
@@ -450,7 +450,7 @@ describe('end-to-end over a known corpus', () => {
       );
 
       const out = execFileSync(process.execPath, [SCRIPT, '--json', '--mentions'], {
-        env: { ...process.env, CLAUDE_MEM_TRANSCRIPT_ROOT: r2 },
+        env: { ...process.env, QWEN_MEM_TRANSCRIPT_ROOT: r2 },
         encoding: 'utf8',
       });
       const parsed = JSON.parse(out);
@@ -465,7 +465,7 @@ describe('end-to-end over a known corpus', () => {
 
   it('declares keyctx unreachable rather than omitting it', () => {
     const out = execFileSync(process.execPath, [SCRIPT, '--json'], {
-      env: { ...process.env, CLAUDE_MEM_TRANSCRIPT_ROOT: root },
+      env: { ...process.env, QWEN_MEM_TRANSCRIPT_ROOT: root },
       encoding: 'utf8',
     });
     const parsed = JSON.parse(out);
@@ -479,7 +479,7 @@ describe('end-to-end over a known corpus', () => {
 
   it('--split PARTITIONS one walk: both arms non-empty and summing to overall', () => {
     const out = execFileSync(process.execPath, [SCRIPT, '--json', '--split', '2026-08-21'], {
-      env: { ...process.env, CLAUDE_MEM_TRANSCRIPT_ROOT: root },
+      env: { ...process.env, QWEN_MEM_TRANSCRIPT_ROOT: root },
       encoding: 'utf8',
     });
     const parsed = JSON.parse(out);
@@ -525,7 +525,7 @@ describe('end-to-end over a known corpus', () => {
       );
       expect(() =>
         execFileSync(process.execPath, [SCRIPT, '--json'], {
-          env: { ...process.env, CLAUDE_MEM_TRANSCRIPT_ROOT: saturated },
+          env: { ...process.env, QWEN_MEM_TRANSCRIPT_ROOT: saturated },
           encoding: 'utf8',
           stdio: 'pipe',
         }),
@@ -538,7 +538,7 @@ describe('end-to-end over a known corpus', () => {
   it('--dump then --corpus re-scores the SAME frozen corpus', () => {
     const frozen = join(root, 'frozen.json');
     execFileSync(process.execPath, [SCRIPT, '--json', '--dump', frozen], {
-      env: { ...process.env, CLAUDE_MEM_TRANSCRIPT_ROOT: root },
+      env: { ...process.env, QWEN_MEM_TRANSCRIPT_ROOT: root },
       encoding: 'utf8',
     });
     // Re-scored with the transcript root pointed at an EMPTY dir: the numbers must come
@@ -546,7 +546,7 @@ describe('end-to-end over a known corpus', () => {
     const empty = mkdtempSync(join(tmpdir(), 'cite-replay-empty-'));
     try {
       const out = execFileSync(process.execPath, [SCRIPT, '--json', '--corpus', frozen], {
-        env: { ...process.env, CLAUDE_MEM_TRANSCRIPT_ROOT: empty },
+        env: { ...process.env, QWEN_MEM_TRANSCRIPT_ROOT: empty },
         encoding: 'utf8',
       });
       const faces = Object.fromEntries(JSON.parse(out).overall.map((r) => [r.face, r]));
@@ -561,7 +561,7 @@ describe('end-to-end over a known corpus', () => {
     writeFileSync(stale, JSON.stringify({ format: 'citation-live-replay/0', files: 1, records: [] }));
     expect(() =>
       execFileSync(process.execPath, [SCRIPT, '--json', '--corpus', stale], {
-        env: { ...process.env, CLAUDE_MEM_TRANSCRIPT_ROOT: root },
+        env: { ...process.env, QWEN_MEM_TRANSCRIPT_ROOT: root },
         encoding: 'utf8',
         stdio: 'pipe',
       }),
@@ -587,7 +587,7 @@ describe('end-to-end over a known corpus', () => {
     );
     expect(() =>
       execFileSync(process.execPath, [SCRIPT, '--json', '--corpus', v1], {
-        env: { ...process.env, CLAUDE_MEM_TRANSCRIPT_ROOT: root },
+        env: { ...process.env, QWEN_MEM_TRANSCRIPT_ROOT: root },
         encoding: 'utf8',
         stdio: 'pipe',
       }),

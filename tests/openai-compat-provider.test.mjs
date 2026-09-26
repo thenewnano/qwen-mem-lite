@@ -11,7 +11,7 @@
 //
 // Two properties are worth more than the rest and are pinned below by name:
 // KEYLESS operation (a local server has no key to send, and a bare `Bearer ` is
-// rejected by several of them) and the CLAUDE_MEM_LLM_PROVIDER pin (under Qwen
+// rejected by several of them) and the QWEN_MEM_LLM_PROVIDER pin (under Qwen
 // Code, settings.json's `env` block injects ANTHROPIC_API_KEY into every session,
 // so without the pin this leg is unreachable no matter what else is set).
 
@@ -83,41 +83,39 @@ describe('detectModeFromEnv — the generic leg', () => {
   });
 });
 
-describe('CLAUDE_MEM_LLM_PROVIDER — the escape hatch', () => {
+describe('QWEN_MEM_LLM_PROVIDER — the escape hatch', () => {
   it('pins the generic leg even when ANTHROPIC_API_KEY is present', () => {
     // The reason this exists: Qwen Code's settings.json env block injects
     // ANTHROPIC_API_KEY into every session, so key-presence order would otherwise
     // win and an OpenAI-compatible backend could never be selected.
     const e = env({ ANTHROPIC_API_KEY: 'sk-ant', OPENAI_BASE_URL: 'http://127.0.0.1:8000/v1' });
     expect(detectModeFromEnv(e)).toBe('api');
-    expect(detectModeFromEnv({ ...e, CLAUDE_MEM_LLM_PROVIDER: 'openai' })).toBe('openai');
+    expect(detectModeFromEnv({ ...e, QWEN_MEM_LLM_PROVIDER: 'openai' })).toBe('openai');
   });
 
   it('accepts any of the four legs, case- and whitespace-insensitively', () => {
     const e = env({ ANTHROPIC_API_KEY: 'sk-ant', OPENAI_API_KEY: 'sk-oai' });
-    expect(detectModeFromEnv({ ...e, CLAUDE_MEM_LLM_PROVIDER: '  Api ' })).toBe('api');
-    expect(detectModeFromEnv({ ...e, CLAUDE_MEM_LLM_PROVIDER: 'OPENAI' })).toBe('openai');
-    expect(detectModeFromEnv({ ...e, CLAUDE_MEM_LLM_PROVIDER: 'cli' })).toBe('cli');
+    expect(detectModeFromEnv({ ...e, QWEN_MEM_LLM_PROVIDER: '  Api ' })).toBe('api');
+    expect(detectModeFromEnv({ ...e, QWEN_MEM_LLM_PROVIDER: 'OPENAI' })).toBe('openai');
+    expect(detectModeFromEnv({ ...e, QWEN_MEM_LLM_PROVIDER: 'cli' })).toBe('cli');
   });
 
   it('ignores a pin whose leg has no credentials, rather than obeying it into a dead leg', () => {
     // Obeying would send every call to a provider that cannot answer; detection
     // (here: the Anthropic key) is what keeps summaries flowing.
-    expect(detectModeFromEnv(env({ ANTHROPIC_API_KEY: 'sk-ant', CLAUDE_MEM_LLM_PROVIDER: 'openai' }))).toBe(
+    expect(detectModeFromEnv(env({ ANTHROPIC_API_KEY: 'sk-ant', QWEN_MEM_LLM_PROVIDER: 'openai' }))).toBe(
       'api',
     );
   });
 
   it('ignores an unknown pin instead of guessing', () => {
-    expect(detectModeFromEnv(env({ OPENAI_API_KEY: 'sk-oai', CLAUDE_MEM_LLM_PROVIDER: 'gpt' }))).toBe(
-      'openai',
-    );
+    expect(detectModeFromEnv(env({ OPENAI_API_KEY: 'sk-oai', QWEN_MEM_LLM_PROVIDER: 'gpt' }))).toBe('openai');
   });
 
   it('is honoured by the memoized detectMode the workers actually call', () => {
     vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant');
     vi.stubEnv('OPENAI_API_KEY', 'sk-oai');
-    vi.stubEnv('CLAUDE_MEM_LLM_PROVIDER', 'openai');
+    vi.stubEnv('QWEN_MEM_LLM_PROVIDER', 'openai');
     _resetMode();
     expect(detectMode()).toBe('openai');
   });
@@ -163,7 +161,7 @@ describe('callHaiku on the generic leg — request shape', () => {
       'OPENAI_MODEL',
       'OPENAI_MODEL_HAIKU',
       'OPENAI_MODEL_SONNET',
-      'CLAUDE_MEM_LLM_PROVIDER',
+      'QWEN_MEM_LLM_PROVIDER',
     ]) {
       vi.stubEnv(v, '');
     }
@@ -282,9 +280,9 @@ describe('callHaiku on the generic leg — request shape', () => {
     expect(fetchMock.mock.calls[0][1].headers['X-Title']).toBeUndefined();
   });
 
-  it('honours the CLAUDE_MEM_MODEL tier through the same transport', async () => {
+  it('honours the QWEN_MEM_MODEL tier through the same transport', async () => {
     vi.stubEnv('OPENAI_API_KEY', 'sk-oai');
-    vi.stubEnv('CLAUDE_MEM_MODEL', 'sonnet');
+    vi.stubEnv('QWEN_MEM_MODEL', 'sonnet');
     _resetMode();
     const fetchMock = okFetch();
     vi.stubGlobal('fetch', fetchMock);

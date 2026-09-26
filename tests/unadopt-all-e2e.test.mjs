@@ -37,7 +37,7 @@ function run(args, { cwd, allowFail = false } = {}) {
 function hasBlock(dir) {
   const p = join(dir, 'CLAUDE.md');
   if (!existsSync(p)) return false;
-  return /<!-- claude-mem-lite:begin/.test(readFileSync(p, 'utf8'));
+  return /<!-- qwen-mem-lite:begin/.test(readFileSync(p, 'utf8'));
 }
 
 describe('unadopt --all scans known projects (~/.claude.json)', () => {
@@ -49,8 +49,8 @@ describe('unadopt --all scans known projects (~/.claude.json)', () => {
     projGone = join(HOME, 'gone-deleted');
     repoSnapshot = existsSync(REPO_CLAUDE_MD) ? readFileSync(REPO_CLAUDE_MD, 'utf8') : null;
 
-    BASE_ENV = { ...process.env, HOME, CLAUDE_MEM_SKIP_REPOS: '1' };
-    delete BASE_ENV.CLAUDE_MEM_DIR;
+    BASE_ENV = { ...process.env, HOME, QWEN_MEM_SKIP_REPOS: '1' };
+    delete BASE_ENV.QWEN_MEM_DIR;
     delete BASE_ENV.CLAUDE_PROJECT_DIR;
     delete BASE_ENV.PWD;
 
@@ -78,7 +78,7 @@ describe('unadopt --all scans known projects (~/.claude.json)', () => {
     // `unadopt --all` skip this project forever — regression case for the
     // hasResidue fix.
     run(['adopt'], { cwd: projC });
-    rmSync(join(projC, '.claude', 'plugin_claude_mem_lite.md'));
+    rmSync(join(projC, '.claude', 'plugin_qwen_mem_lite.md'));
   }, 60000);
 
   afterAll(() => {
@@ -94,7 +94,7 @@ describe('unadopt --all scans known projects (~/.claude.json)', () => {
     expect(hasBlock(projA)).toBe(true);
     expect(hasBlock(projB)).toBe(true);
     expect(hasBlock(projC)).toBe(true);
-    expect(existsSync(join(projC, '.claude', 'plugin_claude_mem_lite.md'))).toBe(false);
+    expect(existsSync(join(projC, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(false);
   });
 
   it('--all --dry-run reports all three (incl. partial-residue C) but removes nothing', () => {
@@ -120,7 +120,7 @@ describe('unadopt --all scans known projects (~/.claude.json)', () => {
       const md = readFileSync(join(d, 'CLAUDE.md'), 'utf8');
       expect(md).toContain('My notes.');
       expect(md).toContain('- spaces');
-      expect(existsSync(join(d, '.claude', 'plugin_claude_mem_lite.md'))).toBe(false);
+      expect(existsSync(join(d, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(false);
     }
   });
 

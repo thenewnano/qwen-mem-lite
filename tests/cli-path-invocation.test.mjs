@@ -1,7 +1,7 @@
 // Regression lock for the v3.1.1 path-resolution fix (code review 2026-06-20,
 // findings #1/#2/#3/#13). The bundled CLI must be advertised by an absolute,
 // import.meta.url-resolved path that exists on EVERY install shape — NOT the
-// pre-v3.1.1 `~/.claude-mem-lite/cli.mjs`, which is absent on a plugin-only
+// pre-v3.1.1 `~/.qwen-mem-lite/cli.mjs`, which is absent on a plugin-only
 // install (setup.sh provisions the data dir but never materializes source).
 //
 // Two correct strategies, asserted separately:
@@ -22,7 +22,7 @@ import { getDetailDoc, buildClaudeMdBlock } from '../adopt-content.mjs';
 // that way anywhere in the analysed tree makes knip drop it from the unused-export
 // report entirely. Pinned for the class by tests/no-url-module-paths.test.mjs.
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const BROKEN = '~/.claude-mem-lite/cli.mjs';
+const BROKEN = '~/.qwen-mem-lite/cli.mjs';
 
 describe('cli-path single source of truth', () => {
   test('CLI_PATH resolves to the real bundled cli.mjs on this install shape', () => {
@@ -48,8 +48,8 @@ describe('LLM-visible CLI hints advertise the resolvable path, not the tilde pat
     for (const instr of [buildServerInstructions(false), buildServerInstructions(true)]) {
       expect(instr).not.toContain(BROKEN);
       expect(instr).toContain(CLI_PATH);
-      // the copyable examples must NOT be the bare `claude-mem-lite <cmd>` form
-      expect(instr).not.toMatch(/\n {2}claude-mem-lite (search|recall|recent|get|timeline) /);
+      // the copyable examples must NOT be the bare `qwen-mem-lite <cmd>` form
+      expect(instr).not.toMatch(/\n {2}qwen-mem-lite (search|recall|recent|get|timeline) /);
     }
   });
 
@@ -73,7 +73,7 @@ describe('LLM-visible CLI hints advertise the resolvable path, not the tilde pat
     expect(doc).not.toContain(CLI_PATH);
     expect(doc).not.toMatch(/node\s+\/\S*cli\.mjs/);
     // …but the reader must still be able to reach a resolvable command.
-    expect(doc).toContain('claude-mem-lite');
+    expect(doc).toContain('qwen-mem-lite');
     expect(doc, 'doc must point at the surface that carries the absolute path').toContain('instructions');
     // routing-cost guidance present: deferred mem_* → CLI is fewer round-trips
     expect(doc).toContain('ToolSearch');
@@ -145,12 +145,14 @@ describe('steering-surface consistency + injection budget', () => {
   // written into a user file) but its number is now install-independent by
   // construction rather than by normalisation, which is why the self-check below
   // asserts ZERO occurrences for it instead of a floor.
-  const REF_CLI_PATH = '/usr/lib/node_modules/claude-mem-lite/cli.mjs';
+  const REF_CLI_PATH = '/usr/lib/node_modules/qwen-mem-lite/cli.mjs';
   const contentLen = (s) => s.split(CLI_PATH).join(REF_CLI_PATH).length;
 
   test('steering surfaces stay within their injection budget', () => {
     expect(contentLen(buildClaudeMdBlock()), 'CLAUDE.md block').toBeLessThan(2000);
-    expect(contentLen(getDetailDoc()), 'detail doc').toBeLessThan(8000);
+    // 10000, not 8000: the detail doc is English since the rename, and the translated
+    // contract runs longer than the Chinese original it replaced.
+    expect(contentLen(getDetailDoc()), 'detail doc').toBeLessThan(10000);
     expect(contentLen(buildServerInstructions(false)), 'instructions full').toBeLessThan(3500);
     expect(contentLen(buildServerInstructions(true)), 'instructions BASE').toBeLessThan(2200);
   });
@@ -198,13 +200,13 @@ describe('steering-surface consistency + injection budget', () => {
 });
 
 describe('runtime recovery hints resolve `repair` by absolute path', () => {
-  // #3: hook-launcher + native-binding-hint advised bare `claude-mem-lite repair`,
+  // #3: hook-launcher + native-binding-hint advised bare `qwen-mem-lite repair`,
   // which is not on PATH for a plugin-only install. They must now emit an
   // absolute `node <cli.mjs> repair`.
-  test('no bare `claude-mem-lite repair` survives in the recovery hints', () => {
+  test('no bare `qwen-mem-lite repair` survives in the recovery hints', () => {
     for (const rel of ['scripts/hook-launcher.mjs', 'lib/native-binding-hint.mjs']) {
       const src = readFileSync(join(ROOT, rel), 'utf8');
-      expect(src, `${rel} still emits bare 'claude-mem-lite repair'`).not.toContain('claude-mem-lite repair');
+      expect(src, `${rel} still emits bare 'qwen-mem-lite repair'`).not.toContain('qwen-mem-lite repair');
       expect(src).toContain('cli.mjs');
     }
   });

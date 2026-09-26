@@ -8,7 +8,7 @@
 //
 // WHAT IT MEASURES, and what it cannot
 //
-// Wall time of a cold `spawnSync` per arm, from a sandboxed HOME and CLAUDE_MEM_DIR. It is a
+// Wall time of a cold `spawnSync` per arm, from a sandboxed HOME and QWEN_MEM_DIR. It is a
 // LATENCY ruler and says nothing about quality — a change that halves the hook and destroys
 // recall reads as a win here. Pair it with denoise-ab before shipping anything that touches
 // retrieval.
@@ -57,7 +57,7 @@
 //  3. The floor must come in measurably under the hook arm. If they converge, the harness is
 //     timing spawn noise and no arm below it means anything.
 //
-// POLLUTION (doctrine rule 6): HOME and CLAUDE_MEM_DIR are a fresh mkdtemp tree, every
+// POLLUTION (doctrine rule 6): HOME and QWEN_MEM_DIR are a fresh mkdtemp tree, every
 // SKIP flag is set so no detached worker outlives the run, MEM_NO_AUTO_ADOPT=1 so it cannot
 // rewrite a CLAUDE.md, and the tree is removed on exit.
 //
@@ -107,7 +107,7 @@ function makeSandbox(seedDb) {
   const data = join(root, 'data');
   const work = join(root, 'work', 'probe');
   for (const d of [home, data, work]) mkdirSync(d, { recursive: true });
-  if (seedDb && existsSync(seedDb)) copyFileSync(seedDb, join(data, 'claude-mem-lite.db'));
+  if (seedDb && existsSync(seedDb)) copyFileSync(seedDb, join(data, 'qwen-mem-lite.db'));
   const target = join(work, 'sample.mjs');
   writeFileSync(target, 'export function f() {\n  return 1;\n}\n'.repeat(120));
   return { root, home, data, work, target };
@@ -133,27 +133,27 @@ function removeSandbox(root) {
 
 function childEnv(sbx) {
   const env = { ...process.env };
-  for (const k of Object.keys(env)) if (/^(CLAUDE_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete env[k];
+  for (const k of Object.keys(env)) if (/^(QWEN_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete env[k];
   delete env.CLAUDE_PROJECT_DIR;
   delete env.PWD;
   return {
     ...env,
     HOME: sbx.home,
-    CLAUDE_MEM_DIR: sbx.data,
+    QWEN_MEM_DIR: sbx.data,
     // No reachable LLM: haiku-client falls back to the `claude` CLI with no API key, and a
     // ruler that spawns a real model call is timing the network.
     CLAUDE_CODE_PATH: join(sbx.root, 'no-such-claude-binary'),
     ANTHROPIC_API_KEY: '',
     OPENROUTER_API_KEY: '',
-    CLAUDE_MEM_SKIP_UPDATE: '1',
-    CLAUDE_MEM_SKIP_EPISODE_LLM: '1',
-    CLAUDE_MEM_SKIP_COMPRESS: '1',
-    CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-    CLAUDE_MEM_SKIP_MAINTAIN: '1',
-    CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
-    CLAUDE_MEM_SKIP_SUMMARY: '1',
-    CLAUDE_MEM_SKIP_REPOS: '1',
-    CLAUDE_MEM_NO_DELAY: '1',
+    QWEN_MEM_SKIP_UPDATE: '1',
+    QWEN_MEM_SKIP_EPISODE_LLM: '1',
+    QWEN_MEM_SKIP_COMPRESS: '1',
+    QWEN_MEM_SKIP_OPTIMIZE: '1',
+    QWEN_MEM_SKIP_MAINTAIN: '1',
+    QWEN_MEM_SKIP_SAVE_ENRICH: '1',
+    QWEN_MEM_SKIP_SUMMARY: '1',
+    QWEN_MEM_SKIP_REPOS: '1',
+    QWEN_MEM_NO_DELAY: '1',
     MEM_NO_AUTO_ADOPT: '1',
   };
 }
@@ -306,7 +306,7 @@ function report(rows, byKey, opts, buffers) {
     );
     return;
   }
-  console.log(`hook entry-point latency — n=${opts.n} per arm, ms, sandboxed HOME + CLAUDE_MEM_DIR`);
+  console.log(`hook entry-point latency — n=${opts.n} per arm, ms, sandboxed HOME + QWEN_MEM_DIR`);
   console.log(`corpus: ${opts.db ? `copy of ${opts.db}` : 'empty DB created by the run'}`);
   console.log(`buffers written by the post-tool-use arm: ${buffers.join(', ') || '(none)'}\n`);
   console.log('arm'.padEnd(34) + 'min'.padStart(7) + 'p50'.padStart(8) + 'p90'.padStart(8) + '   vs floor');

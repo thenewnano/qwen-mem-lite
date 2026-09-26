@@ -54,7 +54,7 @@ import { buildClaudeMdBlock } from '../adopt-content.mjs';
 // drops the module out of knip's report (tests/no-url-module-paths.test.mjs guards this).
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 
-const SLUG = 'claude-mem-lite';
+const SLUG = 'qwen-mem-lite';
 const BLOCK = '## managed\n\nsteering line one\nsteering line two';
 const DOC = '# detail\n\nbody';
 const V = 'v1';
@@ -89,8 +89,8 @@ describe('an unpaired managed sentinel must not eat user content or be reported 
   it('adopt never deletes user text once the end sentinel is gone (the data-loss path)', () => {
     adoptWithTail();
     expect(count(/STEP ONE/g), 'premise: the user tail is there to lose').toBe(1);
-    writeFileSync(md, read().replace(/<!-- claude-mem-lite:end -->\n?/, ''));
-    expect(count(/claude-mem-lite:end/g), 'premise: the end sentinel is gone').toBe(0);
+    writeFileSync(md, read().replace(/<!-- qwen-mem-lite:end -->\n?/, ''));
+    expect(count(/qwen-mem-lite:end/g), 'premise: the end sentinel is gone').toBe(0);
 
     writeManaged(cwd, args());
     expect(count(/STEP ONE/g), 'lost on the first re-adopt').toBe(1);
@@ -128,7 +128,7 @@ describe('an unpaired managed sentinel must not eat user content or be reported 
   it('unadopt does not answer "absent" after deleting the detail doc and leaving an orphan', () => {
     writeManaged(cwd, args());
     expect(existsSync(detailDocPath(cwd, SLUG))).toBe(true);
-    writeFileSync(md, read().replace(/<!-- claude-mem-lite:end -->\n?/, ''));
+    writeFileSync(md, read().replace(/<!-- qwen-mem-lite:end -->\n?/, ''));
     // writeManaged now writes BOTH layouts (claudemd.mjs LAYOUTS), and the case this test
     // states is "no block was removed anywhere, only an orphan remains" — a healthy QWEN.md
     // block would legitimately answer 'removed'. Drop the second layout so the fixture is
@@ -168,7 +168,7 @@ describe('an unpaired managed sentinel must not eat user content or be reported 
     const virgin = join(tmpHome, 'virgin');
     mkdirSync(join(virgin, '.claude'), { recursive: true });
     const vmd = join(virgin, 'CLAUDE.md');
-    const prose = '# Docs\n\nPlugins wrap their block in `<!-- claude-mem-lite:begin v1 -->`.\n';
+    const prose = '# Docs\n\nPlugins wrap their block in `<!-- qwen-mem-lite:begin v1 -->`.\n';
     writeFileSync(vmd, prose);
     expect(existsSync(detailDocPath(virgin, SLUG)), 'premise: never adopted').toBe(false);
 
@@ -191,13 +191,13 @@ describe('an unpaired managed sentinel must not eat user content or be reported 
   // with unadopt unable to clean any of it. That is the unbounded-growth failure the CRLF
   // fix exists to prevent, with its trigger moved rather than removed. This is the guard.
   it('the shipped template body carries no sentinel of its own', () => {
-    expect(buildClaudeMdBlock()).not.toMatch(/<!-- claude-mem-lite:(?:begin|end)/);
+    expect(buildClaudeMdBlock()).not.toMatch(/<!-- qwen-mem-lite:(?:begin|end)/);
   });
 
   it('every damage shape leaves the user rule and the user tail intact', () => {
     const damages = [
-      ['end deleted', (s) => s.replace(/<!-- claude-mem-lite:end -->\n?/, '')],
-      ['begin deleted', (s) => s.replace(/<!-- claude-mem-lite:begin v\d+ -->\n?/, '')],
+      ['end deleted', (s) => s.replace(/<!-- qwen-mem-lite:end -->\n?/, '')],
+      ['begin deleted', (s) => s.replace(/<!-- qwen-mem-lite:begin v\d+ -->\n?/, '')],
       ['version tag broken', (s) => s.replace(/:begin v\d+ -->/, ':begin -->')],
     ];
     for (const [name, damage] of damages) {
@@ -239,10 +239,10 @@ describe('an unpaired managed sentinel must not eat user content or be reported 
   it('the unadopt CLI prints the residue instead of a bare success line', () => {
     const env = {
       ...process.env,
-      CLAUDE_MEM_DIR: join(tmpHome, 'data'),
+      QWEN_MEM_DIR: join(tmpHome, 'data'),
       CLAUDE_PROJECT_DIR: cwd,
       MEM_NO_AUTO_ADOPT: '1',
-      CLAUDE_MEM_TEST_GUARD: '0',
+      QWEN_MEM_TEST_GUARD: '0',
     };
     const cli = (...a) =>
       execFileSync(process.execPath, [join(REPO, 'cli.mjs'), ...a], { cwd, env, encoding: 'utf8' });
@@ -252,7 +252,7 @@ describe('an unpaired managed sentinel must not eat user content or be reported 
     // Both layouts carry a block after this fork's dual write; orphan EVERY one of them,
     // or the healthy copy answers 'removed' and this test stops testing the partial path.
     for (const f of [md, join(cwd, 'QWEN.md')]) {
-      writeFileSync(f, readFileSync(f, 'utf8').replace(/<!-- claude-mem-lite:end -->\n?/, ''));
+      writeFileSync(f, readFileSync(f, 'utf8').replace(/<!-- qwen-mem-lite:end -->\n?/, ''));
     }
     const out = cli('unadopt');
     expect(out).toMatch(/→ partial/);
@@ -270,7 +270,7 @@ describe('an unpaired managed sentinel must not eat user content or be reported 
     // PWD and CLAUDE_PROJECT_DIR both, the way tests/unadopt-all-e2e.test.mjs does it.
     // execFileSync's `cwd` option changes the child's working directory but NOT the
     // inherited `PWD`, and detectCwd() reads PWD — so with only `cwd` set, this test
-    // adopted /home/ai/dev/claude-mem-lite instead of the temp project. It printed
+    // adopted /home/ai/dev/qwen-mem-lite instead of the temp project. It printed
     // "unchanged" and looked harmless ONLY because this repo happens to be adopted
     // already; on a machine where it is not, the test would have written a managed block
     // into the developer's own CLAUDE.md.
@@ -279,10 +279,10 @@ describe('an unpaired managed sentinel must not eat user content or be reported 
       HOME: tmpHome,
       PWD: cwd,
       CLAUDE_PROJECT_DIR: cwd,
-      CLAUDE_MEM_DIR: join(tmpHome, 'data'),
+      QWEN_MEM_DIR: join(tmpHome, 'data'),
       MEM_NO_AUTO_ADOPT: '1',
-      CLAUDE_MEM_SKIP_REPOS: '1',
-      CLAUDE_MEM_TEST_GUARD: '0',
+      QWEN_MEM_SKIP_REPOS: '1',
+      QWEN_MEM_TEST_GUARD: '0',
     };
     writeFileSync(join(tmpHome, '.claude.json'), JSON.stringify({ projects: { [cwd]: {} } }));
 

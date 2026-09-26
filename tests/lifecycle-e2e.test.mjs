@@ -1,6 +1,6 @@
 // Full plugin-lifecycle E2E: install → SessionStart auto-adopt → status →
 // update → uninstall(--purge) → unadopt, all inside an isolated HOME with a
-// fake `claude` bin and --dev symlinks (no network: CLAUDE_MEM_SKIP_REPOS=1).
+// fake `claude` bin and --dev symlinks (no network: QWEN_MEM_SKIP_REPOS=1).
 //
 // ORDER-SENSITIVE: the it() blocks below share module state and run in source
 // order (vitest is sequential within a file). uninstall/unadopt are destructive
@@ -57,15 +57,15 @@ function memHookCount(s) {
   let n = 0;
   for (const ev of Object.values(s?.hooks || {}))
     for (const m of ev)
-      for (const h of m.hooks || []) if (/claude-mem-lite|\.claude-mem-lite/.test(h.command || '')) n++;
+      for (const h of m.hooks || []) if (/qwen-mem-lite|\.qwen-mem-lite/.test(h.command || '')) n++;
   return n;
 }
 function adoptedBlock(dir) {
   const p = join(dir, 'CLAUDE.md');
   if (!existsSync(p)) return { present: false, count: 0, raw: '' };
   const raw = readFileSync(p, 'utf8');
-  const count = (raw.match(/<!-- claude-mem-lite:begin/g) || []).length;
-  return { present: count > 0, count, raw, version: (raw.match(/claude-mem-lite:begin (v\d+)/) || [])[1] };
+  const count = (raw.match(/<!-- qwen-mem-lite:begin/g) || []).length;
+  return { present: count > 0, count, raw, version: (raw.match(/qwen-mem-lite:begin (v\d+)/) || [])[1] };
 }
 
 function fakeClaudeBin() {
@@ -96,12 +96,12 @@ describe('plugin lifecycle: install → adopt → update → uninstall → unado
   beforeAll(() => {
     HOME = mkdtempSync(join(tmpdir(), 'mem-lifecycle-'));
     PROJ = join(HOME, 'work', 'myapp');
-    dataDir = join(HOME, '.claude-mem-lite');
-    cliLink = join(HOME, '.local', 'bin', 'claude-mem-lite');
+    dataDir = join(HOME, '.qwen-mem-lite');
+    cliLink = join(HOME, '.local', 'bin', 'qwen-mem-lite');
     repoClaudeMdSnapshot = existsSync(REPO_CLAUDE_MD) ? readFileSync(REPO_CLAUDE_MD, 'utf8') : null;
 
-    BASE_ENV = { ...process.env, HOME, CLAUDE_MEM_SKIP_REPOS: '1' };
-    delete BASE_ENV.CLAUDE_MEM_DIR;
+    BASE_ENV = { ...process.env, HOME, QWEN_MEM_SKIP_REPOS: '1' };
+    delete BASE_ENV.QWEN_MEM_DIR;
     delete BASE_ENV.MEM_QUIET_HOOKS;
     delete BASE_ENV.MEM_NO_AUTO_ADOPT;
     delete BASE_ENV.CLAUDE_PROJECT_DIR;
@@ -116,7 +116,7 @@ describe('plugin lifecycle: install → adopt → update → uninstall → unado
     mkdirSync(join(pluginsDir(), 'cache', 'thenewnano'), { recursive: true });
     writeFileSync(
       join(pluginsDir(), 'installed_plugins.json'),
-      JSON.stringify({ plugins: { 'claude-mem-lite@thenewnano': [{ version: '3.14.0' }] } }, null, 2),
+      JSON.stringify({ plugins: { 'qwen-mem-lite@thenewnano': [{ version: '3.14.0' }] } }, null, 2),
     );
     writeFileSync(
       join(pluginsDir(), 'known_marketplaces.json'),
@@ -126,7 +126,7 @@ describe('plugin lifecycle: install → adopt → update → uninstall → unado
       settingsPath(),
       JSON.stringify(
         {
-          enabledPlugins: { 'claude-mem-lite@thenewnano': true, 'other@vendor': true },
+          enabledPlugins: { 'qwen-mem-lite@thenewnano': true, 'other@vendor': true },
           extraKnownMarketplaces: { thenewnano: { url: 'x' } },
         },
         null,
@@ -173,11 +173,11 @@ describe('plugin lifecycle: install → adopt → update → uninstall → unado
     expect(a.raw).not.toMatch(/持久记忆/);
     expect(a.raw).toContain('use tabs'); // pre-existing user content survives
     expect(a.raw).toContain('My own project notes');
-    expect(existsSync(join(PROJ, '.claude', 'plugin_claude_mem_lite.md'))).toBe(true);
+    expect(existsSync(join(PROJ, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(true);
     const markers = readdirSync(join(dataDir, 'runtime')).filter((f) => f.startsWith('.auto-adopt-'));
     expect(markers.length).toBeGreaterThan(0);
     // DB is lazy-created on first hook use (install does not create it).
-    expect(existsSync(join(dataDir, 'claude-mem-lite.db'))).toBe(true);
+    expect(existsSync(join(dataDir, 'qwen-mem-lite.db'))).toBe(true);
   });
 
   it('second SessionStart is idempotent (no duplicate block)', () => {
@@ -205,16 +205,16 @@ describe('plugin lifecycle: install → adopt → update → uninstall → unado
     expect(existsSync(dataDir)).toBe(false);
     expect(existsSync(cliLink)).toBe(false);
     expect(memHookCount(s)).toBe(0);
-    expect(s.enabledPlugins?.['claude-mem-lite@thenewnano']).toBeUndefined();
+    expect(s.enabledPlugins?.['qwen-mem-lite@thenewnano']).toBeUndefined();
     expect(s.enabledPlugins?.['other@vendor']).toBe(true);
     expect(
-      readJSON(join(pluginsDir(), 'installed_plugins.json'))?.plugins?.['claude-mem-lite@thenewnano'],
+      readJSON(join(pluginsDir(), 'installed_plugins.json'))?.plugins?.['qwen-mem-lite@thenewnano'],
     ).toBeUndefined();
     expect(existsSync(join(pluginsDir(), 'marketplaces', 'thenewnano'))).toBe(false);
     expect(existsSync(join(pluginsDir(), 'cache', 'thenewnano'))).toBe(false);
     // The documented gap: uninstall does NOT unadopt — the project block survives.
     expect(adoptedBlock(PROJ).present).toBe(true);
-    expect(existsSync(join(PROJ, '.claude', 'plugin_claude_mem_lite.md'))).toBe(true);
+    expect(existsSync(join(PROJ, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(true);
   });
 
   it('unadopt (per-project) removes the block + detail doc, keeps user content', () => {
@@ -223,6 +223,6 @@ describe('plugin lifecycle: install → adopt → update → uninstall → unado
     const md = readFileSync(join(PROJ, 'CLAUDE.md'), 'utf8');
     expect(md).toContain('use tabs');
     expect(md).toContain('My own project notes');
-    expect(existsSync(join(PROJ, '.claude', 'plugin_claude_mem_lite.md'))).toBe(false);
+    expect(existsSync(join(PROJ, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(false);
   });
 });

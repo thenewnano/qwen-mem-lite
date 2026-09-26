@@ -50,7 +50,7 @@ describe('isDbUnusableError', () => {
     ['unable to open database file'],
     ['SQLITE_CANTOPEN: unable to open database file'],
     ['EACCES: permission denied'],
-    ['DB schema is v999 but this claude-mem-lite binary supports up to v49'],
+    ['DB schema is v999 but this qwen-mem-lite binary supports up to v49'],
     ['Cannot find module better_sqlite3.node'],
   ])('does NOT classify %j as unusable', (msg) => {
     expect(isDbUnusableError(new Error(msg))).toBe(false);
@@ -96,7 +96,7 @@ describe('isDbUnusableError', () => {
 describe('dbUnusableRemedy', () => {
   it('offers set-aside when no snapshot exists, and says so rather than staying vague', () => {
     const dir = tmp('rem-none-');
-    const db = join(dir, 'claude-mem-lite.db');
+    const db = join(dir, 'qwen-mem-lite.db');
     writeFileSync(db, 'garbage');
     const r = dbUnusableRemedy(db);
     expect(r.kind).toBe('set-aside');
@@ -107,7 +107,7 @@ describe('dbUnusableRemedy', () => {
 
   it('offers restore, naming the NEWEST snapshot, when one exists', () => {
     const dir = tmp('rem-snap-');
-    const db = join(dir, 'claude-mem-lite.db');
+    const db = join(dir, 'qwen-mem-lite.db');
     writeFileSync(db, 'garbage');
     // Distinct mtimes so "newest" is decided by the field the code sorts on, not by luck.
     writeFileSync(`${db}.2026-09-01.bak`, 'a');
@@ -131,7 +131,7 @@ describe('dbUnusableRemedy', () => {
     const dir = tmp('rem-unread-');
     const notADir = join(dir, 'blocker');
     writeFileSync(notADir, 'x');
-    const r = dbUnusableRemedy(join(notADir, 'claude-mem-lite.db'));
+    const r = dbUnusableRemedy(join(notADir, 'qwen-mem-lite.db'));
     expect(r.kind).toBe('unknown');
     expect(r.command, 'a command we cannot justify must not be printed').toBe('');
     expect(r.note).toMatch(/Could not read/);
@@ -140,7 +140,7 @@ describe('dbUnusableRemedy', () => {
 });
 
 describe('the two notices', () => {
-  const db = '/tmp/x/claude-mem-lite.db';
+  const db = '/tmp/x/qwen-mem-lite.db';
   const restore = {
     kind: 'restore',
     command: `rm -f "${db}-wal" "${db}-shm" && cp "${db}.v1.bak" "${db}"`,
@@ -174,7 +174,7 @@ describe('the two notices', () => {
     const out = formatDbUnusableModelNotice();
     expect(out).toMatch(/Memory is OFF/);
     expect(out).not.toMatch(/rm -f|\bcp\b|\bmv\b|&&/);
-    expect(out, 'it must still route the user somewhere').toMatch(/claude-mem-lite doctor/);
+    expect(out, 'it must still route the user somewhere').toMatch(/qwen-mem-lite doctor/);
   });
 
   it('the two notices are not the same string', () => {

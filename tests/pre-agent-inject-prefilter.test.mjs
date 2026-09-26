@@ -64,8 +64,8 @@ function runPrefilter(flag, { payload = PAYLOAD } = {}) {
   // The maintainer's own shell exports this flag; deleting it is what makes "off"
   // actually off here (the first measurement of this change timed the ON path twice
   // because of exactly that).
-  delete env.CLAUDE_MEM_SUBAGENT_INJECT;
-  if (flag !== undefined) env.CLAUDE_MEM_SUBAGENT_INJECT = flag;
+  delete env.QWEN_MEM_SUBAGENT_INJECT;
+  if (flag !== undefined) env.QWEN_MEM_SUBAGENT_INJECT = flag;
   const stdout = execFileSync('bash', [PREFILTER], { input: payload, env, encoding: 'utf8', timeout: 15000 });
   return {
     stdout,

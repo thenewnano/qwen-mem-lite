@@ -177,7 +177,7 @@ export const memSearchSchema = {
   deep: coerceBool
     .optional()
     .describe(
-      'Tri-state LLM multi-query/HyDE deep search (observations-only). true=force; false=never; omit=AUTO (default ON for mem_search): a normal search that returns weak/few results auto-escalates with ONE Haiku call (query rewritten to keyword/concept/HyDE variants, RRF-fused). Set CLAUDE_MEM_AUTO_DEEP=0 to disable AUTO. Passive recall stays single-query.',
+      'Tri-state LLM multi-query/HyDE deep search (observations-only). true=force; false=never; omit=AUTO (default ON for mem_search): a normal search that returns weak/few results auto-escalates with ONE Haiku call (query rewritten to keyword/concept/HyDE variants, RRF-fused). Set QWEN_MEM_AUTO_DEEP=0 to disable AUTO. Passive recall stays single-query.',
     ),
   rerank: coerceBool
     .optional()
@@ -434,7 +434,7 @@ export const memMaintainSchema = {
     .array(z.enum(['dedup', 'decay', 'cleanup', 'boost', 'demote_pinned', 'purge_stale', 'vacuum']))
     .optional()
     .describe(
-      'Operations: dedup=find/merge duplicate observations, decay=reduce importance of old low-value obs, cleanup=remove orphaned records, boost=promote frequently-accessed obs, demote_pinned=floor importance for obs injected>=8 times but never cited — to 1 with no lesson_learned, to 2 with one (v3.76.1: a lesson-bearing row keeps eligibility on every importance>=2 injection face) (clears pinned noise the decay op cannot reach; in the default set since v3.76.0 and ordered after boost, since boost would otherwise raise the row straight back — set CLAUDE_MEM_SKIP_DEMOTE_PINNED=1 to drop it from the DEFAULT set only), purge_stale=DELETE pending-purge obs older than retain_days (requires confirm=true; first call previews), vacuum=reclaim freelist dead space (whole-DB)',
+      'Operations: dedup=find/merge duplicate observations, decay=reduce importance of old low-value obs, cleanup=remove orphaned records, boost=promote frequently-accessed obs, demote_pinned=floor importance for obs injected>=8 times but never cited — to 1 with no lesson_learned, to 2 with one (v3.76.1: a lesson-bearing row keeps eligibility on every importance>=2 injection face) (clears pinned noise the decay op cannot reach; in the default set since v3.76.0 and ordered after boost, since boost would otherwise raise the row straight back — set QWEN_MEM_SKIP_DEMOTE_PINNED=1 to drop it from the DEFAULT set only), purge_stale=DELETE pending-purge obs older than retain_days (requires confirm=true; first call previews), vacuum=reclaim freelist dead space (whole-DB)',
     ),
   merge_ids: z
     .preprocess(

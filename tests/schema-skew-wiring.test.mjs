@@ -40,7 +40,7 @@ afterEach(() => {
 function skewedDataDir(version = 999) {
   const dir = mkdtempSync(join(tmpdir(), 'skew-wire-'));
   fixtures.push(dir);
-  const db = new Database(join(dir, 'claude-mem-lite.db'));
+  const db = new Database(join(dir, 'qwen-mem-lite.db'));
   db.exec('CREATE TABLE schema_version (version INTEGER)');
   db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(version);
   db.close();
@@ -65,15 +65,15 @@ function run(args, dataDir, { stdin = '{}', ...extraEnv } = {}) {
     env: {
       ...process.env,
       HOME: home,
-      CLAUDE_MEM_DIR: dataDir,
-      CLAUDE_MEM_SKIP_UPDATE: '1',
-      CLAUDE_MEM_SKIP_COMPRESS: '1',
-      CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-      CLAUDE_MEM_SKIP_MAINTAIN: '1',
+      QWEN_MEM_DIR: dataDir,
+      QWEN_MEM_SKIP_UPDATE: '1',
+      QWEN_MEM_SKIP_COMPRESS: '1',
+      QWEN_MEM_SKIP_OPTIMIZE: '1',
+      QWEN_MEM_SKIP_MAINTAIN: '1',
       MEM_NO_AUTO_ADOPT: '1',
       ANTHROPIC_API_KEY: undefined,
       OPENROUTER_API_KEY: undefined,
-      CLAUDE_MEM_HOOK_RUNNING: undefined,
+      QWEN_MEM_HOOK_RUNNING: undefined,
       ...extraEnv,
     },
   });
@@ -138,14 +138,14 @@ describe('openDb keeps its contract: returns null, never throws', () => {
     // not a read — it MINTS and writes a session id — so an unwritable runtime dir made the
     // catch block itself throw, and openDb() threw where every one of its 13 call sites
     // expects null. Reproduced as ENOTDIR against a `main` arm returning null. Real triggers:
-    // EROFS, ENOSPC, EACCES, a relocated CLAUDE_MEM_DIR on a dismounted volume.
+    // EROFS, ENOSPC, EACCES, a relocated QWEN_MEM_DIR on a dismounted volume.
     const dataDir = skewedDataDir();
     const blocker = join(dataDir, 'blocked');
     writeFileSync(blocker, 'a regular file where a directory must go');
 
     const src = `
-      process.env.CLAUDE_MEM_RUNTIME_DIR = ${JSON.stringify(join(blocker, 'runtime'))};
-      process.env.CLAUDE_MEM_DIR = ${JSON.stringify(dataDir)};
+      process.env.QWEN_MEM_RUNTIME_DIR = ${JSON.stringify(join(blocker, 'runtime'))};
+      process.env.QWEN_MEM_DIR = ${JSON.stringify(dataDir)};
       const { openDb } = await import(${JSON.stringify(join(REPO, 'hook-shared.mjs'))});
       try { console.log('OUT:' + (openDb() === null ? 'null' : 'db')); }
       catch (e) { console.log('OUT:threw ' + (e.code || e.message)); }
@@ -154,7 +154,7 @@ describe('openDb keeps its contract: returns null, never throws', () => {
       cwd: REPO,
       encoding: 'utf8',
       timeout: 60_000,
-      env: { ...process.env, CLAUDE_MEM_SKIP_UPDATE: '1', MEM_NO_AUTO_ADOPT: '1' },
+      env: { ...process.env, QWEN_MEM_SKIP_UPDATE: '1', MEM_NO_AUTO_ADOPT: '1' },
     });
     expect(`${r.stdout}`).toContain('OUT:null');
   });
@@ -238,7 +238,7 @@ describe('the CLI stops printing a repair that cannot work', () => {
     // database is the adjacent failure, and it keeps the generic message.
     const dir = mkdtempSync(join(tmpdir(), 'skew-corrupt-'));
     fixtures.push(dir);
-    writeFileSync(join(dir, 'claude-mem-lite.db'), 'not a database at all');
+    writeFileSync(join(dir, 'qwen-mem-lite.db'), 'not a database at all');
     const r = run([join(REPO, 'cli.mjs'), 'recent'], dir);
     const out = `${r.stdout}${r.stderr}`;
     expect(out).not.toMatch(/Memory is OFF/);
@@ -257,7 +257,7 @@ describe('doctor reports which code home cannot open the DB', () => {
     // POSITIONAL, deliberately. The first version of this assertion was
     // `expect(out).toMatch(/\/plugin update|self-update|git pull/)` and was VACUOUS: under
     // this fixture's sandboxed HOME the remedy resolves to kind 'unknown', which emits no
-    // command at all, and an unrelated `⚠ Hook scripts: … Fix: claude-mem-lite self-update`
+    // command at all, and an unrelated `⚠ Hook scripts: … Fix: qwen-mem-lite self-update`
     // line elsewhere in doctor satisfied the regex. Review proved it by deleting both remedy
     // `log()` calls from install.mjs — all five cases stayed green. Anchoring to the line
     // that FOLLOWS the skew failure is what makes it load-bearing.
@@ -334,7 +334,7 @@ describe('the MCP server stops printing a repair that cannot work', () => {
     // WAL/SHM sentence that is specific to the server's exit semantics.
     const dir = mkdtempSync(join(tmpdir(), 'skew-srv-corrupt-'));
     fixtures.push(dir);
-    writeFileSync(join(dir, 'claude-mem-lite.db'), 'not a database at all');
+    writeFileSync(join(dir, 'qwen-mem-lite.db'), 'not a database at all');
     const r = run([join(REPO, 'server.mjs')], dir, { stdin: '' });
     const out = `${r.stdout}${r.stderr}`;
     expect(out).not.toMatch(/Memory is OFF/);

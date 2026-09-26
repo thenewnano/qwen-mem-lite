@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// claude-mem-lite Installer — Smart install/uninstall/status/doctor
+// qwen-mem-lite Installer — Smart install/uninstall/status/doctor
 
 import { execSync, execFileSync } from 'child_process';
 import {
@@ -28,23 +28,23 @@ const SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
 // Plugin CODE / install location — ALWAYS homedir-rooted. Claude Code's
 // settings.json + MCP registration bake ABSOLUTE paths to server.mjs / hooks here,
 // and env vars are per-shell (the MCP launcher won't reliably inherit
-// CLAUDE_MEM_DIR), so code must NOT follow the relocation env var.
-const DATA_DIR = join(homedir(), '.claude-mem-lite');
+// QWEN_MEM_DIR), so code must NOT follow the relocation env var.
+const DATA_DIR = join(homedir(), '.qwen-mem-lite');
 // User DATA location — DB, managed resources, registry DB, runtime/. Honors
-// CLAUDE_MEM_DIR exactly like schema.mjs DB_DIR so the installer WRITES data where
+// QWEN_MEM_DIR exactly like schema.mjs DB_DIR so the installer WRITES data where
 // the runtime/data layer READS it (pre-fix: installer wrote homedir, runtime read
 // the relocated dir → preinstalled skills silently vanished, doctor read the wrong
-// DB). Equals DATA_DIR when CLAUDE_MEM_DIR is unset (the common case).
-const MEM_DATA_DIR = resolveDataDir(process.env.CLAUDE_MEM_DIR);
+// DB). Equals DATA_DIR when QWEN_MEM_DIR is unset (the common case).
+const MEM_DATA_DIR = resolveDataDir(process.env.QWEN_MEM_DIR);
 // Hook-WRITTEN runtime state (breakage markers, ep-flush/pending buffers) lives here.
 // Installation-identity state — install.lock, update-state.json, update residue — stays
 // under MEM_DATA_DIR on purpose: those are about the one real installation, and moving
 // them with a per-harness override would let two concurrent installs take separate locks.
 const MEM_RUNTIME_DIR = resolveRuntimeDir(MEM_DATA_DIR);
-const DB_PATH = join(MEM_DATA_DIR, 'claude-mem-lite.db');
+const DB_PATH = join(MEM_DATA_DIR, 'qwen-mem-lite.db');
 const OLD_DATA_DIR = join(homedir(), '.claude-mem');
 
-// The two directories `createCliSymlink` can land the `claude-mem-lite` command in, in the
+// The two directories `createCliSymlink` can land the `qwen-mem-lite` command in, in the
 // order it tries them. Uninstall already swept exactly this pair as an inline literal, and
 // `status` now has to ask the same question ("is the command installed somewhere, just not
 // on PATH?"), so the list is named once rather than typed a third time. `createCliSymlink`
@@ -57,7 +57,7 @@ const CLI_BIN_DIRS = [join(homedir(), '.local', 'bin'), '/usr/local/bin'];
 const IS_NPX =
   process.env.npm_command === 'exec' || PROJECT_DIR.includes('_npx') || PROJECT_DIR.includes('.npm/_');
 
-// Both modes install to ~/.claude-mem-lite/ (copies or symlinks)
+// Both modes install to ~/.qwen-mem-lite/ (copies or symlinks)
 const INSTALL_DIR = DATA_DIR;
 const SERVER_PATH = join(INSTALL_DIR, 'server.mjs');
 const HOOK_PATH = join(INSTALL_DIR, 'hook.mjs');
@@ -121,7 +121,7 @@ export function copyHookScripts(srcDir, destDir) {
 /**
  * Move legacy `~/.claude-mem/claude-mem.db` (+ -wal/-shm sidecars) to
  * timestamped `*.legacy-backup-<ms>` files inside `newDir`. The legacy DB
- * carries v16 schema (schema_versions plural table); the new claude-mem-lite
+ * carries v16 schema (schema_versions plural table); the new qwen-mem-lite
  * code expects v28 (schema_version singular + memory_session_id column) and
  * MIGRATIONS[] has no v16→v28 bridge — so loading the legacy DB FATALs on
  * first launch. Backing up rather than copying-as-current lets the new
@@ -129,22 +129,22 @@ export function copyHookScripts(srcDir, destDir) {
  *
  * Returns: {action: 'noop'|'skip'|'backed-up', backupPath?}
  *   - noop: no legacy DB found
- *   - skip: working `claude-mem-lite.db` already exists in newDir
- *   - backed-up: legacy files renamed to `<newDir>/claude-mem-lite.db.legacy-backup-<ts>` etc.
+ *   - skip: working `qwen-mem-lite.db` already exists in newDir
+ *   - backed-up: legacy files renamed to `<newDir>/qwen-mem-lite.db.legacy-backup-<ts>` etc.
  */
 export function migrateLegacyClaudeMemData(oldDir, newDir, opts = {}) {
   const legacyDb = join(oldDir, 'claude-mem.db');
-  const targetDb = join(newDir, 'claude-mem-lite.db');
+  const targetDb = join(newDir, 'qwen-mem-lite.db');
   if (!existsSync(legacyDb)) return { action: 'noop' };
   if (existsSync(targetDb)) return { action: 'skip' };
 
   if (!existsSync(newDir)) mkdirSync(newDir, { recursive: true });
   const ts = opts.now ?? Date.now();
-  const backupPath = join(newDir, `claude-mem-lite.db.legacy-backup-${ts}`);
+  const backupPath = join(newDir, `qwen-mem-lite.db.legacy-backup-${ts}`);
   renameSync(legacyDb, backupPath);
   for (const ext of ['-wal', '-shm']) {
     const src = legacyDb + ext;
-    if (existsSync(src)) renameSync(src, join(newDir, `claude-mem-lite.db${ext}.legacy-backup-${ts}`));
+    if (existsSync(src)) renameSync(src, join(newDir, `qwen-mem-lite.db${ext}.legacy-backup-${ts}`));
   }
   return { action: 'backed-up', backupPath };
 }
@@ -217,7 +217,7 @@ export function patchClaudeMdVersion(text, version) {
  *
  * A20260906-R8-P2-3: every call site used to gate on `existsSync(p)`, which FOLLOWS the
  * link, so a dangling symlink reads as absent. Two consequences, and the second is the
- * one that bites: `uninstall` leaves a dead `claude-mem-lite` on PATH, and
+ * one that bites: `uninstall` leaves a dead `qwen-mem-lite` on PATH, and
  * `createCliSymlink` skips the removal, `symlinkSync` throws EEXIST, the catch falls back
  * to an unwritable /usr/local/bin, and the user is told "CLI symlink failed — run
  * manually". Re-running `install` — the documented repair — cannot repair it. The same
@@ -309,8 +309,8 @@ function isDevInstall() {
 // one-liner cannot check an Ed25519 signature, so this remains a trust decision the user
 // makes explicitly; pinning it to a release at least removes the unreleased-WIP half.
 //
-// FOUR surfaces carry this string — here, scripts/hook-launcher.mjs (pure-`node:` charter,
-// cannot import lib/), README.md and README.zh-CN.md. Exported so
+// THREE surfaces carry this string — here, scripts/hook-launcher.mjs (pure-`node:` charter,
+// cannot import lib/) and README.md. Exported so
 // tests/manual-fallback-sync.test.mjs can pin the other three to this one and fail if a
 // fifth appears; a string kept in sync by a comment is a string that drifts.
 export const MANUAL_TARBALL_FALLBACK =
@@ -322,7 +322,7 @@ export const MANUAL_TARBALL_FALLBACK =
  * This is the near cause of the failure v6.3.0 shipped a detector for. Claude Code updates a
  * git-source marketplace by pulling that clone; a DIRTY working tree blocks the pull, the
  * plugin silently stops updating, and eventually the database is written by a newer
- * claude-mem-lite than the code that has to open it. On this machine the clone was pinned 22
+ * qwen-mem-lite than the code that has to open it. On this machine the clone was pinned 22
  * commits behind while everything reported green.
  *
  * It gets dirty on its own: with a DIRECTORY-source marketplace, `${CLAUDE_PLUGIN_ROOT}`
@@ -368,7 +368,7 @@ export function marketplaceCloneHealth(
  *
  * `claude mcp list` prints one `<name>: <command>` line per server, and a plugin-provided
  * one is named `plugin:<plugin>:<server>`. The old test — `list.includes('mem-lite:')` —
- * matched inside `plugin:claude-mem-lite:mem-lite:`, so it could not tell the two apart and
+ * matched inside `plugin:qwen-mem-lite:mem-lite:`, so it could not tell the two apart and
  * always answered "registered" for a plugin user.
  *
  * Deliberately named for what it MEASURES: a bare-name registration, whatever its scope.
@@ -402,7 +402,7 @@ export function nonPluginMemRegistrations(listOutput) {
  * directory to find out" are three different situations, and collapsing the last two ends
  * the reader's search with a fact nobody checked.
  *
- * Shell commands only, no `claude-mem-lite <cmd>`: the remedy for a broken store must not
+ * Shell commands only, no `qwen-mem-lite <cmd>`: the remedy for a broken store must not
  * itself depend on which install shape the user has (the plugin cache has no CLI on PATH).
  *
  * Exported for tests/doctor-db-remedy.test.mjs, which also drives the shipped doctor over a
@@ -451,10 +451,11 @@ const requireFromInstall = createRequire(pathToFileURL(join(INSTALL_DIR, 'packag
 
 // ─── install() step helpers (audit P1-9) ──────────────────────────────────────
 function installSourceFiles(IS_DEV) {
-  // Auto-migrate unhidden dir (~/claude-mem-lite/ → ~/.claude-mem-lite/)
+  // Auto-migrate unhidden dir (~/claude-mem-lite/ → ~/.qwen-mem-lite/). The source keeps
+  // its pre-v0.5 name: that is the layout the old product shipped, not the current identity.
   const oldUnhidden = join(homedir(), 'claude-mem-lite');
   if (!existsSync(DATA_DIR) && existsSync(oldUnhidden)) {
-    log('Migrating ~/claude-mem-lite/ → ~/.claude-mem-lite/...');
+    log('Migrating ~/claude-mem-lite/ → ~/.qwen-mem-lite/...');
     renameSync(oldUnhidden, DATA_DIR);
     ok('Directory migrated');
   }
@@ -464,7 +465,7 @@ function installSourceFiles(IS_DEV) {
   if (!existsSync(MEM_DATA_DIR)) mkdirSync(MEM_DATA_DIR, { recursive: true });
 
   if (IS_DEV) {
-    log('Dev mode — creating symlinks in ~/.claude-mem-lite/...');
+    log('Dev mode — creating symlinks in ~/.qwen-mem-lite/...');
     // Symlink individual source files
     for (const f of SOURCE_FILES) {
       const target = join(PROJECT_DIR, f);
@@ -488,17 +489,17 @@ function installSourceFiles(IS_DEV) {
     symlinkSync(join(PROJECT_DIR, 'node_modules'), nmLink);
     // R10 P3-28: the registry/ symlink is gone. The directory left with the skill registry
     // in v5.0.0, so the existsSync guard was permanently false and the branch was dead —
-    // clearLinkPath still ran, silently removing a stale ~/.claude-mem-lite/registry link
+    // clearLinkPath still ran, silently removing a stale ~/.qwen-mem-lite/registry link
     // on the first dev install after upgrading, which is the one useful thing it did.
     // Do that unconditionally instead of pretending the source directory might return.
     clearLinkPath(join(DATA_DIR, 'registry'));
     // commands/ is intentionally NOT linked: Claude Code reads slash commands
     // from the plugin cache (~/.claude/plugins/cache/<mp>/<plugin>/<ver>/commands/)
-    // or user-level ~/.claude/commands/, never from ~/.claude-mem-lite/commands/.
+    // or user-level ~/.claude/commands/, never from ~/.qwen-mem-lite/commands/.
     // Pre-v2.55 maintained a symlink/copy here that had no consumers.
-    ok('Symlinks created in ~/.claude-mem-lite/ → dev dir');
+    ok('Symlinks created in ~/.qwen-mem-lite/ → dev dir');
   } else {
-    log('Installing to ~/.claude-mem-lite/...');
+    log('Installing to ~/.qwen-mem-lite/...');
     const scriptsDir = join(DATA_DIR, 'scripts');
     if (!existsSync(scriptsDir)) mkdirSync(scriptsDir, { recursive: true });
     for (const f of SOURCE_FILES) {
@@ -519,7 +520,7 @@ function installSourceFiles(IS_DEV) {
       execFileSync('chmod', ['+x', join(scriptsDir, 'post-tool-use.sh')], { stdio: 'pipe' });
     } catch {}
     // commands/ is intentionally NOT copied — see dev-mode branch above.
-    ok('Source files copied to ~/.claude-mem-lite/');
+    ok('Source files copied to ~/.qwen-mem-lite/');
 
     // v2.48 P1-4: prune stale top-level .mjs + 0-byte .db files left behind by
     // prior upgrades (e.g. dispatch.mjs removed in v2.20.0, zero-byte mem.db /
@@ -584,7 +585,7 @@ async function installDependencies(IS_DEV) {
           `better-sqlite3 unusable in the package this installer runs from (${PROJECT_DIR}): ${selfVerify.error}`,
         );
         log(
-          `  The install itself is fine; the \`claude-mem-lite\` shell command will self-heal on first use, or run: ${nativeBindingRepairHint(PROJECT_DIR)}`,
+          `  The install itself is fine; the \`qwen-mem-lite\` shell command will self-heal on first use, or run: ${nativeBindingRepairHint(PROJECT_DIR)}`,
         );
       }
     }
@@ -592,7 +593,7 @@ async function installDependencies(IS_DEV) {
 }
 
 function createCliSymlink() {
-  // 2b. Create global CLI symlink (claude-mem-lite command)
+  // 2b. Create global CLI symlink (qwen-mem-lite command)
   const cliSource = join(INSTALL_DIR, 'cli.mjs');
   if (existsSync(cliSource)) {
     try {
@@ -600,7 +601,7 @@ function createCliSymlink() {
     } catch {}
     // Try ~/.local/bin first (user-writable, commonly on PATH)
     const localBin = join(homedir(), '.local', 'bin');
-    const cliLink = join(localBin, 'claude-mem-lite');
+    const cliLink = join(localBin, 'qwen-mem-lite');
     try {
       if (!existsSync(localBin)) mkdirSync(localBin, { recursive: true });
       clearLinkPath(cliLink);
@@ -609,12 +610,12 @@ function createCliSymlink() {
     } catch {
       // Fallback: try /usr/local/bin (may need sudo)
       try {
-        const globalLink = '/usr/local/bin/claude-mem-lite';
+        const globalLink = '/usr/local/bin/qwen-mem-lite';
         clearLinkPath(globalLink);
         symlinkSync(cliSource, globalLink);
         ok(`CLI: ${globalLink} → ${cliSource}`);
       } catch {
-        warn('CLI symlink failed — run manually: ln -sf ' + cliSource + ' ~/.local/bin/claude-mem-lite');
+        warn('CLI symlink failed — run manually: ln -sf ' + cliSource + ' ~/.local/bin/qwen-mem-lite');
       }
     }
   }
@@ -731,7 +732,7 @@ function registerMcpServer() {
 export function dedupePluginCacheAndHooks({ managedHooks, isDev = false } = {}) {
   // 3b. Deduplicate: if marketplace plugin also registers MCP + hooks,
   // clear them to prevent double execution. install.mjs hooks (in settings.json)
-  // point to ~/.claude-mem-lite/ (latest code in dev mode via symlinks),
+  // point to ~/.qwen-mem-lite/ (latest code in dev mode via symlinks),
   // while plugin hooks use ${CLAUDE_PLUGIN_ROOT} (potentially stale marketplace copy).
   //
   // MCP dedup: Claude Code copies .mcp.json from marketplace clone → plugin cache.
@@ -787,7 +788,7 @@ export function dedupePluginCacheAndHooks({ managedHooks, isDev = false } = {}) 
             pluginHooksPath,
             JSON.stringify(
               {
-                description: pluginHooks.description || 'claude-mem-lite hooks',
+                description: pluginHooks.description || 'qwen-mem-lite hooks',
                 _note:
                   'Hooks managed by install.mjs in settings.json — this file cleared to prevent duplicates',
                 hooks: {},
@@ -809,7 +810,7 @@ export function dedupePluginCacheAndHooks({ managedHooks, isDev = false } = {}) 
     // Clearing only the marketplace source (above) leaves stale cache copies that double-register
     // hooks alongside install.mjs-written settings.json entries.
     try {
-      const cacheBase = join(homedir(), '.claude', 'plugins', 'cache', MARKETPLACE_KEY, 'claude-mem-lite');
+      const cacheBase = join(homedir(), '.claude', 'plugins', 'cache', MARKETPLACE_KEY, 'qwen-mem-lite');
       if (existsSync(cacheBase)) {
         const launchSyncFiles = ['launch.mjs', 'launch-preflight.mjs'];
         // Read, not remembered: the cache dir names ARE versions, so the comparison has to
@@ -873,7 +874,7 @@ export function dedupePluginCacheAndHooks({ managedHooks, isDev = false } = {}) 
                   cachedHooksPath,
                   JSON.stringify(
                     {
-                      description: h.description || 'claude-mem-lite hooks',
+                      description: h.description || 'qwen-mem-lite hooks',
                       _note: `Hooks managed by install.mjs in settings.json — cache hooks.json cleared to prevent duplicate registration (cache ver: ${ver})`,
                       hooks: {},
                     },
@@ -933,10 +934,10 @@ function configureHooks() {
   // identifier the file's own lesson named that the edit just removed (component 1 is the
   // pre-edit directive from scripts/pre-tool-recall.js, which also records the identifiers
   // this one checks). Shipped, signed and tested since it was written, but registered in
-  // NEITHER registry — so `CLAUDE_MEM_SALIENCE=bind` delivered half the mechanism and
+  // NEITHER registry — so `QWEN_MEM_SALIENCE=bind` delivered half the mechanism and
   // nothing said so (audit B6, 2026-08-14). Matched on the edit tools only, NOT Read: there
   // is no post-edit state to compare after a read. Inert (returns before touching stdin)
-  // unless CLAUDE_MEM_SALIENCE=bind, so the default chain pays one short-circuit spawn per
+  // unless QWEN_MEM_SALIENCE=bind, so the default chain pays one short-circuit spawn per
   // edit and emits nothing.
   const memPostToolRecall = {
     matcher: 'Edit|Write|NotebookEdit',
@@ -991,7 +992,7 @@ function configureHooks() {
     ],
   };
 
-  // Fires immediately BEFORE auto-compaction, re-emitting <claude-mem-context> so the
+  // Fires immediately BEFORE auto-compaction, re-emitting <qwen-mem-context> so the
   // summarizer that rewrites the transcript still has memory in scope (SessionStart's
   // compact matcher fires AFTER, when the context is already gone). Parity with
   // hooks/hooks.json: omitting it here made every settings.json install lose exactly the
@@ -1038,7 +1039,7 @@ function configureHooks() {
     ],
   };
 
-  // P0 subagent dispatch-time injection (default off — CLAUDE_MEM_SUBAGENT_INJECT).
+  // P0 subagent dispatch-time injection (default off — QWEN_MEM_SUBAGENT_INJECT).
   // Fires on the Agent/Task dispatch so a subagent (otherwise memory-blind — #8848)
   // can receive one relevant lesson via updatedInput. Parity with hooks/hooks.json.
   // Behind the bash prefilter since 2026-08-22 (audit P2-5): the flag is off by
@@ -1094,7 +1095,7 @@ function configureHooks() {
 }
 
 function backupLegacyClaudeMemData() {
-  // 5. Legacy ~/.claude-mem/ → ~/.claude-mem-lite/ — back up, don't reuse.
+  // 5. Legacy ~/.claude-mem/ → ~/.qwen-mem-lite/ — back up, don't reuse.
   // The legacy DB is schema v16 (schema_versions plural) and there's no
   // bridge in MIGRATIONS[] to v28. Reusing it FATALs on first launch with
   // "no such column: memory_session_id". Rename to a timestamped backup
@@ -1109,7 +1110,7 @@ function backupLegacyClaudeMemData() {
     warn('Legacy DB backup failed: ' + e.message);
   }
 
-  // 5b. Rename claude-mem.db → claude-mem-lite.db in same directory
+  // 5b. Rename claude-mem.db → qwen-mem-lite.db in same directory
   const oldDbInDir = join(MEM_DATA_DIR, 'claude-mem.db');
   if (existsSync(oldDbInDir) && !existsSync(DB_PATH)) {
     renameSync(oldDbInDir, DB_PATH);
@@ -1119,7 +1120,7 @@ function backupLegacyClaudeMemData() {
           renameSync(oldDbInDir + ext, DB_PATH + ext);
         } catch {}
     }
-    ok('Database renamed: claude-mem.db → claude-mem-lite.db');
+    ok('Database renamed: claude-mem.db → qwen-mem-lite.db');
   }
 }
 
@@ -1142,7 +1143,7 @@ function verifyDatabase() {
 
 async function dogfoodAutoAdopt() {
   // 7b. Dogfood auto-adopt (invited-memory, Phase C T13).
-  // Only fires when install.mjs is running from the claude-mem-lite source repo
+  // Only fires when install.mjs is running from the qwen-mem-lite source repo
   // itself (detected via git remote match). In npm/npx flows PROJECT_DIR is a
   // cache dir with no git metadata, so this is a no-op for end users.
   // Two overrides are respected, and they are NOT interchangeable:
@@ -1161,20 +1162,18 @@ async function dogfoodAutoAdopt() {
         stdio: 'pipe',
       }).trim();
       // Accepts the fork's slugs AND upstream's, because this answers a lineage question
-      // ("is install.mjs running from the claude-mem-lite source tree?"), not a provenance
+      // ("is install.mjs running from the qwen-mem-lite source tree?"), not a provenance
       // one — where updates come from is hook-update.mjs's question, answered there. A fork
       // checkout normally keeps `origin` on the upstream repo and adds the fork as a second
       // remote, so keying on the fork alone switched this branch off in exactly the trees
       // that run it: this repository's own suite detects the repo by this remote, and a
       // fresh clone-and-fork (the normal way to work on a fork) would never auto-adopt.
       const isDogfood =
-        /github\.com[:/](?:thenewnano\/(?:qwen-mem-lite|claude-mem-lite)|sdsrss\/claude-mem-lite)(?:\.git)?$/i.test(
-          remote,
-        );
+        /github\.com[:/](?:thenewnano\/qwen-mem-lite|sdsrss\/claude-mem-lite)(?:\.git)?$/i.test(remote);
       if (isDogfood) {
         const { cmdAdopt } = await importFromInstall('adopt-cli.mjs');
         cmdAdopt([]);
-        ok('Invited-memory: auto-adopt for claude-mem-lite dogfood repo');
+        ok('Invited-memory: auto-adopt for qwen-mem-lite dogfood repo');
       }
     } catch {
       // Not a git repo, or git missing — silent skip (this is the normal npm path).
@@ -1204,9 +1203,9 @@ function offerCleanOldVectorDb() {
 }
 
 async function install() {
-  console.log('\nclaude-mem-lite installer\n');
+  console.log('\nqwen-mem-lite installer\n');
 
-  // 1. Install source files to ~/.claude-mem-lite/
+  // 1. Install source files to ~/.qwen-mem-lite/
   const IS_DEV = flags.has('--dev');
 
   installSourceFiles(IS_DEV);
@@ -1233,7 +1232,7 @@ async function install() {
 // ─── Uninstall ──────────────────────────────────────────────────────────────
 
 async function uninstall() {
-  console.log('\nclaude-mem-lite uninstaller\n');
+  console.log('\nqwen-mem-lite uninstaller\n');
 
   // 1. Remove MCP (legacy hook-based install).
   // Try both the legacy "mem" (pre-v2.78) and current "mem-lite" names so a user
@@ -1250,7 +1249,7 @@ async function uninstall() {
 
   // 1b. Remove CLI symlink
   for (const binDir of CLI_BIN_DIRS) {
-    const cliLink = join(binDir, 'claude-mem-lite');
+    const cliLink = join(binDir, 'qwen-mem-lite');
     // No try/catch: clearLinkPath swallows a permissions failure and returns false, so the
     // wrapper this used to have was unreachable once the existsSync gate moved inside it.
     if (clearLinkPath(cliLink)) ok(`CLI symlink removed: ${cliLink}`);
@@ -1266,10 +1265,10 @@ async function uninstall() {
   // Code knows about (~/.claude.json), so point at it — but note the timing: a
   // --purge run removes the CLI symlink, so this is best done BEFORE uninstall.
   log('Invited-memory: project adoption left in place (each adopted project keeps its');
-  log('  CLAUDE.md managed block + .claude/plugin_claude_mem_lite.md). To remove it from');
-  log('  every known project, run `claude-mem-lite unadopt --all` — best done BEFORE');
+  log('  CLAUDE.md managed block + .claude/plugin_qwen_mem_lite.md). To remove it from');
+  log('  every known project, run `qwen-mem-lite unadopt --all` — best done BEFORE');
   log('  uninstall, while the CLI is still on PATH. A project Claude Code never opened');
-  log('  is not in the known list — run `claude-mem-lite unadopt` from inside it.');
+  log('  is not in the known list — run `qwen-mem-lite unadopt` from inside it.');
 
   // 3. Clean plugin registry entries conservatively (avoid deleting other plugins
   // from the same marketplace publisher)
@@ -1316,7 +1315,7 @@ async function uninstall() {
   //
   // The gate exists so uninstalling this plugin does not delete a sibling plugin published
   // under the same marketplace. That reasoning covers `cache/<marketplace>/`; it does not
-  // cover `cache/<marketplace>/claude-mem-lite/`, which is ours alone. Because only the
+  // cover `cache/<marketplace>/qwen-mem-lite/`, which is ours alone. Because only the
   // gated branch existed, a user with any other thenewnano plugin installed kept every cached
   // version of THIS one — measured at 241 MB on a machine where `/plugin uninstall` had
   // already removed the manifest, i.e. bytes belonging to a plugin that was gone.
@@ -1350,23 +1349,23 @@ async function uninstall() {
 
   // 6. Purge data if requested
   if (flags.has('--purge')) {
-    const homeDir = join(homedir(), '.claude-mem-lite');
+    const homeDir = join(homedir(), '.qwen-mem-lite');
     // Always remove the homedir code/install dir (guarded to the canonical path).
     if (existsSync(DATA_DIR) && DATA_DIR === homeDir) {
       rmSync(DATA_DIR, { recursive: true, force: true });
-      ok('Data purged (~/.claude-mem-lite/)');
+      ok('Data purged (~/.qwen-mem-lite/)');
     } else if (existsSync(DATA_DIR)) {
       fail('DATA_DIR path mismatch, refusing to purge for safety: ' + DATA_DIR);
     }
     // Also remove the relocated data dir — but ONLY if it's genuinely our data dir
-    // (contains claude-mem-lite.db), so a mistyped CLAUDE_MEM_DIR is never rm'd.
+    // (contains qwen-mem-lite.db), so a mistyped QWEN_MEM_DIR is never rm'd.
     if (MEM_DATA_DIR !== homeDir) {
-      if (existsSync(join(MEM_DATA_DIR, 'claude-mem-lite.db'))) {
+      if (existsSync(join(MEM_DATA_DIR, 'qwen-mem-lite.db'))) {
         rmSync(MEM_DATA_DIR, { recursive: true, force: true });
         ok(`Relocated data purged (${MEM_DATA_DIR})`);
       } else if (existsSync(MEM_DATA_DIR)) {
         warn(
-          `CLAUDE_MEM_DIR (${MEM_DATA_DIR}) has no claude-mem-lite.db — left untouched. Remove manually if intended.`,
+          `QWEN_MEM_DIR (${MEM_DATA_DIR}) has no qwen-mem-lite.db — left untouched. Remove manually if intended.`,
         );
       }
     }
@@ -1401,7 +1400,7 @@ async function uninstall() {
  * Split what a non-purge uninstall leaves behind into the two halves a user cares about:
  * the memories, and everything else.
  *
- * "Memories" is every file whose name starts with `claude-mem-lite.db` in the data dir —
+ * "Memories" is every file whose name starts with `qwen-mem-lite.db` in the data dir —
  * the DB, its WAL/SHM, and the `.db.<tag>.bak` snapshots. That is DELIBERATELY WIDER than
  * lib/db-backup.mjs::readSnapshots, which additionally requires the trailing dot and a
  * `.bak` suffix: this wants everything that is the user's data, that wants snapshots only. "Rest" is the whole install directory minus that,
@@ -1415,7 +1414,7 @@ async function uninstall() {
  * @returns {{memoryBytes: number, restBytes: number}} bytes, 0 when unmeasurable
  */
 function preservedFootprint() {
-  const DB_PREFIX = 'claude-mem-lite.db';
+  const DB_PREFIX = 'qwen-mem-lite.db';
   const walk = (dir, onFile) => {
     let entries;
     try {
@@ -1436,14 +1435,14 @@ function preservedFootprint() {
 
   let memoryBytes = 0;
   let restBytes = 0;
-  // The memories may live outside the install dir (CLAUDE_MEM_DIR), so measure each dir
+  // The memories may live outside the install dir (QWEN_MEM_DIR), so measure each dir
   // for what it actually holds rather than assuming the two are the same tree.
   walk(MEM_DATA_DIR, (_p, name, size) => {
     if (name.startsWith(DB_PREFIX)) memoryBytes += size;
     else if (MEM_DATA_DIR === DATA_DIR) restBytes += size;
   });
   if (MEM_DATA_DIR !== DATA_DIR) {
-    // A relocated CLAUDE_MEM_DIR may still sit INSIDE the install dir, in which case walking
+    // A relocated QWEN_MEM_DIR may still sit INSIDE the install dir, in which case walking
     // DATA_DIR would count the DB and its snapshots a second time — reported 9.0MB against a
     // true 6.0MB on a nested fixture. Skip the memory tree explicitly rather than assume the
     // two are disjoint; `+ sep` so a sibling named `<dir>-old` is not swallowed too.
@@ -1458,16 +1457,16 @@ function preservedFootprint() {
 // ─── Cleanup Hooks ───────────────────────────────────────────────────────────
 
 async function cleanupHooks() {
-  console.log('\nclaude-mem-lite cleanup-hooks\n');
+  console.log('\nqwen-mem-lite cleanup-hooks\n');
 
   const settings = readSettings();
   const removed = cleanupMemHooksFromSettings(settings);
 
   if (removed > 0) {
     writeSettings(settings);
-    ok(`Removed ${removed} claude-mem-lite hook configuration${removed === 1 ? '' : 's'} from settings.json`);
+    ok(`Removed ${removed} qwen-mem-lite hook configuration${removed === 1 ? '' : 's'} from settings.json`);
   } else {
-    ok('No claude-mem-lite hooks found in settings.json');
+    ok('No qwen-mem-lite hooks found in settings.json');
   }
 
   console.log('');
@@ -1500,7 +1499,7 @@ async function status() {
   // MCP. A plugin install answers this from the manifest and does NOT shell out.
   //
   // Two reasons, and the first is correctness rather than speed. `claude mcp list` prints a
-  // plugin server as `plugin:claude-mem-lite:mem-lite: …`, and the old substring test
+  // plugin server as `plugin:qwen-mem-lite:mem-lite: …`, and the old substring test
   // `list.includes('mem-lite:')` matched INSIDE that name — so a plugin user was reported as
   // having a user-scope registration they do not have, and the branch written for them below
   // was unreachable. That is the same accidental-match class as the `\bmem\b` regex this
@@ -1651,8 +1650,8 @@ async function status() {
   // not an internal detail. Nothing in this repo reads it; external consumers of
   // `status --json` now see `linked: <path>|null`.
   try {
-    execFileSync('claude-mem-lite', ['--help'], { encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
-    push('ok', 'cli', 'CLI: claude-mem-lite command available', { available: true });
+    execFileSync('qwen-mem-lite', ['--help'], { encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
+    push('ok', 'cli', 'CLI: qwen-mem-lite command available', { available: true });
   } catch (e) {
     if (e && e.code !== 'ENOENT') {
       // `e.message` already CARRIES the child's stderr — with stdio:'pipe' Node formats it
@@ -1662,7 +1661,7 @@ async function status() {
       // suffix was written and then withdrawn: printing both duplicates the text.
       // Note `e.code` is UNDEFINED for a non-zero exit — only a spawn failure sets ENOENT —
       // so `!== 'ENOENT'` is what routes this branch, not a truthiness check on the code.
-      push('warn', 'cli', `CLI: on PATH but "claude-mem-lite --help" failed — ${e.message}`, {
+      push('warn', 'cli', `CLI: on PATH but "qwen-mem-lite --help" failed — ${e.message}`, {
         available: false,
         linked: null,
       });
@@ -1676,7 +1675,7 @@ async function status() {
       //     the exact non-converging advice this block exists to stop. Hence isFile().
       const isLinkedCli = (d) => {
         try {
-          return statSync(join(d, 'claude-mem-lite')).isFile();
+          return statSync(join(d, 'qwen-mem-lite')).isFile();
         } catch {
           return false; // ENOENT (absent or dangling), EACCES on the dir, anything else
         }
@@ -1686,8 +1685,8 @@ async function status() {
         push(
           'warn',
           'cli',
-          `CLI: installed at ${join(binDir, 'claude-mem-lite')} but ${binDir} is not on PATH — add it: export PATH="${binDir}:$PATH"`,
-          { available: false, linked: join(binDir, 'claude-mem-lite') },
+          `CLI: installed at ${join(binDir, 'qwen-mem-lite')} but ${binDir} is not on PATH — add it: export PATH="${binDir}:$PATH"`,
+          { available: false, linked: join(binDir, 'qwen-mem-lite') },
         );
       } else {
         push('warn', 'cli', 'CLI: command not on PATH — run install again to create symlink', {
@@ -1714,7 +1713,7 @@ async function status() {
     return;
   }
 
-  console.log('\nclaude-mem-lite status\n');
+  console.log('\nqwen-mem-lite status\n');
   for (const c of checks) {
     if (c.level === 'ok') ok(c.message);
     else if (c.level === 'warn') warn(c.message);
@@ -1735,7 +1734,7 @@ async function doctor() {
   // (doctor checks are ordered by significance: deps → server → DB → drift).
   const json = flags.has('--json');
   const checks = [];
-  if (!json) console.log('\nclaude-mem-lite doctor\n');
+  if (!json) console.log('\nqwen-mem-lite doctor\n');
 
   // Shadow file-level helpers so every call site auto-records.
   const ok = (msg) => {
@@ -1826,7 +1825,7 @@ async function doctor() {
   }
 
   // Which code homes does this machine actually run? A machine can hold three
-  // at once (plugin cache / ~/.claude-mem-lite / npm-global) and each owns its
+  // at once (plugin cache / ~/.qwen-mem-lite / npm-global) and each owns its
   // own native binding. Answering about only the dir install.mjs sits in got it
   // wrong both ways in the field: `✗ server.mjs: missing` on a healthy
   // plugin-only install, and `✓ better-sqlite3: verified` while the registered
@@ -1861,7 +1860,7 @@ async function doctor() {
 
   // Can each code home actually OPEN this database? A binding that loads is not the same
   // question: better-sqlite3 can be perfect and the store still unreadable, because
-  // schema.mjs refuses a DB written by a newer claude-mem-lite (correctly — replaying old
+  // schema.mjs refuses a DB written by a newer qwen-mem-lite (correctly — replaying old
   // migrations over a newer layout would corrupt it). That is a one-way ratchet, and on a
   // plugin install it is REACHED ROUTINELY: the cache only advances when Claude Code's
   // marketplace updater advances it, so anything else that opens the DB — an npm-global
@@ -1970,7 +1969,7 @@ async function doctor() {
     issues++;
   }
 
-  // Entry points. These live in ~/.claude-mem-lite ONLY in the install.mjs-managed
+  // Entry points. These live in ~/.qwen-mem-lite ONLY in the install.mjs-managed
   // layout; `/plugin install` provisions the data dir but serves code from the
   // plugin cache, so demanding them there reported two ✗ and exit 1 on a healthy
   // install of the README's recommended method. Grade against the shape that is
@@ -1981,12 +1980,12 @@ async function doctor() {
   } else if (shape.activePluginVersion) {
     const v = shape.activePluginVersion;
     ok(
-      `Entry points: served from plugin cache v${v.version} (plugin-only install — the ~/.claude-mem-lite code layout is not used)`,
+      `Entry points: served from plugin cache v${v.version} (plugin-only install — the ~/.qwen-mem-lite code layout is not used)`,
     );
     for (const entry of ['server.mjs', 'hook.mjs', 'cli.mjs']) {
       if (!existsSync(join(v.root, entry))) {
         fail(
-          `Plugin cache v${v.version}: ${entry} missing — reinstall with \`/plugin install claude-mem-lite@thenewnano\``,
+          `Plugin cache v${v.version}: ${entry} missing — reinstall with \`/plugin install qwen-mem-lite@thenewnano\``,
         );
         issues++;
       }
@@ -2051,7 +2050,7 @@ async function doctor() {
   // check surfaces stores that predate the budget or exceed it between snapshots.
   try {
     const { listSnapshots, backupBudgetBytes } = await import('./lib/db-backup.mjs');
-    const dbFile = join(MEM_DATA_DIR, 'claude-mem-lite.db');
+    const dbFile = join(MEM_DATA_DIR, 'qwen-mem-lite.db');
     const dbBytes = existsSync(dbFile) ? statSync(dbFile).size : 0;
     const snaps = listSnapshots(dbFile);
     const backupBytes = snaps.reduce((s, x) => s + x.size, 0);
@@ -2060,7 +2059,7 @@ async function doctor() {
     // warning below it promised an eviction enforceBackupBudget would never do.
     if (backupBytes > backupBudgetBytes()) {
       dwarn(
-        `Disk footprint: ${snaps.length} backup snapshot(s) hold ${mb(backupBytes)}MB, over the ${mb(backupBudgetBytes())}MB budget (CLAUDE_MEM_BACKUP_BUDGET_MB) — the next maintain/save snapshot evicts oldest snapshots past the 7d undo grace`,
+        `Disk footprint: ${snaps.length} backup snapshot(s) hold ${mb(backupBytes)}MB, over the ${mb(backupBudgetBytes())}MB budget (QWEN_MEM_BACKUP_BUDGET_MB) — the next maintain/save snapshot evicts oldest snapshots past the 7d undo grace`,
       );
     } else {
       ok(
@@ -2102,7 +2101,7 @@ async function doctor() {
   if (settings === null) {
     dwarn('Plugin lifecycle: not checked (settings.json unreadable)');
   } else if (pluginDisabled && hasHooks) {
-    fail('Plugin lifecycle: plugin is disabled but claude-mem-lite hooks still remain in settings.json');
+    fail('Plugin lifecycle: plugin is disabled but qwen-mem-lite hooks still remain in settings.json');
     issues++;
   } else if (pluginDisabled) {
     ok('Plugin lifecycle: disabled cleanly (no active mem hooks)');
@@ -2134,7 +2133,7 @@ async function doctor() {
 
   // Orphan hooks: settings.json entries referencing hook files that no longer
   // exist on disk. Trips when a user runs `/plugin uninstall` and/or
-  // `rm -rf ~/.claude-mem-lite/` without first running `claude-mem-lite uninstall`
+  // `rm -rf ~/.qwen-mem-lite/` without first running `qwen-mem-lite uninstall`
   // (which clears the settings.json entries). The hooks keep firing and exit
   // with require-error noise every session. README's Uninstall section warns
   // about the right ordering; this check flags the broken state so it surfaces
@@ -2190,7 +2189,7 @@ async function doctor() {
     } else if (bare.length > 0) {
       ok(`MCP registration: "${bare.join('", "')}" registered`);
     } else {
-      dwarn('MCP registration: no claude-mem-lite MCP server is registered and no plugin provides one');
+      dwarn('MCP registration: no qwen-mem-lite MCP server is registered and no plugin provides one');
     }
   } catch (e) {
     // Third outcome, kept apart from "none found" on purpose: the `claude` CLI may not be on
@@ -2309,7 +2308,7 @@ async function doctor() {
   try {
     const procs = execFileSync(
       'pgrep',
-      ['-af', 'chroma|claude-mem-lite.*(scripts/launch|server)\\.mjs|\\.claude-mem/.*worker'],
+      ['-af', 'chroma|qwen-mem-lite.*(scripts/launch|server)\\.mjs|\\.claude-mem/.*worker'],
       { encoding: 'utf8', timeout: 5000, stdio: 'pipe' },
     ).trim();
     const lines = procs.split('\n').filter((l) => l && !l.includes('pgrep'));
@@ -2397,7 +2396,7 @@ async function doctor() {
   // missing is tracked separately by checkDevDrift but the caller MUST surface
   // it to honour #8268's "gate the all-green string on every counter" rule.
   // Gated on the managed layout existing at all. SOURCE_FILES describes what
-  // `install` deploys into ~/.claude-mem-lite; on a plugin-only install nothing
+  // `install` deploys into ~/.qwen-mem-lite; on a plugin-only install nothing
   // was ever deployed there, so every entry reads as "missing" and this reported
   // `⚠ Managed files: 121 missing` + an issue on a correct install — prescribing
   // a repair against a path that does not exist.
@@ -2430,7 +2429,7 @@ async function doctor() {
     };
     if (skipDrift) {
       ok(
-        'Managed files: n/a (plugin-only install — code is served from the plugin cache, so ~/.claude-mem-lite holds data only)',
+        'Managed files: n/a (plugin-only install — code is served from the plugin cache, so ~/.qwen-mem-lite holds data only)',
       );
     } else if (r.devMode) {
       const parts = [];
@@ -2485,16 +2484,16 @@ async function doctor() {
       if (r.missingModuleCount > 0) {
         parts.push(`${r.missingModuleCount} module: ${nameList(r.missingModuleFiles, r.missingModuleCount)}`);
       }
-      // `claude-mem-lite update` is the observation editor (`update <id>`); the
+      // `qwen-mem-lite update` is the observation editor (`update <id>`); the
       // self-updater is `self-update`. Naming the wrong one sent the user to a
       // usage error at the exact moment their install was incomplete.
       issueWarn(
         noCodeInstall
-          ? `Managed files: no claude-mem-lite code is deployed in ${INSTALL_DIR} (${r.missingCount} ` +
+          ? `Managed files: no qwen-mem-lite code is deployed in ${INSTALL_DIR} (${r.missingCount} ` +
               `file(s) absent, none present) — this is a data directory with no install behind it, not ` +
               `a damaged one. Fix: ${installRemedy}`
           : `Managed files: ${r.missingCount} missing (${parts.join('; ')}) — a copy install resolves ` +
-              `imports against the install dir, so these throw at hook time. Fix: claude-mem-lite self-update ` +
+              `imports against the install dir, so these throw at hook time. Fix: qwen-mem-lite self-update ` +
               `(or: node ${join(INSTALL_DIR, 'cli.mjs')} repair)`,
       );
     }
@@ -2505,13 +2504,13 @@ async function doctor() {
 
   // Hook scripts: the check above grades SOURCE_FILES, which holds zero `scripts/` entries.
   // Hook scripts ship from the separate HOOK_SCRIPT_FILES manifest into
-  // ~/.claude-mem-lite/scripts/, and every settings.json hook command names one of those
+  // ~/.qwen-mem-lite/scripts/, and every settings.json hook command names one of those
   // absolute paths — so "the tarball shipped without scripts/" (source-files.mjs:243) killed
   // every hook while doctor printed an all-clear. Both classes are issues here; see
   // checkHookScriptDrift for why the managed-files demote branch must not be copied over.
   try {
     // Same gate as the managed-files check: a plugin-only install never deploys into
-    // ~/.claude-mem-lite, and its hooks run from ${CLAUDE_PLUGIN_ROOT}/scripts/ instead.
+    // ~/.qwen-mem-lite, and its hooks run from ${CLAUDE_PLUGIN_ROOT}/scripts/ instead.
     const skipScripts = !shape.managed && !!shape.activePluginVersion;
     const { checkHookScriptDrift, HOOK_SCRIPT_ENTRY_POINTS } = await import('./lib/doctor-drift.mjs');
     const h = skipScripts ? null : checkHookScriptDrift(INSTALL_DIR, HOOK_SCRIPT_FILES);
@@ -2523,7 +2522,7 @@ async function doctor() {
     // `noCodeInstall` above: the `repair` route runs from an entry point that is itself absent.
     const scriptRemedy = noCodeInstall
       ? installRemedy
-      : `claude-mem-lite self-update (or: node ${join(INSTALL_DIR, 'cli.mjs')} repair)`;
+      : `qwen-mem-lite self-update (or: node ${join(INSTALL_DIR, 'cli.mjs')} repair)`;
     if (skipScripts) {
       ok('Hook scripts: n/a (plugin-only install — hooks run from the plugin cache)');
     } else if (!h.present) {
@@ -2632,21 +2631,21 @@ async function doctor() {
   // that would otherwise carry it cannot: the daily normalize runs in a worker spawned by
   // hook-shared.mjs::spawnBackground with `stdio: 'ignore'`, so its `console.error` warning
   // reaches /dev/null. That warning is still correct for the foreground CLI path; this is
-  // the unattended one. Same shape as the CLAUDE_MEM_SKIP_SIG_VERIFY notice.
+  // the unattended one. Same shape as the QWEN_MEM_SKIP_SIG_VERIFY notice.
   // dwarn, not fail: the flag is set deliberately, so it must be VISIBLE without pushing
   // doctor to exit 1 — a diagnostic that fails on a supported configuration stops being run.
   // `=== '1'` mirrors executeNormalize exactly; warning on `true` would describe a machine
   // that is in fact still fanning out.
-  if (String(process.env.CLAUDE_MEM_NORMALIZE_CROSS_PROJECT || '') === '1') {
+  if (String(process.env.QWEN_MEM_NORMALIZE_CROSS_PROJECT || '') === '1') {
     dwarn(
-      'CLAUDE_MEM_NORMALIZE_CROSS_PROJECT=1: the daily normalize runs over every project at ' +
+      'QWEN_MEM_NORMALIZE_CROSS_PROJECT=1: the daily normalize runs over every project at ' +
         "once, so one project's stored content can steer the synonym groups applied to all of " +
         'them (R10-P3-21). Unset it for the per-project default.',
     );
   }
 
   // Plugin cache versions
-  const pluginCacheBase = join(homedir(), '.claude', 'plugins', 'cache', MARKETPLACE_KEY, 'claude-mem-lite');
+  const pluginCacheBase = join(homedir(), '.claude', 'plugins', 'cache', MARKETPLACE_KEY, 'qwen-mem-lite');
   if (existsSync(pluginCacheBase)) {
     try {
       const versions = readdirSync(pluginCacheBase).filter((n) => /^\d+\./.test(n));
@@ -2692,15 +2691,15 @@ async function doctor() {
     // through the same command name, and nothing else told the user they exist -- a healthy
     // install with bad retrieval read "All checks passed!" and ended there. Derived from
     // DOCTOR_DB_MODES so it cannot become a second list to forget. Text only: the exit-code
-    // contract `claude-mem-lite doctor || alert` depends on is untouched.
+    // contract `qwen-mem-lite doctor || alert` depends on is untouched.
     // Phrased as prose, not as `doctor a | b | c`: a line that looks like a command gets
     // copy-pasted, and `|` is a shell pipe. See doctorDbModeHint()'s note.
     console.log(
-      `  Deeper checks (database layer): run \`claude-mem-lite doctor\` with ${doctorDbModeHint()}\n`,
+      `  Deeper checks (database layer): run \`qwen-mem-lite doctor\` with ${doctorDbModeHint()}\n`,
     );
   }
   // Diagnostic-tool exit-code contract: any ✗-level finding must propagate non-zero
-  // so CI / wrapper scripts (`claude-mem-lite doctor || alert`) actually trip. Keeps
+  // so CI / wrapper scripts (`qwen-mem-lite doctor || alert`) actually trip. Keeps
   // ⚠-only states at exit 0 (#8268 already established the visual ⚠ vs counted-issue
   // separation; this propagates that count to the shell).
   if (issues > 0) process.exitCode = 1;
@@ -2718,15 +2717,15 @@ function hasMemHooksConfigured(settings) {
 /**
  * Walk every mem-hook command in settings.json and collect any absolute file
  * paths that don't currently exist on disk. Used by doctor() to surface
- * post-uninstall residue ("/plugin uninstall claude-mem-lite" leaves
- * settings.json hooks pointing at ~/.claude-mem-lite/hook.mjs; if the user
+ * post-uninstall residue ("/plugin uninstall qwen-mem-lite" leaves
+ * settings.json hooks pointing at ~/.qwen-mem-lite/hook.mjs; if the user
  * then deleted that directory, every session start dispatches to a missing
  * file).
  *
  * Path extraction: command strings look like:
- *   node "/home/sds/.claude-mem-lite/hook.mjs" session-start
- *   bash "/home/sds/.claude-mem-lite/scripts/post-tool-use.sh"
- *   node "/home/sds/.claude-mem-lite/scripts/pre-tool-recall.js"
+ *   node "/home/sds/.qwen-mem-lite/hook.mjs" session-start
+ *   bash "/home/sds/.qwen-mem-lite/scripts/post-tool-use.sh"
+ *   node "/home/sds/.qwen-mem-lite/scripts/pre-tool-recall.js"
  *
  * Scan order (v2.80+): walk EVERY quoted token via matchAll, prefer ones that
  * look like a hook path (absolute + ends in a known hook-runtime extension).
@@ -2740,7 +2739,7 @@ function hasMemHooksConfigured(settings) {
  * Extension list (HOOK_PATH_EXTS) is hardcoded for the runtimes this plugin
  * actually registers (node/bash). Extend if Claude Code ever supports new
  * hook runtimes (e.g. python/.py). Currently safe because isMemHook() filters
- * to claude-mem-lite-owned hooks only — foreign runtimes can't reach here.
+ * to qwen-mem-lite-owned hooks only — foreign runtimes can't reach here.
  */
 const HOOK_PATH_EXTS = ['.mjs', '.js', '.cjs', '.sh'];
 
@@ -2806,9 +2805,9 @@ export function collectOrphanHookPaths(settings, installDir = INSTALL_DIR) {
  *   - non-empty `.db` files — real data risk, always preserved
  *   - WAL/SHM (`*-wal`, `*-shm`) transients
  *   - files not ending in `.mjs` or `.db`
- *   - the canonical DB (`claude-mem-lite.db`) even when 0-byte (fresh-install transient state)
+ *   - the canonical DB (`qwen-mem-lite.db`) even when 0-byte (fresh-install transient state)
  *
- * @param {string} dataDir Absolute path, typically `~/.claude-mem-lite`
+ * @param {string} dataDir Absolute path, typically `~/.qwen-mem-lite`
  * @param {string[]} sourceFiles SOURCE_FILES manifest
  * @returns {string[]} Absolute paths of files that were deleted (ordered by readdir)
  */
@@ -2824,9 +2823,9 @@ export function pruneStaleInstallFiles(dataDir, sourceFiles) {
   // reachable here in the first place. The only file the entry saved was a ZERO-BYTE one,
   // which holds no user data and is exactly the stale artifact this function exists to
   // clear. Nothing creates the file any more, so the "fresh-install transient state"
-  // rationale that keeps `claude-mem-lite.db` here does not transfer. (R9 review F8a
+  // rationale that keeps `qwen-mem-lite.db` here does not transfer. (R9 review F8a
   // corrected the premise; the CHANGELOG still tells users where the real file lives.)
-  const PROTECTED_DBS = new Set(['claude-mem-lite.db']);
+  const PROTECTED_DBS = new Set(['qwen-mem-lite.db']);
   const removed = [];
   let entries;
   try {
@@ -2982,7 +2981,7 @@ function cleanup() {
   // accidentally pruning the wrong file would be costly. Doctor reports stale
   // file counts and points users here; --dry-run lets them confirm the list.
   const dryRun = flags.has('--dry-run');
-  console.log(`\nclaude-mem-lite cleanup${dryRun ? ' (--dry-run)' : ''}\n`);
+  console.log(`\nqwen-mem-lite cleanup${dryRun ? ' (--dry-run)' : ''}\n`);
   let removed = 0;
 
   // Clean .update-staging-* / .update-backup-* — hook-update writes these under
@@ -3080,7 +3079,7 @@ function cleanup() {
 // ─── Manual Update ───────────────────────────────────────────────────────────
 
 async function manualUpdate() {
-  console.log('\nclaude-mem-lite update\n');
+  console.log('\nqwen-mem-lite update\n');
 
   // Force check by importing hook-update (bypasses throttle for manual use)
   const { checkForUpdate, getCurrentVersion } = await import('./hook-update.mjs');
@@ -3093,7 +3092,7 @@ async function manualUpdate() {
     warn(`v${result.to} available — plugin mode only checks for updates.`);
     log('  To upgrade, inside Claude Code run:');
     log('    /plugin marketplace update thenewnano');
-    log('    /plugin install claude-mem-lite@thenewnano');
+    log('    /plugin install qwen-mem-lite@thenewnano');
   } else if (result?.updateAvailable) {
     warn(`v${result.to} available but install failed — try: node install.mjs install`);
   } else {
@@ -3113,8 +3112,8 @@ async function manualUpdate() {
 // latest code even when local install.mjs / hook-update.mjs are themselves
 // buggy on disk.
 async function repair() {
-  console.log('\nclaude-mem-lite repair — re-syncing from the latest SIGNED GitHub release\n');
-  const stagingDir = mkdtempSync(join(tmpdir(), 'claude-mem-lite-repair-'));
+  console.log('\nqwen-mem-lite repair — re-syncing from the latest SIGNED GitHub release\n');
+  const stagingDir = mkdtempSync(join(tmpdir(), 'qwen-mem-lite-repair-'));
   try {
     // Resolve the latest RELEASE (tag) and cryptographically VERIFY it before running any
     // downloaded code — parity with the auto-update path (hook-update.downloadAndInstall).
@@ -3211,7 +3210,7 @@ async function repair() {
 // ─── Release: Sync Versions ─────────────────────────────────────────────────
 
 function syncVersions() {
-  console.log('\nclaude-mem-lite release — sync versions\n');
+  console.log('\nqwen-mem-lite release — sync versions\n');
 
   const pkg = JSON.parse(readFileSync(join(PROJECT_DIR, 'package.json'), 'utf8'));
   const version = pkg.version;
@@ -3267,7 +3266,7 @@ function syncVersions() {
 // declares the same version for corepack-aware tooling. Network cost: ~5-30s
 // per release; release cadence makes this acceptable.
 function regenerateLockfile() {
-  console.log('\nclaude-mem-lite release — regenerate lockfile (npm@10.9.2)\n');
+  console.log('\nqwen-mem-lite release — regenerate lockfile (npm@10.9.2)\n');
   try {
     execFileSync('npx', ['--yes', 'npm@10.9.2', 'install'], {
       stdio: 'inherit',
@@ -3282,7 +3281,7 @@ function regenerateLockfile() {
 
 // ─── Main ───────────────────────────────────────────────────────────────────
 
-// An install can own MORE THAN ONE better-sqlite3 tree (dev repo, ~/.claude-mem-lite,
+// An install can own MORE THAN ONE better-sqlite3 tree (dev repo, ~/.qwen-mem-lite,
 // the plugin cache), each with its own .node — and only the one the RUNNING code
 // resolves matters, i.e. the one next to this file. Rebuilding the wrong tree
 // reports success while every hook keeps failing. Fall back to INSTALL_DIR when
@@ -3294,8 +3293,8 @@ function regenerateLockfile() {
  * plugin-only install (v3.70.0 Release run 32068227636). The legacy clause was
  * `/claude-mem.*worker/`, which matches ANY command line where `claude-mem`
  * precedes `worker` — including vitest's own
- * `…/claude-mem-lite/node_modules/vitest/dist/workers/forks.js` whenever the repo
- * is checked out into a directory called `claude-mem-lite`, as GitHub Actions does.
+ * `…/qwen-mem-lite/node_modules/vitest/dist/workers/forks.js` whenever the repo
+ * is checked out into a directory called `qwen-mem-lite`, as GitHub Actions does.
  * doctor then counted an issue and exited 1 while every other check was green: the
  * exact class of false-red this release exists to remove, invisible locally only
  * because the dev checkout is not named after the package.
@@ -3316,7 +3315,7 @@ export function isStaleMemProcess(line, currentVersion) {
 
   // A shell or wrapper that merely MENTIONS these names in its arguments is not one
   // of our processes. Searching the whole line as free text bit twice within one
-  // release: first vitest workers under a checkout named `claude-mem-lite`, then the
+  // release: first vitest workers under a checkout named `qwen-mem-lite`, then the
   // `git commit -F -` publishing THIS fix, whose message text contains the word
   // "chroma". Anything that takes a program as an argument can quote us.
   if (
@@ -3329,14 +3328,14 @@ export function isStaleMemProcess(line, currentVersion) {
   // Legacy chroma server: the EXECUTABLE, not a substring of some argument.
   if (/(^|\/)chroma$/.test(exe)) return true;
   // Legacy worker: a script path under the pre-v2.20 DATA dir. Dot-prefixed, so a
-  // repo checkout called `claude-mem-lite` cannot produce it.
+  // repo checkout called `qwen-mem-lite` cannot produce it.
   if (tokens.some((t) => /\.claude-mem\/[^/]*worker[^/]*$/.test(t))) return true;
 
   // A plugin-cache launcher/server whose version segment is not the running one.
   // Anchored at end-of-token so it is a script being executed, not prose.
-  const script = tokens.find((t) => /claude-mem-lite\/\d+\.\d+\.\d+\/(scripts\/launch|server)\.mjs$/.test(t));
+  const script = tokens.find((t) => /qwen-mem-lite\/\d+\.\d+\.\d+\/(scripts\/launch|server)\.mjs$/.test(t));
   if (!script || !currentVersion) return false;
-  return script.match(/claude-mem-lite\/(\d+\.\d+\.\d+)\//)[1] !== currentVersion;
+  return script.match(/qwen-mem-lite\/(\d+\.\d+\.\d+)\//)[1] !== currentVersion;
 }
 
 function bindingHostDir() {
@@ -3365,7 +3364,7 @@ async function rebuildBinding() {
   try {
     // Every code home on this machine, not just the one this file sits in.
     // Pre-fix this rebuilt bindingHostDir() alone and reported `✓ ... verified`
-    // — so a user whose ~/.claude-mem-lite tree was stale (hooks silently dead,
+    // — so a user whose ~/.qwen-mem-lite tree was stale (hooks silently dead,
     // MCP server FATAL'ing) ran the documented repair, watched it succeed, and
     // still had no memory. Falling back to INSTALL_DIR keeps a source-only
     // layout with no deps of its own repairable.
@@ -3486,17 +3485,17 @@ async function dispatch(cmd) {
           process.exitCode = 1;
         }
         console.log(`
-claude-mem-lite — Lightweight memory system for Claude Code
+qwen-mem-lite - Lightweight memory system for Qwen Code and Claude Code
 
 Usage:
-  node install.mjs install            Install (copy files to ~/.claude-mem-lite/)
+  node install.mjs install            Install (copy files to ~/.qwen-mem-lite/)
   node install.mjs install --dev      Install dev mode (symlinks to dev dir)
   node install.mjs uninstall          Remove (keep data)
   node install.mjs uninstall --purge  Remove and delete all data
   node install.mjs status             Show current status (use --json for structured output)
   node install.mjs doctor             Diagnose issues (use --json for structured output)
   node install.mjs cleanup            Remove stale temp/staging files (use --dry-run to preview)
-  node install.mjs cleanup-hooks      Remove only claude-mem-lite hooks from settings.json
+  node install.mjs cleanup-hooks      Remove only qwen-mem-lite hooks from settings.json
   node install.mjs self-update         Check for and install updates
   node install.mjs repair             Recover a broken install: download latest tarball, re-run install
   node install.mjs rebuild-binding    Recompile better-sqlite3 for the running Node (fixes "NODE_MODULE_VERSION" after a Node upgrade)

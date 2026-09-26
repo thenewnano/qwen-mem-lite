@@ -2,7 +2,7 @@
 // scripts/pre-tool-recall.js. On the first Read of a file this session, the hook
 // surfaces the file's approximate token size + a one-line summary so the agent
 // can decide to read fully, slice, or grep. Read-only; opt out with
-// CLAUDE_MEM_FILE_INTEL=0. The summary/size logic itself is unit-tested in
+// QWEN_MEM_FILE_INTEL=0. The summary/size logic itself is unit-tested in
 // tests/file-intel.test.mjs — these tests pin the HOOK WIRING (when it fires,
 // when it stays silent, that Edit is unaffected).
 
@@ -20,7 +20,7 @@ const SCRIPT_PATH = resolve(import.meta.dirname, '../scripts/pre-tool-recall.js'
 function runScript(input, env = {}) {
   return new Promise((resolveP, reject) => {
     const child = spawn('node', [SCRIPT_PATH], {
-      env: { ...process.env, CLAUDE_MEM_HOOK_RUNNING: '', ...env },
+      env: { ...process.env, QWEN_MEM_HOOK_RUNNING: '', ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -51,7 +51,7 @@ describe('pre-tool-recall file intelligence (feature ①)', () => {
     projectDir = join(tmpRoot, 'parent', 'inteltest');
     mkdirSync(projectDir, { recursive: true });
 
-    const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+    const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
     db.pragma('foreign_keys = OFF');
     initSchema(db);
     insertSession(db, { id: 'sess-intel', project: 'parent--inteltest', memoryId: 'mem-intel' });
@@ -65,7 +65,7 @@ describe('pre-tool-recall file intelligence (feature ①)', () => {
   });
 
   const env = (extra = {}) => ({
-    CLAUDE_MEM_DIR: tmpRoot,
+    QWEN_MEM_DIR: tmpRoot,
     CLAUDE_PROJECT_DIR: projectDir,
     ...extra,
   });
@@ -100,7 +100,7 @@ describe('pre-tool-recall file intelligence (feature ①)', () => {
     const fp = join(projectDir, 'lessony.mjs');
     writeFileSync(fp, BIG_CONTENT);
 
-    const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+    const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
     db.pragma('foreign_keys = OFF');
     initSchema(db);
     insertObs(db, {
@@ -136,13 +136,13 @@ describe('pre-tool-recall file intelligence (feature ①)', () => {
     expect(stdout).toBe('');
   });
 
-  it('is disabled by CLAUDE_MEM_FILE_INTEL=0', async () => {
+  it('is disabled by QWEN_MEM_FILE_INTEL=0', async () => {
     const fp = join(projectDir, 'optout.mjs');
     writeFileSync(fp, BIG_CONTENT);
 
     const { stdout } = await runScript(
       { tool_name: 'Read', session_id: 's5', tool_input: { file_path: fp } },
-      env({ CLAUDE_MEM_FILE_INTEL: '0' }),
+      env({ QWEN_MEM_FILE_INTEL: '0' }),
     );
     expect(stdout).toBe('');
   });

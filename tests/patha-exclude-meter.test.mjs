@@ -231,19 +231,19 @@ describe('measurePathAExclude — both arms in one call', () => {
 
 describe('recordPathAExclude — the gate must be able to say no', () => {
   let dir;
-  const prev = process.env.CLAUDE_MEM_METRICS;
+  const prev = process.env.QWEN_MEM_METRICS;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'patha-meter-'));
   });
   afterEach(() => {
-    if (prev === undefined) delete process.env.CLAUDE_MEM_METRICS;
-    else process.env.CLAUDE_MEM_METRICS = prev;
+    if (prev === undefined) delete process.env.QWEN_MEM_METRICS;
+    else process.env.QWEN_MEM_METRICS = prev;
     rmSync(dir, { recursive: true, force: true });
   });
 
   it('does nothing at all with metrics off — including the expensive arm', () => {
-    delete process.env.CLAUDE_MEM_METRICS;
+    delete process.env.QWEN_MEM_METRICS;
     expect(pathAMeterEnabled()).toBe(false);
     const out = recordPathAExclude(dir, {
       markerIds: ['1'],
@@ -255,7 +255,7 @@ describe('recordPathAExclude — the gate must be able to say no', () => {
   });
 
   it('does nothing when the marker was empty — no marker, no exclude, nothing to price', () => {
-    process.env.CLAUDE_MEM_METRICS = '1';
+    process.env.QWEN_MEM_METRICS = '1';
     expect(recordPathAExclude(dir, { markerIds: [], after: { rows: rows() } })).toBeNull();
     // The guard has three clauses and each one must be able to fire on its own: a
     // review found that dropping `!Array.isArray(opts.markerIds)` survived the suite.
@@ -265,7 +265,7 @@ describe('recordPathAExclude — the gate must be able to say no', () => {
   });
 
   it('appends one row carrying both arms when enabled', () => {
-    process.env.CLAUDE_MEM_METRICS = '1';
+    process.env.QWEN_MEM_METRICS = '1';
     const out = recordPathAExclude(dir, {
       markerIds: ['1', 'E9'],
       emitted: rows(1, 2),

@@ -50,15 +50,15 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'mem-flushwait-'));
   runtimeDir = join(root, 'runtime');
   mkdirSync(runtimeDir, { recursive: true });
-  process.env.CLAUDE_MEM_DIR = root;
+  process.env.QWEN_MEM_DIR = root;
   // 3s rather than the 15s default: every case here asserts on elapsed time, and the
   // difference between "waited" and "did not wait" has to be legible without a 15s test.
-  process.env.CLAUDE_MEM_FLUSH_TIMEOUT = '3';
+  process.env.QWEN_MEM_FLUSH_TIMEOUT = '3';
 });
 
 afterEach(() => {
-  delete process.env.CLAUDE_MEM_FLUSH_TIMEOUT;
-  delete process.env.CLAUDE_MEM_DIR;
+  delete process.env.QWEN_MEM_FLUSH_TIMEOUT;
+  delete process.env.QWEN_MEM_DIR;
   try {
     rmSync(root, { recursive: true, force: true });
   } catch {
@@ -106,7 +106,7 @@ describe('handleLLMSummary flush wait', () => {
   it('DOES wait on a fresh flush file, then stops when it disappears', async () => {
     // The behaviour that must survive the fix: a real in-flight flush still blocks, or the
     // summary reads the DB before the episode worker has written to it.
-    process.env.CLAUDE_MEM_FLUSH_TIMEOUT = String(SLOW_TIMEOUT_S);
+    process.env.QWEN_MEM_FLUSH_TIMEOUT = String(SLOW_TIMEOUT_S);
     const fresh = flushFile('ep-flush-2-live.json');
     setTimeout(() => {
       try {
@@ -127,7 +127,7 @@ describe('handleLLMSummary flush wait', () => {
     // Another project's Stop, mid-wait. Under the old dir-wide predicate this extended the
     // wait for work this summary will never read. The set is snapshotted at entry, so a
     // latecomer is somebody else's.
-    process.env.CLAUDE_MEM_FLUSH_TIMEOUT = String(SLOW_TIMEOUT_S);
+    process.env.QWEN_MEM_FLUSH_TIMEOUT = String(SLOW_TIMEOUT_S);
     const fresh = flushFile('ep-flush-3-mine.json');
     setTimeout(() => {
       try {

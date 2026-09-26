@@ -6,7 +6,7 @@
 /managed
 /resource-registry.db*
 .tmp/
-.claude-mem-lite/
+.qwen-mem-lite/
 *.db
 *.db-wal
 *.db-shm

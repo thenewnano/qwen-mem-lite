@@ -24,7 +24,7 @@
 //
 // ISOLATION: same contract as tests/audit-fixes-20260816.test.mjs — every
 // spawned hook gets HOME + CLAUDE_PROJECT_DIR inside a mkdtemp sandbox; the
-// runner's CLAUDE_MEM_* / MEM_* flags are stripped from the child env.
+// runner's QWEN_MEM_* / MEM_* flags are stripped from the child env.
 
 import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest';
 import { execFileSync } from 'child_process';
@@ -46,20 +46,20 @@ let BASE_ENV;
 beforeAll(() => {
   BASE_ENV = { ...process.env };
   for (const k of Object.keys(BASE_ENV)) {
-    if (/^(CLAUDE_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete BASE_ENV[k];
+    if (/^(QWEN_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete BASE_ENV[k];
   }
   Object.assign(BASE_ENV, {
     CLAUDE_CODE_PATH: join(tmpdir(), 'no-such-claude-binary'),
     ANTHROPIC_API_KEY: '',
     OPENROUTER_API_KEY: '',
-    CLAUDE_MEM_SKIP_UPDATE: '1',
-    CLAUDE_MEM_SKIP_EPISODE_LLM: '1',
-    CLAUDE_MEM_SKIP_COMPRESS: '1',
-    CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-    CLAUDE_MEM_SKIP_MAINTAIN: '1',
-    CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
-    CLAUDE_MEM_SKIP_REPOS: '1',
-    CLAUDE_MEM_NO_DELAY: '1',
+    QWEN_MEM_SKIP_UPDATE: '1',
+    QWEN_MEM_SKIP_EPISODE_LLM: '1',
+    QWEN_MEM_SKIP_COMPRESS: '1',
+    QWEN_MEM_SKIP_OPTIMIZE: '1',
+    QWEN_MEM_SKIP_MAINTAIN: '1',
+    QWEN_MEM_SKIP_SAVE_ENRICH: '1',
+    QWEN_MEM_SKIP_REPOS: '1',
+    QWEN_MEM_NO_DELAY: '1',
     MEM_QUIET_HOOKS: '1',
     MEM_NO_AUTO_ADOPT: '1',
   });
@@ -75,10 +75,10 @@ describe('D#123 — exclude-set mirrors rendered Key Context, never a query', ()
     tmpHome = mkdtempSync(join(tmpdir(), 'mem-d123-keyobs-'));
     projDir = join(tmpHome, 'd123', 'kx');
     mkdirSync(projDir, { recursive: true });
-    const dbDir = join(tmpHome, '.claude-mem-lite');
+    const dbDir = join(tmpHome, '.qwen-mem-lite');
     runtimeDir = join(dbDir, 'runtime');
     mkdirSync(runtimeDir, { recursive: true });
-    dbPath = join(dbDir, 'claude-mem-lite.db');
+    dbPath = join(dbDir, 'qwen-mem-lite.db');
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
     initSchema(db);
@@ -124,7 +124,7 @@ describe('D#123 — exclude-set mirrors rendered Key Context, never a query', ()
         ...BASE_ENV,
         HOME: tmpHome,
         CLAUDE_PROJECT_DIR: projDir,
-        CLAUDE_MEM_HOOK_RUNNING: undefined,
+        QWEN_MEM_HOOK_RUNNING: undefined,
         ...extraEnv,
       },
       stdio: ['pipe', 'pipe', 'pipe'],

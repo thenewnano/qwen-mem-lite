@@ -1,4 +1,4 @@
-// cli/activity.mjs — `claude-mem-lite activity <save|search|recent|show>`.
+// cli/activity.mjs — `qwen-mem-lite activity <save|search|recent|show>`.
 // Extracted from mem-cli.mjs (v2.41, god-module split). Thin wrapper over
 // lib/activity.mjs pure functions.
 //
@@ -22,7 +22,7 @@ function formatActivityResults(rows) {
 export async function cmdActivity(db, args) {
   const sub = args[0];
   if (!sub) {
-    fail('[mem] Usage: claude-mem-lite activity <save|search|recent|show|delete|promote> ...');
+    fail('[mem] Usage: qwen-mem-lite activity <save|search|recent|show|delete|promote> ...');
     return;
   }
 
@@ -150,7 +150,7 @@ export async function cmdActivity(db, args) {
     // This command lets users prune them by ID without dropping to raw SQL.
     const idStr = positional.join(',').trim();
     if (!idStr) {
-      fail('[mem] Usage: claude-mem-lite activity delete <id1,id2,...> [--confirm]');
+      fail('[mem] Usage: qwen-mem-lite activity delete <id1,id2,...> [--confirm]');
       return;
     }
     const ids = idStr

@@ -5,7 +5,7 @@
 // both measured on the live DB 2026-09-21 over every non-null files_modified row (218
 // entries): 59 of them (27%) are repo-root filenames like `hook.mjs` and were dropped on
 // the floor, and 3 are extensionless slash-bearing values — directories — which sailed
-// through and rendered as key files. That is where `Key Files: claude-mem-lite` in a real
+// through and rendered as key files. That is where `Key Files: qwen-mem-lite` in a real
 // injection came from — though from the EPISODE BUFFER arm of key_files, not from
 // files_modified: no entry in that column equals a project directory. The three
 // extensionless slash-bearing values it does hold are one executable and two /var/tmp
@@ -74,11 +74,11 @@ describe('key_files keeps files and drops directories', () => {
   });
 
   it('drops a directory path', () => {
-    // The exact value that produced `Key Files: claude-mem-lite` in a real injection.
-    seed(db, ['/home/ai/dev/claude-mem-lite', 'lib/handoff-constants.mjs']);
+    // The exact value that produced `Key Files: qwen-mem-lite` in a real injection.
+    seed(db, ['/home/ai/dev/qwen-mem-lite', 'lib/handoff-constants.mjs']);
     const files = (buildAndSaveHandoff(db, SESSION, PROJECT, 'exit', null), keyFilesOf(db));
     expect(files).toContain('lib/handoff-constants.mjs');
-    expect(files).not.toContain('/home/ai/dev/claude-mem-lite');
+    expect(files).not.toContain('/home/ai/dev/qwen-mem-lite');
   });
 
   it('keeps nested and absolute paths, and dotfiles', () => {

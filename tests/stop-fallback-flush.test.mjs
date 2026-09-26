@@ -72,11 +72,11 @@ function runStop(extraEnv = {}) {
       // cwd, and a child spawned with an inherited PWD names the PARENT's project — it
       // then looks for an episode buffer that is not there and does nothing, quietly.
       ...process.env,
-      CLAUDE_MEM_DIR: dataDir,
+      QWEN_MEM_DIR: dataDir,
       CLAUDE_PROJECT_DIR: cwd,
       PWD: cwd,
       MEM_QUIET_HOOKS: '1',
-      CLAUDE_MEM_SKIP_UPDATE: '1',
+      QWEN_MEM_SKIP_UPDATE: '1',
       ...extraEnv,
     },
     encoding: 'utf8',
@@ -124,19 +124,19 @@ afterEach(() => {
 afterAll(() => sweep(ALL_DIRS));
 
 describe('handleStop lock-contended fallback', () => {
-  it('honours CLAUDE_MEM_SKIP_EPISODE_LLM, which the hand-copied version ignored', () => {
+  it('honours QWEN_MEM_SKIP_EPISODE_LLM, which the hand-copied version ignored', () => {
     // The copy always spawned llm-episode. Under the skip flag — which exists so a test
     // run does not fire background model calls — a contended Stop still spawned one, and
     // left the ep-flush-* file behind for it.
     writeBuffer();
     holdLock();
-    runStop({ CLAUDE_MEM_SKIP_EPISODE_LLM: '1' });
+    runStop({ QWEN_MEM_SKIP_EPISODE_LLM: '1' });
 
     expect(flushFiles(), 'skip flag set, yet a flush file was left for a worker').toEqual([]);
 
     // …and the immediate observation is still persisted: the flag suppresses enrichment,
     // never the save. Without this half, deleting the whole fallback would pass the above.
-    const db = new Database(join(dataDir, 'claude-mem-lite.db'), { readonly: true });
+    const db = new Database(join(dataDir, 'qwen-mem-lite.db'), { readonly: true });
     const rows = db.prepare('SELECT memory_session_id FROM observations').all();
     db.close();
     expect(rows.length, 'the contended fallback persisted nothing').toBeGreaterThan(0);
@@ -147,9 +147,9 @@ describe('handleStop lock-contended fallback', () => {
     // be co-attributed to a single garbled row.
     writeBuffer();
     holdLock();
-    runStop({ CLAUDE_MEM_SKIP_EPISODE_LLM: '1' });
+    runStop({ QWEN_MEM_SKIP_EPISODE_LLM: '1' });
 
-    const db = new Database(join(dataDir, 'claude-mem-lite.db'), { readonly: true });
+    const db = new Database(join(dataDir, 'qwen-mem-lite.db'), { readonly: true });
     const titles = db
       .prepare('SELECT title FROM observations ORDER BY id')
       .all()

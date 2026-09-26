@@ -34,7 +34,7 @@ function run(args) {
   try {
     const stdout = execFileSync(process.execPath, [INSTALL_PATH, ...args], {
       encoding: 'utf8',
-      env: { ...process.env, HOME: home, MEM_NO_AUTO_ADOPT: '1', CLAUDE_MEM_DIR: join(home, 'data') },
+      env: { ...process.env, HOME: home, MEM_NO_AUTO_ADOPT: '1', QWEN_MEM_DIR: join(home, 'data') },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     return { stdout, stderr: '', code: 0 };

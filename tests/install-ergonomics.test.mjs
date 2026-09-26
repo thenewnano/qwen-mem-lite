@@ -57,8 +57,8 @@ describe('setup.sh deps-broken flag round-trip (v2.79, binding-probe since D#6 f
     expect(existsSync(REPO_NODE_MODULES)).toBe(true);
     const home = makeTmpDir();
     try {
-      const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+      const dataDir = join(home, '.qwen-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       mkdirSync(pluginRoot, { recursive: true });
       writeFileSync(join(pluginRoot, 'package.json'), '{"name":"fixture"}\n');
@@ -99,8 +99,8 @@ describe('setup.sh deps-broken flag round-trip (v2.79, binding-probe since D#6 f
     expect(existsSync(REPO_NODE_MODULES)).toBe(true);
     const home = makeTmpDir();
     try {
-      const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+      const dataDir = join(home, '.qwen-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       mkdirSync(join(pluginRoot, 'lib'), { recursive: true });
       mkdirSync(join(pluginRoot, 'scripts'), { recursive: true });
@@ -151,8 +151,8 @@ describe('setup.sh deps-broken flag round-trip (v2.79, binding-probe since D#6 f
     expect(existsSync(REPO_NODE_MODULES)).toBe(true);
     const home = makeTmpDir();
     try {
-      const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+      const dataDir = join(home, '.qwen-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       mkdirSync(join(pluginRoot, 'scripts'), { recursive: true });
       writeFileSync(join(pluginRoot, 'package.json'), '{"name":"fixture"}\n');
@@ -190,8 +190,8 @@ describe('setup.sh deps-broken flag round-trip (v2.79, binding-probe since D#6 f
   it('marks deps-broken (with allow-scripts rebuild repair) when better-sqlite3 is present but unusable', () => {
     const home = makeTmpDir();
     try {
-      const dataDir = join(home, '.claude-mem-lite');
-      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+      const dataDir = join(home, '.qwen-mem-lite');
+      const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
       mkdirSync(join(dataDir, 'runtime'), { recursive: true });
       mkdirSync(join(pluginRoot, 'lib'), { recursive: true });
       mkdirSync(join(pluginRoot, 'node_modules', 'better-sqlite3'), { recursive: true });
@@ -274,7 +274,7 @@ describe('collectOrphanHookPaths (v2.79)', () => {
           {
             matcher: '*',
             hooks: [
-              { type: 'command', command: 'node "/tmp/nonexistent-claude-mem-lite/hook.mjs" session-start' },
+              { type: 'command', command: 'node "/tmp/nonexistent-qwen-mem-lite/hook.mjs" session-start' },
             ],
           },
         ],
@@ -284,7 +284,7 @@ describe('collectOrphanHookPaths (v2.79)', () => {
             hooks: [
               {
                 type: 'command',
-                command: 'bash "/tmp/nonexistent-claude-mem-lite/scripts/post-tool-use.sh"',
+                command: 'bash "/tmp/nonexistent-qwen-mem-lite/scripts/post-tool-use.sh"',
               },
             ],
           },
@@ -292,8 +292,8 @@ describe('collectOrphanHookPaths (v2.79)', () => {
       },
     };
     const orphans = collectOrphanHookPaths(settings);
-    expect(orphans).toContain('/tmp/nonexistent-claude-mem-lite/hook.mjs');
-    expect(orphans).toContain('/tmp/nonexistent-claude-mem-lite/scripts/post-tool-use.sh');
+    expect(orphans).toContain('/tmp/nonexistent-qwen-mem-lite/hook.mjs');
+    expect(orphans).toContain('/tmp/nonexistent-qwen-mem-lite/scripts/post-tool-use.sh');
   });
 
   it('ignores ${CLAUDE_PLUGIN_ROOT}-templated hooks (those are plugin-owned, runtime-resolved)', () => {
@@ -343,7 +343,7 @@ describe('collectOrphanHookPaths (v2.79)', () => {
               {
                 type: 'command',
                 command:
-                  'bash -c "claude-mem-lite tracer; exec bash" "/tmp/nonexistent-claude-mem-lite/scripts/wrapped.sh"',
+                  'bash -c "qwen-mem-lite tracer; exec bash" "/tmp/nonexistent-qwen-mem-lite/scripts/wrapped.sh"',
               },
             ],
           },
@@ -351,8 +351,8 @@ describe('collectOrphanHookPaths (v2.79)', () => {
       },
     };
     const orphans = collectOrphanHookPaths(settings);
-    expect(orphans).toEqual(['/tmp/nonexistent-claude-mem-lite/scripts/wrapped.sh']);
-    expect(orphans).not.toContain('claude-mem-lite tracer; exec bash');
+    expect(orphans).toEqual(['/tmp/nonexistent-qwen-mem-lite/scripts/wrapped.sh']);
+    expect(orphans).not.toContain('qwen-mem-lite tracer; exec bash');
   });
 
   it('deduplicates repeated missing paths across hook events', () => {
@@ -362,20 +362,20 @@ describe('collectOrphanHookPaths (v2.79)', () => {
           {
             matcher: '*',
             hooks: [
-              { type: 'command', command: 'node "/tmp/nonexistent-claude-mem-lite/hook.mjs" session-start' },
+              { type: 'command', command: 'node "/tmp/nonexistent-qwen-mem-lite/hook.mjs" session-start' },
             ],
           },
         ],
         Stop: [
           {
             matcher: '*',
-            hooks: [{ type: 'command', command: 'node "/tmp/nonexistent-claude-mem-lite/hook.mjs" stop' }],
+            hooks: [{ type: 'command', command: 'node "/tmp/nonexistent-qwen-mem-lite/hook.mjs" stop' }],
           },
         ],
       },
     };
     const orphans = collectOrphanHookPaths(settings);
-    expect(orphans.filter((p) => p === '/tmp/nonexistent-claude-mem-lite/hook.mjs')).toHaveLength(1);
+    expect(orphans.filter((p) => p === '/tmp/nonexistent-qwen-mem-lite/hook.mjs')).toHaveLength(1);
   });
 });
 
@@ -396,7 +396,7 @@ describe('doctor surfaces orphan hooks (v2.79)', () => {
                   hooks: [
                     {
                       type: 'command',
-                      command: 'node "/tmp/nonexistent-claude-mem-lite-doctor/hook.mjs" session-start',
+                      command: 'node "/tmp/nonexistent-qwen-mem-lite-doctor/hook.mjs" session-start',
                     },
                   ],
                 },
@@ -421,7 +421,7 @@ describe('doctor surfaces orphan hooks (v2.79)', () => {
       }
 
       expect(output).toMatch(/Orphan hooks:.*settings\.json/);
-      expect(output).toContain('/tmp/nonexistent-claude-mem-lite-doctor/hook.mjs');
+      expect(output).toContain('/tmp/nonexistent-qwen-mem-lite-doctor/hook.mjs');
       expect(output).toMatch(/Repair:.*install\.mjs uninstall/);
     } finally {
       try {
@@ -446,13 +446,13 @@ describe('doctor surfaces orphan hooks (v2.79)', () => {
 // `claude` (for `mcp list`), already inside a try/catch that degrades to its own ⚠.
 //
 // PATH is controllable; `/usr/local/bin` is not. `CLI_BIN_DIRS[1]` is absolute, so a machine
-// that really has `/usr/local/bin/claude-mem-lite` would push the "no symlink anywhere" arms
+// that really has `/usr/local/bin/qwen-mem-lite` would push the "no symlink anywhere" arms
 // into the linked branch and fail them for a reason that is not a regression. Rather than
 // leave that as a silent machine-dependency — the pre-ship reviewer found these two arms
 // passing here only by accident of this host — each such arm asserts the premise first, so
 // the failure says WHICH assumption broke instead of pointing at the code under test.
 describe('status distinguishes "no symlink" from "symlink off PATH"', () => {
-  const GLOBAL_BIN_CLI = '/usr/local/bin/claude-mem-lite';
+  const GLOBAL_BIN_CLI = '/usr/local/bin/qwen-mem-lite';
   function runStatus(home) {
     const emptyBin = join(home, 'empty-bin');
     mkdirSync(emptyBin, { recursive: true });
@@ -462,7 +462,7 @@ describe('status distinguishes "no symlink" from "symlink off PATH"', () => {
         env: envWithoutPluginRoot({
           HOME: home,
           PATH: emptyBin,
-          CLAUDE_MEM_DIR: join(home, '.claude-mem-lite'),
+          QWEN_MEM_DIR: join(home, '.qwen-mem-lite'),
           MEM_NO_AUTO_ADOPT: '1',
         }),
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -477,10 +477,10 @@ describe('status distinguishes "no symlink" from "symlink off PATH"', () => {
     try {
       const binDir = join(home, '.local', 'bin');
       mkdirSync(binDir, { recursive: true });
-      symlinkSync(resolve('cli.mjs'), join(binDir, 'claude-mem-lite'));
+      symlinkSync(resolve('cli.mjs'), join(binDir, 'qwen-mem-lite'));
 
       const output = runStatus(home);
-      expect(output).toContain(`installed at ${join(binDir, 'claude-mem-lite')}`);
+      expect(output).toContain(`installed at ${join(binDir, 'qwen-mem-lite')}`);
       expect(output).toContain(`export PATH="${binDir}:$PATH"`);
       // The reinstall remedy is the WRONG answer here; its absence is the fix.
       expect(output).not.toContain('run install again to create symlink');
@@ -515,7 +515,7 @@ describe('status distinguishes "no symlink" from "symlink off PATH"', () => {
     try {
       const shimDir = join(home, 'shim');
       mkdirSync(shimDir, { recursive: true });
-      const shim = join(shimDir, 'claude-mem-lite');
+      const shim = join(shimDir, 'qwen-mem-lite');
       writeFileSync(shim, '#!/bin/sh\necho "native binding did not load" >&2\nexit 1\n');
       execFileSync('chmod', ['+x', shim]);
 
@@ -524,13 +524,13 @@ describe('status distinguishes "no symlink" from "symlink off PATH"', () => {
         env: envWithoutPluginRoot({
           HOME: home,
           PATH: shimDir,
-          CLAUDE_MEM_DIR: join(home, '.claude-mem-lite'),
+          QWEN_MEM_DIR: join(home, '.qwen-mem-lite'),
           MEM_NO_AUTO_ADOPT: '1',
         }),
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
-      expect(output).toContain('on PATH but "claude-mem-lite --help" failed');
+      expect(output).toContain('on PATH but "qwen-mem-lite --help" failed');
       expect(output).toContain('native binding did not load');
       expect(output).not.toContain('is not on PATH — add it');
       expect(output).not.toContain('run install again to create symlink');
@@ -546,7 +546,7 @@ describe('status distinguishes "no symlink" from "symlink off PATH"', () => {
     expect(existsSync(GLOBAL_BIN_CLI)).toBe(false);
     const home = makeTmpDir();
     try {
-      mkdirSync(join(home, '.local', 'bin', 'claude-mem-lite'), { recursive: true });
+      mkdirSync(join(home, '.local', 'bin', 'qwen-mem-lite'), { recursive: true });
       const output = runStatus(home);
       expect(output).toContain('run install again to create symlink');
       expect(output).not.toContain('is not on PATH — add it');
@@ -565,7 +565,7 @@ describe('status distinguishes "no symlink" from "symlink off PATH"', () => {
     try {
       const binDir = join(home, '.local', 'bin');
       mkdirSync(binDir, { recursive: true });
-      symlinkSync(join(home, 'deleted-install', 'cli.mjs'), join(binDir, 'claude-mem-lite'));
+      symlinkSync(join(home, 'deleted-install', 'cli.mjs'), join(binDir, 'qwen-mem-lite'));
 
       const output = runStatus(home);
       expect(output).toContain('run install again to create symlink');

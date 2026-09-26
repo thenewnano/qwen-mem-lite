@@ -1,4 +1,4 @@
-// claude-mem-lite: Auto-update via GitHub Releases
+// qwen-mem-lite: Auto-update via GitHub Releases
 // Checks for new versions on SessionStart, downloads and installs automatically.
 // Skips in dev mode (symlinked installs). Silent on network failure.
 
@@ -57,25 +57,25 @@ import { MARKETPLACE_KEY, PLUGIN_NAME } from './lib/plugin-key.mjs';
 // adopt) — silently, because the only symptom is that the behavior stops appearing on one
 // host. Pointed at the fork, any update that arrives is by definition a Qwen-compatible one.
 //
-// CLAUDE_MEM_SKIP_UPDATE=1 disables the check on demand (dev machines, CI, air-gapped
-// boxes); CLAUDE_MEM_UPDATE_REPO=<owner>/<name> aims the same machinery at a mirror.
+// QWEN_MEM_SKIP_UPDATE=1 disables the check on demand (dev machines, CI, air-gapped
+// boxes); QWEN_MEM_UPDATE_REPO=<owner>/<name> aims the same machinery at a mirror.
 //
 // For whoever publishes this fork's first release: the install path is FAIL-CLOSED on
 // release signatures (RELEASE_PUBLIC_KEY below). A release carrying no
 // release-manifest.json / release-manifest.json.sig assets is refused, and upstream's private
 // signing key is not ours to use — so this fork's releases need their own keypair
 // (scripts/sign-release.mjs signs; embed the new public key below) or the operator sets
-// CLAUDE_MEM_SKIP_SIG_VERIFY=1 knowingly. Until a signed release exists, the check runs,
+// QWEN_MEM_SKIP_SIG_VERIFY=1 knowingly. Until a signed release exists, the check runs,
 // finds nothing installable, and installs nothing.
-const GITHUB_REPO = process.env.CLAUDE_MEM_UPDATE_REPO || 'thenewnano/qwen-mem-lite';
+const GITHUB_REPO = process.env.QWEN_MEM_UPDATE_REPO || 'thenewnano/qwen-mem-lite';
 
 // Plugin CODE location (server.mjs / package.json / install target) — always
-// homedir-rooted, NEVER follows CLAUDE_MEM_DIR (see schema.mjs CODE_DIR). Used
+// homedir-rooted, NEVER follows QWEN_MEM_DIR (see schema.mjs CODE_DIR). Used
 // for dev-mode detection, current-version read, and the install target dir.
-const INSTALL_DIR = CODE_DIR; // ~/.claude-mem-lite/ (code)
+const INSTALL_DIR = CODE_DIR; // ~/.qwen-mem-lite/ (code)
 // DATA/state location — runtime/update-state.json lives with the data (env-aware
 // DB_DIR), matching hook-shared RUNTIME_DIR and install.mjs doctor's read path.
-// Equal to INSTALL_DIR unless CLAUDE_MEM_DIR relocates the data dir.
+// Equal to INSTALL_DIR unless QWEN_MEM_DIR relocates the data dir.
 const STATE_DIR = DB_DIR;
 const STATE_FILE = join(STATE_DIR, 'runtime', 'update-state.json'); // runtime-dir:stays-put — installation identity
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -93,7 +93,7 @@ export async function checkForUpdate(options = {}) {
     const force = Boolean(options.force);
     const allowInstall = options.allowInstall ?? !pluginMode;
 
-    if (isDevMode() || process.env.CLAUDE_MEM_SKIP_UPDATE) return null;
+    if (isDevMode() || process.env.QWEN_MEM_SKIP_UPDATE) return null;
 
     const state = readState();
     if (!force && !shouldCheck(state)) {
@@ -180,7 +180,7 @@ export async function checkForUpdate(options = {}) {
 // Banner string from cached update-state (≤24h stale), or null. No network I/O.
 export function getCachedUpdateBanner() {
   try {
-    if (isDevMode() || process.env.CLAUDE_MEM_SKIP_UPDATE) return null;
+    if (isDevMode() || process.env.QWEN_MEM_SKIP_UPDATE) return null;
     const state = readState();
     if (state.updateAvailable && state.latestVersion) {
       // Cached "available" state only persists for deferred installs (plugin mode
@@ -188,7 +188,7 @@ export function getCachedUpdateBanner() {
       const hint = isPluginMode()
         ? ' — plugin mode only checks for updates; reinstall/update the plugin to apply it'
         : '';
-      return `\n📦 claude-mem-lite: v${state.latestVersion} available (current: v${state.installedVersion})${hint}\n`;
+      return `\n📦 qwen-mem-lite: v${state.latestVersion} available (current: v${state.installedVersion})${hint}\n`;
     }
     return null;
   } catch {
@@ -200,7 +200,7 @@ export function getCachedUpdateBanner() {
 // Caller spawns the refresh in the background so this session doesn't wait.
 export function isUpdateCheckDue() {
   try {
-    if (isDevMode() || process.env.CLAUDE_MEM_SKIP_UPDATE) return false;
+    if (isDevMode() || process.env.QWEN_MEM_SKIP_UPDATE) return false;
     return shouldCheck(readState());
   } catch {
     return false;
@@ -210,11 +210,11 @@ export function isUpdateCheckDue() {
 // D#187. `CLAUDE_PLUGIN_ROOT` is set in every hook and MCP process Claude Code
 // spawns, so inside those the env var answers "am I a plugin install?" perfectly —
 // which is why v3.84.1's fix, which reads it, was enough THERE. It is not set in a
-// plain terminal, and a plugin-only user typing `claude-mem-lite update` therefore
+// plain terminal, and a plugin-only user typing `qwen-mem-lite update` therefore
 // fell off both plugin paths at once: getCurrentVersion() returned '0.0.0' (so every
 // release compares as newer, forever), and isPluginMode() was false, so allowInstall
 // defaulted to true and downloadAndInstall laid a full managed tree into
-// ~/.claude-mem-lite — silently converting a plugin-only install into the hybrid
+// ~/.qwen-mem-lite — silently converting a plugin-only install into the hybrid
 // whose two trees D#184 documents drifting apart.
 //
 // Same root cause as PR #17: process ENVIRONMENT was the only install-shape
@@ -262,7 +262,7 @@ function isPluginMode() {
 export function isDevMode() {
   try {
     // A dev checkout always carries a .git dir. This catches a whole-directory
-    // symlink (~/.claude-mem-lite -> /repo): lstat on server.mjs there follows the
+    // symlink (~/.qwen-mem-lite -> /repo): lstat on server.mjs there follows the
     // intermediate symlink and sees a regular file, so the per-file probe below
     // would return false and auto-update would clobber the working tree.
     if (existsSync(join(INSTALL_DIR, '.git'))) return true;
@@ -295,7 +295,7 @@ function shouldCheck(state) {
 export async function fetchLatestRelease() {
   const headers = {
     Accept: 'application/vnd.github+json',
-    'User-Agent': 'claude-mem-lite-updater/1.0',
+    'User-Agent': 'qwen-mem-lite-updater/1.0',
   };
 
   // Attempt 1: GitHub Releases API
@@ -380,7 +380,7 @@ export function compareVersions(a, b) {
 // plugin cache is a FALLBACK, not a precedence — the order is load-bearing in
 // both directions:
 //
-//   • Plugin cache reachable at all (PR #17): a pure-plugin ~/.claude-mem-lite/
+//   • Plugin cache reachable at all (PR #17): a pure-plugin ~/.qwen-mem-lite/
 //     holds only the DB + runtime state and never any source — the same invariant
 //     syncDataDirFromCache states from the other side in its
 //     `no-existing-code-install` guard — so the INSTALL_DIR read cannot succeed
@@ -419,7 +419,7 @@ export function getCurrentVersion() {
   }
   // D#187: no env var in a plain terminal, so ask the filesystem which plugin
   // version this machine actually runs. Without this a plugin-only user's
-  // `claude-mem-lite update` reads 0.0.0 and every release compares as newer.
+  // `qwen-mem-lite update` reads 0.0.0 and every release compares as newer.
   const active = installShape()?.activePluginVersion;
   if (active) {
     try {
@@ -486,7 +486,7 @@ async function loadReleaseManifest(sourceDir) {
 // on an existing (attacker-owned) dir; mkdtempSync fails closed unless it creates a fresh
 // one. Mirrors the repair() path (install.mjs) which already uses mkdtempSync. (P3-4)
 export function createUpdateTmpDir() {
-  return mkdtempSync(join(tmpdir(), 'claude-mem-lite-update-'));
+  return mkdtempSync(join(tmpdir(), 'qwen-mem-lite-update-'));
 }
 
 // ── Download & Install ─────────────────────────────────────
@@ -549,7 +549,7 @@ async function downloadAndInstall(tarballUrl, expectedVersion, assets = []) {
 
 // Defense-in-depth check on the extracted GitHub tarball before we hand it to
 // installExtractedRelease (which runs `npm install` in staging). Catches:
-// - tarball whose package.json `name` is not claude-mem-lite (repo rename / squatter)
+// - tarball whose package.json `name` is not qwen-mem-lite (repo rename / squatter)
 // - tarball whose `version` does not match the GitHub tag we resolved (replay /
 //   wrong-version artifact)
 // - tarball missing critical entry points (truncated download / wrong content)
@@ -558,7 +558,7 @@ async function downloadAndInstall(tarballUrl, expectedVersion, assets = []) {
 // repo can rewrite package.json. Future: GitHub release attestations
 // (`gh attestation verify`) — requires publish.yml to opt into attestations
 // and a sigstore trust anchor.
-export function validateExtractedTarball(sourceDir, expectedVersion, expectedName = 'claude-mem-lite') {
+export function validateExtractedTarball(sourceDir, expectedVersion, expectedName = 'qwen-mem-lite') {
   const pkgPath = join(sourceDir, 'package.json');
   if (!existsSync(pkgPath)) return { ok: false, reason: 'package.json missing in extracted tarball' };
 
@@ -608,7 +608,7 @@ export function isRepairDowngrade(relVersion, localVersion) {
 //
 // The matching private key is the RELEASE_SIGNING_KEY secret on this fork's repository;
 // signer: scripts/sign-release.mjs; verifier core: lib/release-digest.mjs. The
-// CLAUDE_MEM_SKIP_SIG_VERIFY env escape hatch still forces a skip. To ROTATE: generate a new
+// QWEN_MEM_SKIP_SIG_VERIFY env escape hatch still forces a skip. To ROTATE: generate a new
 // keypair, set the new private key as the secret, ship one signed release with it, and only
 // THEN replace the key below — embedding a key whose releases are not yet signed bricks
 // auto-update (fail-closed on unsigned). Setting this back to '' reverts to opportunistic
@@ -689,16 +689,16 @@ export async function fetchAssetBuffer(url) {
 //     the asset CDN must not bypass verification by stripping the signature assets
 //     (the tags-fallback path also sends assets:[]). A transient fetch failure only
 //     defers the install to the next ~6h poll, not a permanent brick. (audit P1 #5)
-// The CLAUDE_MEM_SKIP_SIG_VERIFY escape hatch still forces a skip. publicKey is a
+// The QWEN_MEM_SKIP_SIG_VERIFY escape hatch still forces a skip. publicKey is a
 // param (defaulting to the embedded constant) only so tests can exercise both regimes.
 export async function verifyReleaseAuthenticity(extractedDir, assets, publicKey = RELEASE_PUBLIC_KEY) {
-  if (process.env.CLAUDE_MEM_SKIP_SIG_VERIFY) {
+  if (process.env.QWEN_MEM_SKIP_SIG_VERIFY) {
     // Loud on stderr, not via debugLog: this disables the strongest control in the
-    // update path, and debugLog is gated behind CLAUDE_MEM_DEBUG — the one case
+    // update path, and debugLog is gated behind QWEN_MEM_DEBUG — the one case
     // where silence is exactly wrong. An operator who set the var sees it; an
     // attacker who set it in someone's environment loses the quiet.
     process.stderr.write(
-      '[claude-mem-lite] WARNING: CLAUDE_MEM_SKIP_SIG_VERIFY is set — installing this release WITHOUT signature verification.\n',
+      '[qwen-mem-lite] WARNING: QWEN_MEM_SKIP_SIG_VERIFY is set — installing this release WITHOUT signature verification.\n',
     );
     return { ok: true, action: 'skipped-env' };
   }
@@ -1132,10 +1132,10 @@ export async function installExtractedRelease(sourceDir, targetDir = INSTALL_DIR
 // ── Plugin-cache → data-dir code sync ──────────────────────
 // Root cause this fixes: a plugin-mode install carries TWO independently
 // versioned code copies sharing one DB. The plugin cache
-// (~/.claude/plugins/cache/<mp>/claude-mem-lite/<ver>/) runs the MCP server and
+// (~/.claude/plugins/cache/<mp>/qwen-mem-lite/<ver>/) runs the MCP server and
 // is advanced by Claude Code's marketplace updater; on launch it opens the
 // shared DB and migrates the schema FORWARD. The data-dir copy
-// (~/.claude-mem-lite/) backs the standalone CLI symlink and the settings.json
+// (~/.qwen-mem-lite/) backs the standalone CLI symlink and the settings.json
 // hooks, but is only advanced by the GitHub-tarball auto-update — which plugin
 // mode disables (allowInstall=false) and which stalls easily (24h throttle,
 // rate limits, staging npm install). The data-dir code then lags the schema the
@@ -1153,7 +1153,7 @@ export async function installExtractedRelease(sourceDir, targetDir = INSTALL_DIR
 //                    exact version that owns the migrated DB). Omitted → scan
 //                    the plugin cache for the highest valid version.
 // opts.targetDir   — defaults to INSTALL_DIR (the homedir code dir, NOT
-//                    CLAUDE_MEM_DIR — see schema.mjs CODE_DIR / #8632).
+//                    QWEN_MEM_DIR — see schema.mjs CODE_DIR / #8632).
 // opts.cacheBase   — override the cache root (tests).
 export async function syncDataDirFromCache(opts = {}) {
   try {
@@ -1188,7 +1188,7 @@ export async function syncDataDirFromCache(opts = {}) {
     }
 
     // Only heal an EXISTING standalone-CLI code install — the case that actually
-    // drifts. A pure-plugin user's ~/.claude-mem-lite/ holds only DATA (DB +
+    // drifts. A pure-plugin user's ~/.qwen-mem-lite/ holds only DATA (DB +
     // runtime, maybe node_modules) and runs ALL code from the cache; setup.sh
     // never materializes source files there. Writing them in would create a
     // non-functional orphan code tree and make launch-preflight's fallback
@@ -1281,7 +1281,7 @@ function copyReleaseIntoStaging(
     }
   }
 
-  // cli.mjs is invoked via the ~/.local/bin/claude-mem-lite symlink, which needs
+  // cli.mjs is invoked via the ~/.local/bin/qwen-mem-lite symlink, which needs
   // the target executable. copyFileSync preserves the source mode and git stores
   // cli.mjs as 100644 — without this chmod, auto-update strips the +x bit set by
   // install.mjs:408 and the next CLI invocation dies with "Permission denied".
@@ -1302,7 +1302,7 @@ function copyReleaseIntoStaging(
 // even if plugin-cache-guard.mjs is missing on disk in degraded installs.
 
 // Mirror of plugin-cache-guard.hasInstallManagedHooks, inlined for the reason above.
-// Kept string-identical in its match rule (`.claude-mem-lite/` or `/claude-mem-lite/`
+// Kept string-identical in its match rule (`.qwen-mem-lite/` or `/qwen-mem-lite/`
 // appearing in a serialized hooks block) so the two cannot disagree about whether
 // settings.json owns the hooks.
 function hasInstallManagedSettingsHooks() {
@@ -1315,7 +1315,7 @@ function hasInstallManagedSettingsHooks() {
     return false;
   }
   const serialized = JSON.stringify(s.hooks || {});
-  if (!(serialized.includes('.claude-mem-lite/') || serialized.includes('/claude-mem-lite/'))) return false;
+  if (!(serialized.includes('.qwen-mem-lite/') || serialized.includes('/qwen-mem-lite/'))) return false;
   // Liveness, mirroring plugin-cache-guard.hasLiveInstallManagedHooks (see its docblock).
   // The string test alone says settings.json MENTIONS a path of ours, not that the path
   // still exists — and a stale entry left by a removed global install fires nothing while
@@ -1328,7 +1328,7 @@ function hasInstallManagedSettingsHooks() {
     for (const m of matchers) {
       for (const h of Array.isArray(m?.hooks) ? m.hooks : []) {
         const c = typeof h?.command === 'string' ? h.command : '';
-        if (!(c.includes('.claude-mem-lite/') || c.includes('/claude-mem-lite/'))) continue;
+        if (!(c.includes('.qwen-mem-lite/') || c.includes('/qwen-mem-lite/'))) continue;
         let paths = [...c.matchAll(/"([^"]+)"/g)].map((x) => x[1]).filter((p) => p.startsWith('/'));
         if (paths.length === 0) paths = c.split(/\s+/).filter((t) => t.startsWith('/'));
         for (const p of paths) {
@@ -1361,7 +1361,7 @@ export function clearCacheHookResidue() {
         p,
         JSON.stringify(
           {
-            description: h.description || 'claude-mem-lite hooks',
+            description: h.description || 'qwen-mem-lite hooks',
             _note: `Auto-cleared by hook-update.mjs post-install — prevents double hook registration (cache ver: ${ver})`,
             hooks: {},
           },

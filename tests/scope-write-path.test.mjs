@@ -1,6 +1,6 @@
 // D#135 P3 prerequisite — the observations.scope WRITE path.
 //
-// v44 added observations.scope + the CLAUDE_MEM_SCOPE_FILTER read lever
+// v44 added observations.scope + the QWEN_MEM_SCOPE_FILTER read lever
 // (scripts/pre-tool-recall.js skips `environment`-scoped rows on file-triggered
 // recalls). The lever was inert in practice: only ONE of the three write faces
 // ever set the column.

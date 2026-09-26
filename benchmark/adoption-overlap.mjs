@@ -40,7 +40,7 @@
 //   node benchmark/adoption-overlap.mjs --score-labels=path          # AUC of delta vs hand-authored label
 //
 // Defaults: dir = ~/.claude/projects/-mnt-data-ssd-dev-projects-mem
-//           db  = schema.mjs's DB_PATH (honors CLAUDE_MEM_DIR)
+//           db  = schema.mjs's DB_PATH (honors QWEN_MEM_DIR)
 //           end = now, start = end - 30d.
 import { readdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';

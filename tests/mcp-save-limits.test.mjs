@@ -36,10 +36,10 @@ beforeAll(async () => {
     args: [SERVER_PATH],
     env: {
       ...process.env,
-      CLAUDE_MEM_DIR: DB_DIR,
+      QWEN_MEM_DIR: DB_DIR,
       CLAUDE_PROJECT_DIR: '/test/project',
       PWD: '/test/project',
-      CLAUDE_MEM_AUTO_DEEP: '0',
+      QWEN_MEM_AUTO_DEEP: '0',
     },
   });
   client = new Client({ name: 'save-limits-client', version: '0.0.0' });
@@ -80,7 +80,7 @@ describe('mem_save size ceiling', () => {
     const id = Number(text.match(/#(\d+)/)?.[1]);
     expect(Number.isInteger(id)).toBe(true);
 
-    const db = new Database(join(DB_DIR, 'claude-mem-lite.db'), { readonly: true });
+    const db = new Database(join(DB_DIR, 'qwen-mem-lite.db'), { readonly: true });
     const row = db.prepare('SELECT title FROM observations WHERE id = ?').get(id);
     db.close();
 
@@ -101,7 +101,7 @@ describe('mem_save size ceiling', () => {
     });
     const text = (res?.content || []).map((c) => c.text).join('\n');
     const id = Number(text.match(/#(\d+)/)?.[1]);
-    const db = new Database(join(DB_DIR, 'claude-mem-lite.db'), { readonly: true });
+    const db = new Database(join(DB_DIR, 'qwen-mem-lite.db'), { readonly: true });
     const row = db.prepare('SELECT title, narrative FROM observations WHERE id = ?').get(id);
     db.close();
     expect(row.title).toBe(title);

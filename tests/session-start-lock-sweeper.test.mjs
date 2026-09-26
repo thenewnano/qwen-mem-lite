@@ -56,14 +56,14 @@ function runSessionStart() {
     input: JSON.stringify({ session_id: 'sweeper-ss', source: 'startup', cwd: dataDir }),
     env: {
       ...process.env,
-      CLAUDE_MEM_DIR: dataDir,
+      QWEN_MEM_DIR: dataDir,
       CLAUDE_PROJECT_DIR: dataDir,
-      CLAUDE_MEM_SKIP_UPDATE: '1',
-      CLAUDE_MEM_SKIP_MAINTAIN: '1',
-      CLAUDE_MEM_SKIP_COMPRESS: '1',
-      CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-      CLAUDE_MEM_SKIP_EPISODE_LLM: '1',
-      CLAUDE_MEM_SKIP_SUMMARY: '1',
+      QWEN_MEM_SKIP_UPDATE: '1',
+      QWEN_MEM_SKIP_MAINTAIN: '1',
+      QWEN_MEM_SKIP_COMPRESS: '1',
+      QWEN_MEM_SKIP_OPTIMIZE: '1',
+      QWEN_MEM_SKIP_EPISODE_LLM: '1',
+      QWEN_MEM_SKIP_SUMMARY: '1',
       MEM_NO_AUTO_ADOPT: '1',
     },
     stdio: 'pipe',
@@ -76,7 +76,7 @@ beforeEach(() => {
   dataDir = mkdtempSync(join(tmpdir(), 'mem-sweeper-'));
   runtimeDir = join(dataDir, 'runtime');
   mkdirSync(runtimeDir, { recursive: true });
-  dbPath = join(dataDir, 'claude-mem-lite.db');
+  dbPath = join(dataDir, 'qwen-mem-lite.db');
   const db = new Database(dbPath);
   initSchema(db);
   db.close();

@@ -109,8 +109,8 @@ describe('the reads-file name means the same thing in bash and in Node', () => {
         const proj = join(root, 'proj');
         for (const d of [home, data, proj]) mkdirSync(d, { recursive: true });
         const env = { ...process.env };
-        for (const k of Object.keys(env)) if (/^CLAUDE_MEM_/.test(k)) delete env[k];
-        const full = { ...env, HOME: home, CLAUDE_MEM_DIR: data, CLAUDE_PROJECT_DIR: proj, ...extraEnv };
+        for (const k of Object.keys(env)) if (/^QWEN_MEM_/.test(k)) delete env[k];
+        const full = { ...env, HOME: home, QWEN_MEM_DIR: data, CLAUDE_PROJECT_DIR: proj, ...extraEnv };
         const r = spawnSync('bash', [join(REPO, 'scripts/post-tool-use.sh')], {
           input: JSON.stringify({ tool_name: 'Read', tool_input: { file_path: '/x/y/z.mjs' } }),
           env: full,
@@ -119,7 +119,7 @@ describe('the reads-file name means the same thing in bash and in Node', () => {
         });
         expect(r.status, `prefilter exited ${r.status}: ${r.stderr}`).toBe(0);
         // Where Node would look, asked of the resolver the hooks themselves use.
-        const nodeDir = resolveRuntimeDir(resolveDataDir(full.CLAUDE_MEM_DIR), full);
+        const nodeDir = resolveRuntimeDir(resolveDataDir(full.QWEN_MEM_DIR), full);
         const wrote = (dir) =>
           existsSync(dir) ? readdirSync(dir).filter((f) => f.startsWith('reads-')) : [];
         return { nodeDir, inNodeDir: wrote(nodeDir), inDataRuntime: wrote(join(data, 'runtime')) };
@@ -134,15 +134,15 @@ describe('the reads-file name means the same thing in bash and in Node', () => {
       expect(r.inNodeDir, 'the bash prefilter wrote no reads- file on the default path').toHaveLength(1);
     });
 
-    it('honours CLAUDE_MEM_RUNTIME_DIR, which is the directory Node reads', () => {
+    it('honours QWEN_MEM_RUNTIME_DIR, which is the directory Node reads', () => {
       const rt = mkdtempSync(join(tmpdir(), 'reads-rt-'));
       try {
-        const r = writeAndLocate({ CLAUDE_MEM_RUNTIME_DIR: rt });
+        const r = writeAndLocate({ QWEN_MEM_RUNTIME_DIR: rt });
         expect(r.nodeDir).toBe(rt); // the resolver, not my restatement of it
         expect(
           r.inNodeDir,
           `bash wrote to ${r.inDataRuntime.length ? join('<data>', 'runtime') : 'nowhere'} while ` +
-            `hook.mjs reads ${r.nodeDir}. resolveRuntimeDir() honours CLAUDE_MEM_RUNTIME_DIR and ` +
+            `hook.mjs reads ${r.nodeDir}. resolveRuntimeDir() honours QWEN_MEM_RUNTIME_DIR and ` +
             'the bash side must mirror it: otherwise every Read is dropped from the episode AND ' +
             "the file lands outside the reaper's directory, so it grows forever.",
         ).toHaveLength(1);

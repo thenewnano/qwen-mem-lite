@@ -1,4 +1,4 @@
-// claude-mem-lite shared utilities
+// qwen-mem-lite shared utilities
 // Used by server.mjs, hook.mjs, and tests
 
 import { basename, dirname } from 'path';
@@ -302,22 +302,22 @@ export function makeEntryDesc(toolName, input, resp, opts) {
 // ─── Structured Logging ──────────────────────────────────────────────────────
 
 /**
- * Emit a structured log line gated by CLAUDE_MEM_DEBUG.
- * Format: [claude-mem-lite] [ISO timestamp] [LEVEL] context: message
+ * Emit a structured log line gated by QWEN_MEM_DEBUG.
+ * Format: [qwen-mem-lite] [ISO timestamp] [LEVEL] context: message
  * @param {'DEBUG'|'WARN'|'ERROR'} level Log severity
  * @param {string} context Module or function name
  * @param {string} msg Human-readable message
  */
 export function debugLog(level, context, msg) {
-  if (!process.env.CLAUDE_MEM_DEBUG) return;
+  if (!process.env.QWEN_MEM_DEBUG) return;
   const ts = new Date().toISOString();
-  console.error(`[claude-mem-lite] [${ts}] [${level}] ${context}: ${msg}`);
+  console.error(`[qwen-mem-lite] [${ts}] [${level}] ${context}: ${msg}`);
 }
 
 /**
  * Log a caught error at ERROR level (includes stack trace when available).
- * Gated by CLAUDE_MEM_DEBUG for stderr output. Separately, if
- * `CLAUDE_MEM_CATCH_SAMPLE` (float 0..1) is set, a random fraction of caught
+ * Gated by QWEN_MEM_DEBUG for stderr output. Separately, if
+ * `QWEN_MEM_CATCH_SAMPLE` (float 0..1) is set, a random fraction of caught
  * errors get appended to `$DB_DIR/errors/YYYY-MM-DD.jsonl` — observable
  * residue for otherwise-silent swallowed errors (see lib/err-sampler.mjs).
  * Use in catch blocks for non-fatal errors.
@@ -325,9 +325,9 @@ export function debugLog(level, context, msg) {
  * @param {string} context Module or function name for attribution
  */
 export function debugCatch(e, context) {
-  if (process.env.CLAUDE_MEM_DEBUG) {
+  if (process.env.QWEN_MEM_DEBUG) {
     const ts = new Date().toISOString();
-    console.error(`[claude-mem-lite] [${ts}] [ERROR] ${context}:`, e?.stack || e?.message || e);
+    console.error(`[qwen-mem-lite] [${ts}] [ERROR] ${context}:`, e?.stack || e?.message || e);
   }
   // Sampled-to-disk surface for post-mortem. Lazy-loaded so fs-less paths
   // don't pay the module cost; wrapped in try so sampler faults never crash
@@ -340,11 +340,11 @@ export function debugCatch(e, context) {
   // by blocking the specifier; tests/debug-catch-sampler-deps.test.mjs). Resolving at
   // call time also honours a data dir redirected after module load, which DB_DIR (a
   // load-time constant) does not.
-  if (process.env.CLAUDE_MEM_CATCH_SAMPLE) {
+  if (process.env.QWEN_MEM_CATCH_SAMPLE) {
     (async () => {
       try {
         const { maybeSampleError } = await import('./lib/err-sampler.mjs');
-        maybeSampleError(e, context, resolveDataDir(process.env.CLAUDE_MEM_DIR));
+        maybeSampleError(e, context, resolveDataDir(process.env.QWEN_MEM_DIR));
       } catch {
         /* sampler dynamic-import fault must not propagate */
       }

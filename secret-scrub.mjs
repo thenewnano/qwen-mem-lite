@@ -1,4 +1,4 @@
-// claude-mem-lite: Secret pattern detection and scrubbing
+// qwen-mem-lite: Secret pattern detection and scrubbing
 // Extracted from utils.mjs for focused responsibility
 
 import { stripPrivate } from './lib/private-strip.mjs';

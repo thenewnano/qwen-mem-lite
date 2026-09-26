@@ -1,5 +1,5 @@
 // D#51: benchmark/cite-recall.mjs must credit the PostToolUse error-recall hint
-// (hook.mjs triggerErrorRecall → `[claude-mem-lite] Related memories found for this
+// (hook.mjs triggerErrorRecall → `[qwen-mem-lite] Related memories found for this
 // error:` + `  #NN [type] body` rows) to its OWN :error-recall bucket, using the same
 // row-anchored extraction as production lib/citation-tracker.mjs (INJECTED_ROW_RE).
 //
@@ -62,7 +62,7 @@ describe('cite-recall :error-recall bucket (D#51)', () => {
     const now = Date.now();
     const T = new Date(now).toISOString();
     const block = [
-      '[claude-mem-lite] Related memories found for this error:',
+      '[qwen-mem-lite] Related memories found for this error:',
       '  #3860 [bugfix] Error: foo failed, same root cause as #9999 [decision] over there',
       '  #8736 [bugfix] bar baz qux',
       '  → Use mem_get(ids=[3860,8736]) for details.',
@@ -114,7 +114,7 @@ describe('cite-recall :error-recall bucket (D#51)', () => {
     const now = Date.now();
     const T = new Date(now).toISOString();
     const block = [
-      '[claude-mem-lite] Related memories found for this error:',
+      '[qwen-mem-lite] Related memories found for this error:',
       '  #4242 [decision] pick option D over B',
     ].join('\n'); // note: no `[mem]` line — old loose-marker gate would skip this entirely
     writeFileSync(

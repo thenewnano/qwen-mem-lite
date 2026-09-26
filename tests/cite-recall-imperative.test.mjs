@@ -1,5 +1,5 @@
 // Phase-2 instrumentation: benchmark/cite-recall.mjs must credit the task-imperative
-// line (CLAUDE_MEM_TASK_IMPERATIVE) to its own :imperative bucket. The line is
+// line (QWEN_MEM_TASK_IMPERATIVE) to its own :imperative bucket. The line is
 // co-located with the <memory-context> block in ONE UserPromptSubmit attachment, so
 // per-attachment marker routing would fold its #NN into :memory-context; this locks the
 // per-line split + the #1501 OR-gate (imperative-only attachments must not be skipped).

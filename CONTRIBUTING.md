@@ -1,4 +1,4 @@
-# Contributing to claude-mem-lite
+# Contributing to qwen-mem-lite
 
 Thanks for taking the time. This file exists because the project got its first outside
 contribution (PR #17) and discovered two things nobody had written down: how CI behaves
@@ -47,15 +47,15 @@ every one of those checks on push; the local hook is the second line, not the on
 ## The checks
 
 ```bash
-env -u CLAUDE_MEM_DIR npm test    # vitest run — the whole suite
+env -u QWEN_MEM_DIR npm test    # vitest run — the whole suite
 npm run lint                      # eslint .
 npm run dead-code                 # knip — see the caveat below
 ```
 
 **That `env -u` is not decoration.** The suite provisions its own sandbox, and one case
 (`tests/resolve-data-dir.test.mjs > follows a subprocess that inherited the ambient env`)
-asserts what a subprocess does with an *unset* `CLAUDE_MEM_DIR`. If you have
-claude-mem-lite installed and that variable exported, a plain `npm test` reports
+asserts what a subprocess does with an *unset* `QWEN_MEM_DIR`. If you have
+qwen-mem-lite installed and that variable exported, a plain `npm test` reports
 `1 failed | 10 passed` on that file and it is not your change. Measured, not assumed.
 
 Three things about those numbers that will otherwise cost you an afternoon:
@@ -140,12 +140,12 @@ imports can be deleted with a green suite — that has happened here (D#190).
   containing real command output and session ids), or `.tmp-*` twin files.
 - **Releases are maintainer-only.** A version bump must touch five files together
   (`package.json`, `package-lock.json`, `plugin.json`, `marketplace.json`, and the
-  Version line in `CLAUDE.md`), and pushing a `v*` tag publishes to npm automatically.
+  Version line in `CLAUDE.md`), and pushing a `v*` tag runs the release workflow (signed GitHub release; npm publishing is gated off).
   Please leave the version alone in a pull request.
 
 ## Reporting a bug
 
-Include the install shape — plugin-only, `~/.claude-mem-lite` managed install, npm
+Include the install shape — plugin-only, `~/.qwen-mem-lite` managed install, npm
 global, or a combination. Several defects have existed on exactly one of those and been
 invisible on the others, and the process environment differs between a hook, an MCP
 server, and your terminal in ways that have hidden bugs before (D#187).

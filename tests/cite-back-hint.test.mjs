@@ -328,7 +328,7 @@ describe('countUnsavedBugfixShape', () => {
             type: 'tool_use',
             name: 'Bash',
             input: {
-              command: 'claude-mem-lite activity save --type lesson --title "fix" --body "<root cause>"',
+              command: 'qwen-mem-lite activity save --type lesson --title "fix" --body "<root cause>"',
             },
           },
         ],
@@ -535,9 +535,9 @@ describe('buildCiteRecallNudge', () => {
     expect(out.split('\n').length).toBe(2);
   });
 
-  it('respects CLAUDE_MEM_NO_CITE_NUDGE=1 (full silence)', () => {
+  it('respects QWEN_MEM_NO_CITE_NUDGE=1 (full silence)', () => {
     seed('p6', { injected: 10, recalled: 0, ratio: 0, unsaved: 5 });
-    expect(buildCiteRecallNudge('p6', tmp, { CLAUDE_MEM_NO_CITE_NUDGE: '1' })).toBe('');
+    expect(buildCiteRecallNudge('p6', tmp, { QWEN_MEM_NO_CITE_NUDGE: '1' })).toBe('');
   });
 
   it('treats unsaved=0 as no nudge', () => {
@@ -587,9 +587,9 @@ describe('buildCiteRecallNudge', () => {
     expect(buildCiteRecallNudge('n3', tmp, {})).toContain('cite-recall 10%');
   });
 
-  it('CLAUDE_MEM_CITE_NUDGE_WIDE_DENOMINATOR=1 restores the pre-release gating', () => {
+  it('QWEN_MEM_CITE_NUDGE_WIDE_DENOMINATOR=1 restores the pre-release gating', () => {
     seed('n4', { injected: 40, recalled: 4, ratio: 0.1, gateInjected: 8, gateRecalled: 4, gateRatio: 0.5 });
-    const out = buildCiteRecallNudge('n4', tmp, { CLAUDE_MEM_CITE_NUDGE_WIDE_DENOMINATOR: '1' });
+    const out = buildCiteRecallNudge('n4', tmp, { QWEN_MEM_CITE_NUDGE_WIDE_DENOMINATOR: '1' });
     expect(out).toContain('cite-recall 10%');
     expect(out).toContain('(4/40)');
   });
@@ -606,8 +606,8 @@ describe('buildCiteRecallNudge', () => {
     // Default: injected < 5 → silent. Override min-injected to 3 → fires.
     expect(buildCiteRecallNudge('p9', tmp, {})).toBe('');
     const out = buildCiteRecallNudge('p9', tmp, {
-      CLAUDE_MEM_CITE_NUDGE_MIN_INJECTED: '3',
-      CLAUDE_MEM_CITE_NUDGE_THRESHOLD: '0.8',
+      QWEN_MEM_CITE_NUDGE_MIN_INJECTED: '3',
+      QWEN_MEM_CITE_NUDGE_THRESHOLD: '0.8',
     });
     expect(out).toContain('cite-recall 75%');
   });
@@ -637,9 +637,9 @@ describe('buildCiteRecallNudge', () => {
     expect(out).toContain('2 unsaved bugfix-shape');
   });
 
-  it('CLAUDE_MEM_CITE_NUDGE_SILENCE_AFTER=0 never silences', () => {
+  it('QWEN_MEM_CITE_NUDGE_SILENCE_AFTER=0 never silences', () => {
     seed('p-never', { injected: 10, recalled: 0, ratio: 0, lowStreak: 99 });
-    expect(buildCiteRecallNudge('p-never', tmp, { CLAUDE_MEM_CITE_NUDGE_SILENCE_AFTER: '0' })).toContain(
+    expect(buildCiteRecallNudge('p-never', tmp, { QWEN_MEM_CITE_NUDGE_SILENCE_AFTER: '0' })).toContain(
       'cite-recall 0%',
     );
   });
@@ -660,7 +660,7 @@ describe('buildCiteRecallNudge', () => {
     expect(buildCiteRecallNudge('p-thr0', tmp, {}), 'premise: these stats DO fire by default').toContain(
       'cite-recall 0%',
     );
-    expect(buildCiteRecallNudge('p-thr0', tmp, { CLAUDE_MEM_CITE_NUDGE_THRESHOLD: '0' })).toBe('');
+    expect(buildCiteRecallNudge('p-thr0', tmp, { QWEN_MEM_CITE_NUDGE_THRESHOLD: '0' })).toBe('');
   });
 
   it('MIN_INJECTED=0 removes the volume floor — the other swallowed 0', () => {
@@ -668,7 +668,7 @@ describe('buildCiteRecallNudge', () => {
     // let it through, which `Number(env.X) || 5` could not express.
     seed('p-min0', { injected: 1, recalled: 0, ratio: 0 });
     expect(buildCiteRecallNudge('p-min0', tmp, {}), 'premise: default floor suppresses it').toBe('');
-    expect(buildCiteRecallNudge('p-min0', tmp, { CLAUDE_MEM_CITE_NUDGE_MIN_INJECTED: '0' })).toContain(
+    expect(buildCiteRecallNudge('p-min0', tmp, { QWEN_MEM_CITE_NUDGE_MIN_INJECTED: '0' })).toContain(
       'cite-recall 0%',
     );
   });
@@ -678,7 +678,7 @@ describe('buildCiteRecallNudge', () => {
     // `lowStreak >= NaN` is false: the self-silencing turned OFF, which is the opposite of
     // every other knob's failure direction and the one a user would never notice.
     seed('p-garbage', { injected: 10, recalled: 0, ratio: 0, lowStreak: CITE_NUDGE_SILENCE_AFTER });
-    expect(buildCiteRecallNudge('p-garbage', tmp, { CLAUDE_MEM_CITE_NUDGE_SILENCE_AFTER: 'abc' })).toBe('');
+    expect(buildCiteRecallNudge('p-garbage', tmp, { QWEN_MEM_CITE_NUDGE_SILENCE_AFTER: 'abc' })).toBe('');
   });
 
   it('a fractional SILENCE_AFTER still works — the bound is >=, not an integer domain', () => {
@@ -686,12 +686,12 @@ describe('buildCiteRecallNudge', () => {
     // setting, and rejecting it would silently swap a working value for the default of 3.
     seed('p-frac', { injected: 10, recalled: 0, ratio: 0, lowStreak: 2 });
     expect(
-      buildCiteRecallNudge('p-frac', tmp, { CLAUDE_MEM_CITE_NUDGE_SILENCE_AFTER: '2.5' }),
+      buildCiteRecallNudge('p-frac', tmp, { QWEN_MEM_CITE_NUDGE_SILENCE_AFTER: '2.5' }),
       'lowStreak 2 is below 2.5, so the nag must still fire',
     ).toContain('cite-recall 0%');
     seed('p-frac2', { injected: 10, recalled: 0, ratio: 0, lowStreak: 3 });
     expect(
-      buildCiteRecallNudge('p-frac2', tmp, { CLAUDE_MEM_CITE_NUDGE_SILENCE_AFTER: '2.5' }),
+      buildCiteRecallNudge('p-frac2', tmp, { QWEN_MEM_CITE_NUDGE_SILENCE_AFTER: '2.5' }),
       'lowStreak 3 is above 2.5, so it must be silenced',
     ).toBe('');
   });
@@ -717,7 +717,7 @@ describe('nextCiteLowStreak', () => {
 
 // R11-B-P1-2 — the streak's unit. `Stop` fires once per assistant TURN, so the writer
 // that called nextCiteLowStreak on every fire was counting turns while its docblock (and
-// the CLAUDE_MEM_CITE_NUDGE_SILENCE_AFTER default of 3) described sessions. Production
+// the QWEN_MEM_CITE_NUDGE_SILENCE_AFTER default of 3) described sessions. Production
 // evidence at the time of the fix: lowStreak 58 against 26 transcripts on disk.
 describe('nextCiteStreakState (R11-B-P1-2)', () => {
   const LOW = { injected: 10, ratio: 0.2 }; // ratio gate fires
@@ -868,7 +868,7 @@ describe('extractCiteBackSignals (P5 ① — Stop-time positive signal)', () => 
       attachment: {
         type: 'hook_success',
         hookName: 'PostToolUse',
-        command: 'node /home/u/.claude-mem-lite/hook.mjs post-tool-use',
+        command: 'node /home/u/.qwen-mem-lite/hook.mjs post-tool-use',
         stdout: JSON.stringify({
           suppressOutput: true,
           hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: hintText },

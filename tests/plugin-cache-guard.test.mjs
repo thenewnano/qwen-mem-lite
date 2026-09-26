@@ -18,7 +18,7 @@ function makeHome() {
 }
 
 function writeCacheHooks(home, version, hooksBody) {
-  const dir = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', version, 'hooks');
+  const dir = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', version, 'hooks');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'hooks.json'), JSON.stringify(hooksBody, null, 2));
   return join(dir, 'hooks.json');
@@ -38,7 +38,7 @@ describe('plugin-cache-guard', () => {
             Stop: [{ matcher: '*', hooks: [] }],
           },
         });
-        const root = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', '3.95.0');
+        const root = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', '3.95.0');
         expect(pluginCacheHookEvents(root)).toEqual({
           ok: true,
           events: ['SessionStart', 'Stop'],
@@ -53,11 +53,11 @@ describe('plugin-cache-guard', () => {
       const home = makeHome();
       try {
         writeCacheHooks(home, '3.95.0', {
-          description: 'claude-mem-lite hooks',
+          description: 'qwen-mem-lite hooks',
           _note: 'Auto-cleared by hook-update.mjs post-install',
           hooks: {},
         });
-        const root = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', '3.95.0');
+        const root = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', '3.95.0');
         expect(pluginCacheHookEvents(root)).toEqual({ ok: false, events: [], reason: 'empty' });
       } finally {
         rmSync(home, { recursive: true, force: true });
@@ -67,7 +67,7 @@ describe('plugin-cache-guard', () => {
     it('says NO for a missing manifest and for an unparseable one', () => {
       const home = makeHome();
       try {
-        const root = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', '3.95.0');
+        const root = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', '3.95.0');
         expect(pluginCacheHookEvents(root)).toEqual({ ok: false, events: [], reason: 'no-manifest' });
 
         mkdirSync(join(root, 'hooks'), { recursive: true });
@@ -110,7 +110,7 @@ describe('plugin-cache-guard', () => {
           'plugins',
           'cache',
           'thenewnano',
-          'claude-mem-lite',
+          'qwen-mem-lite',
           '2.28.0',
           'hooks',
         );
@@ -167,7 +167,7 @@ describe('plugin-cache-guard', () => {
       }
     });
 
-    it('returns true when settings.json hooks reference claude-mem-lite path', () => {
+    it('returns true when settings.json hooks reference qwen-mem-lite path', () => {
       const home = makeHome();
       try {
         mkdirSync(join(home, '.claude'), { recursive: true });
@@ -179,7 +179,7 @@ describe('plugin-cache-guard', () => {
                 {
                   matcher: '*',
                   hooks: [
-                    { type: 'command', command: `node "${home}/.claude-mem-lite/hook.mjs" session-start` },
+                    { type: 'command', command: `node "${home}/.qwen-mem-lite/hook.mjs" session-start` },
                   ],
                 },
               ],
@@ -231,8 +231,8 @@ describe('plugin-cache-guard', () => {
     it('returns true when the managed entry names a launcher that exists', () => {
       const home = makeHome();
       try {
-        const launcher = join(home, '.claude-mem-lite', 'scripts', 'hook-launcher.mjs');
-        mkdirSync(join(home, '.claude-mem-lite', 'scripts'), { recursive: true });
+        const launcher = join(home, '.qwen-mem-lite', 'scripts', 'hook-launcher.mjs');
+        mkdirSync(join(home, '.qwen-mem-lite', 'scripts'), { recursive: true });
         writeFileSync(launcher, '// installed\n');
         writeSettings(home, `node "${launcher}" hook.mjs session-start`);
         expect(hasInstallManagedHooks({ home })).toBe(true);
@@ -245,7 +245,7 @@ describe('plugin-cache-guard', () => {
     it('says NO when the managed entry names a launcher that was deleted', () => {
       const home = makeHome();
       try {
-        const launcher = join(home, '.claude-mem-lite', 'scripts', 'hook-launcher.mjs');
+        const launcher = join(home, '.qwen-mem-lite', 'scripts', 'hook-launcher.mjs');
         writeSettings(home, `node "${launcher}" hook.mjs session-start`);
         // The string test still passes — that is precisely the trap.
         expect(hasInstallManagedHooks({ home })).toBe(true);
@@ -258,10 +258,10 @@ describe('plugin-cache-guard', () => {
     it('resolves an unquoted legacy command path too', () => {
       const home = makeHome();
       try {
-        const launcher = join(home, '.claude-mem-lite', 'hook.mjs');
+        const launcher = join(home, '.qwen-mem-lite', 'hook.mjs');
         writeSettings(home, `node ${launcher} session-start`);
         expect(hasLiveInstallManagedHooks({ home })).toBe(false);
-        mkdirSync(join(home, '.claude-mem-lite'), { recursive: true });
+        mkdirSync(join(home, '.qwen-mem-lite'), { recursive: true });
         writeFileSync(launcher, '// installed\n');
         expect(hasLiveInstallManagedHooks({ home })).toBe(true);
       } finally {
@@ -274,7 +274,7 @@ describe('plugin-cache-guard', () => {
       try {
         // Marker present, but nothing path-shaped to check — the narrow rule must not
         // turn "unfamiliar shape" into "dead", or it would silently disable the dedup.
-        writeSettings(home, 'run-mem-hook --plugin .claude-mem-lite/ session-start');
+        writeSettings(home, 'run-mem-hook --plugin .qwen-mem-lite/ session-start');
         expect(hasInstallManagedHooks({ home })).toBe(true);
         expect(hasLiveInstallManagedHooks({ home })).toBe(true);
       } finally {

@@ -1,8 +1,8 @@
 # CLAUDE.md
 
-Lightweight persistent memory for Claude Code. MCP server + hooks plugin.
+Lightweight persistent memory for Qwen Code and Claude Code. MCP server + hooks plugin.
 
-- **Version**: 6.12.1 — **this exact string is a release guard.**
+- **Version**: 7.0.0 — **this exact string is a release guard.**
   `tests/install-e2e.test.mjs` asserts CLAUDE.md contains `**Version**: <v>` matching
   `package.json`, `plugin.json` and `marketplace.json`. Do not reformat this line.
 - **Runtime**: Node >=22 (20 dropped in v4.0.0), ESM · npm · better-sqlite3 + FTS5
@@ -27,7 +27,7 @@ before retrieval, measurement, release, migration or schema work.**
 | **Recapture the gate baseline** | `node benchmark/benchmark.mjs --production-hybrid > benchmark/baseline.json` — **expires 30 days after its own `timestamp`**, and CI + publish pass `--strict`. Sampled **2026-09-26T07:40:01Z** → red from **2026-10-26 07:40 UTC**. The stamp lives in THREE places (`baseline.json`, `ci.yml`, this row); `tests/baseline-stamp-sync.test.mjs` fails if they disagree. **Recapture BEFORE tagging, in its own commit** — otherwise it goes red after the tag is pushed |
 | Audit metrics | `npm run audit:metrics` · `audit:baseline` · `audit:selfcheck` |
 
-Two CLI families, both canonical in `cli.mjs` (`claude-mem-lite help` for flags):
+Two CLI families, both canonical in `cli.mjs` (`qwen-mem-lite help` for flags):
 **`CLI_COMMANDS`** = `search recent recall get timeline browse context save update delete
 defer compress maintain optimize fts-check restore export import-jsonl stats citation-stats
 activity memdir-audit adopt unadopt help`; **`INSTALL_COMMANDS`** = `install uninstall status
@@ -105,9 +105,9 @@ scratch file there — moves the headline.
 
 | Baseline | Value | Tree / date |
 |----------|-------|-------------|
-| Tests | **425 files / 6585**, 0 skipped (1 skips without git hooks) | `main` @ `5b67178`, 2026-09-26, v6.12.1 tree |
+| Tests | **425 files / 6583**, 0 skipped (1 skips without git hooks) | post-rebrand working tree, 2026-09-26 (re-measured before commit) |
 | Knip | **32** unused exports, **0** unused files, **3** unlisted binaries | same tree, primary working tree, knip 6.35.1 |
-| Coverage | **85.94** stmts · **80.27** branches · **91.18** funcs · **87.12** lines | same tree, vitest 5.0.0 |
+| Coverage | **85.93** stmts · **80.24** branches · **91.19** funcs · **87.13** lines | same tree, vitest 5.0.0 |
 
 Coverage `include` is a **denylist** — staying out costs a named `exclude`. Outside by
 design: `install.mjs`, `server.mjs`, `hook.mjs`, `cli.mjs`, `benchmark/**`, `scripts/**`
@@ -159,7 +159,7 @@ inversion (83 → 130 files). → `baselines.md`, `findings.md § Baselines`.
 - **`package.json`'s `os` is an npm INSTALL gate sitting on every MCP launch after an update** (the plugin cache ships without `node_modules`), so `["darwin","linux"]` did not warn Windows users — it killed the stdio server. **A gate is not a message.** `doctor` keys on whether **bash runs** and returns **three** outcomes: "I could not look" gets its own warning, because a green "nothing to check" ends the search.
 - **A recovery path must not import the thing it recovers** — one import edge, for two path constants, put the signature-verified repair out of reach on the broken install it exists to repair. They live in `lib/data-paths.mjs` (a leaf): importing a constant drags in its module's whole load graph.
 - **A prebuilt addon that is PRESENT and will not load cannot be healed by compiling one** — better-sqlite3 picks `prebuilds/` on existence alone. Quarantine the dead prebuild **only inside the source-build branch**, and **never name the addon's path — ask `getPrebuildPath()`**.
-- **A DB written by a NEWER claude-mem-lite locks every older code home out, permanently.** `lib/schema-skew.mjs` computes the remedy from the ROOT that is behind, not the machine's global shape — **grep its importers rather than enumerating surfaces here.** The dedup marker must be per PROJECT; nothing called from `openDb`'s catch may throw (`getSessionId()` MINTS and writes).
+- **A DB written by a NEWER qwen-mem-lite locks every older code home out, permanently.** `lib/schema-skew.mjs` computes the remedy from the ROOT that is behind, not the machine's global shape — **grep its importers rather than enumerating surfaces here.** The dedup marker must be per PROJECT; nothing called from `openDb`'s catch may throw (`getSessionId()` MINTS and writes).
 - **A database file SQLite will not open is that shape with a DESTRUCTIVE remedy.** `SQLITE_CORRUPT_VTAB` (a damaged FTS index) carries the **same message text** as a damaged file — classify on `err.code` via `isFtsCorruptionError`, or you offer to overwrite a database whose rows are intact. The two channels carry **different strings**: the human gets the shell command, the model none. Register new per-project markers in `GC_PROJECT_MARKER_PREFIXES`.
 - **`claude mcp remove -s project` edits the repository you are standing in** — it once emptied this repo's tracked `.mcp.json`. Install warns instead, on both branches.
 
@@ -172,8 +172,8 @@ inversion (83 → 130 files). → `baselines.md`, `findings.md § Baselines`.
 - **An MCP tool's advertised JSON Schema is not its enforced schema, and `.pipe()` is where they part** — zod 4 renders the ZodPipe's INPUT side. Put the constraint INSIDE the `z.preprocess`.
 - **Tool name mapping**: Claude Code's Agent tool is `'Agent'`, not `'Task'`; Skill via `event.tool_input?.skill`. Skill commands (`/search`, `/recall`, `/recent`, `/timeline`) use `!` preprocessing for CLI injection.
 - **A sweep is only as wide as its population, and `walkShipped` is every shipped `.mjs`/`.js`** — the three shipped bash hooks sit outside every guard built on it, which is where two `setup.sh` runtime-dir splits hid for 12 audit rounds. Read a guard's population before its criteria, and fix this class behaviourally: a text scan carries the same blind spot.
-<!-- claude-mem-lite:begin v1 -->
-## claude-mem-lite — persistent memory
+<!-- qwen-mem-lite:begin v1 -->
+## qwen-mem-lite — persistent memory
 
 PreToolUse hooks already run `mem_recall` for past lessons before Read/Edit/Write. The calls worth making proactively:
 
@@ -185,10 +185,10 @@ PreToolUse hooks already run `mem_recall` for past lessons before Read/Edit/Writ
 | Deferring to a future session | `mem_defer({title, priority:1|2|3, detail})`; when fixed, add `closes_deferred=[N]` to `mem_save` |
 | Looking up past work / history | `mem_search "keywords"` · `mem_recent` · `mem_timeline` |
 
-Path cost is round-trips, not milliseconds: the PreToolUse hook above already recalls (0 calls) — prefer it. For an explicit query, if these `mem_*` tools are deferred behind ToolSearch (Qwen Code: `tool_search`) this session, the Bash CLI `claude-mem-lite` is one call vs two (ToolSearch + call); the MCP server instructions carry the absolute path to use when it is not on PATH.
+Path cost is round-trips, not milliseconds: the PreToolUse hook above already recalls (0 calls) — prefer it. For an explicit query, if these `mem_*` tools are deferred behind ToolSearch (Qwen Code: `tool_search`) this session, the Bash CLI `qwen-mem-lite` is one call vs two (ToolSearch + call); the MCP server instructions carry the absolute path to use when it is not on PATH.
 
-Full tool + CLI tables, citation/decay rules, and save discipline → `.claude/plugin_claude_mem_lite.md` (Claude Code) · `.qwen/plugin_claude_mem_lite.md` (Qwen Code)
-<!-- claude-mem-lite:end -->
+Full tool + CLI tables, citation/decay rules, and save discipline → `.claude/plugin_qwen_mem_lite.md` (Claude Code) · `.qwen/plugin_qwen_mem_lite.md` (Qwen Code)
+<!-- qwen-mem-lite:end -->
 
 <!-- code-graph-mcp:begin v2 -->
 ## Code Graph (repo-wide AST index)

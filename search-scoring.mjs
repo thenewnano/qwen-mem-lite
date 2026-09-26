@@ -1,4 +1,4 @@
-// claude-mem-lite shared search-scoring / ranking helpers: re-ranking, PRF term
+// qwen-mem-lite shared search-scoring / ranking helpers: re-ranking, PRF term
 // extraction, concept-expansion — plus the MCP instructions
 // builder and idle-cleanup/access-boost side helpers. Used by the MCP server,
 // the CLI (mem-cli), and search-engine; originally extracted from server.mjs for
@@ -38,7 +38,7 @@ import { PINNED_INJ_THRESHOLD } from './lib/maintain-core.mjs';
 const INSTRUCTIONS_BASE = [
   'Long-term memory across sessions. Hooks auto-inject context (0 round-trips) — prefer adopting that over any call. For an explicit query, pick the path with fewer model round-trips (CLI vs MCP below).',
   '',
-  `CLI (via Bash) — invoke as \`${CLI_INVOKE} <cmd>\` (resolves on any install shape; the bare \`claude-mem-lite\` shorthand works only after an optional global \`npm i -g github:thenewnano/qwen-mem-lite\`):`,
+  `CLI (via Bash) — invoke as \`${CLI_INVOKE} <cmd>\` (resolves on any install shape; the bare \`qwen-mem-lite\` shorthand works only after an optional global \`npm i -g github:thenewnano/qwen-mem-lite\`):`,
   `  ${CLI_INVOKE} search "query"  — FTS5 full-text search`,
   `  ${CLI_INVOKE} search "err" --type bugfix  — filter by type`,
   `  ${CLI_INVOKE} recall "file.mjs"  — file-related memories`,
@@ -341,7 +341,7 @@ export function expandQueryByConcepts(db, ftsQuery, project) {
  * incidence on that corpus is zero, and this is a snapshot of one corpus, not a property.
  *
  * WHAT THIS DELIBERATELY DOES NOT FIX. `importance = 1` is also what an explicit
- * `claude-mem-lite update N --importance 1` writes, and that demotion is reverted by the
+ * `qwen-mem-lite update N --importance 1` writes, and that demotion is reverted by the
  * next read exactly the same way — worse, INSPECTING the row is what pushes access_count to
  * 2 in the first place. Separating "1 because nobody set it" from "1 because a human said
  * so" needs a marker this schema does not have, and `demoted_at` is not it — for a reason

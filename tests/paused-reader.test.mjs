@@ -174,18 +174,18 @@ describe('readPausedNote', () => {
     writePaused('guarded-paused.md', '# Paused — guarded\n\n## Not done\n\n- an item\n');
     vi.spyOn(process, 'cwd').mockReturnValue(root);
 
-    expect(process.env.CLAUDE_MEM_TEST_GUARD).toBe('1'); // premise: the guard is actually on
+    expect(process.env.QWEN_MEM_TEST_GUARD).toBe('1'); // premise: the guard is actually on
 
     expect(readPausedNote()).toBeNull(); // default path is neutralised
     expect(readPausedNote({ projectPath: root })?.items).toEqual(['an item']); // explicit is not
 
     // ...and the default reads normally once the guard is off, so this is containment and
     // not a reader that simply never returns anything.
-    process.env.CLAUDE_MEM_TEST_GUARD = 'off';
+    process.env.QWEN_MEM_TEST_GUARD = 'off';
     try {
       expect(readPausedNote()?.items).toEqual(['an item']);
     } finally {
-      process.env.CLAUDE_MEM_TEST_GUARD = '1';
+      process.env.QWEN_MEM_TEST_GUARD = '1';
     }
   });
 

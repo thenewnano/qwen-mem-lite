@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// claude-mem-lite: PreToolUse file recall — injects lessons before Edit/Write
+// qwen-mem-lite: PreToolUse file recall — injects lessons before Edit/Write
 // Lightweight standalone (~30ms): only imports better-sqlite3, fs, path, os,
 // and the pure-data lib/low-signal-patterns.mjs (zero runtime deps, ~1ms overhead).
 // Safety: readonly DB, exit 0 always, 3s timeout
@@ -65,15 +65,15 @@ import { readHookStdin, TOOL_INPUT_FILE_MAX_BYTES, salvageTruncatedHookEvent } f
 import { inferProject } from '../project-utils.mjs';
 
 import { DAY_MS } from '../lib/time-constants.mjs';
-// CLAUDE_MEM_DIR matches schema.mjs / main CLI — one env var sandboxes the
-// whole system. CLAUDE_MEM_DB_PATH / CLAUDE_MEM_RUNTIME_DIR remain as
+// QWEN_MEM_DIR matches schema.mjs / main CLI — one env var sandboxes the
+// whole system. QWEN_MEM_DB_PATH / QWEN_MEM_RUNTIME_DIR remain as
 // per-component overrides for tests that mix isolated + real paths.
-const DATA_DIR = resolveDataDir(process.env.CLAUDE_MEM_DIR);
-const DB_PATH = process.env.CLAUDE_MEM_DB_PATH || join(DATA_DIR, 'claude-mem-lite.db');
+const DATA_DIR = resolveDataDir(process.env.QWEN_MEM_DIR);
+const DB_PATH = process.env.QWEN_MEM_DB_PATH || join(DATA_DIR, 'qwen-mem-lite.db');
 const RUNTIME_DIR = resolveRuntimeDir(DATA_DIR);
 
 // A3 (v2.83): cross-hook dedup window. UPS writes
-// `runtime/.claude-mem-injected-<project>` after each inject; we read it to drop IDs the
+// `runtime/.qwen-mem-injected-<project>` after each inject; we read it to drop IDs the
 // agent already saw in this window. Imported, not inlined (ARCH-3): the copy's stated
 // reason — keep this standalone fast path import-free (#8447) — was retired by v3.80.0,
 // which already imports lib modules here, and the inlined value silently encoded the
@@ -89,7 +89,7 @@ import { DEDUP_STALE_MS as CROSS_HOOK_DEDUP_MS } from './prompt-search-utils.mjs
 // false. `crossHookInjectedFile` is a UNION across hooks and calls inside the staleness
 // window: `mergeCrossHookInjected` unions new ids into the old ones, UPS contributes up
 // to MAX_RESULTS per prompt and this script contributes up to `mergeCap` per trigger, so
-// nothing holds it at 3. Measured on this machine's `runtime/.claude-mem-injected-*`
+// nothing holds it at 3. Measured on this machine's `runtime/.qwen-mem-injected-*`
 // markers (2026-09-01): id-count histogram 1x9, 2x1, 3x2, 16x1 over n=13, and 1x11, 2x1,
 // 3x1, 15x1 over n=14 an hour later. Read that as "3 is not a bound", not as a
 // distribution: it is one developer machine, the tail entry is a single long agent session
@@ -131,18 +131,17 @@ const COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes (used only for legacy fallback)
 // bug-reintroduction 100%→50% — the agent sees lessons and ignores them; the
 // bottleneck is ACTING). Default ON: Edit/Write lesson blocks end with an ack
 // directive, and Read→Edit re-surfaces the Read-time lesson IDs as a one-line
-// ack nudge at the actual action point. CLAUDE_MEM_SALIENCE=legacy (or 0)
+// ack nudge at the actual action point. QWEN_MEM_SALIENCE=legacy (or 0)
 // restores the pre-v2.98 passive behavior.
-const SALIENCE_LEGACY =
-  process.env.CLAUDE_MEM_SALIENCE === 'legacy' || process.env.CLAUDE_MEM_SALIENCE === '0';
-const SALIENCE_BIND = process.env.CLAUDE_MEM_SALIENCE === 'bind';
-const SALIENCE_BRIDGE = process.env.CLAUDE_MEM_SALIENCE === 'bridge';
+const SALIENCE_LEGACY = process.env.QWEN_MEM_SALIENCE === 'legacy' || process.env.QWEN_MEM_SALIENCE === '0';
+const SALIENCE_BIND = process.env.QWEN_MEM_SALIENCE === 'bind';
+const SALIENCE_BRIDGE = process.env.QWEN_MEM_SALIENCE === 'bridge';
 const ACK_DIRECTIVE =
   "apply each lesson to this edit or rule it out — state '#NN applied' or '#NN n/a — <reason>' in your next user-facing message.";
 // v-bind salience forcing-function (#8771 audit: ack ≠ act). Instead of a cheap
 // '#NN applied / n/a' verdict, demand the model bind the lesson to the concrete
 // line it's editing and quote the satisfying edit line. Selected by
-// CLAUDE_MEM_SALIENCE=bind; default stays ACK_DIRECTIVE.
+// QWEN_MEM_SALIENCE=bind; default stays ACK_DIRECTIVE.
 const BIND_DIRECTIVE =
   "For each lesson: state the one concrete check it forces on the line(s) you're editing, quote the edit line that satisfies it, then report '#NN: <check> — pass' or '#NN: n/a — <why this edit can't reach it>'.";
 const ACTIVE_DIRECTIVE = SALIENCE_BIND ? BIND_DIRECTIVE : ACK_DIRECTIVE;
@@ -150,10 +149,10 @@ const STALE_MS = 10 * 60 * 1000; // 10 minutes cleanup threshold for legacy file
 // Feature ① (file intelligence): on the first Read of a file each session, inject
 // its approximate token size + a one-line summary so the agent can decide to read
 // fully, slice, or grep. Read-only (Edit/Write already commit to the file). Default
-// ON; CLAUDE_MEM_FILE_INTEL=0 disables. Files below the token floor stay silent so
-// small reads carry no noise. Env names mirror schema.mjs CLAUDE_MEM_* convention (#8447).
+// ON; QWEN_MEM_FILE_INTEL=0 disables. Files below the token floor stay silent so
+// small reads carry no noise. Env names mirror schema.mjs QWEN_MEM_* convention (#8447).
 const FILE_INTEL_OFF = ['0', 'off', 'false', 'no'].includes(
-  String(process.env.CLAUDE_MEM_FILE_INTEL || '').toLowerCase(),
+  String(process.env.QWEN_MEM_FILE_INTEL || '').toLowerCase(),
 );
 // P2 (D#78): edge-level decay ENFORCEMENT — opt-in (default OFF, shadow-first).
 // When on, a (obs,file) edge whose miss_streak reached K consecutive uncited
@@ -161,11 +160,11 @@ const FILE_INTEL_OFF = ['0', 'off', 'false', 'no'].includes(
 // search / UPS / error-recall. P1 counting (Stop-side attribution) is always
 // on regardless of this flag. Flip only after real-DB cite-rate evidence.
 const EDGE_DECAY_ON = ['1', 'on', 'true', 'yes'].includes(
-  String(process.env.CLAUDE_MEM_EDGE_DECAY || '').toLowerCase(),
+  String(process.env.QWEN_MEM_EDGE_DECAY || '').toLowerCase(),
 );
 // NaN-checked, not `|| 3`: an explicit K=0 is falsy and would silently become
 // the default instead of clamping to the declared minimum of 1 (review D#78).
-const EDGE_DECAY_K_RAW = parseInt(process.env.CLAUDE_MEM_EDGE_DECAY_K, 10);
+const EDGE_DECAY_K_RAW = parseInt(process.env.QWEN_MEM_EDGE_DECAY_K, 10);
 const EDGE_DECAY_K = Math.max(1, Number.isNaN(EDGE_DECAY_K_RAW) ? 3 : EDGE_DECAY_K_RAW);
 // P3 (D#78): scope filter — opt-in (default OFF, shadow-first). When on,
 // environment-scoped observations (tooling/CI/network gotchas that apply in
@@ -211,15 +210,15 @@ const EDGE_DECAY_K = Math.max(1, Number.isNaN(EDGE_DECAY_K_RAW) ? 3 : EDGE_DECAY
 // era-confounded. The `(null)` bucket and the face-overall figure ARE, being
 // dominated by legacy rows.
 const SCOPE_FILTER_ON = ['1', 'on', 'true', 'yes'].includes(
-  String(process.env.CLAUDE_MEM_SCOPE_FILTER || '').toLowerCase(),
+  String(process.env.QWEN_MEM_SCOPE_FILTER || '').toLowerCase(),
 );
 // `min: 1` replaces the old `Math.max(1, parseInt(…) || 800)`. The wrapper made the
 // clamp look like the whole story, but the `|| 800` inside it swallowed an explicit 0 —
-// `CLAUDE_MEM_FILE_INTEL_MIN_TOKENS=0` (a user asking for no floor) landed on 800, not on
+// `QWEN_MEM_FILE_INTEL_MIN_TOKENS=0` (a user asking for no floor) landed on 800, not on
 // 1. Same class as the UPS knobs; caught by the widened tree sweep in
 // tests/env-number.test.mjs once it learned the trailing-default shape.
-const FILE_INTEL_MIN_TOKENS = envNumber(process.env.CLAUDE_MEM_FILE_INTEL_MIN_TOKENS, {
-  name: 'CLAUDE_MEM_FILE_INTEL_MIN_TOKENS',
+const FILE_INTEL_MIN_TOKENS = envNumber(process.env.QWEN_MEM_FILE_INTEL_MIN_TOKENS, {
+  name: 'QWEN_MEM_FILE_INTEL_MIN_TOKENS',
   defaultValue: 800,
   min: 1,
   integer: true,
@@ -227,12 +226,12 @@ const FILE_INTEL_MIN_TOKENS = envNumber(process.env.CLAUDE_MEM_FILE_INTEL_MIN_TO
 // Feature ② (repeated-read guard): when the agent does a FULL re-read of a file
 // it already read this session and the file is unchanged (mtime), nudge it to
 // reuse context instead of re-slurping. Read-only; only fires above the floor and
-// never on offset/limit paging. Default ON; CLAUDE_MEM_REREAD_GUARD=0 disables.
+// never on offset/limit paging. Default ON; QWEN_MEM_REREAD_GUARD=0 disables.
 const REREAD_GUARD_OFF = ['0', 'off', 'false', 'no'].includes(
-  String(process.env.CLAUDE_MEM_REREAD_GUARD || '').toLowerCase(),
+  String(process.env.QWEN_MEM_REREAD_GUARD || '').toLowerCase(),
 );
-const REREAD_MIN_TOKENS = envNumber(process.env.CLAUDE_MEM_REREAD_MIN_TOKENS, {
-  name: 'CLAUDE_MEM_REREAD_MIN_TOKENS',
+const REREAD_MIN_TOKENS = envNumber(process.env.QWEN_MEM_REREAD_MIN_TOKENS, {
+  name: 'QWEN_MEM_REREAD_MIN_TOKENS',
   defaultValue: 600,
   min: 1,
   integer: true,
@@ -251,12 +250,12 @@ function cooldownPathFor(sessionId) {
   return sharedCooldownPathFor(RUNTIME_DIR, sessionId);
 }
 
-// Comprehension-bridge (CLAUDE_MEM_SALIENCE=bridge): rewrite the top bound lesson
+// Comprehension-bridge (QWEN_MEM_SALIENCE=bridge): rewrite the top bound lesson
 // into a check naming a symbol in THIS change. Dynamic import keeps the LLM stack
 // out of the default fast path (#8447). Fail-open: null → caller uses ACK line.
 async function bridgeTopLesson(rows, changeText) {
   if (!SALIENCE_BRIDGE || !changeText) return null;
-  const fake = process.env.CLAUDE_MEM_BRIDGE_FAKE;
+  const fake = process.env.QWEN_MEM_BRIDGE_FAKE;
   let extractIdents, bridgeLesson;
   try {
     ({ extractIdents } = await import('../lib/lesson-idents.mjs'));
@@ -300,7 +299,7 @@ function entryTimestamp(v) {
 }
 
 // A3 (v2.83): cross-hook injected-IDs store. UPS writes
-// `runtime/.claude-mem-injected-<project>-<session>` with {ids, ts, count}. We
+// `runtime/.qwen-mem-injected-<project>-<session>` with {ids, ts, count}. We
 // read inside the staleness window, filter overlaps from PreToolUse output,
 // then merge back so the next UPS sees what we emitted too.
 // D#120: the file is keyed per SESSION (payload-only keying let two concurrent
@@ -368,7 +367,7 @@ function writeCooldown(cooldownPath, data, isSessionScoped) {
 
 try {
   // Skip if recursive hook
-  if (process.env.CLAUDE_MEM_HOOK_RUNNING) process.exit(0);
+  if (process.env.QWEN_MEM_HOOK_RUNNING) process.exit(0);
 
   // Skip if DB doesn't exist
   if (!existsSync(DB_PATH)) process.exit(0);
@@ -735,7 +734,7 @@ try {
     // reliably renders across CC variants (sdscc drops plain-text stdout from PreToolUse).
     // suppressOutput:true hides it from transcript mode per CC hook docs.
     // Feature ①: file intelligence (size + summary) for the first Read of this
-    // file this session. Read-only; opt out via CLAUDE_MEM_FILE_INTEL=0. Never
+    // file this session. Read-only; opt out via QWEN_MEM_FILE_INTEL=0. Never
     // throws — fileIntelFor returns null on unreadable/below-threshold files.
     let fileIntelLine = null;
     if (isRead && !FILE_INTEL_OFF) {
@@ -743,7 +742,7 @@ try {
         fileIntelLine = fileIntelFor(filePath, { minTokens: FILE_INTEL_MIN_TOKENS });
       } catch {}
     }
-    // Tier-1 firing counter (①). recordMetric no-ops unless CLAUDE_MEM_METRICS=1,
+    // Tier-1 firing counter (①). recordMetric no-ops unless QWEN_MEM_METRICS=1,
     // so default users pay nothing; observers see counts in `doctor` / `stats`.
     if (fileIntelLine) recordMetric(DATA_DIR, { event: 'file_intel' });
     const lines = [];
@@ -771,7 +770,7 @@ try {
       });
     }
     const showFraming =
-      hasLessons || Boolean(fileIntelLine) || (!isRead && process.env.CLAUDE_MEM_PRETOOL_NUDGE === '1');
+      hasLessons || Boolean(fileIntelLine) || (!isRead && process.env.QWEN_MEM_PRETOOL_NUDGE === '1');
     if (showFraming) {
       // Framing line mirrors #7758 handoff-injection fix: without an explicit
       // "system-injected, continue" disclaimer, observed turn-end after Edit+reminder
@@ -836,7 +835,7 @@ try {
           );
         else lines.push(`[mem] ⚠ Before this edit: ${ACTIVE_DIRECTIVE}`);
       }
-    } else if (!isRead && process.env.CLAUDE_MEM_PRETOOL_NUDGE === '1') {
+    } else if (!isRead && process.env.QWEN_MEM_PRETOOL_NUDGE === '1') {
       // R-4: Edit/Write empty → short backfill reminder. OPT-IN (default off) as
       // of the cross-project audit: this "no prior lessons, remember to /lesson"
       // reminder fired on ~70% of Edit/Write recalls and drove zero observed
@@ -844,7 +843,7 @@ try {
       // definition can't have a lesson. Save-nudging now lives at Stop time
       // (buildCiteRecallNudge's unsaved-bugfix line + the cite-back hint), which
       // has the full episode to judge whether a real fix happened. Set
-      // CLAUDE_MEM_PRETOOL_NUDGE=1 to restore the per-Edit reminder.
+      // QWEN_MEM_PRETOOL_NUDGE=1 to restore the per-Edit reminder.
       //
       // Read never emitted this (passive). The cooldown write below still runs on
       // every branch, so Read→Edit dedup + cite-back lessonId tracking are intact.

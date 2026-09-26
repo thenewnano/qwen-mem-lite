@@ -459,22 +459,22 @@ describe('deepDisclosureNote — D#3, the caveat the caller could not otherwise 
     expect(deepDisclosureNote({ ...flooded, rowCount: 1 })).toContain('ADJACENT');
   });
 
-  it('honours the CLAUDE_MEM_DEEP_DISCLOSURE=off opt-out, case-insensitively', () => {
+  it('honours the QWEN_MEM_DEEP_DISCLOSURE=off opt-out, case-insensitively', () => {
     // Required by the released-artifact checklist: a user-visible default change ships with
     // a revert path that is not "pin the old version".
     const args = { escalated: true, escalatedObsCount: 2, variantCount: 4, rowCount: 10 };
-    expect(deepDisclosureNote({ ...args, env: { CLAUDE_MEM_DEEP_DISCLOSURE: 'off' } })).toBe('');
-    expect(deepDisclosureNote({ ...args, env: { CLAUDE_MEM_DEEP_DISCLOSURE: 'OFF' } })).toBe('');
+    expect(deepDisclosureNote({ ...args, env: { QWEN_MEM_DEEP_DISCLOSURE: 'off' } })).toBe('');
+    expect(deepDisclosureNote({ ...args, env: { QWEN_MEM_DEEP_DISCLOSURE: 'OFF' } })).toBe('');
     // Any other value keeps the disclosure — an off switch that trips on '0' or 'false'
     // would silence it for anyone who set the var to the wrong word and thought otherwise.
-    expect(deepDisclosureNote({ ...args, env: { CLAUDE_MEM_DEEP_DISCLOSURE: '0' } })).not.toBe('');
+    expect(deepDisclosureNote({ ...args, env: { QWEN_MEM_DEEP_DISCLOSURE: '0' } })).not.toBe('');
     expect(deepDisclosureNote({ ...args, env: {} })).not.toBe('');
   });
 
   it('is wired into BOTH faces, from one shared home', () => {
     // Structural, and deliberately so. The positive end-to-end path needs an LLM to produce
     // >1 variant, and the suite forbids real LLM calls globally (vitest.config.mjs blanks
-    // both API keys and sets CLAUDE_MEM_AUTO_DEEP_CLI=0) — which is exactly why the existing
+    // both API keys and sets QWEN_MEM_AUTO_DEEP_CLI=0) — which is exactly why the existing
     // F13 "rewrote into N variants" disclosure has no test at all. What can be checked
     // deterministically is that neither face hand-rolls its own wording: this repo's most
     // expensive recurring defect is twin surfaces drifting apart.
@@ -516,14 +516,14 @@ describe('autoDeepLlmReady — LLM availability gate for AUTO escalation', () =>
 
   it('kill switch honors common disable spellings, not just the exact "0"', () => {
     for (const off of ['0', 'false', 'off', 'NO', ' false ']) {
-      expect(autoDeepLlmReady({ CLAUDE_MEM_AUTO_DEEP_CLI: off }), `"${off}" should disable`).toBe(false);
+      expect(autoDeepLlmReady({ QWEN_MEM_AUTO_DEEP_CLI: off }), `"${off}" should disable`).toBe(false);
     }
     // a non-disable value (or empty/unset) leaves it enabled (default-on)
-    expect(autoDeepLlmReady({ CLAUDE_MEM_AUTO_DEEP_CLI: '1' })).toBe(true);
-    expect(autoDeepLlmReady({ CLAUDE_MEM_AUTO_DEEP_CLI: '' })).toBe(true);
+    expect(autoDeepLlmReady({ QWEN_MEM_AUTO_DEEP_CLI: '1' })).toBe(true);
+    expect(autoDeepLlmReady({ QWEN_MEM_AUTO_DEEP_CLI: '' })).toBe(true);
     // an injected llm or a provider key still overrides the kill switch
-    expect(autoDeepLlmReady({ CLAUDE_MEM_AUTO_DEEP_CLI: '0' }, async () => null)).toBe(true);
-    expect(autoDeepLlmReady({ CLAUDE_MEM_AUTO_DEEP_CLI: '0', ANTHROPIC_API_KEY: 'sk' })).toBe(true);
+    expect(autoDeepLlmReady({ QWEN_MEM_AUTO_DEEP_CLI: '0' }, async () => null)).toBe(true);
+    expect(autoDeepLlmReady({ QWEN_MEM_AUTO_DEEP_CLI: '0', ANTHROPIC_API_KEY: 'sk' })).toBe(true);
   });
 });
 
@@ -610,12 +610,12 @@ describe('D#40 auto-path safety — throttle + rewrite cache + no-retry', () => 
 
 describe('CLI deep-mode resolution (default-off)', () => {
   it('CLI default is normal (no escalation) when env unset', () => {
-    const prev = process.env.CLAUDE_MEM_AUTO_DEEP;
-    delete process.env.CLAUDE_MEM_AUTO_DEEP;
+    const prev = process.env.QWEN_MEM_AUTO_DEEP;
+    delete process.env.QWEN_MEM_AUTO_DEEP;
     try {
       expect(resolveDeepMode(undefined, { surface: 'cli' })).toBe('normal');
     } finally {
-      if (prev !== undefined) process.env.CLAUDE_MEM_AUTO_DEEP = prev;
+      if (prev !== undefined) process.env.QWEN_MEM_AUTO_DEEP = prev;
     }
   });
 
@@ -624,8 +624,8 @@ describe('CLI deep-mode resolution (default-off)', () => {
     expect(resolveDeepMode(false, { surface: 'cli', env: {} })).toBe('normal');
   });
 
-  it('CLI opts into auto only when CLAUDE_MEM_AUTO_DEEP=1', () => {
-    expect(resolveDeepMode(undefined, { surface: 'cli', env: { CLAUDE_MEM_AUTO_DEEP: '1' } })).toBe('auto');
+  it('CLI opts into auto only when QWEN_MEM_AUTO_DEEP=1', () => {
+    expect(resolveDeepMode(undefined, { surface: 'cli', env: { QWEN_MEM_AUTO_DEEP: '1' } })).toBe('auto');
   });
 });
 import { handleSearchForTest } from '../server.mjs';
@@ -724,11 +724,11 @@ describe('shouldEscalateToDeep — folded-in corpus guard (FIX 2)', () => {
 
 describe('resolveDeepMode — tri-state precedence', () => {
   it('explicit true → deep (ignores env)', () => {
-    expect(resolveDeepMode(true, { surface: 'cli', env: { CLAUDE_MEM_AUTO_DEEP: '0' } })).toBe('deep');
+    expect(resolveDeepMode(true, { surface: 'cli', env: { QWEN_MEM_AUTO_DEEP: '0' } })).toBe('deep');
   });
 
   it('explicit false → normal (ignores env)', () => {
-    expect(resolveDeepMode(false, { surface: 'mcp', env: { CLAUDE_MEM_AUTO_DEEP: '1' } })).toBe('normal');
+    expect(resolveDeepMode(false, { surface: 'mcp', env: { QWEN_MEM_AUTO_DEEP: '1' } })).toBe('normal');
   });
 
   it('undefined + env unset → per-surface default (mcp=auto, cli=normal)', () => {
@@ -737,11 +737,11 @@ describe('resolveDeepMode — tri-state precedence', () => {
   });
 
   it('undefined + env=1 → auto on both surfaces', () => {
-    expect(resolveDeepMode(undefined, { surface: 'cli', env: { CLAUDE_MEM_AUTO_DEEP: '1' } })).toBe('auto');
+    expect(resolveDeepMode(undefined, { surface: 'cli', env: { QWEN_MEM_AUTO_DEEP: '1' } })).toBe('auto');
   });
 
   it('undefined + env=0 → normal on both surfaces', () => {
-    expect(resolveDeepMode(undefined, { surface: 'mcp', env: { CLAUDE_MEM_AUTO_DEEP: '0' } })).toBe('normal');
+    expect(resolveDeepMode(undefined, { surface: 'mcp', env: { QWEN_MEM_AUTO_DEEP: '0' } })).toBe('normal');
   });
 
   it('AUTO_DEEP_MIN_RESULTS is the documented default of 3', () => {
@@ -792,18 +792,18 @@ describe('mem_search auto-escalation (MCP, default-on)', () => {
     db.close();
   });
 
-  it('CLAUDE_MEM_AUTO_DEEP=0 disables escalation', async () => {
+  it('QWEN_MEM_AUTO_DEEP=0 disables escalation', async () => {
     const db = seededDb();
     const llm = stubLLM({ variants: ['nope'] });
-    const prev = process.env.CLAUDE_MEM_AUTO_DEEP;
-    process.env.CLAUDE_MEM_AUTO_DEEP = '0';
+    const prev = process.env.QWEN_MEM_AUTO_DEEP;
+    process.env.QWEN_MEM_AUTO_DEEP = '0';
     try {
       const res = await handleSearchForTest(db, { query: 'zqxjv9471kpw' }, { llm });
       expect(res.escalated).toBe(false);
       expect(llm.calls()).toBe(0);
     } finally {
-      if (prev === undefined) delete process.env.CLAUDE_MEM_AUTO_DEEP;
-      else process.env.CLAUDE_MEM_AUTO_DEEP = prev;
+      if (prev === undefined) delete process.env.QWEN_MEM_AUTO_DEEP;
+      else process.env.QWEN_MEM_AUTO_DEEP = prev;
     }
     db.close();
   });
@@ -908,8 +908,8 @@ describe('CLI cmdSearch auto-escalation (D#39)', () => {
   it('auto-escalates on a weak query and total reflects the fused variant set (#8735)', async () => {
     const db = seededDb();
     const llm = stubLLM({ variants: ['kubernetes pods', 'k8s cluster scheduling'] });
-    const prev = process.env.CLAUDE_MEM_AUTO_DEEP;
-    process.env.CLAUDE_MEM_AUTO_DEEP = '1';
+    const prev = process.env.QWEN_MEM_AUTO_DEEP;
+    process.env.QWEN_MEM_AUTO_DEEP = '1';
     let parsed;
     try {
       // 'zqxjv9471kpw' hits 0 obs in the seeded corpus → count < AUTO_DEEP_MIN_RESULTS → escalates.
@@ -928,8 +928,8 @@ describe('CLI cmdSearch auto-escalation (D#39)', () => {
       }
       parsed = JSON.parse(stdout.trim());
     } finally {
-      if (prev === undefined) delete process.env.CLAUDE_MEM_AUTO_DEEP;
-      else process.env.CLAUDE_MEM_AUTO_DEEP = prev;
+      if (prev === undefined) delete process.env.QWEN_MEM_AUTO_DEEP;
+      else process.env.QWEN_MEM_AUTO_DEEP = prev;
     }
 
     // #8735: total is results.length (fused) not the original FTS count (~0).
@@ -943,11 +943,11 @@ describe('CLI cmdSearch auto-escalation (D#39)', () => {
     db.close();
   });
 
-  it('default-off: no escalation without CLAUDE_MEM_AUTO_DEEP, stub LLM never called', async () => {
+  it('default-off: no escalation without QWEN_MEM_AUTO_DEEP, stub LLM never called', async () => {
     const db = seededDb();
     const llm = stubLLM({ variants: ['kubernetes pods'] });
-    const prev = process.env.CLAUDE_MEM_AUTO_DEEP;
-    delete process.env.CLAUDE_MEM_AUTO_DEEP;
+    const prev = process.env.QWEN_MEM_AUTO_DEEP;
+    delete process.env.QWEN_MEM_AUTO_DEEP;
     let parsed;
     try {
       let stdout = '';
@@ -963,7 +963,7 @@ describe('CLI cmdSearch auto-escalation (D#39)', () => {
       }
       parsed = JSON.parse(stdout.trim());
     } finally {
-      if (prev !== undefined) process.env.CLAUDE_MEM_AUTO_DEEP = prev;
+      if (prev !== undefined) process.env.QWEN_MEM_AUTO_DEEP = prev;
     }
 
     expect(parsed.deep).toBe(false);
@@ -971,11 +971,11 @@ describe('CLI cmdSearch auto-escalation (D#39)', () => {
     db.close();
   });
 
-  it('--no-deep suppresses escalation even with CLAUDE_MEM_AUTO_DEEP=1', async () => {
+  it('--no-deep suppresses escalation even with QWEN_MEM_AUTO_DEEP=1', async () => {
     const db = seededDb();
     const llm = stubLLM({ variants: ['kubernetes pods'] });
-    const prev = process.env.CLAUDE_MEM_AUTO_DEEP;
-    process.env.CLAUDE_MEM_AUTO_DEEP = '1';
+    const prev = process.env.QWEN_MEM_AUTO_DEEP;
+    process.env.QWEN_MEM_AUTO_DEEP = '1';
     let parsed;
     try {
       let stdout = '';
@@ -991,8 +991,8 @@ describe('CLI cmdSearch auto-escalation (D#39)', () => {
       }
       parsed = JSON.parse(stdout.trim());
     } finally {
-      if (prev === undefined) delete process.env.CLAUDE_MEM_AUTO_DEEP;
-      else process.env.CLAUDE_MEM_AUTO_DEEP = prev;
+      if (prev === undefined) delete process.env.QWEN_MEM_AUTO_DEEP;
+      else process.env.QWEN_MEM_AUTO_DEEP = prev;
     }
 
     expect(parsed.deep).toBe(false);

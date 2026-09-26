@@ -19,7 +19,7 @@
 // surface immediately.
 //
 // ISOLATION CONTRACT (all four are load-bearing):
-//   1. CLAUDE_MEM_DIR → a mkdtempSync sandbox. vitest.config.mjs sets it to '' for
+//   1. QWEN_MEM_DIR → a mkdtempSync sandbox. vitest.config.mjs sets it to '' for
 //      the runner, so a spawned child with no explicit value falls back to the LIVE
 //      ~/.claude DB. The mem_stats case asserts `Data dir: <sandbox>` over the wire,
 //      which is the one assertion that fails loudly if that ever leaks.
@@ -32,8 +32,8 @@
 //      assertion green even if the cwd option were dropped and the server ran here.)
 //   3. No LLM, no network. CLAUDE_CODE_PATH points at a path that cannot exist, so
 //      haiku-client's CLI mode fails fast instead of spawning a real `claude`; the API
-//      keys stay empty; CLAUDE_MEM_SKIP_SAVE_ENRICH=1 stops mem_save from queueing a
-//      background enrichment worker; CLAUDE_MEM_AUTO_DEEP=0 keeps mem_search single-query.
+//      keys stay empty; QWEN_MEM_SKIP_SAVE_ENRICH=1 stops mem_save from queueing a
+//      background enrichment worker; QWEN_MEM_AUTO_DEEP=0 keeps mem_search single-query.
 //      mem_optimize is exercised on its DEGRADED arm and asserts the degradation
 //      (non-zero `skipped`), not a `\d+` that also matches an empty work queue.
 //   4. afterAll closes the transport and removes the sandbox in a `finally`, so a
@@ -120,7 +120,7 @@ async function call(name, args = {}) {
 
 /** Open the sandbox memory DB for verification independent of the server's read path. */
 function withDb(fn) {
-  const db = new Database(join(DATA_DIR, 'claude-mem-lite.db'));
+  const db = new Database(join(DATA_DIR, 'qwen-mem-lite.db'));
   try {
     return fn(db);
   } finally {
@@ -170,19 +170,19 @@ beforeAll(async () => {
   const env = {
     ...process.env,
     HOME: join(ROOT, 'home'),
-    CLAUDE_MEM_DIR: DATA_DIR,
+    QWEN_MEM_DIR: DATA_DIR,
     // haiku-client detectMode() falls back to 'cli' with no API key and would spawn the
     // real `claude`. Point it at a path that cannot exist → fail fast, no spend.
     CLAUDE_CODE_PATH: join(ROOT, 'no-such-claude-binary'),
     ANTHROPIC_API_KEY: '',
     OPENROUTER_API_KEY: '',
-    CLAUDE_MEM_AUTO_DEEP: '0',
-    CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
-    CLAUDE_MEM_SKIP_REPOS: '1',
+    QWEN_MEM_AUTO_DEEP: '0',
+    QWEN_MEM_SKIP_SAVE_ENRICH: '1',
+    QWEN_MEM_SKIP_REPOS: '1',
     MEM_QUIET_HOOKS: '1',
-    CLAUDE_MEM_QUIET_TRACE: '0',
+    QWEN_MEM_QUIET_TRACE: '0',
   };
-  delete env.CLAUDE_MEM_HOOK_RUNNING;
+  delete env.QWEN_MEM_HOOK_RUNNING;
   // Both project-dir env vars are removed so the transport's `cwd` is the ONLY source
   // inferProject() can read (isolation contract #2). The runner inherits PWD=<this repo>,
   // so leaving it in place would both hide a cwd leak and put the sweep's rows under the
@@ -437,7 +437,7 @@ describe('MCP feature sweep: public tools', () => {
 describe('MCP feature sweep: hidden tools', () => {
   itTool('mem_stats', async () => {
     const text = await call('mem_stats', { days: 30 });
-    // Isolation proof: the server resolved the SANDBOX data dir, not ~/.claude-mem-lite.
+    // Isolation proof: the server resolved the SANDBOX data dir, not ~/.qwen-mem-lite.
     expect(text).toContain(`Data dir: ${DATA_DIR}`);
     const total = text.match(/Total: (\d+) observations \| (\d+) sessions/);
     expect(total, `no parseable totals line in:\n${text}`).toBeTruthy();

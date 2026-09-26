@@ -9,9 +9,9 @@
 // NOWHERE outside tests, even though schema.mjs:766 claims they run "on EVERY
 // ensureDb". Net effect of the half-fix: cleanups silently stopped executing.
 //
-// This file MUST set CLAUDE_MEM_DIR and dynamic-import schema.mjs BEFORE any
+// This file MUST set QWEN_MEM_DIR and dynamic-import schema.mjs BEFORE any
 // static import binds DB_DIR — otherwise ensureDb() would open the real user DB
-// at ~/.claude-mem-lite (a destructive-path violation).
+// at ~/.qwen-mem-lite (a destructive-path violation).
 
 import { describe, test, expect, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
@@ -19,7 +19,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 const tmp = mkdtempSync(join(tmpdir(), 'mem-ensuredb-p15-'));
-process.env.CLAUDE_MEM_DIR = tmp;
+process.env.QWEN_MEM_DIR = tmp;
 
 // env is set above → schema.mjs binds DB_DIR/DB_PATH to our sandbox tmpdir.
 const { ensureDb } = await import('../schema.mjs');

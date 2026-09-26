@@ -1374,7 +1374,7 @@ describe('CLI help and error handling', () => {
 
   it('shows help for no args', async () => {
     const output = await captureStdout(() => run([]));
-    expect(output).toContain('claude-mem-lite CLI');
+    expect(output).toContain('qwen-mem-lite CLI');
     expect(output).toContain('Commands:');
   });
 
@@ -2452,8 +2452,8 @@ describe('CLI context command', () => {
       .run('mem-s1', new Date(now).toISOString(), now);
 
     const output = await captureStdout(() => run(['context', '--project', 'test--project']));
-    expect(output).toContain('<claude-mem-context>');
-    expect(output).toContain('</claude-mem-context>');
+    expect(output).toContain('<qwen-mem-context>');
+    expect(output).toContain('</qwen-mem-context>');
     expect(output).toContain('### Last Session');
     expect(output).toContain('Fix auth bug');
     expect(output).toContain('Patched middleware');
@@ -2478,7 +2478,7 @@ describe('CLI context command', () => {
     expect(output).toContain('DB-derived request');
     // Ensure the error-paths from the old CLAUDE.md-reading implementation are gone.
     expect(output).not.toContain('No CLAUDE.md');
-    expect(output).not.toContain('No claude-mem-context block found');
+    expect(output).not.toContain('No qwen-mem-context block found');
   });
 
   it('emits JSON with parsed sections when --json is set', async () => {
@@ -2531,15 +2531,15 @@ describe('CLI stats command extended', () => {
   });
 
   it('shows Recall metering line when metrics are enabled (G13)', async () => {
-    const prev = process.env.CLAUDE_MEM_METRICS;
-    process.env.CLAUDE_MEM_METRICS = '1';
+    const prev = process.env.QWEN_MEM_METRICS;
+    process.env.QWEN_MEM_METRICS = '1';
     try {
       const output = await captureStdout(() => run(['stats']));
       expect(output).toContain('Recall metering (7d):');
       expect(output).toContain('enrich-save');
     } finally {
-      if (prev === undefined) delete process.env.CLAUDE_MEM_METRICS;
-      else process.env.CLAUDE_MEM_METRICS = prev;
+      if (prev === undefined) delete process.env.QWEN_MEM_METRICS;
+      else process.env.QWEN_MEM_METRICS = prev;
     }
   });
 

@@ -5,7 +5,7 @@
 // CLAUDE_PROJECT_DIR is set, so hooks always name the session root. In a bare terminal it is
 // not, so the name follows wherever the user happens to stand:
 //
-//   • `cd src/auth && claude-mem-lite recent` → reads `src--auth`, which has no rows, while
+//   • `cd src/auth && qwen-mem-lite recent` → reads `src--auth`, which has no rows, while
 //     the session's hooks wrote `projects--mem`. The user sees "No recent observations".
 //
 // The obvious fix — anchor on the git work-tree root — was tried and REVERTED before it
@@ -119,7 +119,7 @@ describe('resolveCliProject', () => {
   });
 
   it('falls back to the work-tree root when the cwd-derived name holds nothing', () => {
-    // The reported bug: `cd src/auth && claude-mem-lite recent` read an empty `src--auth`.
+    // The reported bug: `cd src/auth && qwen-mem-lite recent` read an empty `src--auth`.
     const root = mktmp('cliproj-sub-');
     mkdirSync(join(root, '.git'));
     const deep = join(root, 'src', 'auth');
@@ -250,8 +250,8 @@ describe('CLI end to end — a subdirectory reads what the repo root saved', () 
           ...process.env,
           PWD: cwd,
           CLAUDE_PROJECT_DIR: undefined,
-          CLAUDE_MEM_DIR: dataDir,
-          CLAUDE_MEM_SKIP_UPDATE: '1',
+          QWEN_MEM_DIR: dataDir,
+          QWEN_MEM_SKIP_UPDATE: '1',
           MEM_QUIET_HOOKS: '1',
         },
         encoding: 'utf8',
@@ -287,8 +287,8 @@ describe('CLI end to end — a subdirectory reads what the repo root saved', () 
           ...process.env,
           PWD: cwd,
           CLAUDE_PROJECT_DIR: undefined,
-          CLAUDE_MEM_DIR: dataDir,
-          CLAUDE_MEM_SKIP_UPDATE: '1',
+          QWEN_MEM_DIR: dataDir,
+          QWEN_MEM_SKIP_UPDATE: '1',
           MEM_QUIET_HOOKS: '1',
         },
         encoding: 'utf8',

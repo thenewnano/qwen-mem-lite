@@ -174,7 +174,7 @@ export function extractCjkLikePatterns(query) {
  * obs-side synonym expansion ("查询"→"(查询 OR query OR search)") is a
  * legitimate recall mechanism that this filter would break.
  *
- * Threshold default 0.2 is tunable via `CLAUDE_MEM_CJK_PREC_MIN` env var.
+ * Threshold default 0.2 is tunable via `QWEN_MEM_CJK_PREC_MIN` env var.
  * Explicit threshold arg still overrides the env value — tests and in-code
  * callers with domain context stay authoritative.
  *
@@ -188,12 +188,12 @@ export function extractCjkLikePatterns(query) {
  * @param {string} query Raw query text
  * @param {string} text Candidate result text
  * @param {number} [threshold] Fraction of patterns that must match. If
- *   omitted, reads CLAUDE_MEM_CJK_PREC_MIN (default 0.2).
+ *   omitted, reads QWEN_MEM_CJK_PREC_MIN (default 0.2).
  * @returns {boolean}
  */
 export function cjkPrecisionOk(query, text, threshold) {
   if (threshold === undefined) {
-    const envVal = process.env.CLAUDE_MEM_CJK_PREC_MIN;
+    const envVal = process.env.QWEN_MEM_CJK_PREC_MIN;
     const parsed = envVal ? parseFloat(envVal) : NaN;
     threshold = Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : 0.2;
   }

@@ -1,4 +1,4 @@
-// claude-mem-lite — Semantic Memory Injection
+// qwen-mem-lite — Semantic Memory Injection
 // Search past observations for relevant memories to inject as context at user-prompt time.
 
 import {
@@ -227,7 +227,7 @@ export function formatMemoryLine(obs) {
   }
   // Defang any literal block-delimiter tag in title/lesson so it can't prematurely close
   // the <memory-context> block this line is injected into (parity with hook-context's
-  // <claude-mem-context> defense).
+  // <qwen-mem-context> defense).
   return neutralizeContextDelimiters(
     `- [${obs.type}] ${truncate(obs.title, 80)}${lessonTag} (#${obs.id})${staleHint}`,
   );
@@ -299,7 +299,7 @@ export function searchRelevantMemories(
   const queryIsCjkDominant = _cjkChars > 0 && _cjkChars >= _asciiLetters;
 
   // v2.41 metrics: record timing + candidate/filter/return counts per call.
-  // Gated by CLAUDE_MEM_METRICS=1 — no-op when disabled (zero hot-path cost).
+  // Gated by QWEN_MEM_METRICS=1 — no-op when disabled (zero hot-path cost).
   const _t0 = Date.now();
   let _candidates = 0,
     _aboveThreshold = 0,

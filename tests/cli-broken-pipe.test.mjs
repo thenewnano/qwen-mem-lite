@@ -1,6 +1,6 @@
 // A reader that leaves is not an error.
 //
-// `claude-mem-lite search x | head -1`, `| grep -q`, or quitting `less` closes the read end
+// `qwen-mem-lite search x | head -1`, `| grep -q`, or quitting `less` closes the read end
 // while the CLI is still writing. Node then emits 'error' on the stdout Socket, and with no
 // listener that is an UNHANDLED error event: a ~20-line stack ending in `outVerbatim` where
 // the user expected their prompt back.
@@ -63,7 +63,7 @@ const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'cli.mjs');
 let dir;
 
 beforeAll(() => {
-  // HOME and CLAUDE_MEM_DIR both sandboxed: the CLI resolves an install shape out of HOME,
+  // HOME and QWEN_MEM_DIR both sandboxed: the CLI resolves an install shape out of HOME,
   // and an unsandboxed run would read (and `adopt` would write to) the machine running the
   // suite.
   dir = mkdtempSync(join(tmpdir(), 'cli-broken-pipe-'));
@@ -84,7 +84,7 @@ function runWithClosedStdout(args) {
       env: {
         ...process.env,
         HOME: dir,
-        CLAUDE_MEM_DIR: join(dir, 'data'),
+        QWEN_MEM_DIR: join(dir, 'data'),
         MEM_NO_AUTO_ADOPT: '1',
       },
     });
@@ -122,7 +122,7 @@ describe('CLI survives a consumer that closes the pipe', () => {
     // The first cut called `process.exit(0)` here. `runDoctor` assigns
     // `process.exitCode = 1` AFTER its last print, so the forced exit landed first and
     // `doctor | head -1` under `pipefail` read 0 on 10/10 runs while the unpiped command
-    // reads 1 — silently turning a failing `claude-mem-lite doctor || alert`, the wrapper
+    // reads 1 — silently turning a failing `qwen-mem-lite doctor || alert`, the wrapper
     // install.mjs's own exit-code contract names, into a passing one. Pinned in source
     // because reproducing it needs a shell with `pipefail` around a pipeline, which the
     // in-suite probe shapes cannot express (see the header).

@@ -3,14 +3,14 @@
 //
 // Node resolves ESM specifiers against a module's REALPATH (no --preserve-symlinks). So in
 // a dev install every entry point is a symlink into the repo, and its `../lib/x.mjs`
-// imports resolve inside the REPO — an absent `~/.claude-mem-lite/lib/x.mjs` changes
+// imports resolve inside the REPO — an absent `~/.qwen-mem-lite/lib/x.mjs` changes
 // nothing. Verified on the maintainer's own machine: doctor reported
 //
 //   ⚠ Dev drift: 6 missing: lib/injected-ids.mjs, lib/time-constants.mjs, …
 //     (re-run: node …/install.mjs install --dev)
 //
 // while every hook that imports those exact modules was demonstrably working, because
-// readlink -f ~/.claude-mem-lite/scripts/pre-tool-recall.js → the repo. A remedy was
+// readlink -f ~/.qwen-mem-lite/scripts/pre-tool-recall.js → the repo. A remedy was
 // prescribed for a healthy install.
 //
 // In a COPY install (npm / plugin / `install` without --dev) the entry points are real
@@ -53,7 +53,7 @@ function doctorOn({
   // Fresh HOME per call so two shapes can be compared in one test.
   const home = mkdtempSync(join(tmpdir(), 'doctor-shape-'));
   homes.push(home);
-  const installDir = join(home, '.claude-mem-lite');
+  const installDir = join(home, '.qwen-mem-lite');
   mkdirSync(join(installDir, 'lib'), { recursive: true });
   mkdirSync(join(installDir, 'scripts'), { recursive: true });
   mkdirSync(join(installDir, 'runtime'), { recursive: true });
@@ -77,8 +77,8 @@ function doctorOn({
       env: {
         ...process.env,
         HOME: home,
-        CLAUDE_MEM_DIR: join(home, 'data'),
-        CLAUDE_MEM_SKIP_UPDATE: '1',
+        QWEN_MEM_DIR: join(home, 'data'),
+        QWEN_MEM_SKIP_UPDATE: '1',
         MEM_QUIET_HOOKS: '1',
       },
       encoding: 'utf8',

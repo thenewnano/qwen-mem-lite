@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# claude-mem-lite SessionStart pre-hook
+# qwen-mem-lite SessionStart pre-hook
 # Data directory setup, migrations, and dependency resolution
 #
 
@@ -14,7 +14,7 @@ else
 fi
 
 # The same three locations lib/data-paths.mjs defines, under the same names. This script
-# carried ONE variable for all three, and under CLAUDE_MEM_DIR that variable is the CODE
+# carried ONE variable for all three, and under QWEN_MEM_DIR that variable is the CODE
 # dir — so every question about the DATABASE was asked of a directory holding none. This
 # repo has now had that confusion three times (v6.3.0, the same fix reintroduced with the
 # halves swapped, and here), which is why the names are spelled out rather than inferred.
@@ -22,8 +22,8 @@ fi
 #   CODE_DIR    — ALWAYS homedir. settings.json and the MCP registration bake absolute
 #                 paths to server.mjs / hook.mjs under it, so it must not follow the
 #                 relocation env var. Owns node_modules and the run-once install markers.
-#   DB_DIR      — follows CLAUDE_MEM_DIR. Owns claude-mem-lite.db and its sidecars.
-#   RUNTIME_DIR — follows CLAUDE_MEM_RUNTIME_DIR, else DB_DIR/runtime. Owns state a hook
+#   DB_DIR      — follows QWEN_MEM_DIR. Owns qwen-mem-lite.db and its sidecars.
+#   RUNTIME_DIR — follows QWEN_MEM_RUNTIME_DIR, else DB_DIR/runtime. Owns state a hook
 #                 writes and another component reads back (see .deps-broken below).
 #
 # ASK the shared resolver rather than re-deriving its rules (absolute-only, "undefined" /
@@ -34,16 +34,16 @@ fi
 # node spawn to be told that. A resolver that is missing (truncated tree) or that throws
 # (invalid override) leaves the defaults in place; the Node side rejects a bad value loudly
 # enough on its own, and aborting here would fail the user's session start.
-CODE_DIR="$HOME/.claude-mem-lite"
+CODE_DIR="$HOME/.qwen-mem-lite"
 DB_DIR="$CODE_DIR"
 RUNTIME_DIR="$CODE_DIR/runtime"
-if [[ -n "${CLAUDE_MEM_DIR:-}" || -n "${CLAUDE_MEM_RUNTIME_DIR:-}" ]] && [[ -f "$ROOT/lib/resolve-data-dir.mjs" ]]; then
+if [[ -n "${QWEN_MEM_DIR:-}" || -n "${QWEN_MEM_RUNTIME_DIR:-}" ]] && [[ -f "$ROOT/lib/resolve-data-dir.mjs" ]]; then
   # shellcheck disable=SC2016  # node script single-quoted on purpose; path passed via env, not shell expansion
   _resolved="$(RESOLVER_MOD="$ROOT/lib/resolve-data-dir.mjs" node -e '
     const { pathToFileURL } = require("node:url");
     import(pathToFileURL(process.env.RESOLVER_MOD).href)
       .then((m) => {
-        const db = m.resolveDataDir(process.env.CLAUDE_MEM_DIR);
+        const db = m.resolveDataDir(process.env.QWEN_MEM_DIR);
         process.stdout.write(`${db}\n${m.resolveRuntimeDir(db)}\n`);
       })
       .catch(() => process.exit(1));
@@ -79,14 +79,15 @@ log_warn() { echo -e "${YELLOW}⚠${NC} $*" >&2; }
 # day GitHub bumps the runner image. Keep SC2317 for anyone on an older shellcheck.
 log_err()  { echo -e "${RED}✗${NC} $*" >&2; }
 
-# 1. Migrate unhidden dir (~/claude-mem-lite/ → ~/.claude-mem-lite/)
+# 1. Migrate unhidden dir (~/claude-mem-lite/ → ~/.qwen-mem-lite/; the source keeps its
+#    pre-v0.5 name - it is the old product layout, not the current identity)
 #    CODE_DIR, not DB_DIR, and deliberately: the pre-v0.5 unhidden directory held the
 #    INSTALL — server.mjs, hook.mjs, package.json — and CODE_DIR is the one location that
 #    must never follow the relocation env var. Moving it into a relocated DB_DIR would
 #    strand every absolute path settings.json and the MCP registration baked.
 if [[ -d "$OLD_UNHIDDEN_DIR" && ! -d "$CODE_DIR" ]]; then
   mv "$OLD_UNHIDDEN_DIR" "$CODE_DIR"
-  log_ok "Migrated ~/claude-mem-lite/ → ~/.claude-mem-lite/"
+  log_ok "Migrated ~/claude-mem-lite/ → ~/.qwen-mem-lite/"
 fi
 
 # 2. Ensure both locations exist (runtime created after migration check)
@@ -100,18 +101,18 @@ fi
 
 # 3. Legacy ~/.claude-mem/ DB is schema-v16 (no memory_session_id) with no migration bridge to
 #    the current schema — activating it FATALs on first launch ("no such column: memory_session_id")
-#    and the "! -f claude-mem-lite.db" guard would re-copy it every time the user deletes the broken
+#    and the "! -f qwen-mem-lite.db" guard would re-copy it every time the user deletes the broken
 #    DB (recovery loop). Mirror install.mjs migrateLegacyClaudeMemData: back it up (don't activate)
 #    and let a fresh DB be created. Source ~/.claude-mem/ is left intact.
 #
 #    DB_DIR, because that guard is the whole convergence argument: it closes when the product
-#    creates claude-mem-lite.db, and the product creates it in DB_DIR. Asked of CODE_DIR under
+#    creates qwen-mem-lite.db, and the product creates it in DB_DIR. Asked of CODE_DIR under
 #    a relocation it never closed — nothing ever writes a database THERE — so this block
 #    copied the legacy database again on every single SessionStart, without bound. Measured
 #    2026-09-14: control arm stable at 1 backup across three runs, relocated arm 1 → 3.
 OLD_DIR="$HOME/.claude-mem"
-if [[ -f "$OLD_DIR/claude-mem.db" && ! -f "$DB_DIR/claude-mem-lite.db" && ! -f "$DB_DIR/claude-mem.db" ]]; then
-  BACKUP="$DB_DIR/claude-mem-lite.db.legacy-backup-$(date +%s)"
+if [[ -f "$OLD_DIR/claude-mem.db" && ! -f "$DB_DIR/qwen-mem-lite.db" && ! -f "$DB_DIR/claude-mem.db" ]]; then
+  BACKUP="$DB_DIR/qwen-mem-lite.db.legacy-backup-$(date +%s)"
   if cp "$OLD_DIR/claude-mem.db" "$BACKUP" 2>/dev/null; then
     log_info "Legacy ~/.claude-mem/ DB is schema-incompatible; backed up to $(basename "$BACKUP") (a fresh DB will be created). Old ~/.claude-mem/ preserved."
   else
@@ -119,13 +120,13 @@ if [[ -f "$OLD_DIR/claude-mem.db" && ! -f "$DB_DIR/claude-mem-lite.db" && ! -f "
   fi
 fi
 
-# 4. Rename claude-mem.db → claude-mem-lite.db in same directory (DB_DIR: a relocated user's
+# 4. Rename claude-mem.db → qwen-mem-lite.db in same directory (DB_DIR: a relocated user's
 #    pre-rename database sits there, and asking CODE_DIR left it unrenamed and unopened).
-if [[ -f "$DB_DIR/claude-mem.db" && ! -f "$DB_DIR/claude-mem-lite.db" ]]; then
-  mv "$DB_DIR/claude-mem.db" "$DB_DIR/claude-mem-lite.db"
-  mv "$DB_DIR/claude-mem.db-wal" "$DB_DIR/claude-mem-lite.db-wal" 2>/dev/null || true
-  mv "$DB_DIR/claude-mem.db-shm" "$DB_DIR/claude-mem-lite.db-shm" 2>/dev/null || true
-  log_ok "Database renamed: claude-mem.db → claude-mem-lite.db"
+if [[ -f "$DB_DIR/claude-mem.db" && ! -f "$DB_DIR/qwen-mem-lite.db" ]]; then
+  mv "$DB_DIR/claude-mem.db" "$DB_DIR/qwen-mem-lite.db"
+  mv "$DB_DIR/claude-mem.db-wal" "$DB_DIR/qwen-mem-lite.db-wal" 2>/dev/null || true
+  mv "$DB_DIR/claude-mem.db-shm" "$DB_DIR/qwen-mem-lite.db-shm" 2>/dev/null || true
+  log_ok "Database renamed: claude-mem.db → qwen-mem-lite.db"
 fi
 
 # 5. Ensure runtime directories exist (after migration to not mask migration check).
@@ -147,8 +148,8 @@ mkdir -p "$CODE_DIR/runtime"
 #
 # ...and that contract is a two-directory agreement, not a filename. hook.mjs renders the
 # flag from `join(RUNTIME_DIR, '.deps-broken')`, where RUNTIME_DIR is
-# `resolveRuntimeDir(resolveDataDir(CLAUDE_MEM_DIR))` (hook-shared.mjs). Hardcoding a
-# homedir path here meant that under CLAUDE_MEM_DIR / CLAUDE_MEM_RUNTIME_DIR the writer and
+# `resolveRuntimeDir(resolveDataDir(QWEN_MEM_DIR))` (hook-shared.mjs). Hardcoding a
+# homedir path here meant that under QWEN_MEM_DIR / QWEN_MEM_RUNTIME_DIR the writer and
 # the reader named two different directories, so the one surface that says "your hooks are
 # degraded" rendered nothing on exactly the installs that had relocated. Measured
 # 2026-09-14: flag planted where this script wrote it → banner 0 times; planted where
@@ -193,7 +194,7 @@ mark_deps_ok() {
 if [[ ! -d "$ROOT/node_modules/better-sqlite3" ]]; then
   # Fast path: symlink from data dir (instant, no network needed)
   # CODE_DIR: node_modules belongs to the install, not to the data, and must not follow
-  # CLAUDE_MEM_DIR — install.mjs writes it under the homedir install location.
+  # QWEN_MEM_DIR — install.mjs writes it under the homedir install location.
   if [[ -d "$CODE_DIR/node_modules/better-sqlite3" ]]; then
     if ln -sfn "$CODE_DIR/node_modules" "$ROOT/node_modules" 2>/dev/null; then
       log_ok "Dependencies linked from $CODE_DIR"
@@ -335,7 +336,7 @@ fi
 
 # 8. Prune old plugin cache versions (keep latest 3)
 if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
-  CACHE_DIR="$HOME/.claude/plugins/cache/thenewnano/claude-mem-lite"
+  CACHE_DIR="$HOME/.claude/plugins/cache/thenewnano/qwen-mem-lite"
   if [[ -d "$CACHE_DIR" ]]; then
     # List version dirs sorted by semver descending, skip top 3
     # Use glob + while-read for bash 3.2 (macOS) compatibility (no mapfile, no `ls | grep`)
@@ -378,9 +379,9 @@ fi
 
 # 9. Residue detection (plugin mode only): warn once if legacy direct-install
 #    hooks remain in ~/.claude/settings.json. A user who installed via global
-#    `claude-mem-lite install` and later switched to the marketplace plugin
+#    `qwen-mem-lite install` and later switched to the marketplace plugin
 #    will run every hook twice (direct settings.json hooks AND plugin hooks)
-#    until they run `claude-mem-lite uninstall` to clear the settings.json
+#    until they run `qwen-mem-lite uninstall` to clear the settings.json
 #    entries. /plugin uninstall does not touch settings.json.
 # CODE_DIR/runtime, same reason: the residue it warns about is stale hook entries in
 # ~/.claude/settings.json — one machine, one warning, regardless of where the data lives.
@@ -402,7 +403,7 @@ if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && ! -f "$RESIDUE_MARKER" ]]; then
             const inner = Array.isArray(entry?.hooks) ? entry.hooks : [];
             for (const h of inner) {
               const cmd = String(h?.command || "");
-              if (cmd.includes(".claude-mem-lite/") || cmd.includes("claude-mem-lite/scripts") || cmd.includes("claude-mem-lite/hook.mjs")) {
+              if (cmd.includes(".qwen-mem-lite/") || cmd.includes("qwen-mem-lite/scripts") || cmd.includes("qwen-mem-lite/hook.mjs")) {
                 found.push(ev);
                 break;
               }
@@ -414,7 +415,7 @@ if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && ! -f "$RESIDUE_MARKER" ]]; then
           process.stderr.write("\x1b[33m⚠\x1b[0m Legacy direct-install hooks detected in " + process.env.SETTINGS_PATH + "\n");
           process.stderr.write("  Events with stale entries: " + [...new Set(found)].join(", ") + "\n");
           process.stderr.write("  These will fire alongside plugin hooks (each tool call runs twice).\n");
-          process.stderr.write("  Fix: run \x1b[1mclaude-mem-lite uninstall\x1b[0m to clear settings.json,\n");
+          process.stderr.write("  Fix: run \x1b[1mqwen-mem-lite uninstall\x1b[0m to clear settings.json,\n");
           process.stderr.write("       then keep using the plugin install. (One-time warning.)\n\n");
           process.exit(2);
         }
@@ -426,5 +427,5 @@ if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && ! -f "$RESIDUE_MARKER" ]]; then
   touch "$RESIDUE_MARKER"
 fi
 
-log_ok "claude-mem-lite ready"
+log_ok "qwen-mem-lite ready"
 exit 0

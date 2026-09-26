@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// LongMemEval benchmark adapter for claude-mem-lite.
+// LongMemEval benchmark adapter for qwen-mem-lite.
 //
 // Measures our REAL production retrieval (FTS5/BM25 + query expansion, zero
 // embeddings) against the LongMemEval long-term-memory benchmark, so we have a
@@ -279,7 +279,7 @@ function main(argv) {
 
   const lines = [];
   lines.push(
-    `\nLongMemEval — claude-mem-lite (lexical FTS5 BM25, turns=${opts.turns}${opts.temporal ? ', temporal' : ''}, n=${out.n})`,
+    `\nLongMemEval — qwen-mem-lite (lexical FTS5 BM25, turns=${opts.turns}${opts.temporal ? ', temporal' : ''}, n=${out.n})`,
   );
   lines.push(
     `  recall_any@k:  ${opts.ks.map((k) => `@${k}=${fmtPct(out.overall.recallAny[String(k)])}`).join('  ')}   nDCG=${out.overall.ndcg.toFixed(3)}  MRR=${out.overall.mrr.toFixed(3)}`,

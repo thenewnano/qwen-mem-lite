@@ -3,7 +3,7 @@
 // `uninstall` reclaims it, but only through a branch gated on "no other plugin from this
 // marketplace remains", because the same branch also deletes the marketplace-wide directory.
 // That gate is right for `cache/<marketplace>/` and wrong for `cache/<marketplace>/
-// claude-mem-lite/`, which belongs to this plugin alone: a user with any sibling thenewnano
+// qwen-mem-lite/`, which belongs to this plugin alone: a user with any sibling thenewnano
 // plugin kept every cached version of a plugin they had uninstalled.
 //
 // §8.V3: a destructive path modified this session is exercised in a sandbox HOME, never
@@ -27,10 +27,10 @@ afterAll(() => fixtures.disposeAll());
 function sandboxHome({ siblingPlugin }) {
   const home = fixtures.track(mkdtempSync(join(tmpdir(), 'cml-uninst-home-')));
   const plugins = join(home, '.claude', 'plugins');
-  const ourCache = join(plugins, 'cache', 'thenewnano', 'claude-mem-lite', '6.3.0');
+  const ourCache = join(plugins, 'cache', 'thenewnano', 'qwen-mem-lite', '6.3.0');
   mkdirSync(join(ourCache, 'scripts'), { recursive: true });
   writeFileSync(join(ourCache, 'scripts', 'launch.mjs'), '// stub\n');
-  writeFileSync(join(ourCache, 'package.json'), '{"name":"claude-mem-lite","version":"6.3.0"}');
+  writeFileSync(join(ourCache, 'package.json'), '{"name":"qwen-mem-lite","version":"6.3.0"}');
 
   const siblingCache = join(plugins, 'cache', 'thenewnano', 'other-plugin', '1.0.0');
   mkdirSync(siblingCache, { recursive: true });
@@ -39,7 +39,7 @@ function sandboxHome({ siblingPlugin }) {
   mkdirSync(join(plugins, 'marketplaces', 'thenewnano'), { recursive: true });
   writeFileSync(join(plugins, 'marketplaces', 'thenewnano', 'marketplace.json'), '{}');
 
-  const installed = { 'claude-mem-lite@thenewnano': { version: '6.3.0' } };
+  const installed = { 'qwen-mem-lite@thenewnano': { version: '6.3.0' } };
   if (siblingPlugin) installed['other-plugin@thenewnano'] = { version: '1.0.0' };
   writeFileSync(join(plugins, 'installed_plugins.json'), JSON.stringify(installed));
 
@@ -48,7 +48,7 @@ function sandboxHome({ siblingPlugin }) {
 
   return {
     home,
-    ourCacheRoot: join(plugins, 'cache', 'thenewnano', 'claude-mem-lite'),
+    ourCacheRoot: join(plugins, 'cache', 'thenewnano', 'qwen-mem-lite'),
     siblingCacheRoot: join(plugins, 'cache', 'thenewnano', 'other-plugin'),
     marketplaceCacheRoot: join(plugins, 'cache', 'thenewnano'),
     installedPath: join(plugins, 'installed_plugins.json'),
@@ -64,8 +64,8 @@ function runUninstall(home) {
     env: {
       ...process.env,
       HOME: home,
-      CLAUDE_MEM_DIR: dataDir,
-      CLAUDE_MEM_SKIP_UPDATE: '1',
+      QWEN_MEM_DIR: dataDir,
+      QWEN_MEM_SKIP_UPDATE: '1',
       MEM_NO_AUTO_ADOPT: '1',
     },
   });
@@ -99,6 +99,6 @@ describe('uninstall reclaims its own plugin cache', () => {
     runUninstall(s.home);
     const installed = JSON.parse(readFileSync(s.installedPath, 'utf8'));
     expect(installed['other-plugin@thenewnano']).toBeTruthy();
-    expect(installed['claude-mem-lite@thenewnano']).toBeUndefined();
+    expect(installed['qwen-mem-lite@thenewnano']).toBeUndefined();
   });
 });

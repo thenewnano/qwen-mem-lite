@@ -272,13 +272,13 @@ describe('hook-telemetry — secret scrubbing (parity with lib/err-sampler.mjs)'
     recordHookError('pre-recall:json', err, tmp);
     const mine = readOnlyLine();
 
-    const prev = process.env.CLAUDE_MEM_CATCH_SAMPLE;
-    process.env.CLAUDE_MEM_CATCH_SAMPLE = '1';
+    const prev = process.env.QWEN_MEM_CATCH_SAMPLE;
+    process.env.QWEN_MEM_CATCH_SAMPLE = '1';
     try {
       maybeSampleError(err, 'pre-recall:json', tmp);
     } finally {
-      if (prev === undefined) delete process.env.CLAUDE_MEM_CATCH_SAMPLE;
-      else process.env.CLAUDE_MEM_CATCH_SAMPLE = prev;
+      if (prev === undefined) delete process.env.QWEN_MEM_CATCH_SAMPLE;
+      else process.env.QWEN_MEM_CATCH_SAMPLE = prev;
     }
     const errDir = join(tmp, 'errors');
     const sampled = JSON.parse(

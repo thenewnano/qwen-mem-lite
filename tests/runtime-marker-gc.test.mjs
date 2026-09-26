@@ -104,11 +104,11 @@ describe('sweepStaleProjectMarkers — the age gate', () => {
     expect(sweepStaleProjectMarkers(dir, { ageMs: 5 * DAY })).toBe(1);
   });
 
-  it('CLAUDE_MEM_SKIP_MARKER_GC=1 disables the sweep entirely', () => {
+  it('QWEN_MEM_SKIP_MARKER_GC=1 disables the sweep entirely', () => {
     // Released-artifact requirement: a new default that DELETES user files ships
     // with a documented way back out.
     const p = put('session-projects--x', 400);
-    expect(sweepStaleProjectMarkers(dir, { env: { CLAUDE_MEM_SKIP_MARKER_GC: '1' } })).toBe(0);
+    expect(sweepStaleProjectMarkers(dir, { env: { QWEN_MEM_SKIP_MARKER_GC: '1' } })).toBe(0);
     expect(existsSync(p)).toBe(true);
     expect(sweepStaleProjectMarkers(dir, { env: {} })).toBe(1);
   });

@@ -65,7 +65,7 @@ function tmp(prefix) {
 /** A DB carrying exactly one schema_version row. */
 function dbAtVersion(version) {
   const dir = tmp('skew-db-');
-  const path = join(dir, 'claude-mem-lite.db');
+  const path = join(dir, 'qwen-mem-lite.db');
   const db = new Database(path);
   db.exec('CREATE TABLE schema_version (version INTEGER)');
   db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(version);
@@ -89,7 +89,7 @@ function codeHomeSupporting(supported) {
 
 describe('isSchemaSkewError / schemaSkewFromError', () => {
   it('recognises the coded error and reads both versions off it', () => {
-    const err = new Error('DB schema is v49 but this claude-mem-lite binary supports up to v48.');
+    const err = new Error('DB schema is v49 but this qwen-mem-lite binary supports up to v48.');
     err.code = SCHEMA_SKEW_CODE;
     err.dbVersion = 49;
     err.binaryVersion = 48;
@@ -101,7 +101,7 @@ describe('isSchemaSkewError / schemaSkewFromError', () => {
   it('falls back to the message when the error carries no fields', () => {
     // The shipped message is the contract older builds throw; the code field is new.
     const err = new Error(
-      'DB schema is v49 but this claude-mem-lite binary supports up to v48. A newer version wrote this DB;',
+      'DB schema is v49 but this qwen-mem-lite binary supports up to v48. A newer version wrote this DB;',
     );
     expect(isSchemaSkewError(err)).toBe(true);
     expect(schemaSkewFromError(err)).toEqual({ dbVersion: 49, binaryVersion: 48 });
@@ -125,7 +125,7 @@ describe('schemaSkewRemedy — the command must match the install shape', () => 
     });
     expect(r.kind).toBe('plugin');
     expect(r.commands.join('\n')).toContain('/plugin marketplace update thenewnano');
-    expect(r.commands.join('\n')).toContain('/plugin update claude-mem-lite@thenewnano');
+    expect(r.commands.join('\n')).toContain('/plugin update qwen-mem-lite@thenewnano');
     // The RED case: this is the string schema.mjs prints today, and it repairs nothing here.
     expect(r.commands.join('\n')).not.toContain('npm i -g');
   });
@@ -146,17 +146,17 @@ describe('schemaSkewRemedy — the command must match the install shape', () => 
     // The empty square of the matrix, and the one that was wrong. hasManagedCodeInstall is
     // true for anyone who ALSO has an npm/managed install, and for a dev checkout (existsSync
     // follows symlinks) — so `activePluginVersion && !managed` fell through to the managed
-    // branch and printed `claude-mem-lite self-update` beneath a line reading "the code
+    // branch and printed `qwen-mem-lite self-update` beneath a line reading "the code
     // running here (plugin cache v5.6.0)". Neither command advances a plugin cache. That is
     // verbatim the failure this module exists to prevent.
-    const cacheRoot = '/home/u/.claude/plugins/cache/thenewnano/claude-mem-lite/5.6.0';
+    const cacheRoot = '/home/u/.claude/plugins/cache/thenewnano/qwen-mem-lite/5.6.0';
     const r = schemaSkewRemedy({
       managed: true,
       activePluginVersion: { version: '5.6.0', root: cacheRoot },
       root: cacheRoot,
     });
     expect(r.kind).toBe('plugin');
-    expect(r.commands.join('\n')).toContain('/plugin update claude-mem-lite@thenewnano');
+    expect(r.commands.join('\n')).toContain('/plugin update qwen-mem-lite@thenewnano');
     expect(r.commands.join('\n')).not.toContain('self-update');
   });
 
@@ -165,7 +165,7 @@ describe('schemaSkewRemedy — the command must match the install shape', () => 
     const r = schemaSkewRemedy({
       managed: true,
       activePluginVersion: { version: '5.6.0', root: '/home/u/.claude/plugins/cache/x/5.6.0' },
-      root: '/home/u/.claude-mem-lite',
+      root: '/home/u/.qwen-mem-lite',
     });
     expect(r.kind).toBe('managed');
     expect(r.commands.join('\n')).toContain('self-update');
@@ -176,7 +176,7 @@ describe('schemaSkewRemedy — the command must match the install shape', () => 
     expect(r.kind).toBe('unknown');
     expect(r.commands).toEqual([]);
     // Must name what it looked at — "I could not look" and "nothing to do" are different answers.
-    expect(r.note).toMatch(/~\/\.claude-mem-lite|plugin cache/);
+    expect(r.note).toMatch(/~\/\.qwen-mem-lite|plugin cache/);
   });
 });
 
@@ -245,7 +245,7 @@ describe('formatSchemaSkewNotice', () => {
     });
     expect(notice).toContain('49');
     expect(notice).toContain('48');
-    expect(notice).toContain('/plugin update claude-mem-lite@thenewnano');
+    expect(notice).toContain('/plugin update qwen-mem-lite@thenewnano');
     expect(notice).not.toContain('npm i -g');
     // One block, not a wall: the SessionStart envelope shares stdout with the dashboard.
     expect(notice.split('\n').length).toBeLessThanOrEqual(8);
@@ -264,7 +264,7 @@ describe('formatSchemaSkewNotice', () => {
 
 describe('schemaCompatProbeSource — a path cannot break out of the -e script', () => {
   // This function interpolates three filesystem paths into JavaScript source that is then
-  // handed to `node -e`. A plugin cache root or a CLAUDE_MEM_DIR is user-controlled, so
+  // handed to `node -e`. A plugin cache root or a QWEN_MEM_DIR is user-controlled, so
   // every one goes through JSON.stringify — the same discipline binding-probe.mjs states
   // for its own probe. Pinned here because the export exists for exactly this reason.
   const hostile = '/tmp/a"; process.exit(42); //';
@@ -347,7 +347,7 @@ describe('probeSchemaCompatInFreshProcess — asks the module, does not parse it
 describe('probeSchemaCompat over several homes', () => {
   it('names the home that cannot open the DB and leaves the others alone', () => {
     const roots = [
-      { label: 'managed install (~/.claude-mem-lite)', root: '/m' },
+      { label: 'managed install (~/.qwen-mem-lite)', root: '/m' },
       { label: 'plugin cache v5.6.0', root: '/p' },
     ];
     const results = probeSchemaCompat(roots, '/db', {

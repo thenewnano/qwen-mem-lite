@@ -9,7 +9,7 @@
 //   recent --since D          date_since: D
 //
 // A caller working from the CLI vocabulary (the plugin doc tells agents to reach
-// for `claude-mem-lite <cmd>`, so that vocabulary is the one in context) sends the
+// for `qwen-mem-lite <cmd>`, so that vocabulary is the one in context) sends the
 // CLI name. The MCP schema has no such property, so the validator strips it and the
 // tool answers the UNFILTERED question — "recent bugfixes from the last day" comes
 // back as every recent memory, with nothing marking the filter as dropped. A wider
@@ -52,11 +52,11 @@ beforeAll(async () => {
     args: [SERVER_PATH],
     env: {
       ...process.env,
-      CLAUDE_MEM_DIR: DB_DIR,
+      QWEN_MEM_DIR: DB_DIR,
       CLAUDE_PROJECT_DIR: '/test/alias',
       PWD: '/test/alias',
-      CLAUDE_MEM_AUTO_DEEP: '0',
-      CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
+      QWEN_MEM_AUTO_DEEP: '0',
+      QWEN_MEM_SKIP_SAVE_ENRICH: '1',
     },
   });
   client = new Client({ name: 'mem-alias-client', version: '0.0.0' });

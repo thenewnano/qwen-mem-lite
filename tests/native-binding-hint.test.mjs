@@ -61,7 +61,7 @@ describe('formatHookError', () => {
 
   it('formats a non-DLOPEN error as the structured ERROR line', () => {
     const line = formatHookError(new Error('boom'), 'stop', { now: NOW });
-    expect(line).toContain('[claude-mem-lite]');
+    expect(line).toContain('[qwen-mem-lite]');
     expect(line).toContain('[ERROR] stop: boom');
   });
 
@@ -75,11 +75,11 @@ describe('formatHookError', () => {
     const line = formatHookError(err, 'stop', { now: NOW });
     expect(line).toContain('[WARN] stop:');
     expect(line).toContain('native DB binding');
-    // resolvable absolute path, not bare `claude-mem-lite` (off-PATH on plugin
+    // resolvable absolute path, not bare `qwen-mem-lite` (off-PATH on plugin
     // installs); `rebuild-binding`, not `repair` — see the rationale on
     // CLI_REBUILD_BINDING in lib/native-binding-hint.mjs
     expect(line).toContain('cli.mjs rebuild-binding');
-    expect(line).not.toContain('claude-mem-lite repair');
+    expect(line).not.toContain('qwen-mem-lite repair');
     // the verbose original message must NOT leak through
     expect(line).not.toContain('NODE_MODULE_VERSION');
   });

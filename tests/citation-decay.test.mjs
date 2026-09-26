@@ -44,7 +44,7 @@ describe('extractInjectedFromPreToolUse', () => {
       attachment: {
         type: 'hook_success',
         hookName: 'PreToolUse:Read',
-        command: 'node /home/u/.claude-mem-lite/scripts/pre-tool-recall.js',
+        command: 'node /home/u/.qwen-mem-lite/scripts/pre-tool-recall.js',
         stdout,
         stderr: '',
         exitCode: 0,
@@ -882,10 +882,10 @@ describe('applyCitationDecay — the removed adoption-rate gate (D#204)', () => 
     expect(row.uncited_streak).toBe(0);
   });
 
-  it('CLAUDE_MEM_CITATION_ADOPTION_THRESHOLD is inert AND warns — not silently ignored', () => {
+  it('QWEN_MEM_CITATION_ADOPTION_THRESHOLD is inert AND warns — not silently ignored', () => {
     // 0.5 used to suppress a 15%-cite-rate project. It must now change nothing,
     // and must not do that quietly: an accepted setting that means nothing is
-    // worse than an unsupported one (the CLAUDE_MEM_RECOMMEND_MODE=live precedent).
+    // worse than an unsupported one (the QWEN_MEM_RECOMMEND_MODE=live precedent).
     const target = makeObs({ importance: 2, uncited_streak: 2, decay_seen_count: 20, cited_count: 3 });
     const realWrite = process.stderr.write.bind(process.stderr);
     let captured = '';
@@ -893,12 +893,12 @@ describe('applyCitationDecay — the removed adoption-rate gate (D#204)', () => 
       captured += String(chunk);
       return true;
     };
-    process.env.CLAUDE_MEM_CITATION_ADOPTION_THRESHOLD = '0.5';
+    process.env.QWEN_MEM_CITATION_ADOPTION_THRESHOLD = '0.5';
     try {
       applyCitationDecay(db, 'p', new Set([target]), new Set(), 'sess-1');
     } finally {
       process.stderr.write = realWrite;
-      delete process.env.CLAUDE_MEM_CITATION_ADOPTION_THRESHOLD;
+      delete process.env.QWEN_MEM_CITATION_ADOPTION_THRESHOLD;
     }
     const row = db.prepare('SELECT uncited_streak, demoted_at FROM observations WHERE id=?').get(target);
     expect(row.demoted_at).toBeGreaterThan(0); // NOT suppressed

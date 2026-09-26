@@ -23,7 +23,7 @@ const SCRIPT = resolve(import.meta.dirname, '../scripts/post-tool-recall.js');
 function run(input, env = {}) {
   return new Promise((res, rej) => {
     const c = spawn('node', [SCRIPT], {
-      env: { ...process.env, CLAUDE_MEM_HOOK_RUNNING: '', ...env },
+      env: { ...process.env, QWEN_MEM_HOOK_RUNNING: '', ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let out = '';
@@ -64,7 +64,7 @@ describe('post-tool-recall (bind component 2)', () => {
       JSON.stringify({ [fp]: { ts: Date.now(), lessonIds: [42], lessonIdents: idents } }),
     );
   };
-  const env = (extra = {}) => ({ CLAUDE_MEM_DIR: root, CLAUDE_MEM_SALIENCE: 'bind', ...extra });
+  const env = (extra = {}) => ({ QWEN_MEM_DIR: root, QWEN_MEM_SALIENCE: 'bind', ...extra });
 
   it('warns when the edit dropped a flagged identifier', async () => {
     seed(SID1, { 42: ['recoverChildrenOf'] });
@@ -85,7 +85,7 @@ describe('post-tool-recall (bind component 2)', () => {
     writeFileSync(fp, 'function purgeStale() { db.delete(); }');
     const out = await run(
       { tool_name: 'Edit', session_id: SID3, tool_input: { file_path: fp } },
-      env({ CLAUDE_MEM_SALIENCE: 'current' }),
+      env({ QWEN_MEM_SALIENCE: 'current' }),
     );
     expect(out).toBe('');
   });

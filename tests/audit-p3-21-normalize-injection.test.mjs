@@ -36,7 +36,7 @@
 //
 // ── WHAT REAL CONCEPTS LOOK LIKE, three populations, 2026-09-08 ──────────────────────────
 //
-//   real DB (~/.claude-mem-lite)             1 row with concepts,  10 distinct, max len 13
+//   real DB (~/.qwen-mem-lite)             1 row with concepts,  10 distinct, max len 13
 //   benchmark/fixtures/seed-data.json      200 rows,              541 distinct, max len 22
 //   benchmark/fixtures/seed-data-cjk.json   31 rows,               55 distinct, max len  9
 //
@@ -397,23 +397,23 @@ describe('R10-P3-21 tier 3: normalize is the cross-project rewrite path', () => 
     }
   });
 
-  it('CLAUDE_MEM_NORMALIZE_CROSS_PROJECT=1 restores the old single-pass behaviour', async () => {
+  it('QWEN_MEM_NORMALIZE_CROSS_PROJECT=1 restores the old single-pass behaviour', async () => {
     // The §2-EXT escape hatch for a user-visible default change. A shipped revert path that
     // nothing exercises is the same class of dead guard as an untested denylist clause: it
     // reads as an option and would be discovered broken by whoever needed it most.
-    process.env.CLAUDE_MEM_NORMALIZE_CROSS_PROJECT = '1';
+    process.env.QWEN_MEM_NORMALIZE_CROSS_PROJECT = '1';
     const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       callModelJSONAsync.mockResolvedValue({ groups: [] });
       await executeNormalize(db, true);
       expect(callModelJSONAsync.mock.calls.length, 'one pass over the union, as before').toBe(1);
       // Second review: the first version of this warning went through debugLog, which
-      // returns early unless CLAUDE_MEM_DEBUG is set — so it fired zero times in the
+      // returns early unless QWEN_MEM_DEBUG is set — so it fired zero times in the
       // detached worker that is the only place the hatch is used. A documented safety net
       // nothing emits is worse than none, because it reads as present.
       const warned = warn.mock.calls.flat().join(' ');
       expect(warned, 'the user must be told a protection is off').toContain(
-        'CLAUDE_MEM_NORMALIZE_CROSS_PROJECT=1',
+        'QWEN_MEM_NORMALIZE_CROSS_PROJECT=1',
       );
       expect(warned).toContain('R10-P3-21');
       const user = callModelJSONAsync.mock.calls[0][0].user;
@@ -423,22 +423,22 @@ describe('R10-P3-21 tier 3: normalize is the cross-project rewrite path', () => 
       expect(user).toContain('tokenizer');
     } finally {
       warn.mockRestore();
-      delete process.env.CLAUDE_MEM_NORMALIZE_CROSS_PROJECT;
+      delete process.env.QWEN_MEM_NORMALIZE_CROSS_PROJECT;
     }
   });
 
   it('only the documented value opts out — a typo must not silently re-open the path', async () => {
-    // Mirrors the CLAUDE_MEM_REACH_DISCLESURE lesson: an install that meant to set the flag
+    // Mirrors the QWEN_MEM_REACH_DISCLESURE lesson: an install that meant to set the flag
     // and mistyped must get the SAFE behaviour, not the dangerous one. The comparison is
     // `=== '1'`, so anything else fans out.
     for (const v of ['true', 'on', 'yes', '0', '']) {
-      process.env.CLAUDE_MEM_NORMALIZE_CROSS_PROJECT = v;
+      process.env.QWEN_MEM_NORMALIZE_CROSS_PROJECT = v;
       callModelJSONAsync.mockReset();
       callModelJSONAsync.mockResolvedValue({ groups: [] });
       await executeNormalize(db, true);
       expect(callModelJSONAsync.mock.calls.length, `"${v}" must not opt out`).toBe(2);
     }
-    delete process.env.CLAUDE_MEM_NORMALIZE_CROSS_PROJECT;
+    delete process.env.QWEN_MEM_NORMALIZE_CROSS_PROJECT;
   });
 
   it('P2-1(b): projects past the per-run cap are DEFERRED, not starved forever', async () => {
@@ -486,14 +486,14 @@ describe('R10-P3-21 tier 3: normalize is the cross-project rewrite path', () => 
     // the original starvation, and neither turned a single case red.
     //
     // The flake diagnosis was right and the substitution was still avoidable: the gate file
-    // lives under RUNTIME_DIR, which honours CLAUDE_MEM_RUNTIME_DIR, so this case gets a
+    // lives under RUNTIME_DIR, which honours QWEN_MEM_RUNTIME_DIR, so this case gets a
     // PRIVATE one and stops competing with every other suite for a shared file. That needs a
     // fresh module instance, because NORMALIZE_GATE_FILE is resolved once at module load —
     // hence resetModules plus a dynamic import of BOTH the module and its mocked client, so
     // the mock instance the fresh copy calls is the one this case inspects.
     const gateDir = mkdtempSync(join(tmpdir(), 'mem-p321-gate-'));
     try {
-      vi.stubEnv('CLAUDE_MEM_RUNTIME_DIR', gateDir);
+      vi.stubEnv('QWEN_MEM_RUNTIME_DIR', gateDir);
       vi.resetModules();
       const { executeNormalize: freshNormalize } = await import('../hook-optimize.mjs');
       const { callModelJSONAsync: freshClient } = await import('../haiku-client.mjs');
@@ -547,7 +547,7 @@ describe('R10-P3-21 tier 3: normalize is the cross-project rewrite path', () => 
     // another full cycle — a silent regression of the very starvation the rotation fixed.
     const gateDir = mkdtempSync(join(tmpdir(), 'mem-p321-hatch-'));
     try {
-      vi.stubEnv('CLAUDE_MEM_RUNTIME_DIR', gateDir);
+      vi.stubEnv('QWEN_MEM_RUNTIME_DIR', gateDir);
       vi.resetModules();
       const { executeNormalize: freshNormalize } = await import('../hook-optimize.mjs');
       const { callModelJSONAsync: freshClient } = await import('../haiku-client.mjs');
@@ -574,12 +574,12 @@ describe('R10-P3-21 tier 3: normalize is the cross-project rewrite path', () => 
 
       // One legacy run with the hatch on, then the hatch off again.
       const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
-      vi.stubEnv('CLAUDE_MEM_NORMALIZE_CROSS_PROJECT', '1');
+      vi.stubEnv('QWEN_MEM_NORMALIZE_CROSS_PROJECT', '1');
       freshClient.mockReset();
       freshClient.mockResolvedValue({ groups: [] });
       await freshNormalize(fresh, true);
       expect(freshClient.mock.calls.length, 'premise: the hatch really took the legacy path').toBe(1);
-      vi.stubEnv('CLAUDE_MEM_NORMALIZE_CROSS_PROJECT', '');
+      vi.stubEnv('QWEN_MEM_NORMALIZE_CROSS_PROJECT', '');
       warn.mockRestore();
 
       freshClient.mockReset();

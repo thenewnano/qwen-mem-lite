@@ -216,7 +216,7 @@ describe('lib/hook-stdout — the human channel', () => {
     const { queueHookSystemMessage } = await import('../lib/hook-stdout.mjs');
     const written = [];
     queueHookContext('SessionStart', 'dashboard for the model');
-    queueHookSystemMessage('📦 claude-mem-lite: v9.9.9 available');
+    queueHookSystemMessage('📦 qwen-mem-lite: v9.9.9 available');
     expect(flushHookStdout({ write: (s) => written.push(s) })).toBe(true);
     expect(written).toHaveLength(1);
     const parsed = JSON.parse(written[0]);
@@ -250,9 +250,9 @@ describe('hook.mjs post-tool-use: co-firing receipts stay one document', () => {
     tmpHome = mkdtempSync(join(tmpdir(), 'mem-1env-'));
     projDir = join(tmpHome, 'work', 'proj');
     mkdirSync(projDir, { recursive: true });
-    const dbDir = join(tmpHome, '.claude-mem-lite');
+    const dbDir = join(tmpHome, '.qwen-mem-lite');
     mkdirSync(join(dbDir, 'runtime'), { recursive: true });
-    dbPath = join(dbDir, 'claude-mem-lite.db');
+    dbPath = join(dbDir, 'qwen-mem-lite.db');
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
     initSchema(db);
@@ -260,7 +260,7 @@ describe('hook.mjs post-tool-use: co-firing receipts stay one document', () => {
 
     env = { ...process.env };
     for (const k of Object.keys(env)) {
-      if (/^(CLAUDE_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete env[k];
+      if (/^(QWEN_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete env[k];
     }
     Object.assign(env, {
       HOME: tmpHome,
@@ -268,14 +268,14 @@ describe('hook.mjs post-tool-use: co-firing receipts stay one document', () => {
       CLAUDE_CODE_PATH: join(tmpHome, 'no-such-claude-binary'),
       ANTHROPIC_API_KEY: '',
       OPENROUTER_API_KEY: '',
-      CLAUDE_MEM_SKIP_UPDATE: '1',
-      CLAUDE_MEM_SKIP_EPISODE_LLM: '1',
-      CLAUDE_MEM_SKIP_COMPRESS: '1',
-      CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-      CLAUDE_MEM_SKIP_MAINTAIN: '1',
-      CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
-      CLAUDE_MEM_SKIP_REPOS: '1',
-      CLAUDE_MEM_NO_DELAY: '1',
+      QWEN_MEM_SKIP_UPDATE: '1',
+      QWEN_MEM_SKIP_EPISODE_LLM: '1',
+      QWEN_MEM_SKIP_COMPRESS: '1',
+      QWEN_MEM_SKIP_OPTIMIZE: '1',
+      QWEN_MEM_SKIP_MAINTAIN: '1',
+      QWEN_MEM_SKIP_SAVE_ENRICH: '1',
+      QWEN_MEM_SKIP_REPOS: '1',
+      QWEN_MEM_NO_DELAY: '1',
       MEM_NO_AUTO_ADOPT: '1',
     });
     // Seed through the CLI so the row goes through the real write path (enrichment,

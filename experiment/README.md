@@ -1,6 +1,6 @@
 # Value A/B — does memory injection improve coding outcomes?
 
-claude-mem-lite's retrieval benchmarks (R@10, P@1, MRR, nDCG) measure **retrieval
+qwen-mem-lite's retrieval benchmarks (R@10, P@1, MRR, nDCG) measure **retrieval
 mechanics** — whether the right rows come back. They do **not** measure whether
 injecting those rows changed what Claude did, or whether the change helped. This
 harness closes that gap with a controlled, falsifiable A/B.
@@ -88,13 +88,13 @@ node experiment/analyze-results.mjs
    averages, or raise trial count to average out sampling.
 3. **Hook registration** — a live treatment/shuffled run must register the mem
    hooks in the sandbox pointed at the seeded DB. Provide a ready settings.json via
-   `CLAUDE_MEM_EXPERIMENT_SETTINGS` (see `lib/real-deps.mjs::writeHookSettings`).
+   `QWEN_MEM_EXPERIMENT_SETTINGS` (see `lib/real-deps.mjs::writeHookSettings`).
    This is the one integration seam that only a live `claude` can validate.
 
 ## What this is not
 
 Dry-run numbers are **synthetic plumbing checks**, never findings — `analyze` marks
 them. A real verdict requires the live run on a real corpus. Pair the external
-outcome with the internal `claude-mem-lite citation-stats` cite-recall: if
+outcome with the internal `qwen-mem-lite citation-stats` cite-recall: if
 cite-recall is high but outcomes don't move, that empirically confirms the
 citation-decay loop optimizes a proxy (audit thesis ALGO-2).

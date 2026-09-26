@@ -1,7 +1,7 @@
 // Audit P3-4: a plugin disabled in the Claude UI must stop growing runtime state.
 //
 // Pre-fix symptom: install.mjs writes DIRECT hook entries into ~/.claude/settings.json,
-// so disabling the plugin in the UI (enabledPlugins["claude-mem-lite@thenewnano"] = false)
+// so disabling the plugin in the UI (enabledPlugins["qwen-mem-lite@thenewnano"] = false)
 // leaves those hooks wired. hook.mjs:114 makes the Node side exit(0) when disabled, but
 // the bash pre-filter's Read fast-path never reaches Node — it appended the read path to
 // runtime/reads-<project>.txt on EVERY Read. The 24h sweep that reaps those files
@@ -71,9 +71,9 @@ function readEvent(settings, { filePath = '/home/user/secret-project/plan.md' } 
     env: {
       ...process.env,
       HOME: home,
-      CLAUDE_MEM_DIR: memDir,
+      QWEN_MEM_DIR: memDir,
       CLAUDE_PROJECT_DIR: '/tmp/org/proj',
-      CLAUDE_MEM_HOOK_RUNNING: '',
+      QWEN_MEM_HOOK_RUNNING: '',
     },
     encoding: 'utf8',
   });
@@ -132,9 +132,9 @@ describe('P3-4 disabled plugin stops appending reads-<project>.txt', () => {
       env: {
         ...process.env,
         HOME: home,
-        CLAUDE_MEM_DIR: memDir,
+        QWEN_MEM_DIR: memDir,
         CLAUDE_PROJECT_DIR: '/tmp/org/proj',
-        CLAUDE_MEM_HOOK_RUNNING: '',
+        QWEN_MEM_HOOK_RUNNING: '',
       },
       encoding: 'utf8',
     });

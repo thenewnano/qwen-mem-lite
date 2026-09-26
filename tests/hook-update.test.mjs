@@ -36,7 +36,7 @@ function makeDataDir(version = '1.0.0') {
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ version }, null, 2));
   writeFileSync(
     join(dir, 'package-lock.json'),
-    JSON.stringify({ name: 'claude-mem-lite', lockfileVersion: 3 }, null, 2),
+    JSON.stringify({ name: 'qwen-mem-lite', lockfileVersion: 3 }, null, 2),
   );
   writeFileSync(join(dir, 'server.mjs'), '// server');
   writeFileSync(join(dir, 'hook.mjs'), '// old hook');
@@ -44,13 +44,13 @@ function makeDataDir(version = '1.0.0') {
   return dir;
 }
 
-// Code/install dir is ALWAYS homedir-rooted (~/.claude-mem-lite), independent of
-// CLAUDE_MEM_DIR relocation — Claude Code bakes absolute paths to server.mjs/hooks
+// Code/install dir is ALWAYS homedir-rooted (~/.qwen-mem-lite), independent of
+// QWEN_MEM_DIR relocation — Claude Code bakes absolute paths to server.mjs/hooks
 // there. os.homedir() honors $HOME on POSIX, so HOME steers CODE_DIR in tests.
 // A regular-file server.mjs (not a symlink) keeps isDevMode() false.
 function makeCodeHome(version = '1.0.0') {
   const home = makeDir('mem-update-home');
-  const codeDir = join(home, '.claude-mem-lite');
+  const codeDir = join(home, '.qwen-mem-lite');
   mkdirSync(codeDir, { recursive: true });
   writeFileSync(join(codeDir, 'package.json'), JSON.stringify({ version }, null, 2));
   writeFileSync(join(codeDir, 'server.mjs'), '// code server');
@@ -63,7 +63,7 @@ function makeReleaseDir(version = '1.1.0') {
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ version }, null, 2));
   writeFileSync(
     join(dir, 'package-lock.json'),
-    JSON.stringify({ name: 'claude-mem-lite', lockfileVersion: 3 }, null, 2),
+    JSON.stringify({ name: 'qwen-mem-lite', lockfileVersion: 3 }, null, 2),
   );
   writeFileSync(join(dir, 'hook.mjs'), '// new hook');
   writeFileSync(join(dir, 'server.mjs'), '// new server');
@@ -85,22 +85,22 @@ async function loadModule(env = {}) {
   vi.resetModules();
   for (const v of PROXY_ENV_VARS) delete process.env[v];
   delete process.env.CLAUDE_PLUGIN_ROOT;
-  delete process.env.CLAUDE_MEM_SKIP_UPDATE;
-  // CLAUDE_MEM_UPDATE_REPO is deliberately NOT scrubbed here: hook-update reads it at
+  delete process.env.QWEN_MEM_SKIP_UPDATE;
+  // QWEN_MEM_UPDATE_REPO is deliberately NOT scrubbed here: hook-update reads it at
   // import time, so the override test must set it before loadModule — a scrub here would
   // delete it out from under the import and the test would silently assert the default.
   // Real shells do not set it, afterEach clears it between tests, and the default-repo
   // test deletes it explicitly.
   // `process.env.X = undefined` coerces to the STRING "undefined", which the
   // schema.mjs data-dir resolver now rejects (lib/resolve-data-dir.mjs). A test
-  // that doesn't relocate must leave CLAUDE_MEM_DIR truly UNSET, not "undefined"
+  // that doesn't relocate must leave QWEN_MEM_DIR truly UNSET, not "undefined"
   // — mirror the afterEach delete instead of assigning a nullish value.
-  if (env.CLAUDE_MEM_DIR === undefined) delete process.env.CLAUDE_MEM_DIR;
-  else process.env.CLAUDE_MEM_DIR = env.CLAUDE_MEM_DIR;
+  if (env.QWEN_MEM_DIR === undefined) delete process.env.QWEN_MEM_DIR;
+  else process.env.QWEN_MEM_DIR = env.QWEN_MEM_DIR;
   // HOME is sandboxed by DEFAULT, not only when a caller remembers to pass it.
   // `installExtractedRelease` now WRITES `~/.claude/settings.json` (the post-swap hook
   // reconcile), and `os.homedir()` honours $HOME on POSIX — so on any machine whose
-  // settings.json holds a dangling claude-mem-lite hook entry, which is exactly the state
+  // settings.json holds a dangling qwen-mem-lite hook entry, which is exactly the state
   // an upgrade past the registry removal creates, `npx vitest run` was rewriting the
   // developer's real config and leaving a .bak. Reproduced at 289 B → 42 B before this
   // line existed. Most loadModule call sites pass no HOME; defaulting here covers all of
@@ -124,9 +124,9 @@ afterEach(() => {
     else process.env[k] = v;
   }
   delete process.env.CLAUDE_PLUGIN_ROOT;
-  delete process.env.CLAUDE_MEM_SKIP_UPDATE;
-  delete process.env.CLAUDE_MEM_UPDATE_REPO;
-  delete process.env.CLAUDE_MEM_DIR;
+  delete process.env.QWEN_MEM_SKIP_UPDATE;
+  delete process.env.QWEN_MEM_UPDATE_REPO;
+  delete process.env.QWEN_MEM_DIR;
   process.env.HOME = originalHome;
   for (const dir of trackedDirs) rmSync(dir, { recursive: true, force: true });
   trackedDirs.clear();
@@ -142,14 +142,14 @@ describe('loadModule never leaves the real HOME in place', () => {
   // ~/.claude/settings.json.
   it('redirects $HOME away from the developer even when no HOME is passed', async () => {
     process.env.HOME = originalHome; // premise: start from the real one
-    await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     expect(process.env.HOME, 'a test could write the real ~/.claude').not.toBe(originalHome);
   });
 
   it('respects a HOME the caller already set, rather than clobbering their fixture', async () => {
     const preset = makeDir('mem-update-preset-home');
     process.env.HOME = preset;
-    await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     expect(process.env.HOME).toBe(preset);
   });
 });
@@ -160,10 +160,10 @@ describe('createUpdateTmpDir (P3-4: predictable-/tmp TOCTOU)', () => {
     const a = createUpdateTmpDir();
     const b = createUpdateTmpDir();
     try {
-      // Old code: join(tmpdir(), `claude-mem-lite-update-${Date.now()}`) — guessable, and two
+      // Old code: join(tmpdir(), `qwen-mem-lite-update-${Date.now()}`) — guessable, and two
       // same-ms calls collide. mkdtempSync gives a random suffix, so a !== b always.
       expect(a).not.toBe(b);
-      expect(a).toContain('claude-mem-lite-update-');
+      expect(a).toContain('qwen-mem-lite-update-');
       // 0700: no group/other permission bits (old mkdirSync(recursive) inherited ~0755).
       expect(statSync(a).mode & 0o077).toBe(0);
     } finally {
@@ -183,7 +183,7 @@ describe('hook update lifecycle', () => {
       json: async () => ({ tag_name: 'v1.1.0', tarball_url: 'https://example.com/release.tgz' }),
     });
     const { checkForUpdate } = await loadModule({
-      CLAUDE_MEM_DIR: dataDir,
+      QWEN_MEM_DIR: dataDir,
       CLAUDE_PLUGIN_ROOT: '/plugin/root',
       HOME: home,
     });
@@ -217,7 +217,7 @@ describe('hook update lifecycle', () => {
       status: 200,
       json: async () => ({ tag_name: 'v1.1.0', tarball_url: 'https://example.com/release.tgz' }),
     });
-    const { checkForUpdate } = await loadModule({ CLAUDE_MEM_DIR: dataDir, HOME: home });
+    const { checkForUpdate } = await loadModule({ QWEN_MEM_DIR: dataDir, HOME: home });
 
     expect(await checkForUpdate()).toBeNull();
     const result = await checkForUpdate({ force: true, allowInstall: false });
@@ -235,7 +235,7 @@ describe('hook update lifecycle', () => {
       }
       return '';
     });
-    const { installExtractedRelease } = await loadModule({ CLAUDE_MEM_DIR: dataDir });
+    const { installExtractedRelease } = await loadModule({ QWEN_MEM_DIR: dataDir });
 
     expect(await installExtractedRelease(releaseDir, dataDir)).toBe(true);
     expect(readFileSync(join(dataDir, 'hook.mjs'), 'utf8')).toContain('new hook');
@@ -246,7 +246,7 @@ describe('hook update lifecycle', () => {
 
   // Regression v2.73.1: copyFileSync preserves source mode and git stores
   // cli.mjs as 100644 — without the chmod inside copyReleaseIntoStaging the
-  // ~/.local/bin/claude-mem-lite → cli.mjs symlink target loses its +x bit
+  // ~/.local/bin/qwen-mem-lite → cli.mjs symlink target loses its +x bit
   // after every auto-update, dying with "Permission denied" on next CLI call.
   // POSIX-only: Windows has no chmod semantics, so the assertion is skipped.
   it.skipIf(process.platform === 'win32')(
@@ -260,7 +260,7 @@ describe('hook update lifecycle', () => {
         }
         return '';
       });
-      const { installExtractedRelease } = await loadModule({ CLAUDE_MEM_DIR: dataDir });
+      const { installExtractedRelease } = await loadModule({ QWEN_MEM_DIR: dataDir });
 
       expect(await installExtractedRelease(releaseDir, dataDir)).toBe(true);
       const installedCli = join(dataDir, 'cli.mjs');
@@ -277,7 +277,7 @@ describe('hook update lifecycle', () => {
       if (String(cmd).startsWith('npm install')) throw new Error('npm failed');
       return '';
     });
-    const { installExtractedRelease } = await loadModule({ CLAUDE_MEM_DIR: dataDir });
+    const { installExtractedRelease } = await loadModule({ QWEN_MEM_DIR: dataDir });
 
     expect(await installExtractedRelease(releaseDir, dataDir)).toBe(false);
     expect(readFileSync(join(dataDir, 'hook.mjs'), 'utf8')).toContain('old hook');
@@ -300,7 +300,7 @@ describe('hook update lifecycle', () => {
       }
       return '';
     });
-    const { installExtractedRelease } = await loadModule({ CLAUDE_MEM_DIR: dataDir });
+    const { installExtractedRelease } = await loadModule({ QWEN_MEM_DIR: dataDir });
 
     expect(await installExtractedRelease(releaseDir, dataDir)).toBe(false);
     // Old version restored, the broken new version reverted, no leftover staging/backup dirs.
@@ -338,7 +338,7 @@ describe('hook update lifecycle', () => {
           return '';
         }),
       );
-      const { installExtractedRelease } = await loadModule({ CLAUDE_MEM_DIR: dataDir });
+      const { installExtractedRelease } = await loadModule({ QWEN_MEM_DIR: dataDir });
 
       expect(await installExtractedRelease(releaseDir, dataDir)).toBe(true);
       expect(probes).toBe(1);
@@ -363,7 +363,7 @@ describe('hook update lifecycle', () => {
           return '';
         }),
       );
-      const { installExtractedRelease } = await loadModule({ CLAUDE_MEM_DIR: dataDir });
+      const { installExtractedRelease } = await loadModule({ QWEN_MEM_DIR: dataDir });
 
       expect(await installExtractedRelease(releaseDir, dataDir)).toBe(true);
       expect(probes).toBe(2);
@@ -392,7 +392,7 @@ describe('hook update lifecycle', () => {
           return '';
         }),
       );
-      const { installExtractedRelease } = await loadModule({ CLAUDE_MEM_DIR: dataDir });
+      const { installExtractedRelease } = await loadModule({ QWEN_MEM_DIR: dataDir });
 
       expect(await installExtractedRelease(releaseDir, dataDir)).toBe(true);
       expect(probes).toBe(3);
@@ -409,7 +409,7 @@ describe('hook update lifecycle', () => {
           return '';
         }),
       );
-      const { installExtractedRelease } = await loadModule({ CLAUDE_MEM_DIR: dataDir });
+      const { installExtractedRelease } = await loadModule({ QWEN_MEM_DIR: dataDir });
 
       expect(await installExtractedRelease(releaseDir, dataDir)).toBe(false);
       expect(readFileSync(join(dataDir, 'hook.mjs'), 'utf8')).toContain('old hook');
@@ -419,7 +419,7 @@ describe('hook update lifecycle', () => {
 
   // Regression: scripts/ is curated to HOOK_SCRIPT_FILES only — dev-only
   // helpers (mock-claude.mjs, extract-repos.mjs…) and
-  // any future subdirectories MUST NOT leak into ~/.claude-mem-lite/scripts/.
+  // any future subdirectories MUST NOT leak into ~/.qwen-mem-lite/scripts/.
   // Pre-v2.55 hook-update did a recursive copy of the whole scripts/ tree and
   // shipped every dev-only file from the GitHub Releases tarball.
   it('staged install curates scripts/ to HOOK_SCRIPT_FILES and skips dev-only files', async () => {
@@ -439,7 +439,7 @@ describe('hook update lifecycle', () => {
       }
       return '';
     });
-    const { installExtractedRelease } = await loadModule({ CLAUDE_MEM_DIR: dataDir });
+    const { installExtractedRelease } = await loadModule({ QWEN_MEM_DIR: dataDir });
 
     expect(await installExtractedRelease(releaseDir, dataDir)).toBe(true);
     // All four curated hook scripts land
@@ -487,7 +487,7 @@ describe('hook update lifecycle', () => {
       }
       return '';
     });
-    const { installExtractedRelease } = await loadModule({ CLAUDE_MEM_DIR: dataDir });
+    const { installExtractedRelease } = await loadModule({ QWEN_MEM_DIR: dataDir });
 
     expect(await installExtractedRelease(releaseDir, dataDir)).toBe(true);
     expect(existsSync(join(dataDir, newRelPath))).toBe(true);
@@ -498,28 +498,28 @@ describe('hook update lifecycle', () => {
 // Regression D#27: hook-update.mjs:19 set INSTALL_DIR = DB_DIR, conflating the
 // plugin CODE location (server.mjs / package.json / install target — always
 // homedir-rooted because Claude Code bakes absolute paths there) with the DATA
-// location (runtime/update-state — env-aware via CLAUDE_MEM_DIR). Under
-// relocation (CLAUDE_MEM_DIR set ≠ homedir) auto-update read the version from
+// location (runtime/update-state — env-aware via QWEN_MEM_DIR). Under
+// relocation (QWEN_MEM_DIR set ≠ homedir) auto-update read the version from
 // and switched files into the *data* dir, so it never found/updated the real
 // server.mjs. State, by contrast, correctly belongs in the data dir (install.mjs
 // doctor reads MEM_DATA_DIR/runtime/update-state.json). Fix: INSTALL_DIR = CODE_DIR
 // (homedir), STATE_DIR = DB_DIR (data).
 describe('code/data dir separation under relocation (D#27)', () => {
-  it('getCurrentVersion reads the homedir code dir, not the relocated CLAUDE_MEM_DIR data dir', async () => {
+  it('getCurrentVersion reads the homedir code dir, not the relocated QWEN_MEM_DIR data dir', async () => {
     const { home } = makeCodeHome('2.0.0'); // real code install → 2.0.0
     const dataDir = makeDataDir('1.0.0'); // relocated data dir holds a 1.0.0 decoy package.json
-    const { getCurrentVersion } = await loadModule({ CLAUDE_MEM_DIR: dataDir, HOME: home });
+    const { getCurrentVersion } = await loadModule({ QWEN_MEM_DIR: dataDir, HOME: home });
     // Pre-fix INSTALL_DIR = DB_DIR = dataDir → would read the 1.0.0 decoy.
     expect(getCurrentVersion()).toBe('2.0.0');
   });
 
-  // Pure-plugin install: ~/.claude-mem-lite holds only DB + runtime state, no
+  // Pure-plugin install: ~/.qwen-mem-lite holds only DB + runtime state, no
   // package.json, so INSTALL_DIR read fails and pre-fix returned '0.0.0' — which
   // made checkForUpdate compute hasUpdate=true and nag every SessionStart. Fix
   // reads the running plugin-cache version from CLAUDE_PLUGIN_ROOT.
   it('getCurrentVersion reads CLAUDE_PLUGIN_ROOT package.json in plugin mode when the code dir has none', async () => {
     const home = makeDir('mem-update-home');
-    mkdirSync(join(home, '.claude-mem-lite', 'runtime'), { recursive: true }); // state only, no package.json
+    mkdirSync(join(home, '.qwen-mem-lite', 'runtime'), { recursive: true }); // state only, no package.json
     const pluginRoot = makeDir('mem-plugin-root');
     writeFileSync(join(pluginRoot, 'package.json'), JSON.stringify({ version: '3.84.0' }, null, 2));
     const { getCurrentVersion } = await loadModule({ HOME: home, CLAUDE_PLUGIN_ROOT: pluginRoot });
@@ -549,9 +549,9 @@ describe('code/data dir separation under relocation (D#27)', () => {
   // banner as `(current: vundefined)`.
   it('getCurrentVersion falls through a package.json that carries no version field', async () => {
     const home = makeDir('mem-update-home');
-    const codeDir = join(home, '.claude-mem-lite');
+    const codeDir = join(home, '.qwen-mem-lite');
     mkdirSync(codeDir, { recursive: true });
-    writeFileSync(join(codeDir, 'package.json'), JSON.stringify({ name: 'claude-mem-lite' }, null, 2));
+    writeFileSync(join(codeDir, 'package.json'), JSON.stringify({ name: 'qwen-mem-lite' }, null, 2));
     writeFileSync(join(codeDir, 'server.mjs'), '// code server');
     const pluginRoot = makeDir('mem-plugin-root');
     writeFileSync(join(pluginRoot, 'package.json'), JSON.stringify({ version: '3.84.0' }, null, 2));
@@ -560,8 +560,8 @@ describe('code/data dir separation under relocation (D#27)', () => {
 
     // …and to the last resort when nothing readable is left.
     const bare = makeDir('mem-update-home');
-    mkdirSync(join(bare, '.claude-mem-lite'), { recursive: true });
-    writeFileSync(join(bare, '.claude-mem-lite', 'package.json'), JSON.stringify({ name: 'x' }, null, 2));
+    mkdirSync(join(bare, '.qwen-mem-lite'), { recursive: true });
+    writeFileSync(join(bare, '.qwen-mem-lite', 'package.json'), JSON.stringify({ name: 'x' }, null, 2));
     const { getCurrentVersion: bareVersion } = await loadModule({ HOME: bare });
     expect(bareVersion()).toBe('0.0.0');
   });
@@ -572,10 +572,10 @@ describe('code/data dir separation under relocation (D#27)', () => {
   // > 0 persisted updateAvailable:true and getCachedUpdateBanner rendered
   // `(current: v0.0.0)` on every SessionStart.
   it('a current pure-plugin install reports no update and emits no SessionStart banner', async () => {
-    // Production shape, not a relocation: the data dir IS ~/.claude-mem-lite, and it
+    // Production shape, not a relocation: the data dir IS ~/.qwen-mem-lite, and it
     // holds only runtime state — the code lives in the cache.
     const home = makeDir('mem-update-home');
-    const dataDir = join(home, '.claude-mem-lite');
+    const dataDir = join(home, '.qwen-mem-lite');
     mkdirSync(join(dataDir, 'runtime'), { recursive: true });
     const pluginRoot = makeDir('mem-plugin-root');
     writeFileSync(join(pluginRoot, 'package.json'), JSON.stringify({ version: '3.84.0' }, null, 2));
@@ -595,7 +595,7 @@ describe('code/data dir separation under relocation (D#27)', () => {
     expect(getCachedUpdateBanner()).toBeNull();
   });
 
-  it('installExtractedRelease defaults its target to the homedir code dir, not CLAUDE_MEM_DIR', async () => {
+  it('installExtractedRelease defaults its target to the homedir code dir, not QWEN_MEM_DIR', async () => {
     const { home, codeDir } = makeCodeHome('1.0.0');
     writeFileSync(join(codeDir, 'hook.mjs'), '// old hook');
     mkdirSync(join(codeDir, 'node_modules'), { recursive: true });
@@ -606,7 +606,7 @@ describe('code/data dir separation under relocation (D#27)', () => {
         mkdirSync(join(opts.cwd, 'node_modules'), { recursive: true });
       return '';
     });
-    const { installExtractedRelease } = await loadModule({ CLAUDE_MEM_DIR: dataDir, HOME: home });
+    const { installExtractedRelease } = await loadModule({ QWEN_MEM_DIR: dataDir, HOME: home });
 
     // No explicit targetDir → must default to the code dir, not the relocated data dir.
     expect(await installExtractedRelease(releaseDir)).toBe(true);
@@ -614,7 +614,7 @@ describe('code/data dir separation under relocation (D#27)', () => {
     expect(readFileSync(join(dataDir, 'hook.mjs'), 'utf8')).toContain('old hook'); // data dir untouched
   });
 
-  it('update state still lands in the CLAUDE_MEM_DIR data dir, not the code dir', async () => {
+  it('update state still lands in the QWEN_MEM_DIR data dir, not the code dir', async () => {
     const { home, codeDir } = makeCodeHome('1.0.0');
     const dataDir = makeDataDir('1.0.0');
     globalThis.fetch = vi.fn().mockResolvedValue({
@@ -623,7 +623,7 @@ describe('code/data dir separation under relocation (D#27)', () => {
       json: async () => ({ tag_name: 'v1.1.0', tarball_url: 'https://example.com/release.tgz' }),
     });
     const { checkForUpdate } = await loadModule({
-      CLAUDE_MEM_DIR: dataDir,
+      QWEN_MEM_DIR: dataDir,
       CLAUDE_PLUGIN_ROOT: '/plugin/root',
       HOME: home,
     });
@@ -646,7 +646,7 @@ describe('rate-limit handling + malformed-response robustness', () => {
     // clobber it back to false with a stale in-memory snapshot.
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 403, json: async () => ({}) });
     const { checkForUpdate } = await loadModule({
-      CLAUDE_MEM_DIR: dataDir,
+      QWEN_MEM_DIR: dataDir,
       CLAUDE_PLUGIN_ROOT: '/plugin/root',
       HOME: home,
     });
@@ -666,7 +666,7 @@ describe('rate-limit handling + malformed-response robustness', () => {
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) })
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ name: 'v1.1.0' }] });
     const { checkForUpdate } = await loadModule({
-      CLAUDE_MEM_DIR: dataDir,
+      QWEN_MEM_DIR: dataDir,
       CLAUDE_PLUGIN_ROOT: '/plugin/root',
       HOME: home,
     });
@@ -687,7 +687,7 @@ describe('cache hook residue clearing', () => {
   // below pins. Writing the file keeps this fixture what its name claims — a real
   // install-managed registration — rather than a string that resembles one.
   function writeManagedHooks(home, { live = true } = {}) {
-    const launcher = join(home, '.claude-mem-lite', 'scripts', 'hook-launcher.mjs');
+    const launcher = join(home, '.qwen-mem-lite', 'scripts', 'hook-launcher.mjs');
     if (live) {
       mkdirSync(dirname(launcher), { recursive: true });
       writeFileSync(launcher, '// installed launcher\n');
@@ -710,7 +710,7 @@ describe('cache hook residue clearing', () => {
 
   it('clears populated hooks.json in every remaining cache version', async () => {
     const home = makeDir('mem-cache-residue');
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
     for (const v of ['2.28.0', '2.31.0']) {
       mkdirSync(join(cacheBase, v, 'hooks'), { recursive: true });
       writeFileSync(
@@ -732,7 +732,7 @@ describe('cache hook residue clearing', () => {
     const origHome = process.env.HOME;
     process.env.HOME = home;
     try {
-      const { clearCacheHookResidue } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+      const { clearCacheHookResidue } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
       expect(clearCacheHookResidue()).toBe(2);
 
       for (const v of ['2.28.0', '2.31.0']) {
@@ -753,7 +753,7 @@ describe('cache hook residue clearing', () => {
     const origHome = process.env.HOME;
     process.env.HOME = home;
     try {
-      const { clearCacheHookResidue } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+      const { clearCacheHookResidue } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
       expect(clearCacheHookResidue()).toBe(0);
     } finally {
       process.env.HOME = origHome;
@@ -768,11 +768,11 @@ describe('cache hook residue clearing', () => {
   // a full session with zero hook fires.
   it('refuses to clear when settings.json holds no install-managed hooks (plugin-only install)', async () => {
     const home = makeDir('mem-cache-residue-pluginonly');
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
     const manifest = join(cacheBase, '3.95.0', 'hooks', 'hooks.json');
     mkdirSync(join(cacheBase, '3.95.0', 'hooks'), { recursive: true });
     const original = JSON.stringify({
-      description: 'claude-mem-lite hooks',
+      description: 'qwen-mem-lite hooks',
       hooks: { SessionStart: [{ matcher: '*', hooks: [{ type: 'command', command: 'x' }] }] },
     });
     writeFileSync(manifest, original);
@@ -796,7 +796,7 @@ describe('cache hook residue clearing', () => {
     const origHome = process.env.HOME;
     process.env.HOME = home;
     try {
-      const { clearCacheHookResidue } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+      const { clearCacheHookResidue } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
       expect(clearCacheHookResidue()).toBe(0);
       expect(readFileSync(manifest, 'utf8')).toBe(original);
     } finally {
@@ -807,16 +807,16 @@ describe('cache hook residue clearing', () => {
   // The half the plugin-only guard above does NOT cover, and the reachable route back
   // into its exact end state: settings.json DOES name a path of ours, but the path is
   // gone. Reached by installing globally, switching to the plugin, and removing
-  // ~/.claude-mem-lite without running our `uninstall` — the leftover entries fire
+  // ~/.qwen-mem-lite without running our `uninstall` — the leftover entries fire
   // nothing, so the cache manifest is again the only live registration, and a clearer
   // gated on the string alone empties it on every update check.
   it('refuses to clear when the settings.json entry names a path that no longer exists', async () => {
     const home = makeDir('mem-cache-residue-stale');
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
     const manifest = join(cacheBase, '3.95.1', 'hooks', 'hooks.json');
     mkdirSync(join(cacheBase, '3.95.1', 'hooks'), { recursive: true });
     const original = JSON.stringify({
-      description: 'claude-mem-lite hooks',
+      description: 'qwen-mem-lite hooks',
       hooks: { SessionStart: [{ matcher: '*', hooks: [{ type: 'command', command: 'x' }] }] },
     });
     writeFileSync(manifest, original);
@@ -825,7 +825,7 @@ describe('cache hook residue clearing', () => {
     const origHome = process.env.HOME;
     process.env.HOME = home;
     try {
-      const { clearCacheHookResidue } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+      const { clearCacheHookResidue } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
       expect(clearCacheHookResidue()).toBe(0);
       expect(readFileSync(manifest, 'utf8')).toBe(original);
     } finally {
@@ -837,7 +837,7 @@ describe('cache hook residue clearing', () => {
 describe('plugin cache pruning', () => {
   it('removes old versions and keeps the latest 3', async () => {
     const home = makeDir('mem-prune-home');
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
     const versions = ['1.0.0', '1.1.0', '2.0.0', '2.1.0', '2.5.0'];
     for (const v of versions) {
       mkdirSync(join(cacheBase, v), { recursive: true });
@@ -847,7 +847,7 @@ describe('plugin cache pruning', () => {
     const origHome = process.env.HOME;
     process.env.HOME = home;
     try {
-      const { prunePluginCache } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+      const { prunePluginCache } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
       const removed = prunePluginCache();
       expect(removed).toBe(2);
 
@@ -865,7 +865,7 @@ describe('plugin cache pruning', () => {
   // (tests/install-lifecycle.test.mjs) — the two prune the same directory.
   it('never removes the version dir CLAUDE_PLUGIN_ROOT points at', async () => {
     const home = makeDir('mem-prune-home3');
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
     for (const v of ['3.90.0', '3.94.0', '3.95.0', '3.96.0']) {
       mkdirSync(join(cacheBase, v), { recursive: true });
       writeFileSync(join(cacheBase, v, 'server.mjs'), `// v${v}`);
@@ -875,7 +875,7 @@ describe('plugin cache pruning', () => {
     process.env.HOME = home;
     try {
       const { prunePluginCache } = await loadModule({
-        CLAUDE_MEM_DIR: makeDataDir(),
+        QWEN_MEM_DIR: makeDataDir(),
         // Trailing slash on purpose: the guard compares inodes, not strings.
         CLAUDE_PLUGIN_ROOT: join(cacheBase, '3.90.0') + '/',
       });
@@ -891,7 +891,7 @@ describe('plugin cache pruning', () => {
   // the keep window the surplus still goes.
   it('CONTROL: still prunes the surplus when the running root is inside keep-latest-3', async () => {
     const home = makeDir('mem-prune-home4');
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
     for (const v of ['3.90.0', '3.94.0', '3.95.0', '3.96.0']) {
       mkdirSync(join(cacheBase, v), { recursive: true });
     }
@@ -900,7 +900,7 @@ describe('plugin cache pruning', () => {
     process.env.HOME = home;
     try {
       const { prunePluginCache } = await loadModule({
-        CLAUDE_MEM_DIR: makeDataDir(),
+        QWEN_MEM_DIR: makeDataDir(),
         CLAUDE_PLUGIN_ROOT: join(cacheBase, '3.96.0'),
       });
       expect(prunePluginCache()).toBe(1);
@@ -912,7 +912,7 @@ describe('plugin cache pruning', () => {
 
   it('does nothing when 3 or fewer versions exist', async () => {
     const home = makeDir('mem-prune-home2');
-    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
     for (const v of ['1.0.0', '2.0.0']) {
       mkdirSync(join(cacheBase, v), { recursive: true });
     }
@@ -920,7 +920,7 @@ describe('plugin cache pruning', () => {
     const origHome = process.env.HOME;
     process.env.HOME = home;
     try {
-      const { prunePluginCache } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+      const { prunePluginCache } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
       expect(prunePluginCache()).toBe(0);
       expect(readdirSync(cacheBase)).toHaveLength(2);
     } finally {
@@ -931,7 +931,7 @@ describe('plugin cache pruning', () => {
 
 describe('validateExtractedTarball', () => {
   function makeTarballDir({
-    name = 'claude-mem-lite',
+    name = 'qwen-mem-lite',
     version = '2.57.0',
     entries = ['cli.mjs', 'server.mjs', 'hook.mjs'],
     skipPkg = false,
@@ -947,13 +947,13 @@ describe('validateExtractedTarball', () => {
   }
 
   it('accepts a well-formed tarball when version matches', async () => {
-    const { validateExtractedTarball } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { validateExtractedTarball } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     const dir = makeTarballDir({ version: '2.57.0' });
     expect(validateExtractedTarball(dir, '2.57.0')).toEqual({ ok: true });
   });
 
   it('rejects when package.json is missing', async () => {
-    const { validateExtractedTarball } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { validateExtractedTarball } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     const dir = makeTarballDir({ skipPkg: true });
     const result = validateExtractedTarball(dir, '2.57.0');
     expect(result.ok).toBe(false);
@@ -961,7 +961,7 @@ describe('validateExtractedTarball', () => {
   });
 
   it('rejects when package.json is unparseable', async () => {
-    const { validateExtractedTarball } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { validateExtractedTarball } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     const dir = makeTarballDir({ skipPkg: true });
     writeFileSync(join(dir, 'package.json'), '{not valid json');
     const result = validateExtractedTarball(dir, '2.57.0');
@@ -970,7 +970,7 @@ describe('validateExtractedTarball', () => {
   });
 
   it('rejects when name is wrong (repo squatter / rename)', async () => {
-    const { validateExtractedTarball } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { validateExtractedTarball } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     const dir = makeTarballDir({ name: 'malicious-clone' });
     const result = validateExtractedTarball(dir, '2.57.0');
     expect(result.ok).toBe(false);
@@ -978,7 +978,7 @@ describe('validateExtractedTarball', () => {
   });
 
   it('rejects when version does not match the resolved tag', async () => {
-    const { validateExtractedTarball } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { validateExtractedTarball } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     const dir = makeTarballDir({ version: '2.50.0' });
     const result = validateExtractedTarball(dir, '2.57.0');
     expect(result.ok).toBe(false);
@@ -986,7 +986,7 @@ describe('validateExtractedTarball', () => {
   });
 
   it('rejects when an entry-point file is missing', async () => {
-    const { validateExtractedTarball } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { validateExtractedTarball } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     const dir = makeTarballDir({ entries: ['cli.mjs', 'server.mjs'] }); // no hook.mjs
     const result = validateExtractedTarball(dir, '2.57.0');
     expect(result.ok).toBe(false);
@@ -994,13 +994,13 @@ describe('validateExtractedTarball', () => {
   });
 
   it('skips version match when expectedVersion is not provided (release-resolution shortcut)', async () => {
-    const { validateExtractedTarball } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { validateExtractedTarball } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     const dir = makeTarballDir({ version: '99.99.99' });
     expect(validateExtractedTarball(dir)).toEqual({ ok: true });
   });
 
   it('honors expectedName override (for fork installs)', async () => {
-    const { validateExtractedTarball } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { validateExtractedTarball } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     const dir = makeTarballDir({ name: 'forked-mem-lite', version: '1.0.0' });
     expect(validateExtractedTarball(dir, '1.0.0', 'forked-mem-lite')).toEqual({ ok: true });
   });
@@ -1011,7 +1011,7 @@ describe('validateExtractedTarball', () => {
 // `CLAUDE_PLUGIN_ROOT` is set in every hook and MCP process, so v3.84.1's env-var fix
 // held there — and only there. In a plain terminal a plugin-only user got 0.0.0 from
 // getCurrentVersion() (every release forever newer) AND allowInstall defaulting to
-// true, so `claude-mem-lite update` wrote a full managed tree into ~/.claude-mem-lite
+// true, so `qwen-mem-lite update` wrote a full managed tree into ~/.qwen-mem-lite
 // and converted a plugin-only install into the hybrid whose two trees D#184 documents
 // drifting apart. Both halves are asserted here with CLAUDE_PLUGIN_ROOT UNSET, which
 // is the whole point — with it set, the pre-fix code passes these too.
@@ -1021,17 +1021,17 @@ describe('D#187: plugin-only install detected without CLAUDE_PLUGIN_ROOT', () =>
   // runtime cannot start, so it is deliberately not counted.
   function makePluginOnlyHome(version = '3.9.0') {
     const home = makeDir('mem-plugin-only-home');
-    const root = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', version);
+    const root = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', version);
     mkdirSync(join(root, 'scripts'), { recursive: true });
     writeFileSync(join(root, 'scripts', 'launch.mjs'), '// launcher');
-    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'claude-mem-lite', version }, null, 2));
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'qwen-mem-lite', version }, null, 2));
     return { home, root, version };
   }
 
   it('getCurrentVersion reads the live plugin cache instead of returning 0.0.0', async () => {
     const { home, version } = makePluginOnlyHome('3.9.0');
     const dataDir = makeDataDir('1.0.0');
-    const { getCurrentVersion } = await loadModule({ CLAUDE_MEM_DIR: dataDir, HOME: home });
+    const { getCurrentVersion } = await loadModule({ QWEN_MEM_DIR: dataDir, HOME: home });
     expect(process.env.CLAUDE_PLUGIN_ROOT).toBeUndefined(); // the condition under test
     expect(getCurrentVersion()).toBe(version);
   });
@@ -1044,7 +1044,7 @@ describe('D#187: plugin-only install detected without CLAUDE_PLUGIN_ROOT', () =>
       status: 200,
       json: async () => ({ tag_name: 'v9.9.9', tarball_url: 'https://example.invalid/t.tar.gz', assets: [] }),
     });
-    const { checkForUpdate } = await loadModule({ CLAUDE_MEM_DIR: dataDir, HOME: home });
+    const { checkForUpdate } = await loadModule({ QWEN_MEM_DIR: dataDir, HOME: home });
     const result = await checkForUpdate({ force: true });
     expect(result).toMatchObject({
       pluginMode: true,
@@ -1054,8 +1054,8 @@ describe('D#187: plugin-only install detected without CLAUDE_PLUGIN_ROOT', () =>
       to: '9.9.9',
     });
     // the conversion-to-hybrid this defect caused, asserted directly
-    expect(existsSync(join(home, '.claude-mem-lite', 'hook.mjs'))).toBe(false);
-    expect(existsSync(join(home, '.claude-mem-lite', 'server.mjs'))).toBe(false);
+    expect(existsSync(join(home, '.qwen-mem-lite', 'hook.mjs'))).toBe(false);
+    expect(existsSync(join(home, '.qwen-mem-lite', 'server.mjs'))).toBe(false);
   });
 
   it('a machine WITH a managed code install is still not plugin-only — installs proceed', async () => {
@@ -1064,7 +1064,7 @@ describe('D#187: plugin-only install detected without CLAUDE_PLUGIN_ROOT', () =>
     // managed tree beside it (both entry points, which is what certifies a code home)
     // — this is the hybrid shape, and it must keep auto-installing.
     const { home } = makePluginOnlyHome('3.9.0');
-    const codeDir = join(home, '.claude-mem-lite');
+    const codeDir = join(home, '.qwen-mem-lite');
     mkdirSync(codeDir, { recursive: true });
     writeFileSync(join(codeDir, 'package.json'), JSON.stringify({ version: '1.0.0' }, null, 2));
     writeFileSync(join(codeDir, 'server.mjs'), '// code server');
@@ -1075,7 +1075,7 @@ describe('D#187: plugin-only install detected without CLAUDE_PLUGIN_ROOT', () =>
       status: 200,
       json: async () => ({ tag_name: 'v9.9.9', tarball_url: 'https://example.invalid/t.tar.gz', assets: [] }),
     });
-    const { checkForUpdate, getCurrentVersion } = await loadModule({ CLAUDE_MEM_DIR: dataDir, HOME: home });
+    const { checkForUpdate, getCurrentVersion } = await loadModule({ QWEN_MEM_DIR: dataDir, HOME: home });
     // the managed package.json wins the version read, ahead of the plugin cache
     expect(getCurrentVersion()).toBe('1.0.0');
     const result = await checkForUpdate({ force: true });
@@ -1085,20 +1085,20 @@ describe('D#187: plugin-only install detected without CLAUDE_PLUGIN_ROOT', () =>
 
 describe('isRepairDowngrade (P3-3: signed-release rollback guard)', () => {
   it('flags a strictly-older resolved release as a downgrade', async () => {
-    const { isRepairDowngrade } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { isRepairDowngrade } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     // Attacker replays v3.20.0 (validly signed, since-patched) as "latest" over installed v3.43.0.
     expect(isRepairDowngrade('3.20.0', '3.43.0')).toBe(true);
     expect(isRepairDowngrade('3.42.9', '3.43.0')).toBe(true);
   });
 
   it('allows same-or-newer releases (legitimate repair / self-heal)', async () => {
-    const { isRepairDowngrade } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { isRepairDowngrade } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     expect(isRepairDowngrade('3.43.0', '3.43.0')).toBe(false); // re-sync same version
     expect(isRepairDowngrade('3.44.0', '3.43.0')).toBe(false); // forward
   });
 
   it('allows through when the local version is unknown (broken install still needs repair)', async () => {
-    const { isRepairDowngrade } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { isRepairDowngrade } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     expect(isRepairDowngrade('3.20.0', null)).toBe(false);
     expect(isRepairDowngrade('3.20.0', undefined)).toBe(false);
     expect(isRepairDowngrade(null, '3.43.0')).toBe(false);
@@ -1121,7 +1121,7 @@ describe('non-blocking SessionStart helpers (P3d)', () => {
     });
     globalThis.fetch = vi.fn(); // must NOT be called
     const { getCachedUpdateBanner } = await loadModule({
-      CLAUDE_MEM_DIR: dataDir,
+      QWEN_MEM_DIR: dataDir,
       CLAUDE_PLUGIN_ROOT: '/plugin/root',
       HOME: home,
     });
@@ -1140,21 +1140,21 @@ describe('non-blocking SessionStart helpers (P3d)', () => {
       installedVersion: '1.0.0',
       updateAvailable: false,
     });
-    const { getCachedUpdateBanner } = await loadModule({ CLAUDE_MEM_DIR: dataDir, HOME: home });
+    const { getCachedUpdateBanner } = await loadModule({ QWEN_MEM_DIR: dataDir, HOME: home });
     expect(getCachedUpdateBanner()).toBeNull();
   });
 
   it('isUpdateCheckDue is true with no prior check and false right after one', async () => {
     const { home } = makeCodeHome('1.0.0'); // non-symlink server.mjs → isDevMode() false
     const dataDir = makeDataDir('1.0.0');
-    const { isUpdateCheckDue } = await loadModule({ CLAUDE_MEM_DIR: dataDir, HOME: home });
+    const { isUpdateCheckDue } = await loadModule({ QWEN_MEM_DIR: dataDir, HOME: home });
     expect(isUpdateCheckDue()).toBe(true); // no state file → never checked
     seedState(dataDir, {
       lastCheck: new Date().toISOString(),
       installedVersion: '1.0.0',
       updateAvailable: false,
     });
-    const { isUpdateCheckDue: due2 } = await loadModule({ CLAUDE_MEM_DIR: dataDir, HOME: home });
+    const { isUpdateCheckDue: due2 } = await loadModule({ QWEN_MEM_DIR: dataDir, HOME: home });
     expect(due2()).toBe(false); // just checked → throttled
   });
 
@@ -1177,7 +1177,7 @@ describe('non-blocking SessionStart helpers (P3d)', () => {
     });
     globalThis.fetch = vi.fn();
     const { checkForUpdate } = await loadModule({
-      CLAUDE_MEM_DIR: dataDir,
+      QWEN_MEM_DIR: dataDir,
       CLAUDE_PLUGIN_ROOT: '/plugin/root',
       HOME: home,
     });
@@ -1197,7 +1197,7 @@ describe('non-blocking SessionStart helpers (P3d)', () => {
     });
     globalThis.fetch = vi.fn();
     const { checkForUpdate } = await loadModule({
-      CLAUDE_MEM_DIR: dataDir,
+      QWEN_MEM_DIR: dataDir,
       CLAUDE_PLUGIN_ROOT: '/plugin/root',
       HOME: home,
     });
@@ -1205,11 +1205,11 @@ describe('non-blocking SessionStart helpers (P3d)', () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
-  it('isUpdateCheckDue is false when CLAUDE_MEM_SKIP_UPDATE is set', async () => {
+  it('isUpdateCheckDue is false when QWEN_MEM_SKIP_UPDATE is set', async () => {
     const { home } = makeCodeHome('1.0.0'); // non-symlink server.mjs → isDevMode() false
     const dataDir = makeDataDir('1.0.0');
-    const mod = await loadModule({ CLAUDE_MEM_DIR: dataDir, HOME: home });
-    process.env.CLAUDE_MEM_SKIP_UPDATE = '1';
+    const mod = await loadModule({ QWEN_MEM_DIR: dataDir, HOME: home });
+    process.env.QWEN_MEM_SKIP_UPDATE = '1';
     expect(mod.isUpdateCheckDue()).toBe(false);
     expect(mod.getCachedUpdateBanner()).toBeNull();
   });
@@ -1220,10 +1220,10 @@ describe('non-blocking SessionStart helpers (P3d)', () => {
     // QWEN.md half of adopt) with no symptom beyond behavior disappearing on one host.
     // Pinned by URL because the URL *is* the contract — this constant feeds the
     // releases/latest lookup and the tags fallback alike.
-    delete process.env.CLAUDE_MEM_UPDATE_REPO; // order-independent: a sibling test sets it
+    delete process.env.QWEN_MEM_UPDATE_REPO; // order-independent: a sibling test sets it
     const { home } = makeCodeHome('1.0.0');
     const dataDir = makeDataDir('1.0.0');
-    const mod = await loadModule({ CLAUDE_MEM_DIR: dataDir, HOME: home });
+    const mod = await loadModule({ QWEN_MEM_DIR: dataDir, HOME: home });
     globalThis.fetch = vi.fn(async () => ({ ok: false, status: 404, json: async () => ({}) }));
     expect(await mod.fetchLatestRelease()).toBeNull();
     const urls = globalThis.fetch.mock.calls.map((c) => String(c[0]));
@@ -1231,11 +1231,11 @@ describe('non-blocking SessionStart helpers (P3d)', () => {
     expect(urls[1]).toBe('https://api.github.com/repos/thenewnano/qwen-mem-lite/tags?per_page=1');
   });
 
-  it('CLAUDE_MEM_UPDATE_REPO aims that lookup at a mirror', async () => {
+  it('QWEN_MEM_UPDATE_REPO aims that lookup at a mirror', async () => {
     const { home } = makeCodeHome('1.0.0');
     const dataDir = makeDataDir('1.0.0');
-    process.env.CLAUDE_MEM_UPDATE_REPO = 'acme/mem-mirror'; // read at import time, so set first
-    const mod = await loadModule({ CLAUDE_MEM_DIR: dataDir, HOME: home });
+    process.env.QWEN_MEM_UPDATE_REPO = 'acme/mem-mirror'; // read at import time, so set first
+    const mod = await loadModule({ QWEN_MEM_DIR: dataDir, HOME: home });
     globalThis.fetch = vi.fn(async () => ({ ok: false, status: 404, json: async () => ({}) }));
     expect(await mod.fetchLatestRelease()).toBeNull();
     const urls = globalThis.fetch.mock.calls.map((c) => String(c[0]));
@@ -1244,14 +1244,14 @@ describe('non-blocking SessionStart helpers (P3d)', () => {
   });
 });
 
-// A plugin-cache version dir: ~/.claude/plugins/cache/thenewnano/claude-mem-lite/<ver>/
+// A plugin-cache version dir: ~/.claude/plugins/cache/thenewnano/qwen-mem-lite/<ver>/
 // with a package.json whose name passes validateExtractedTarball and the three
 // required entry points. No source-files.mjs → loadReleaseManifest falls back to
 // the real LOCAL_SOURCE_FILES manifest; only the files present here get copied.
 function makeCacheVersion(home, version, body = `// v${version}`) {
-  const dir = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', version);
+  const dir = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', version);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'claude-mem-lite', version }, null, 2));
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'qwen-mem-lite', version }, null, 2));
   writeFileSync(join(dir, 'cli.mjs'), `#!/usr/bin/env node\n${body} cli\n`);
   writeFileSync(join(dir, 'server.mjs'), `${body} server`);
   writeFileSync(join(dir, 'hook.mjs'), `${body} hook`);
@@ -1341,7 +1341,7 @@ describe('syncDataDirFromCache (plugin-cache → data-dir code sync)', () => {
     expect(await syncDataDirFromCache()).toMatchObject({ synced: false, reason: 'no-cache' });
   });
 
-  it('skips a cache version whose package.json name is not claude-mem-lite', async () => {
+  it('skips a cache version whose package.json name is not qwen-mem-lite', async () => {
     const { home } = makeCodeHome('1.0.0');
     const dir = makeCacheVersion(home, '2.0.0');
     writeFileSync(
@@ -1366,7 +1366,7 @@ describe('syncDataDirFromCache (plugin-cache → data-dir code sync)', () => {
   });
 
   it('treats a .git dir as dev mode (whole-directory symlink, server.mjs is a plain file)', async () => {
-    // ~/.claude-mem-lite -> /repo whole-dir symlink: server.mjs there is a plain
+    // ~/.qwen-mem-lite -> /repo whole-dir symlink: server.mjs there is a plain
     // file so the per-file probe misses it, but the checkout's .git is present.
     // Without this, auto-update would clobber the working tree.
     const { home, codeDir } = makeCodeHome('1.0.0');
@@ -1444,13 +1444,13 @@ describe('release signature verification (P1 supply-chain)', () => {
   }
 
   it('verifyDownloadedRelease passes for a valid signature + intact files', async () => {
-    const { verifyDownloadedRelease } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { verifyDownloadedRelease } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     const { dir, pub, bytes, sig } = makeSignedRelease();
     expect(verifyDownloadedRelease(dir, bytes, sig, pub)).toMatchObject({ ok: true, reason: 'verified' });
   });
 
   it('verifyDownloadedRelease rejects a tampered file (hash mismatch)', async () => {
-    const { verifyDownloadedRelease } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { verifyDownloadedRelease } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     const { dir, pub, bytes, sig } = makeSignedRelease();
     writeFileSync(join(dir, 'server.mjs'), '// TROJANED\n'); // post-sign tamper
     const r = verifyDownloadedRelease(dir, bytes, sig, pub);
@@ -1459,7 +1459,7 @@ describe('release signature verification (P1 supply-chain)', () => {
   });
 
   it('verifyDownloadedRelease rejects a signature from a foreign key', async () => {
-    const { verifyDownloadedRelease } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { verifyDownloadedRelease } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     const { dir, bytes, sig } = makeSignedRelease();
     const { publicKey: otherPub } = generateKeyPairSync('ed25519');
     const r = verifyDownloadedRelease(
@@ -1472,7 +1472,7 @@ describe('release signature verification (P1 supply-chain)', () => {
   });
 
   it('verifyReleaseAuthenticity uses the embedded key by default → FAILS CLOSED (active since v3.20.0)', async () => {
-    const { verifyReleaseAuthenticity } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { verifyReleaseAuthenticity } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     // A real RELEASE_PUBLIC_KEY is now embedded → the default regime VERIFIES.
     // A release carrying a manifest but NO .sig asset is refused (downgrade/strip
     // protection), short-circuiting before any network fetch.
@@ -1495,7 +1495,7 @@ describe('release signature verification (P1 supply-chain)', () => {
     // reaches createPublicKey(embedded) + crypto.verify. A manifest signed by a
     // DIFFERENT (test) key must come back signature-invalid — proving the embedded key
     // both parses and correctly refuses a non-matching signature (guards a corrupt paste).
-    const { verifyDownloadedRelease } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { verifyDownloadedRelease } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     const { dir, bytes, sig } = makeSignedRelease(); // signed by makeSignedRelease's own key, not the embedded one
     expect(verifyDownloadedRelease(dir, bytes, sig)).toMatchObject({
       ok: false,
@@ -1503,16 +1503,16 @@ describe('release signature verification (P1 supply-chain)', () => {
     });
   });
 
-  it('verifyReleaseAuthenticity honors the CLAUDE_MEM_SKIP_SIG_VERIFY escape hatch', async () => {
-    const mod = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
-    process.env.CLAUDE_MEM_SKIP_SIG_VERIFY = '1';
+  it('verifyReleaseAuthenticity honors the QWEN_MEM_SKIP_SIG_VERIFY escape hatch', async () => {
+    const mod = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
+    process.env.QWEN_MEM_SKIP_SIG_VERIFY = '1';
     try {
       expect(await mod.verifyReleaseAuthenticity('/nonexistent', [])).toMatchObject({
         ok: true,
         action: 'skipped-env',
       });
     } finally {
-      delete process.env.CLAUDE_MEM_SKIP_SIG_VERIFY;
+      delete process.env.QWEN_MEM_SKIP_SIG_VERIFY;
     }
   });
 
@@ -1522,7 +1522,7 @@ describe('release signature verification (P1 supply-chain)', () => {
   // (the tags-fallback path always sends assets:[]). The publicKey param lets the test
   // exercise the keyed regime without committing a real embedded key.
   it('key present + NO signature assets → refuses to install (downgrade/strip protection)', async () => {
-    const { verifyReleaseAuthenticity } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { verifyReleaseAuthenticity } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     const { pub } = makeSignedRelease();
     globalThis.fetch = vi.fn(); // must NOT be reached
     const r = await verifyReleaseAuthenticity('/nonexistent', [], pub);
@@ -1531,14 +1531,14 @@ describe('release signature verification (P1 supply-chain)', () => {
   });
 
   it('key present + tags-fallback (assets undefined) → refuses', async () => {
-    const { verifyReleaseAuthenticity } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { verifyReleaseAuthenticity } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     const { pub } = makeSignedRelease();
     const r = await verifyReleaseAuthenticity('/nonexistent', undefined, pub);
     expect(r).toMatchObject({ ok: false, action: 'missing-signature' });
   });
 
   it('key present + valid signature assets → verified (legit signed release still installs)', async () => {
-    const { verifyReleaseAuthenticity } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { verifyReleaseAuthenticity } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     const { dir, pub, bytes, sig } = makeSignedRelease();
     const assets = [
       {
@@ -1560,7 +1560,7 @@ describe('release signature verification (P1 supply-chain)', () => {
   });
 
   it('empty embedded key stays opportunistic (skipped-no-pubkey — unchanged default)', async () => {
-    const { verifyReleaseAuthenticity } = await loadModule({ CLAUDE_MEM_DIR: makeDataDir() });
+    const { verifyReleaseAuthenticity } = await loadModule({ QWEN_MEM_DIR: makeDataDir() });
     const r = await verifyReleaseAuthenticity('/nonexistent', [], '');
     expect(r).toMatchObject({ ok: true, action: 'skipped-no-pubkey' });
   });

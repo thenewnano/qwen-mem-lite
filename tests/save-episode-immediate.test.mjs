@@ -28,7 +28,7 @@ describe('saveEpisodeImmediate (audit #6 — shutdown durability)', () => {
     // normal and shutdown paths (the normal path relies on the LLM worker to upgrade
     // them later). That noise gate is orthogonal to #6 — the opt-out isolates the
     // assertion under test: the SHUTDOWN path now actually persists the episode.
-    process.env.CLAUDE_MEM_KEEP_LOW_SIGNAL = '1';
+    process.env.QWEN_MEM_KEEP_LOW_SIGNAL = '1';
     try {
       const episode = {
         project: 'p1',
@@ -43,7 +43,7 @@ describe('saveEpisodeImmediate (audit #6 — shutdown durability)', () => {
       expect(row).toBeTruthy();
       expect(row.memory_session_id).toBe('s1');
     } finally {
-      delete process.env.CLAUDE_MEM_KEEP_LOW_SIGNAL;
+      delete process.env.QWEN_MEM_KEEP_LOW_SIGNAL;
     }
   });
 

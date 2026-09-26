@@ -1,6 +1,6 @@
-// `claude-mem-lite status` shelled out to `claude mcp list` and then asked one question of
+// `qwen-mem-lite status` shelled out to `claude mcp list` and then asked one question of
 // the output: does it contain the substring `mem-lite:`. A plugin-provided server prints as
-// `plugin:claude-mem-lite:mem-lite: …`, which contains it — so a plugin user was reported as
+// `plugin:qwen-mem-lite:mem-lite: …`, which contains it — so a plugin user was reported as
 // carrying a bare-name registration they do not have, and the branch written for them was
 // unreachable. Same accidental-match class as the `\bmem\b` regex v2.79.1 removed from the
 // very same block.
@@ -27,7 +27,7 @@ afterAll(() => fixtures.disposeAll());
 // idealised — the diagnostics block below the list is where a loose parser goes wrong.
 const REAL_OUTPUT = `Checking MCP server health…
 
-plugin:claude-mem-lite:mem-lite: node /home/u/.claude/plugins/cache/thenewnano/claude-mem-lite/6.3.0/scripts/launch.mjs - ✔ Connected
+plugin:qwen-mem-lite:mem-lite: node /home/u/.claude/plugins/cache/thenewnano/qwen-mem-lite/6.3.0/scripts/launch.mjs - ✔ Connected
 plugin:code-graph-mcp:code-graph: node /home/u/.claude/plugins/cache/code-graph-mcp/0.142.0/scripts/mcp-launcher.js - ✔ Connected
 plugin:context7:context7: https://mcp.context7.com/mcp (HTTP) - ✔ Connected
 
@@ -36,7 +36,7 @@ MCP config diagnostics ⚠
 For help configuring MCP servers, see: https://code.claude.com/docs/en/mcp
 
 [Contains warnings] Project config (shared via .mcp.json)
-Location: /home/u/dev/claude-mem-lite/.mcp.json
+Location: /home/u/dev/qwen-mem-lite/.mcp.json
  └ [Warning] [mem-lite] mcpServers.mem-lite: Missing environment variables: CLAUDE_PLUGIN_ROOT
 `;
 
@@ -49,16 +49,16 @@ describe('nonPluginMemRegistrations', () => {
   });
 
   it('counts a bare user-scope registration', () => {
-    const out = 'mem-lite: node /home/u/.claude-mem-lite/server.mjs - ✔ Connected\n';
+    const out = 'mem-lite: node /home/u/.qwen-mem-lite/server.mjs - ✔ Connected\n';
     expect(nonPluginMemRegistrations(out)).toEqual(['mem-lite']);
   });
 
   it('still recognises the pre-v2.78 legacy name', () => {
-    expect(nonPluginMemRegistrations('mem: node /home/u/.claude-mem-lite/server.mjs - ✔\n')).toEqual(['mem']);
+    expect(nonPluginMemRegistrations('mem: node /home/u/.qwen-mem-lite/server.mjs - ✔\n')).toEqual(['mem']);
   });
 
   it('finds the duplicate when both shapes are present', () => {
-    const out = REAL_OUTPUT + 'mem-lite: node /home/u/.claude-mem-lite/server.mjs - ✔ Connected\n';
+    const out = REAL_OUTPUT + 'mem-lite: node /home/u/.qwen-mem-lite/server.mjs - ✔ Connected\n';
     expect(nonPluginMemRegistrations(out)).toEqual(['mem-lite']);
   });
 
@@ -89,7 +89,7 @@ describe('pluginIsRegistered', () => {
     if (recorded || entries) {
       writeFileSync(
         join(dir, '.claude', 'plugins', 'installed_plugins.json'),
-        JSON.stringify(entries ?? { 'claude-mem-lite@thenewnano': { version: '1.0.0' } }),
+        JSON.stringify(entries ?? { 'qwen-mem-lite@thenewnano': { version: '1.0.0' } }),
       );
     }
     return dir;
@@ -104,7 +104,7 @@ describe('pluginIsRegistered', () => {
   });
 
   it('accepts the nested `plugins` shape the registry also uses', () => {
-    const h = home({ entries: { plugins: { 'claude-mem-lite@thenewnano': [{ version: '1.0.0' }] } } });
+    const h = home({ entries: { plugins: { 'qwen-mem-lite@thenewnano': [{ version: '1.0.0' }] } } });
     expect(pluginIsRegistered({ home: h, settings: {} })).toBe(true);
   });
 
@@ -112,7 +112,7 @@ describe('pluginIsRegistered', () => {
     expect(
       pluginIsRegistered({
         home: home(),
-        settings: { enabledPlugins: { 'claude-mem-lite@thenewnano': true } },
+        settings: { enabledPlugins: { 'qwen-mem-lite@thenewnano': true } },
       }),
     ).toBe(true);
   });
@@ -122,7 +122,7 @@ describe('pluginIsRegistered', () => {
     expect(
       pluginIsRegistered({
         home: home({ recorded: true }),
-        settings: { enabledPlugins: { 'claude-mem-lite@thenewnano': false } },
+        settings: { enabledPlugins: { 'qwen-mem-lite@thenewnano': false } },
       }),
     ).toBe(false);
   });
@@ -159,21 +159,21 @@ describe('status does not health-check every MCP server on a plugin install', ()
     chmodSync(join(bin, 'claude'), 0o755);
 
     if (plugin || leftoverCache) {
-      const ver = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', '9.9.9');
+      const ver = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', '9.9.9');
       // scripts/launch.mjs is what lib/install-shape.mjs::listPluginCacheVersions keys on —
       // a version dir without it is not counted as a code home. The first draft of this
       // fixture omitted it and the plugin case silently graded as an npm-channel install.
       mkdirSync(join(ver, 'scripts'), { recursive: true });
       writeFileSync(join(ver, 'scripts', 'launch.mjs'), '// stub\n');
       writeFileSync(join(ver, '.mcp.json'), '{"mcpServers":{}}');
-      writeFileSync(join(ver, 'package.json'), '{"name":"claude-mem-lite","version":"9.9.9"}');
+      writeFileSync(join(ver, 'package.json'), '{"name":"qwen-mem-lite","version":"9.9.9"}');
       mkdirSync(join(home, '.claude', 'plugins'), { recursive: true });
       // A leftover cache is a DIRECTORY with nothing recording an install — the state
       // `/plugin uninstall` leaves behind, which this round's own README documents.
       if (plugin) {
         writeFileSync(
           join(home, '.claude', 'plugins', 'installed_plugins.json'),
-          JSON.stringify({ 'claude-mem-lite@thenewnano': { version: '9.9.9' } }),
+          JSON.stringify({ 'qwen-mem-lite@thenewnano': { version: '9.9.9' } }),
         );
       }
     }
@@ -191,8 +191,8 @@ describe('status does not health-check every MCP server on a plugin install', ()
         ...process.env,
         HOME: home,
         PATH: `${bin}:${process.env.PATH}`,
-        CLAUDE_MEM_DIR: dataDir,
-        CLAUDE_MEM_SKIP_UPDATE: '1',
+        QWEN_MEM_DIR: dataDir,
+        QWEN_MEM_SKIP_UPDATE: '1',
         MEM_NO_AUTO_ADOPT: '1',
       },
     });
@@ -242,14 +242,14 @@ describe('doctor detects a duplicate MCP registration', () => {
     );
     chmodSync(join(bin, 'claude'), 0o755);
 
-    const ver = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', '9.9.9');
+    const ver = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', '9.9.9');
     mkdirSync(join(ver, 'scripts'), { recursive: true });
     writeFileSync(join(ver, 'scripts', 'launch.mjs'), '// stub\n');
     mkdirSync(join(home, '.claude', 'plugins'), { recursive: true });
     if (recorded) {
       writeFileSync(
         join(home, '.claude', 'plugins', 'installed_plugins.json'),
-        JSON.stringify({ 'claude-mem-lite@thenewnano': { version: '9.9.9' } }),
+        JSON.stringify({ 'qwen-mem-lite@thenewnano': { version: '9.9.9' } }),
       );
     }
 
@@ -262,16 +262,16 @@ describe('doctor detects a duplicate MCP registration', () => {
         ...process.env,
         HOME: home,
         PATH: `${bin}:${process.env.PATH}`,
-        CLAUDE_MEM_DIR: dataDir,
-        CLAUDE_MEM_SKIP_UPDATE: '1',
-        CLAUDE_MEM_SKIP_MAINTAIN: '1',
+        QWEN_MEM_DIR: dataDir,
+        QWEN_MEM_SKIP_UPDATE: '1',
+        QWEN_MEM_SKIP_MAINTAIN: '1',
         MEM_NO_AUTO_ADOPT: '1',
       },
     }).stdout;
   }
 
-  const PLUGIN_LINE = 'plugin:claude-mem-lite:mem-lite: node /x/launch.mjs - ✔ Connected';
-  const BARE_LINE = 'mem-lite: node /home/u/.claude-mem-lite/server.mjs - ✔ Connected';
+  const PLUGIN_LINE = 'plugin:qwen-mem-lite:mem-lite: node /x/launch.mjs - ✔ Connected';
+  const BARE_LINE = 'mem-lite: node /home/u/.qwen-mem-lite/server.mjs - ✔ Connected';
 
   it('warns, and names the removal command, when both registrations exist', () => {
     const out = runDoctor({ listOutput: `${PLUGIN_LINE}\n${BARE_LINE}` });

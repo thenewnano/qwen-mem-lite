@@ -47,8 +47,8 @@ describe('disposeFixtureDir', () => {
   it('removes a populated fixture tree for real', () => {
     const root = mkdtempSync(join(tmpdir(), 'mem-dispose-probe-'));
     mkdirSync(join(root, 'work', 'fresh'), { recursive: true });
-    mkdirSync(join(root, '.claude-mem-lite', 'runtime'), { recursive: true });
-    writeFileSync(join(root, '.claude-mem-lite', 'claude-mem-lite.db'), 'x'.repeat(1024));
+    mkdirSync(join(root, '.qwen-mem-lite', 'runtime'), { recursive: true });
+    writeFileSync(join(root, '.qwen-mem-lite', 'qwen-mem-lite.db'), 'x'.repeat(1024));
 
     expect(existsSync(root)).toBe(true);
     expect(disposeFixtureDir(root)).toBe(true);
@@ -110,8 +110,8 @@ describe('makeFixtureTracker', () => {
     expect(existsSync(root)).toBe(false);
 
     // A detached worker resolving its data dir against the HOME it was handed.
-    mkdirSync(join(root, '.claude-mem-lite', 'runtime'), { recursive: true });
-    writeFileSync(join(root, '.claude-mem-lite', 'claude-mem-lite.db'), 'x'.repeat(256));
+    mkdirSync(join(root, '.qwen-mem-lite', 'runtime'), { recursive: true });
+    writeFileSync(join(root, '.qwen-mem-lite', 'qwen-mem-lite.db'), 'x'.repeat(256));
     expect(existsSync(root)).toBe(true);
 
     expect(fixtures.disposeAll()).toBe(0);

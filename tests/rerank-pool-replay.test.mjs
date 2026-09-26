@@ -226,7 +226,7 @@ describe('costCompare refuses to report a ratio it cannot measure', () => {
 // was measuring", and it fixed that shape in lib/patha-exclude-meter.mjs. The same shape
 // was alive in THIS file the whole time and the guard above could not see it: a readonly
 // database handle blocks the `injection_count` UPDATE and says nothing about
-// `recordMetric`'s appendFileSync. A whole-corpus run with CLAUDE_MEM_METRICS=1 appended
+// `recordMetric`'s appendFileSync. A whole-corpus run with QWEN_MEM_METRICS=1 appended
 // ~1.5M `inject` rows in one day. The four checks pinned below this line all existed; the
 // sink they did not cover is the one that fired.
 describe('self-check 5: the metric sink is shut, and the guard can see it open', () => {
@@ -286,24 +286,24 @@ describe('self-check 5: the metric sink is shut, and the guard can see it open',
     });
   });
 
-  it('leaves CLAUDE_MEM_METRICS exactly as it found it, on both paths', () => {
+  it('leaves QWEN_MEM_METRICS exactly as it found it, on both paths', () => {
     // The guard forces the sink ON so it cannot pass merely because metrics are disabled.
     // Leaking that into the rest of the process would turn the sink on for every later
     // call in the same run — the guard would then have created the condition it prevents.
-    const original = process.env.CLAUDE_MEM_METRICS;
+    const original = process.env.QWEN_MEM_METRICS;
     try {
-      delete process.env.CLAUDE_MEM_METRICS;
+      delete process.env.QWEN_MEM_METRICS;
       withTmp((dir) => assertNoMetricWrite(metricShardPath(dir), () => true));
-      expect('CLAUDE_MEM_METRICS' in process.env).toBe(false);
+      expect('QWEN_MEM_METRICS' in process.env).toBe(false);
 
-      process.env.CLAUDE_MEM_METRICS = '0';
+      process.env.QWEN_MEM_METRICS = '0';
       withTmp((dir) => {
         expect(() => assertNoMetricWrite(metricShardPath(dir), () => false)).toThrow(); // throwing path
       });
-      expect(process.env.CLAUDE_MEM_METRICS).toBe('0');
+      expect(process.env.QWEN_MEM_METRICS).toBe('0');
     } finally {
-      if (original === undefined) delete process.env.CLAUDE_MEM_METRICS;
-      else process.env.CLAUDE_MEM_METRICS = original;
+      if (original === undefined) delete process.env.QWEN_MEM_METRICS;
+      else process.env.QWEN_MEM_METRICS = original;
     }
   });
 
@@ -335,13 +335,13 @@ describe('self-check 5: the metric sink is shut, and the guard can see it open',
   it('metricShardPath names the file recordMetric actually writes', () => {
     withTmp((dir) => {
       const shard = metricShardPath(dir);
-      const prev = process.env.CLAUDE_MEM_METRICS;
-      process.env.CLAUDE_MEM_METRICS = '1';
+      const prev = process.env.QWEN_MEM_METRICS;
+      process.env.QWEN_MEM_METRICS = '1';
       try {
         recordMetric(dir, { event: 'inject' });
       } finally {
-        if (prev === undefined) delete process.env.CLAUDE_MEM_METRICS;
-        else process.env.CLAUDE_MEM_METRICS = prev;
+        if (prev === undefined) delete process.env.QWEN_MEM_METRICS;
+        else process.env.QWEN_MEM_METRICS = prev;
       }
       // If this ever fails, the guard has been watching a file nothing writes — the exact
       // vacuous pass the throwaway-dir design exists to prevent.
@@ -350,14 +350,14 @@ describe('self-check 5: the metric sink is shut, and the guard can see it open',
     });
   });
 
-  it('metricShardPath does not leak CLAUDE_MEM_METRICS when mkdtemp throws', () => {
+  it('metricShardPath does not leak QWEN_MEM_METRICS when mkdtemp throws', () => {
     // Review S2: the first version wrote the env var BEFORE mkdtempSync, so a throwing
     // mkdtemp (TMPDIR gone, ENOSPC, EACCES) skipped the finally and left ='1' set for the
     // rest of the process — the guard creating the condition its own comment warns about.
-    const original = process.env.CLAUDE_MEM_METRICS;
+    const original = process.env.QWEN_MEM_METRICS;
     const originalTmp = process.env.TMPDIR;
     try {
-      delete process.env.CLAUDE_MEM_METRICS;
+      delete process.env.QWEN_MEM_METRICS;
       process.env.TMPDIR = join(REPO, 'no', 'such', 'dir', 'anywhere');
       for (const fn of [
         () => metricShardPath('/nope'),
@@ -368,13 +368,13 @@ describe('self-check 5: the metric sink is shut, and the guard can see it open',
         } catch {
           /* expected: ENOENT from mkdtemp */
         }
-        expect('CLAUDE_MEM_METRICS' in process.env).toBe(false);
+        expect('QWEN_MEM_METRICS' in process.env).toBe(false);
       }
     } finally {
       if (originalTmp === undefined) delete process.env.TMPDIR;
       else process.env.TMPDIR = originalTmp;
-      if (original === undefined) delete process.env.CLAUDE_MEM_METRICS;
-      else process.env.CLAUDE_MEM_METRICS = original;
+      if (original === undefined) delete process.env.QWEN_MEM_METRICS;
+      else process.env.QWEN_MEM_METRICS = original;
     }
   });
 
@@ -389,13 +389,13 @@ describe('self-check 5: the metric sink is shut, and the guard can see it open',
       const before = metricsDirSize(dir);
       expect(before).toBe(0); // premise: nothing there yet
       expect(runLevelGrowth(dir, before)).toBe(0); // and the gate agrees
-      const prev = process.env.CLAUDE_MEM_METRICS;
-      process.env.CLAUDE_MEM_METRICS = '1';
+      const prev = process.env.QWEN_MEM_METRICS;
+      process.env.QWEN_MEM_METRICS = '1';
       try {
         recordMetric(dir, { event: 'inject', durationMs: 1 });
       } finally {
-        if (prev === undefined) delete process.env.CLAUDE_MEM_METRICS;
-        else process.env.CLAUDE_MEM_METRICS = prev;
+        if (prev === undefined) delete process.env.QWEN_MEM_METRICS;
+        else process.env.QWEN_MEM_METRICS = prev;
       }
       expect(runLevelGrowth(dir, before)).toBeGreaterThan(0);
     });

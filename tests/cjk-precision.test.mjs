@@ -81,38 +81,38 @@ describe('cjkPrecisionOk unit behavior', () => {
     expect(cjkPrecisionOk(q, prose, 0.9)).toBe(false);
   });
 
-  it('threshold defaults read CLAUDE_MEM_CJK_PREC_MIN env var', () => {
+  it('threshold defaults read QWEN_MEM_CJK_PREC_MIN env var', () => {
     // Omitting threshold uses env var if set to a valid 0..1 value.
     const q = '修复FTS搜索的CJK误报';
     const prose = '修复 了一些东西'; // ~1/3 keyword coverage
-    const original = process.env.CLAUDE_MEM_CJK_PREC_MIN;
+    const original = process.env.QWEN_MEM_CJK_PREC_MIN;
     try {
-      process.env.CLAUDE_MEM_CJK_PREC_MIN = '0.9';
+      process.env.QWEN_MEM_CJK_PREC_MIN = '0.9';
       expect(cjkPrecisionOk(q, prose)).toBe(false);
-      process.env.CLAUDE_MEM_CJK_PREC_MIN = '0.1';
+      process.env.QWEN_MEM_CJK_PREC_MIN = '0.1';
       expect(cjkPrecisionOk(q, prose)).toBe(true);
       // Invalid env values fall back to the 0.2 default.
-      process.env.CLAUDE_MEM_CJK_PREC_MIN = 'garbage';
+      process.env.QWEN_MEM_CJK_PREC_MIN = 'garbage';
       expect(cjkPrecisionOk(q, prose)).toBe(true); // default 0.2 passes (1/3 ≈ 33% ≥ 0.2)
-      process.env.CLAUDE_MEM_CJK_PREC_MIN = '2.5';
+      process.env.QWEN_MEM_CJK_PREC_MIN = '2.5';
       expect(cjkPrecisionOk(q, prose)).toBe(true); // out-of-range → default
     } finally {
-      if (original === undefined) delete process.env.CLAUDE_MEM_CJK_PREC_MIN;
-      else process.env.CLAUDE_MEM_CJK_PREC_MIN = original;
+      if (original === undefined) delete process.env.QWEN_MEM_CJK_PREC_MIN;
+      else process.env.QWEN_MEM_CJK_PREC_MIN = original;
     }
   });
 
   it('explicit threshold arg overrides env var', () => {
     const q = '修复FTS搜索';
     const prose = '修复了一些东西';
-    const original = process.env.CLAUDE_MEM_CJK_PREC_MIN;
+    const original = process.env.QWEN_MEM_CJK_PREC_MIN;
     try {
-      process.env.CLAUDE_MEM_CJK_PREC_MIN = '0.9';
+      process.env.QWEN_MEM_CJK_PREC_MIN = '0.9';
       // Explicit low threshold wins over strict env setting.
       expect(cjkPrecisionOk(q, prose, 0.1)).toBe(true);
     } finally {
-      if (original === undefined) delete process.env.CLAUDE_MEM_CJK_PREC_MIN;
-      else process.env.CLAUDE_MEM_CJK_PREC_MIN = original;
+      if (original === undefined) delete process.env.QWEN_MEM_CJK_PREC_MIN;
+      else process.env.QWEN_MEM_CJK_PREC_MIN = original;
     }
   });
 });
@@ -130,7 +130,7 @@ describe('user-prompt-search.js CJK precision filter (subprocess)', () => {
     mkdirSync(`${DB_DIR}/runtime`, { recursive: true });
     const Database = (await import('better-sqlite3')).default;
     const { initSchema } = await import('../schema.mjs');
-    db = new Database(`${DB_DIR}/claude-mem-lite.db`);
+    db = new Database(`${DB_DIR}/qwen-mem-lite.db`);
     initSchema(db);
     insertSession(db, { id: 'sess-1', project: 'test--project' });
   });
@@ -149,15 +149,15 @@ describe('user-prompt-search.js CJK precision filter (subprocess)', () => {
     return new Promise((ok) => {
       // CLAUDE_PROJECT_DIR + PWD drive inferProject() → 'test--project',
       // matching the seed session's project field so SQL JOIN lines up.
-      // CLAUDE_MEM_UPS_TOP_MIN='0' disables the top-|rel| gate (sparse test
+      // QWEN_MEM_UPS_TOP_MIN='0' disables the top-|rel| gate (sparse test
       // corpus can't reach the production-calibrated floor).
       const env = {
         ...process.env,
-        CLAUDE_MEM_DIR: DB_DIR,
+        QWEN_MEM_DIR: DB_DIR,
         CLAUDE_PROJECT_DIR: '/test/project',
         PWD: '/test/project',
-        CLAUDE_MEM_UPS_TOP_MIN: '0',
-        CLAUDE_MEM_HOOK_RUNNING: '',
+        QWEN_MEM_UPS_TOP_MIN: '0',
+        QWEN_MEM_HOOK_RUNNING: '',
       };
       const proc = spawn(process.execPath, [SCRIPT_PATH], { env });
       let stdout = '';
@@ -243,7 +243,7 @@ describe('user-prompt-search.js explicit-signal gate (subprocess)', () => {
     mkdirSync(`${DB_DIR}/runtime`, { recursive: true });
     const Database = (await import('better-sqlite3')).default;
     const { initSchema } = await import('../schema.mjs');
-    db = new Database(`${DB_DIR}/claude-mem-lite.db`);
+    db = new Database(`${DB_DIR}/qwen-mem-lite.db`);
     initSchema(db);
     insertSession(db, { id: 'sess-1', project: 'test--project' });
     // Seed prompts that BM25 will surface — used to verify gate behavior:
@@ -274,11 +274,11 @@ describe('user-prompt-search.js explicit-signal gate (subprocess)', () => {
     return new Promise((ok) => {
       const env = {
         ...process.env,
-        CLAUDE_MEM_DIR: DB_DIR,
+        QWEN_MEM_DIR: DB_DIR,
         CLAUDE_PROJECT_DIR: '/test/project',
         PWD: '/test/project',
-        CLAUDE_MEM_UPS_TOP_MIN: '0',
-        CLAUDE_MEM_HOOK_RUNNING: '',
+        QWEN_MEM_UPS_TOP_MIN: '0',
+        QWEN_MEM_HOOK_RUNNING: '',
         ...extraEnv,
       };
       const proc = spawn(process.execPath, [SCRIPT_PATH], { env });
@@ -315,13 +315,13 @@ describe('user-prompt-search.js explicit-signal gate (subprocess)', () => {
     expect(stdout).toContain('[mem] FYI — Past similar questions');
   });
 
-  it('CLAUDE_MEM_UPS_REQUIRE_SIGNAL=0 restores always-search behavior', async () => {
+  it('QWEN_MEM_UPS_REQUIRE_SIGNAL=0 restores always-search behavior', async () => {
     // Same no-signal prompt as the first case, but with the env override —
     // gate disabled, FTS pipeline runs as before, seeded prompt surfaces.
     // Backwards-compatibility escape hatch for projects that prefer the old
     // always-search policy (and accept the lower cite-recall).
     const stdout = await runScript('Does this work fine for me', {
-      CLAUDE_MEM_UPS_REQUIRE_SIGNAL: '0',
+      QWEN_MEM_UPS_REQUIRE_SIGNAL: '0',
     });
     expect(stdout).toContain('[mem] FYI — Past similar questions');
   });
@@ -374,7 +374,7 @@ describe('user-prompt-search.js CJK channel (subprocess)', () => {
     mkdirSync(`${DB_DIR}/runtime`, { recursive: true });
     const Database = (await import('better-sqlite3')).default;
     const { initSchema } = await import('../schema.mjs');
-    db = new Database(`${DB_DIR}/claude-mem-lite.db`);
+    db = new Database(`${DB_DIR}/qwen-mem-lite.db`);
     initSchema(db);
     insertSession(db, { id: 'sess-1', project: 'test--project' });
     // Seed a Chinese prompt that BM25 will match on shared chars.
@@ -399,11 +399,11 @@ describe('user-prompt-search.js CJK channel (subprocess)', () => {
     return new Promise((ok) => {
       const env = {
         ...process.env,
-        CLAUDE_MEM_DIR: DB_DIR,
+        QWEN_MEM_DIR: DB_DIR,
         CLAUDE_PROJECT_DIR: '/test/project',
         PWD: '/test/project',
-        CLAUDE_MEM_UPS_TOP_MIN: '0',
-        CLAUDE_MEM_HOOK_RUNNING: '',
+        QWEN_MEM_UPS_TOP_MIN: '0',
+        QWEN_MEM_HOOK_RUNNING: '',
         ...extraEnv,
       };
       const proc = spawn(process.execPath, [SCRIPT_PATH], { env });

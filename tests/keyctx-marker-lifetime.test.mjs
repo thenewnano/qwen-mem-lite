@@ -1,6 +1,6 @@
 // The Key Context marker is SESSION-scoped, but it is garbage-collected by AGE.
 //
-// hook.mjs sweeps `.claude-mem-keyctx-*` at 24h mtime, on the same policy as the
+// hook.mjs sweeps `.qwen-mem-keyctx-*` at 24h mtime, on the same policy as the
 // pre-recall cooldown and injected-ids markers. That policy fits those two — their
 // semantics ARE time-windowed (the dedup window is 5 minutes). It does not fit this one:
 // injected-ids.mjs documents the marker as "session-lifetime validity (no time window)",

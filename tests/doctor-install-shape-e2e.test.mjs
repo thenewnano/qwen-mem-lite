@@ -29,7 +29,7 @@ let home;
 function withRealDeps(root) {
   const pkgDir = join(root, 'node_modules', 'better-sqlite3');
   mkdirSync(pkgDir, { recursive: true });
-  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'claude-mem-lite', version: '9.9.9' }));
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'qwen-mem-lite', version: '9.9.9' }));
   writeFileSync(
     join(pkgDir, 'package.json'),
     JSON.stringify({ name: 'better-sqlite3', version: '12.10.0', main: 'index.js' }),
@@ -45,7 +45,7 @@ function withRealDeps(root) {
 function withBrokenDeps(root) {
   const pkgDir = join(root, 'node_modules', 'better-sqlite3');
   mkdirSync(pkgDir, { recursive: true });
-  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'claude-mem-lite', version: '9.9.9' }));
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'qwen-mem-lite', version: '9.9.9' }));
   writeFileSync(
     join(pkgDir, 'package.json'),
     JSON.stringify({ name: 'better-sqlite3', version: '12.10.0', main: 'index.js' }),
@@ -58,7 +58,7 @@ function withBrokenDeps(root) {
 }
 
 function pluginCacheDir(version) {
-  return join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', version);
+  return join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', version);
 }
 
 function makePluginVersion(version, { deps = 'real' } = {}) {
@@ -73,12 +73,12 @@ function makePluginVersion(version, { deps = 'real' } = {}) {
   );
   if (deps === 'real') withRealDeps(root);
   else if (deps === 'broken') withBrokenDeps(root);
-  else writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'claude-mem-lite', version }));
+  else writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'qwen-mem-lite', version }));
   return root;
 }
 
 function makeManagedInstall({ deps = 'real' } = {}) {
-  const root = join(home, '.claude-mem-lite');
+  const root = join(home, '.qwen-mem-lite');
   mkdirSync(join(root, 'runtime'), { recursive: true });
   for (const f of ['server.mjs', 'hook.mjs', 'cli.mjs', 'mem-cli.mjs', 'install.mjs']) {
     writeFileSync(join(root, f), '// x\n');
@@ -94,7 +94,7 @@ function enablePlugin() {
     join(home, '.claude', 'settings.json'),
     JSON.stringify(
       {
-        enabledPlugins: { 'claude-mem-lite@thenewnano': true },
+        enabledPlugins: { 'qwen-mem-lite@thenewnano': true },
       },
       null,
       2,
@@ -103,7 +103,7 @@ function enablePlugin() {
 }
 
 function run(cmd, extraEnv = {}) {
-  const env = { ...process.env, HOME: home, CLAUDE_MEM_SKIP_REPOS: '1' };
+  const env = { ...process.env, HOME: home, QWEN_MEM_SKIP_REPOS: '1' };
   for (const k of Object.keys(env)) {
     if (/^CLAUDE_PLUGIN_ROOT$/.test(k)) delete env[k];
   }
@@ -141,7 +141,7 @@ afterEach(() => {
 describe('doctor: a healthy plugin-only install is not an error', () => {
   it('exits 0, flags nothing, and prescribes nothing that does not exist', () => {
     makePluginVersion('3.69.1');
-    mkdirSync(join(home, '.claude-mem-lite', 'runtime'), { recursive: true });
+    mkdirSync(join(home, '.qwen-mem-lite', 'runtime'), { recursive: true });
     enablePlugin();
     const r = run('doctor');
     expect(failLines(r.stdout), `doctor flagged a healthy plugin-only install:\n${r.stdout}`).toEqual([]);
@@ -151,13 +151,13 @@ describe('doctor: a healthy plugin-only install is not an error', () => {
     expect(r.stdout).not.toMatch(/✗ hook\.mjs: missing/);
     expect(r.stdout).not.toMatch(/Managed files: \d+ missing/);
     // `update` is the observation editor; the self-updater is `self-update`.
-    expect(r.stdout).not.toMatch(/claude-mem-lite update(?!\s*<)/);
+    expect(r.stdout).not.toMatch(/qwen-mem-lite update(?!\s*<)/);
   });
 
   it('still FAILS a plugin-only install whose cache entry point is gone', () => {
     const root = makePluginVersion('3.69.1');
     rmSync(join(root, 'server.mjs'));
-    mkdirSync(join(home, '.claude-mem-lite', 'runtime'), { recursive: true });
+    mkdirSync(join(home, '.qwen-mem-lite', 'runtime'), { recursive: true });
     enablePlugin();
     const r = run('doctor');
     expect(r.code).toBe(1);
@@ -192,7 +192,7 @@ describe('doctor: a stale binding is found in whichever install owns it', () => 
     // and does not). Pinning the message would make this test pass or fail on the
     // machine's directory layout, which is the exact blind spot that shipped a
     // free-text pgrep match in this same release.
-    const root = join(home, '.claude-mem-lite');
+    const root = join(home, '.qwen-mem-lite');
     mkdirSync(join(root, 'runtime'), { recursive: true });
     for (const f of ['server.mjs', 'hook.mjs']) writeFileSync(join(root, f), '// x\n');
     const r = run('doctor');
@@ -207,7 +207,7 @@ describe('doctor: a stale binding is found in whichever install owns it', () => 
     // upgrade. Reporting it made doctor permanently red about a tree nothing loads.
     makePluginVersion('3.69.1');
     makePluginVersion('3.66.1', { deps: 'broken' });
-    mkdirSync(join(home, '.claude-mem-lite', 'runtime'), { recursive: true });
+    mkdirSync(join(home, '.qwen-mem-lite', 'runtime'), { recursive: true });
     enablePlugin();
     const r = run('doctor');
     expect(failLines(r.stdout), `a dead cache version made doctor red:\n${r.stdout}`).toEqual([]);
@@ -218,7 +218,7 @@ describe('doctor: a stale binding is found in whichever install owns it', () => 
 describe('status: the plugin manifest doing its job is not two failures', () => {
   it('reports MCP and hooks as provided by the manifest', () => {
     makePluginVersion('3.69.1');
-    mkdirSync(join(home, '.claude-mem-lite', 'runtime'), { recursive: true });
+    mkdirSync(join(home, '.qwen-mem-lite', 'runtime'), { recursive: true });
     enablePlugin();
     const r = run('status');
     expect(r.stdout).not.toMatch(/✗ MCP server: not registered/);
@@ -227,7 +227,7 @@ describe('status: the plugin manifest doing its job is not two failures', () => 
   });
 
   it('still FAILS when neither the plugin nor settings.json provides hooks', () => {
-    mkdirSync(join(home, '.claude-mem-lite', 'runtime'), { recursive: true });
+    mkdirSync(join(home, '.qwen-mem-lite', 'runtime'), { recursive: true });
     writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({}));
     const r = run('status');
     expect(r.stdout).toMatch(/✗ Hooks: not configured/);
@@ -244,7 +244,7 @@ describe('an EMPTY plugin manifest is not the healthy plugin shape', () => {
     writeFileSync(
       join(pluginCacheDir(version), 'hooks', 'hooks.json'),
       JSON.stringify({
-        description: 'claude-mem-lite hooks',
+        description: 'qwen-mem-lite hooks',
         _note: 'Auto-cleared by hook-update.mjs post-install — prevents double hook registration',
         hooks: {},
       }),
@@ -253,7 +253,7 @@ describe('an EMPTY plugin manifest is not the healthy plugin shape', () => {
 
   it('status goes RED, names the state, and prints a repair', () => {
     makePluginVersion('3.95.0');
-    mkdirSync(join(home, '.claude-mem-lite', 'runtime'), { recursive: true });
+    mkdirSync(join(home, '.qwen-mem-lite', 'runtime'), { recursive: true });
     enablePlugin();
     // Control: populated manifest is green, so the red below is attributable to the
     // emptying and not to the fixture's shape.
@@ -269,7 +269,7 @@ describe('an EMPTY plugin manifest is not the healthy plugin shape', () => {
 
   it('doctor goes RED and exits 1', () => {
     makePluginVersion('3.95.0');
-    mkdirSync(join(home, '.claude-mem-lite', 'runtime'), { recursive: true });
+    mkdirSync(join(home, '.qwen-mem-lite', 'runtime'), { recursive: true });
     enablePlugin();
     expect(failLines(run('doctor').stdout), 'a healthy fixture was already red').toEqual([]);
 
@@ -281,7 +281,7 @@ describe('an EMPTY plugin manifest is not the healthy plugin shape', () => {
 
   it('a missing manifest is caught too, not just an emptied one', () => {
     makePluginVersion('3.95.0');
-    mkdirSync(join(home, '.claude-mem-lite', 'runtime'), { recursive: true });
+    mkdirSync(join(home, '.qwen-mem-lite', 'runtime'), { recursive: true });
     enablePlugin();
     expect(run('status').stdout, 'fixture was not green to begin with').toMatch(
       /✓ Hooks: provided by the plugin manifest/,
@@ -307,7 +307,7 @@ describe('an EMPTY plugin manifest is not the healthy plugin shape', () => {
     beforeEach(() => {
       makePluginVersion('3.95.0');
       emptyTheManifest('3.95.0');
-      mkdirSync(join(home, '.claude-mem-lite', 'runtime'), { recursive: true });
+      mkdirSync(join(home, '.qwen-mem-lite', 'runtime'), { recursive: true });
       enablePlugin();
     });
 

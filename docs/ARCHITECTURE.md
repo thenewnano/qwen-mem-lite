@@ -1,4 +1,4 @@
-# claude-mem-lite — Architecture
+# qwen-mem-lite — Architecture
 
 Generated 2026-09-05 against v3.96.0; **§3 and §4 regenerated 2026-09-06** on the
 skill-registry removal branch (R9, `docs/audits/20260906-145304.md`), which deleted 11 source
@@ -22,15 +22,15 @@ file it was read from; a line without a file is an inference and is marked as su
 
 ## 1. What it is
 
-A persistent-memory plugin for Claude Code. One SQLite database
-(`~/.claude-mem-lite/`, `better-sqlite3` + FTS5) holds observations, user prompts,
+A persistent-memory plugin for Qwen Code and Claude Code. One SQLite database
+(`~/.qwen-mem-lite/`, `better-sqlite3` + FTS5) holds observations, user prompts,
 sessions and events. Three **faces** expose it:
 
 | Face | Entry | Transport |
 |---|---|---|
-| Hooks | `hooks/hooks.json` → `scripts/hook-launcher.mjs` → `hook.mjs` / `scripts/*.js` | Claude Code hook events, stdin JSON → stdout text / `additionalContext` |
+| Hooks | `hooks/hooks.json` → `scripts/hook-launcher.mjs` → `hook.mjs` / `scripts/*.js` | Qwen Code / Claude Code hook events, stdin JSON → stdout text / `additionalContext` |
 | MCP server | `server.mjs` | stdio JSON-RPC, 9 listed + 9 hidden tools (`tool-schemas.mjs`) |
-| CLI | `cli.mjs` → `mem-cli.mjs` (data) / `install.mjs` (lifecycle) | `claude-mem-lite <cmd>` |
+| CLI | `cli.mjs` → `mem-cli.mjs` (data) / `install.mjs` (lifecycle) | `qwen-mem-lite <cmd>` |
 
 The faces share logic through `lib/*-core.mjs` (87 modules under `lib/`); the engines
 (`search-engine.mjs`, `deep-search.mjs`, `hook-*.mjs`, `schema.mjs`) sit
@@ -279,11 +279,11 @@ graph LR
 
 | Module | Lines | Responsibility | Public interface (exports; `*` = re-export) |
 |---|---|---|---|
-| `adopt-cli.mjs` | 484 | CLAUDE.md-steering plan (v3.13): CLI handlers for claude-mem-lite adopt [--all] [--force] [--dry-run] [--status] [--disable/--enable] claude-mem-lite… | disableSentinelPath(), isAutoAdoptDisabled(), cmdAdopt(), silentAutoAdopt(), hasAutoAdoptMarker(), cmdUnadopt() |
-| `cli/activity.mjs` | 222 | `claude-mem-lite activity <save/search/recent/show>`. Extracted from mem-cli.mjs (v2.41, god-module split). Thin wrapper over lib/activity.mjs pure… | cmdActivity() |
+| `adopt-cli.mjs` | 484 | CLAUDE.md-steering plan (v3.13): CLI handlers for qwen-mem-lite adopt [--all] [--force] [--dry-run] [--status] [--disable/--enable] qwen-mem-lite… | disableSentinelPath(), isAutoAdoptDisabled(), cmdAdopt(), silentAutoAdopt(), hasAutoAdoptMarker(), cmdUnadopt() |
+| `cli/activity.mjs` | 222 | `qwen-mem-lite activity <save/search/recent/show>`. Extracted from mem-cli.mjs (v2.41, god-module split). Thin wrapper over lib/activity.mjs pure… | cmdActivity() |
 | `cli/common.mjs` | 447 | shared helpers used by every per-command file under cli/. Extracted from mem-cli.mjs (v2.41) as first step in the god-module split. Scope: pure… | parseArgs(), out(), outVerbatim(), fail(), rejectBareStringFlags(), resolvePositionalAlias(), KNOWN_CLI_FLAGS … (+9) |
-| `cli/doctor.mjs` | 117 | `claude-mem-lite doctor --benchmark/--metrics`. Extracted from mem-cli.mjs (v2.41, god-module split). `doctor` without flags is handled upstream by… | cmdDoctor() |
-| `cli/fts-check.mjs` | 54 | `claude-mem-lite fts-check <check/rebuild>`. Extracted from mem-cli.mjs (v2.41, god-module split). | cmdFtsCheck() |
+| `cli/doctor.mjs` | 117 | `qwen-mem-lite doctor --benchmark/--metrics`. Extracted from mem-cli.mjs (v2.41, god-module split). `doctor` without flags is handled upstream by… | cmdDoctor() |
+| `cli/fts-check.mjs` | 54 | `qwen-mem-lite fts-check <check/rebuild>`. Extracted from mem-cli.mjs (v2.41, god-module split). | cmdFtsCheck() |
 | `mem-cli.mjs` | 3814 | CLI — lightweight command layer for direct memory access No MCP SDK or heavy deps — only imports schema.mjs and utils.mjs READ commands resolve the… | OBS_TIME_FIELDS, formatObsFieldValue, cmdSearchForTest(), run() |
 | `server/fts-check.mjs` | 36 | MCP `mem_fts_check` handler. Extracted from server.mjs (v2.41, god-module split). Pure delegate to schema.mjs helpers; Zod filters args.action before… | handleMemFtsCheck() |
 
@@ -291,7 +291,7 @@ graph LR
 
 | Module | Lines | Responsibility | Public interface (exports; `*` = re-export) |
 |---|---|---|---|
-| `adopt-content.mjs` | 187 | CLAUDE.md-steering plan (v3.13): content generators for the claude-mem-lite managed block (written into <cwd>/CLAUDE.md) and its companion… | PLUGIN_SLUG, CURRENT_SENTINEL_VERSION, buildClaudeMdBlock(), getDetailDoc() |
+| `adopt-content.mjs` | 187 | CLAUDE.md-steering plan (v3.13): content generators for the qwen-mem-lite managed block (written into <cwd>/CLAUDE.md) and its companion… | PLUGIN_SLUG, CURRENT_SENTINEL_VERSION, buildClaudeMdBlock(), getDetailDoc() |
 | `claudemd.mjs` | 333 | CLAUDE.md-steering plan (v3.13): claudemd.mjs — primitives for the project-tree managed block at <cwd>/CLAUDE.md plus an on-demand detail doc at… | claudeMdPath(), detailDocPath(), readBlock(), isAdopted(), hasResidue(), needsRefresh(), writeManaged() … (+3) |
 | `deep-search.mjs` | 621 | Opt-in LLM multi-query / HyDE deep search. This is the EXPLICIT "search harder" path — it is NOT on the passive hook pipeline, which stays… | MAX_VARIANTS, AUTO_DEEP_MIN_RESULTS, AUTO_DEEP_MIN_CORPUS, hasEscalatableCorpus(), autoDeepLlmReady(), shouldEscalateToDeep(), resolveDeepMode() … (+11) |
 | `haiku-client.mjs` | 871 | Unified LLM call wrapper Shared by memory (hook.mjs) and dispatch modules Provider priority: ANTHROPIC_API_KEY (direct Anthropic API) →… | BG_LLM_TIMEOUT_MS, resolveModel(), resolveOpenRouterModel(), detectMode(), _resetMode(), getClaudePath(), splitPrompt() … (+13) |
@@ -339,7 +339,7 @@ graph LR
 | `lib/efficacy-arms.mjs` | 36 | pure arm-semantics for the efficacy severe test. ONE tested source of truth for "what does arm X mean", because a wrong per-arm env silently… | INJECTED_ARMS, armConfig(), taskSuffixForArm() |
 | `lib/efficacy-bridge-select.mjs` | 15 | pure helpers for the efficacy arm-B measurement: (1) select only commits where the bridge CAN bind (lesson identifier ∈ edit region), (2) verify the… | lessonBindsToRegion(), BRIDGE_MARKER, bridgeFired() |
 | `lib/env-number.mjs` | 104 | Numeric environment overrides with an explicit failure mode. The idiom this replaces — `Number(process.env.X // DEFAULT)` — has no failure mode at… | envNumber() |
-| `lib/err-sampler.mjs` | 97 | sampled append-only log of swallowed errors. Rationale: debugCatch previously only surfaced errors when CLAUDE_MEM_DEBUG was on. In production,… | maybeSampleError(), _sampleRate(), SAMPLE_LOG_RETENTION_MS |
+| `lib/err-sampler.mjs` | 97 | sampled append-only log of swallowed errors. Rationale: debugCatch previously only surfaced errors when QWEN_MEM_DEBUG was on. In production,… | maybeSampleError(), _sampleRate(), SAMPLE_LOG_RETENTION_MS |
 | `lib/error-recall-core.mjs` | 400 | Error-triggered recall — the SELECTION half of the surface. Why this is a shared core and not left inline in hook.mjs (project convention "shared by… | ERROR_RECALL_LIMIT, DEFAULT_ERROR_RECALL_BM25_FLOOR, CALIBRATED_ERROR_RECALL_BM25_FLOOR, errorRecallBm25Floor(), errorRecallSql(), errorRecallFtsQuery(), selectErrorRecall() |
 | `lib/events-injection.mjs` | 135 | surface `events` into the passive injection surfaces. HIGH-1 (full audit 2026-07-16): persistHaikuSummary upgrade-deletes every event-typed memory… | searchInjectableEvents(), recentInjectableEvents(), renderInjectableEvent() |
 | `lib/export-columns.mjs` | 122 | Single source of truth for the observation columns that `export` emits and `restore` reads back. Both the CLI (`cmdExport` in mem-cli.mjs) and the… | EXPORT_COLUMNS, EXPORT_COLUMNS_SQL, buildExportWhere() |
@@ -358,9 +358,9 @@ graph LR
 | `lib/import-jsonl.mjs` | 358 | import a Claude Code JSONL transcript file into the memory DB. One transcript ≈ one Claude Code session; we map: user line -> user_prompts row… | MAX_IMPORT_BYTES, importJsonl() |
 | `lib/inject-search-core.mjs` | 98 | the retrieval-side shared core (P2-11, audit 2026-08-14; second cut D#123, 2026-08-16). Shared home for the three SQL atoms that kept drifting across… | liveObsFilterSql(), recencyDecaySql(), injectionRelevanceSql() |
 | `lib/injected-ids.mjs` | 232 | the cross-hook injected-ids dedup marker: file name, freshness + same-session gate, and payload shape. Single source of truth for… | injectedIdsFileName(), readInjectedMarker(), mergeInjectedMarker(), injectedIdKey(), EVENT_ID_PREFIX, keyContextIdsFileName() |
-| `lib/install-shape.mjs` | 302 | which code homes does this machine actually RUN? claude-mem-lite can occupy three code homes at once and they are not interchangeable: plugin cache… | hasManagedCodeInstall(), listPluginCacheVersions(), detectInstallShape(), probeRuntimeRoots() |
+| `lib/install-shape.mjs` | 302 | which code homes does this machine actually RUN? qwen-mem-lite can occupy three code homes at once and they are not interchangeable: plugin cache… | hasManagedCodeInstall(), listPluginCacheVersions(), detectInstallShape(), probeRuntimeRoots() |
 | `lib/keyctx-marker.mjs` | 118 | the one place the SessionStart Key Context render is recorded. Two things happen together because they must describe the SAME set: ① the per-session… | KEYCTX_TOUCH_AFTER_MS, recordKeyContextInjection(), touchKeyContextMarker() |
-| `lib/lesson-bridge.mjs` | 42 | pure prompt builder + fail-open Haiku bridge for the comprehension-bridge forcing-function (CLAUDE_MEM_SALIENCE=bridge). Loaded by… | buildBridgePrompt(), bridgeLesson() |
+| `lib/lesson-bridge.mjs` | 42 | pure prompt builder + fail-open Haiku bridge for the comprehension-bridge forcing-function (QWEN_MEM_SALIENCE=bridge). Loaded by… | buildBridgePrompt(), bridgeLesson() |
 | `lib/lesson-idents.mjs` | 32 | pure, zero-dependency extractor of code identifiers a lesson names, for the bind-salience PostToolUse "dropped a required reference" check… | extractIdents(), presentIdents() |
 | `lib/llm-call.mjs` | 76 | the provider-routed background LLM call (Anthropic API → OpenRouter → claude CLI). It lived in `hook-shared.mjs`, which is the hook layer's own… | callLLM() |
 | `lib/llm-provider-probe.mjs` | 115 | "is the configured LLM provider actually usable?" Every keyed-provider dispatcher in haiku-client.mjs degrades to `claude -p` when the API call… | tcpReachable(), llmProviderStatus() |
@@ -384,14 +384,14 @@ graph LR
 | `lib/release-digest.mjs` | 109 | shared release-signing core (P1 supply-chain hardening). One source of truth for BOTH sides of the auto-update authenticity check so the CI signer… | sha256Hex(), sha256File(), buildReleaseManifest(), serializeManifest(), verifyReleaseFiles(), verifyManifestSignature() |
 | `lib/relevance-floor.mjs` | 149 | Corpus-size normalization for ABSOLUTE relevance floors. Extracted from scripts/user-prompt-search.js (v3.61.0) when a second injection face —… | corpusFloorScale() |
 | `lib/reread-guard.mjs` | 63 | pure logic + one IO helper for feature ② (repeated-read guard). When the agent does a full Read of a file it already read this session and the file… | readFileMeta(), shouldWarnReread(), buildRereadWarning() |
-| `lib/resolve-data-dir.mjs` | 152 | Single source of truth for resolving the CLAUDE_MEM_DIR data directory. Zero runtime deps (node:path + node:os only) so hot-path hook scripts can… | resolveDataDir(), resolveRuntimeDir() |
+| `lib/resolve-data-dir.mjs` | 152 | Single source of truth for resolving the QWEN_MEM_DIR data directory. Zero runtime deps (node:path + node:os only) so hot-path hook scripts can… | resolveDataDir(), resolveRuntimeDir() |
 | `lib/rrf.mjs` | 61 | Reciprocal Rank Fusion core (single source of truth, D#42). deep-search.rrfFuseN (N-list, full-row output with best-rank row selection) is a thin… | RRF_K, rrfAccumulate() |
 | `lib/save-enrich.mjs` | 194 | Save-time background enrichment — G1+G2 (roadmap 2026-07-18). The v3.49 save-nudge REMINDS the caller to write a lesson; nothing backfills when the… | ENRICH_OBLIGATED_TYPES, shouldQueueSaveEnrich(), queueSaveEnrich(), executeSaveEnrich() |
 | `lib/save-nudge.mjs` | 22 | Save-time lesson nudge (audit 2026-07-17 P4): bugfix/decision are the types whose value lives in the lesson (root cause + fix / constraint +… | buildLessonNudge() |
-| `lib/save-observation.mjs` | 487 | Shared "save one observation" pipeline — used by both mem-cli.mjs::cmdSave (CLI `claude-mem-lite save`) and server.mjs::mem_save (MCP tool).… | splitSupersedeTokens(), formatSupersededNote(), formatSupersedeSkipped(), saveObservation(), saveWithClosures() |
+| `lib/save-observation.mjs` | 487 | Shared "save one observation" pipeline — used by both mem-cli.mjs::cmdSave (CLI `qwen-mem-lite save`) and server.mjs::mem_save (MCP tool).… | splitSupersedeTokens(), formatSupersededNote(), formatSupersedeSkipped(), saveObservation(), saveWithClosures() |
 | `lib/scrub-record.mjs` | 90 | per-table scrub helper. Applies scrubSecrets to the known text fields of a table row. Numeric / JSON-blob / id fields are passed through untouched.… | TEXT_FIELDS_BY_TABLE, scrubRecord() |
 | `lib/search-core.mjs` | 1083 | Shared cross-source search core for cmdSearch (CLI) and mem_search (MCP). coreRunSearchPipeline (below) is the SINGLE orchestration body — deep /… | buildSearchFtsQuery(), parseDuration(), parseDateBounds(), MIN_FUSION_POOL, computePerSourceWindow(), effectiveObsFtsQuery(), searchSessionsFts() … (+8) |
-| `lib/shard-gc.mjs` | 54 | retention sweep for daily JSONL shard directories. `lib/metrics.mjs` (CLAUDE_MEM_METRICS) appends one `YYYY-MM-DD.jsonl` per day with no GC of its… | gcDailyShards() |
+| `lib/shard-gc.mjs` | 54 | retention sweep for daily JSONL shard directories. `lib/metrics.mjs` (QWEN_MEM_METRICS) appends one `YYYY-MM-DD.jsonl` per day with no GC of its… | gcDailyShards() |
 | `lib/startup-dashboard.mjs` | 135 | aggregates git/tasks/plans/handoff/events stats into a single SessionStart injection line (T10c v2.31). Pure function (with injectable stubs for test… | buildDashboard() |
 | `lib/stats-core.mjs` | 191 | shared primary stats feed for CLI `stats` and MCP `mem_stats`. Audit 2026-07-17 MED-4: these ~15 COUNT/GROUP-BY queries were hand-copied… | computeStatsFeed() |
 | `lib/stats-quality.mjs` | 230 | Shared quality-dashboard computation — used by both mem-cli.mjs (CLI `stats --quality`) and server.mjs (MCP `mem_stats({quality: true})`). Splits… | computeNoiseGauge(), computeQualityStats(), formatQualityReport() |
@@ -400,7 +400,7 @@ graph LR
 | `lib/task-reader.mjs` | 149 | parse ~/.claude/tasks/<taskListId>/*.json for startup dashboard (T10a). Pure function over the filesystem. Filters to pending + in_progress tasks for… | readProjectTasks() |
 | `lib/time-constants.mjs` | 38 | millisecond time units, defined once. Four modules each carried their own `const DAY_MS` (deferred-work, metrics, err-sampler, hook-telemetry) with… | DAY_MS, ORPHAN_EPISODE_AGE_MS |
 | `lib/timeline-core.mjs` | 280 | Shared "timeline around an anchor" core. Single source of truth for cmdTimeline (CLI) and mem_timeline (MCP). Pre- extraction the anchor-resolution… | resolveAnchorToken(), formatAnchorError(), resolveQueryAnchor(), fetchRecentTimeline(), fetchTimelineWindow() |
-| `lib/tmp-fixture-sweep.mjs` | 101 | Sweep stale claude-mem-lite test-fixture directories from temp dirs. Tests create sandboxes via mkdtempSync(join(tmpdir(), '<prefix>')) and clean… | TEST_FIXTURE_PREFIXES, DEFAULT_FIXTURE_AGE_MS, sweepStaleTestFixtures() |
+| `lib/tmp-fixture-sweep.mjs` | 101 | Sweep stale qwen-mem-lite test-fixture directories from temp dirs. Tests create sandboxes via mkdtempSync(join(tmpdir(), '<prefix>')) and clean… | TEST_FIXTURE_PREFIXES, DEFAULT_FIXTURE_AGE_MS, sweepStaleTestFixtures() |
 | `lib/tool-refusal.mjs` | 117 | Did this tool call fail because a PROGRAM failed, or because the agent's own tool chain said no? WHY THIS EXISTS. Claude Code delivers host-flagged… | REFUSAL_SENTINELS, isToolChainRefusal(), shouldRecallOnFailure() |
 | `lib/transcript-scan.mjs` | 133 | One parse of a Claude Code transcript, shared by everything that scans it. Audit 2026-08-22 P2-8. handleStop asked the same .jsonl the same question… | TRANSCRIPT_ENTRY_HEAP_FACTOR, TRANSCRIPT_CACHE_MAX_BYTES, transcriptCacheBudgetBytes(), readTranscriptEntries(), _resetTranscriptCache() |
 | `lib/upgrade-banner.mjs` | 77 | One-shot v2.70.0 upgrade banner. Split out of hook.mjs because hook.mjs has module-level side effects (notably `if (!event) process.exit(0)` at top… | V270_RELEASE_EPOCH, hasPreV270Data(), emitV270UpgradeBanner() |
@@ -483,7 +483,7 @@ graph LR
 5. Optional async enrichment (`lib/save-enrich.mjs`) and `closes_deferred` bookkeeping.
 
 **F7 · Install / self-update** (`cli.mjs install` · `hook-update.mjs`)
-1. `install.mjs:install` — `installSourceFiles` copies the `source-files.mjs` set to `~/.claude-mem-lite/`, `installDependencies` installs deps. (The native binding is probed at every launch by `scripts/launch.mjs` via `lib/binding-probe.mjs` — CHANGELOG v3.58.x, not re-read here.)
+1. `install.mjs:install` — `installSourceFiles` copies the `source-files.mjs` set to `~/.qwen-mem-lite/`, `installDependencies` installs deps. (The native binding is probed at every launch by `scripts/launch.mjs` via `lib/binding-probe.mjs` — CHANGELOG v3.58.x, not re-read here.)
 2. `configureHooks` writes direct `settings.json` entries, then dedupes against the plugin manifest (`plugin-cache-guard.mjs`) — the two hook sets must change together (`tests/audit-silent-20260814.test.mjs`).
 3. `dogfoodAutoAdopt` writes the managed CLAUDE.md block for an adopted project.
 4. Update: `hook-update.mjs:checkForUpdate` (24 h, dev-mode skip) → `fetchLatestRelease` → `downloadAndInstall` → `verifyReleaseAuthenticity` (signed manifest).

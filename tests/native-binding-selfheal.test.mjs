@@ -372,7 +372,7 @@ describe('cli.mjs rebuild-binding — the local, network-free repair command', (
 
   it('is routed by cli.mjs and reports a healthy binding without rebuilding', () => {
     // Isolated data dir: the command takes runtime/install.lock and clears the
-    // breakage marker, so the default (~/.claude-mem-lite) would contend with a
+    // breakage marker, so the default (~/.qwen-mem-lite) would contend with a
     // live session's lock — flaky here, and mutating real state from a test.
     const dataDir = mkdtempSync(join(tmpdir(), 'cml-rb-'));
     // Isolated HOME too, since v3.70.0: rebuild-binding now repairs EVERY code home
@@ -387,7 +387,7 @@ describe('cli.mjs rebuild-binding — the local, network-free repair command', (
     const r = spawnSync(process.execPath, [join(REPO_ROOT, 'cli.mjs'), 'rebuild-binding'], {
       encoding: 'utf8',
       timeout: 300_000,
-      env: { ...process.env, CLAUDE_MEM_DIR: dataDir, HOME: fakeHome },
+      env: { ...process.env, QWEN_MEM_DIR: dataDir, HOME: fakeHome },
     });
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(fakeHome, { recursive: true, force: true });
@@ -412,7 +412,7 @@ describe('cli.mjs rebuild-binding — the local, network-free repair command', (
         const r = spawnSync(process.execPath, [join(REPO_ROOT, 'cli.mjs'), 'rebuild-binding'], {
           encoding: 'utf8',
           timeout: 300_000,
-          env: { ...process.env, CLAUDE_MEM_DIR: dataDir },
+          env: { ...process.env, QWEN_MEM_DIR: dataDir },
         });
         expect(r.status).not.toBe(0);
         expect(`${r.stdout}${r.stderr}`).toMatch(/in progress/i);
@@ -447,7 +447,7 @@ describe('formatHookError — the hint must name a repair that actually applies'
 // ── The prebuild that is present and will not load ──────────────────────────
 //
 // Found 2026-09-06 by running tests/sandbox/phaseB-npm.mjs against a corrupted
-// `prebuilds/linux-x64.node`: `claude-mem-lite rebuild-binding` — the foreground repair
+// `prebuilds/linux-x64.node`: `qwen-mem-lite rebuild-binding` — the foreground repair
 // doctor tells users to run, the one deliberately given no time budget — exited 1, and the
 // manual command it printed could not fix it either. doctor stayed red permanently.
 //

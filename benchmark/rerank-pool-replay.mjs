@@ -42,7 +42,7 @@
 // and FAILS THE RUN if it succeeds — a promise in a comment is not a guarantee.
 // (2) The metrics. The same function also appends an `inject` row to
 // `$DB_DIR/metrics/YYYY-MM-DD.jsonl`, and a readonly DATABASE handle does nothing about a
-// file append. With CLAUDE_MEM_METRICS=1 a whole-corpus run wrote ~1.5M of them in a day
+// file append. With QWEN_MEM_METRICS=1 a whole-corpus run wrote ~1.5M of them in a day
 // against ~1.5k on a real day, and `doctor` then reported this replay's in-process timings
 // as live injection latency. Every arm invocation now goes through `callArm()`, which
 // passes the shipped `{ counterfactual: true }` option (it skips both side effects), and
@@ -174,9 +174,9 @@ export function callArm(fn, db, text, project) {
  * `recordMetric(DB_DIR, { event: 'inject' })` (an appendFileSync to
  * `$DB_DIR/metrics/YYYY-MM-DD.jsonl`, which a readonly *database* handle does nothing
  * about). Until v3.91.0 this file replayed the whole corpus through both arms with the
- * metric sink wide open: on a machine running with CLAUDE_MEM_METRICS=1 that appended
+ * metric sink wide open: on a machine running with QWEN_MEM_METRICS=1 that appended
  * ~1.5M `inject` rows in a day — three orders of magnitude over a production day — and
- * `claude-mem-lite doctor` then reported the replay's in-process timings as if they were
+ * `qwen-mem-lite doctor` then reported the replay's in-process timings as if they were
  * live injection latency. The docblock at the top of this file said "IT CANNOT POLLUTE
  * THE CORPUS, and proves it rather than promising it"; that sentence was true of the
  * corpus and false of the metrics, because the proof only ever covered one sink.
@@ -202,8 +202,8 @@ export function callArm(fn, db, text, project) {
  */
 export function assertNoMetricWrite(shard, probe) {
   const tmp = mkdtempSync(join(tmpdir(), 'rerank-pool-sink-')); // BEFORE the env write:
-  const prevEnv = process.env.CLAUDE_MEM_METRICS; // if mkdtemp throws (TMPDIR
-  process.env.CLAUDE_MEM_METRICS = '1'; // gone, ENOSPC, EACCES) the
+  const prevEnv = process.env.QWEN_MEM_METRICS; // if mkdtemp throws (TMPDIR
+  process.env.QWEN_MEM_METRICS = '1'; // gone, ENOSPC, EACCES) the
   try {
     // finally never runs and
     const size = () => (existsSync(shard) ? statSync(shard).size : 0); // '1' leaks into the
@@ -230,8 +230,8 @@ export function assertNoMetricWrite(shard, probe) {
     }
   } finally {
     rmSync(tmp, { recursive: true, force: true });
-    if (prevEnv === undefined) delete process.env.CLAUDE_MEM_METRICS;
-    else process.env.CLAUDE_MEM_METRICS = prevEnv;
+    if (prevEnv === undefined) delete process.env.QWEN_MEM_METRICS;
+    else process.env.QWEN_MEM_METRICS = prevEnv;
   }
 }
 
@@ -245,8 +245,8 @@ export function assertNoMetricWrite(shard, probe) {
  */
 export function metricShardPath(dbDir) {
   const tmp = mkdtempSync(join(tmpdir(), 'rerank-pool-name-'));
-  const prevEnv = process.env.CLAUDE_MEM_METRICS;
-  process.env.CLAUDE_MEM_METRICS = '1';
+  const prevEnv = process.env.QWEN_MEM_METRICS;
+  process.env.QWEN_MEM_METRICS = '1';
   try {
     recordMetric(tmp, { event: 'sink_liveness_probe' });
     const named = existsSync(join(tmp, 'metrics')) ? readdirSync(join(tmp, 'metrics')) : [];
@@ -264,8 +264,8 @@ export function metricShardPath(dbDir) {
     return join(dbDir, 'metrics', named[0]);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
-    if (prevEnv === undefined) delete process.env.CLAUDE_MEM_METRICS;
-    else process.env.CLAUDE_MEM_METRICS = prevEnv;
+    if (prevEnv === undefined) delete process.env.QWEN_MEM_METRICS;
+    else process.env.QWEN_MEM_METRICS = prevEnv;
   }
 }
 
@@ -291,7 +291,7 @@ export function metricShardPath(dbDir) {
  * has printed, so a false positive — a live hook writing during a multi-minute run, which
  * this cannot distinguish and says so — costs a scary message rather than the run's output.
  *
- * One stated limitation: with `CLAUDE_MEM_METRICS` unset, a bypassing call writes nothing,
+ * One stated limitation: with `QWEN_MEM_METRICS` unset, a bypassing call writes nothing,
  * so this passes. That is correct (no harm occurred) but it means the run-level guard is
  * silent about call FORM on a metrics-off machine; the probe, which forces the sink on for
  * its own duration, is what covers that case. The two are complementary, not redundant.
@@ -631,7 +631,7 @@ async function main() {
     }
   }
 
-  const dbPath = process.env.CLAUDE_MEM_DB_PATH || join(DB_DIR, 'claude-mem-lite.db');
+  const dbPath = process.env.QWEN_MEM_DB_PATH || join(DB_DIR, 'qwen-mem-lite.db');
   const db = new Database(dbPath, { readonly: true });
   assertCannotWrite(db);
 

@@ -1,4 +1,4 @@
-// claude-mem-lite: Cross-session handoff extraction, detection, and injection
+// qwen-mem-lite: Cross-session handoff extraction, detection, and injection
 // Extracted for testability — hook.mjs has module-level side effects
 
 import { basename } from 'path';
@@ -317,9 +317,9 @@ export function buildAndSaveHandoff(db, sessionId, project, type, episodeSnapsho
   // for having no `/`. That is the dropped-file half, and it reproduces.
   //
   // The directory half comes from the EPISODE BUFFER, which that measurement never read:
-  // `~/.claude-mem-lite/runtime/ep-<project>.json` carries entries like
+  // `~/.qwen-mem-lite/runtime/ep-<project>.json` carries entries like
   // `/home/ai/dev/loop-testing`, byte-for-byte the key_files of the matching handoff row.
-  // `Key Files: claude-mem-lite` in a real injection came from there, NOT from
+  // `Key Files: qwen-mem-lite` in a real injection came from there, NOT from
   // files_modified — no entry in that column equals a project directory. The three
   // extensionless slash-bearing values it does hold are one executable
   // (`claude-plugin/bin/code-graph-mcp`) and two `/var/tmp` scratch dirs, and the
@@ -406,7 +406,7 @@ export function buildAndSaveHandoff(db, sessionId, project, type, episodeSnapsho
   //
   // Deliberately NOT sourced from deferred_work, even though it is the other project-scoped
   // durable queue: those rows are already delivered at SessionStart by the `### Deferred
-  // Work` block in hook-context.mjs, inside `<claude-mem-context>` — NOT by
+  // Work` block in hook-context.mjs, inside `<qwen-mem-context>` — NOT by
   // lib/startup-dashboard.mjs, which contains no reference to the table (the claims lens
   // corrected that attribution). It renders the top 5 open rows by priority, so "already
   // delivered" is true of the head of the queue rather than all of it; 12 were open on

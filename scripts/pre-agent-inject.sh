@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# claude-mem-lite: Fast bash pre-filter for the PreToolUse:Agent|Task hook.
+# qwen-mem-lite: Fast bash pre-filter for the PreToolUse:Agent|Task hook.
 #
-# Subagent dispatch-time injection is DEFAULT OFF (CLAUDE_MEM_SUBAGENT_INJECT=on|1),
+# Subagent dispatch-time injection is DEFAULT OFF (QWEN_MEM_SUBAGENT_INJECT=on|1),
 # and pre-agent-inject.js's off path is already the cheapest thing a Node script can
 # do — it reads one env var and returns. The cost that remained was Node itself:
 # every Agent/Task dispatch paid a full interpreter start for a feature that was
@@ -10,7 +10,7 @@
 # here. With the flag ON the prefilter costs 1.8ms on top of the 44.9ms the feature
 # already spends (46.7ms) — the trade is a rounding error against a real saving.
 #
-# Measure with the flag EXPLICITLY unset (`env -u CLAUDE_MEM_SUBAGENT_INJECT …`). A
+# Measure with the flag EXPLICITLY unset (`env -u QWEN_MEM_SUBAGENT_INJECT …`). A
 # maintainer shell that dogfoods the feature exports it, and the first pass at these
 # numbers timed the ON path twice and called it the off-path cost.
 #
@@ -27,7 +27,7 @@
 # the whole subagent prompt back via updatedInput, so stdin must reach it verbatim.
 # hook-launcher.mjs sits next to this file in every install shape (plugin cache,
 # managed copy, dev symlink), which is also how it locates its own install dir.
-case "${CLAUDE_MEM_SUBAGENT_INJECT:-}" in
+case "${QWEN_MEM_SUBAGENT_INJECT:-}" in
   on|1)
     _mem_dir=$(dirname "${BASH_SOURCE[0]}")
     exec node "${_mem_dir}/hook-launcher.mjs" scripts/pre-agent-inject.js

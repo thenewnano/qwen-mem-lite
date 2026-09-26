@@ -222,7 +222,7 @@ describe('extractInjectionEvents', () => {
 
   it('emits one subagent event per parallel Agent tool_use instead of collapsing to the last — Fix 4', () => {
     const ts = '2026-07-01T00:00:00.000Z';
-    const marker = "surfaced by your operator's claude-mem-lite";
+    const marker = "surfaced by your operator's qwen-mem-lite";
     const f = fixture([
       {
         type: 'user',

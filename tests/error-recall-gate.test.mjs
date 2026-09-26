@@ -303,22 +303,22 @@ describe('error-recall wiring: hook.mjs honours the gate', () => {
 
     BASE_ENV = { ...process.env };
     for (const k of Object.keys(BASE_ENV)) {
-      if (/^(CLAUDE_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete BASE_ENV[k];
+      if (/^(QWEN_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete BASE_ENV[k];
     }
     Object.assign(BASE_ENV, {
       HOME: HOME_DIR,
       CLAUDE_CODE_PATH: join(ROOT, 'no-such-claude-binary'), // no LLM spend, no network
       ANTHROPIC_API_KEY: '',
       OPENROUTER_API_KEY: '',
-      CLAUDE_MEM_SKIP_UPDATE: '1',
-      CLAUDE_MEM_SKIP_EPISODE_LLM: '1',
-      CLAUDE_MEM_SKIP_COMPRESS: '1',
-      CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-      CLAUDE_MEM_SKIP_MAINTAIN: '1',
-      CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
-      CLAUDE_MEM_SKIP_REPOS: '1',
-      CLAUDE_MEM_NO_DELAY: '1',
-      CLAUDE_MEM_DIR: dataDir,
+      QWEN_MEM_SKIP_UPDATE: '1',
+      QWEN_MEM_SKIP_EPISODE_LLM: '1',
+      QWEN_MEM_SKIP_COMPRESS: '1',
+      QWEN_MEM_SKIP_OPTIMIZE: '1',
+      QWEN_MEM_SKIP_MAINTAIN: '1',
+      QWEN_MEM_SKIP_SAVE_ENRICH: '1',
+      QWEN_MEM_SKIP_REPOS: '1',
+      QWEN_MEM_NO_DELAY: '1',
+      QWEN_MEM_DIR: dataDir,
     });
     delete BASE_ENV.CLAUDE_PROJECT_DIR;
     delete BASE_ENV.PWD;

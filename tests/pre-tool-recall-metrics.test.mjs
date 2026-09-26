@@ -1,7 +1,7 @@
 // Tier-1 firing counters for ① file-intel + ② reread-guard. The hook records a
 // `file_intel` / `reread_warn` event via lib/metrics.mjs (gated by
-// CLAUDE_MEM_METRICS=1, default off → zero hot-path cost) on each firing; the
-// rows aggregate into `claude-mem-lite doctor` / `stats`. This pins the WIRING:
+// QWEN_MEM_METRICS=1, default off → zero hot-path cost) on each firing; the
+// rows aggregate into `qwen-mem-lite doctor` / `stats`. This pins the WIRING:
 // events recorded on fire, nothing recorded when metrics are disabled.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -17,13 +17,13 @@ const SCRIPT_PATH = resolve(import.meta.dirname, '../scripts/pre-tool-recall.js'
 
 function runScript(input, env = {}) {
   return new Promise((resolveP, reject) => {
-    // Hermetic metrics gate: an ambient CLAUDE_MEM_METRICS from the shell (e.g.
+    // Hermetic metrics gate: an ambient QWEN_MEM_METRICS from the shell (e.g.
     // exported via Claude Code settings) must NOT leak into the child — tests
     // opt in explicitly via `env`. Without this, the "default off" case inherits
     // the shell value and the disabled-path assertion fails locally while CI's
     // clean env hides it (mem #8725).
-    const childEnv = { ...process.env, CLAUDE_MEM_HOOK_RUNNING: '', ...env };
-    if (!('CLAUDE_MEM_METRICS' in env)) delete childEnv.CLAUDE_MEM_METRICS;
+    const childEnv = { ...process.env, QWEN_MEM_HOOK_RUNNING: '', ...env };
+    if (!('QWEN_MEM_METRICS' in env)) delete childEnv.QWEN_MEM_METRICS;
     const child = spawn('node', [SCRIPT_PATH], {
       env: childEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -59,7 +59,7 @@ describe('pre-tool-recall firing metrics (tier-1)', () => {
     tmpRoot = mkdtempSync(join(tmpdir(), `pre-recall-metrics-${process.pid}-`));
     projectDir = join(tmpRoot, 'parent', 'metricstest');
     mkdirSync(projectDir, { recursive: true });
-    const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+    const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
     db.pragma('foreign_keys = OFF');
     initSchema(db);
     insertSession(db, { id: 'sess-m', project: 'parent--metricstest', memoryId: 'mem-m' });
@@ -72,7 +72,7 @@ describe('pre-tool-recall firing metrics (tier-1)', () => {
     } catch {}
   });
 
-  const env = (extra = {}) => ({ CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir, ...extra });
+  const env = (extra = {}) => ({ QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir, ...extra });
   const metricEvents = () => {
     const p = join(tmpRoot, 'metrics', `${today()}.jsonl`);
     if (!existsSync(p)) return [];
@@ -86,15 +86,15 @@ describe('pre-tool-recall firing metrics (tier-1)', () => {
   it('records a file_intel event when ① fires (metrics enabled)', async () => {
     const fp = join(projectDir, 'm1.mjs');
     writeFileSync(fp, BIG);
-    await runScript(read(fp, 's1'), env({ CLAUDE_MEM_METRICS: '1' }));
+    await runScript(read(fp, 's1'), env({ QWEN_MEM_METRICS: '1' }));
     expect(metricEvents()).toContain('file_intel');
   });
 
   it('records a reread_warn event when ② warns (metrics enabled)', async () => {
     const fp = join(projectDir, 'm2.mjs');
     writeFileSync(fp, BIG);
-    await runScript(read(fp, 's2'), env({ CLAUDE_MEM_METRICS: '1' })); // first read → file_intel
-    await runScript(read(fp, 's2'), env({ CLAUDE_MEM_METRICS: '1' })); // repeat full read of unchanged file → reread_warn
+    await runScript(read(fp, 's2'), env({ QWEN_MEM_METRICS: '1' })); // first read → file_intel
+    await runScript(read(fp, 's2'), env({ QWEN_MEM_METRICS: '1' })); // repeat full read of unchanged file → reread_warn
     expect(metricEvents()).toContain('reread_warn');
   });
 
@@ -103,7 +103,7 @@ describe('pre-tool-recall firing metrics (tier-1)', () => {
     // had NO firing counter while file_intel/reread_warn were metered.
     const fp = join(projectDir, 'm4.mjs');
     writeFileSync(fp, BIG);
-    const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+    const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
     insertObs(db, {
       sessionId: 'mem-m',
       project: 'parent--metricstest',
@@ -114,7 +114,7 @@ describe('pre-tool-recall firing metrics (tier-1)', () => {
       filesModified: '["m4.mjs"]',
     });
     db.close();
-    await runScript(read(fp, 's4'), env({ CLAUDE_MEM_METRICS: '1' }));
+    await runScript(read(fp, 's4'), env({ QWEN_MEM_METRICS: '1' }));
     const p = join(tmpRoot, 'metrics', `${today()}.jsonl`);
     const rows = readFileSync(p, 'utf8')
       .trim()
@@ -131,7 +131,7 @@ describe('pre-tool-recall firing metrics (tier-1)', () => {
   it('records NO pretool_recall event when nothing injects (metrics enabled)', async () => {
     const fp = join(projectDir, 'm5.mjs');
     writeFileSync(fp, BIG);
-    await runScript(read(fp, 's5'), env({ CLAUDE_MEM_METRICS: '1' })); // no obs seeded → file_intel only
+    await runScript(read(fp, 's5'), env({ QWEN_MEM_METRICS: '1' })); // no obs seeded → file_intel only
     const p = join(tmpRoot, 'metrics', `${today()}.jsonl`);
     const events = existsSync(p)
       ? readFileSync(p, 'utf8')
@@ -143,7 +143,7 @@ describe('pre-tool-recall firing metrics (tier-1)', () => {
     expect(events).not.toContain('pretool_recall');
   });
 
-  it('records nothing when CLAUDE_MEM_METRICS is unset (default off)', async () => {
+  it('records nothing when QWEN_MEM_METRICS is unset (default off)', async () => {
     const fp = join(projectDir, 'm3.mjs');
     writeFileSync(fp, BIG);
     await runScript(read(fp, 's3'), env()); // metrics disabled

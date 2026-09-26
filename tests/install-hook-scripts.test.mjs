@@ -1,6 +1,6 @@
 // install-hook-scripts.test.mjs — Bug 1 regression
 // install.mjs writes settings.json hook commands pointing at
-// `~/.claude-mem-lite/scripts/pre-tool-recall.js` (and, until the skill-registry
+// `~/.qwen-mem-lite/scripts/pre-tool-recall.js` (and, until the skill-registry
 // removal in 2026-09, `pre-skill-bridge.js`), but the non-dev copy block only
 // copied 3 of the 5 scripts. The PreToolUse scripts went missing on every fresh
 // install, so each Read/Skill tool call after install logged "Cannot find module"

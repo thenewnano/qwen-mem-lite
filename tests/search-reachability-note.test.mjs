@@ -5,7 +5,7 @@
 // vector-populated DB). That bound is correct and stays. What was never adjusted is
 // the REPORTED NUMBER: countSearchTotal re-derives the full MATCH+filter population.
 //
-// Measured 2026-09-07 against a 128-row sandbox corpus (CLAUDE_MEM_DIR sandbox; the
+// Measured 2026-09-07 against a 128-row sandbox corpus (QWEN_MEM_DIR sandbox; the
 // real DB was verified untouched at 14 rows before and after): the last non-empty
 // offset is 59 / 59 / 89 for limits 10 / 20 / 30 — exactly max(limit*3, 60) — while
 // the CLI printed "Found 10 of 128" at offset 50 and "No results at offset 60". At
@@ -63,11 +63,11 @@ describe('reachabilityNote — D#5, the ceiling the reported total hides', () =>
   });
 
   it('honours the off switch, and ONLY the documented value', () => {
-    expect(reachabilityNote({ ...shown, env: { CLAUDE_MEM_REACH_DISCLOSURE: 'off' } })).toBe('');
-    expect(reachabilityNote({ ...shown, env: { CLAUDE_MEM_REACH_DISCLOSURE: 'OFF' } })).toBe('');
+    expect(reachabilityNote({ ...shown, env: { QWEN_MEM_REACH_DISCLOSURE: 'off' } })).toBe('');
+    expect(reachabilityNote({ ...shown, env: { QWEN_MEM_REACH_DISCLOSURE: 'OFF' } })).toBe('');
     // '0' is not the documented value — treating it as off would silence installs that
     // meant to set it and mistyped, which is the failure this repo keeps paying for.
-    expect(reachabilityNote({ ...shown, env: { CLAUDE_MEM_REACH_DISCLOSURE: '0' } })).not.toBe('');
+    expect(reachabilityNote({ ...shown, env: { QWEN_MEM_REACH_DISCLOSURE: '0' } })).not.toBe('');
     expect(reachabilityNote({ ...shown, env: {} })).not.toBe('');
   });
 

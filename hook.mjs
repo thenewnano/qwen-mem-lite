@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// claude-mem-lite Hook v2 — Cognitive memory architecture
+// qwen-mem-lite Hook v2 — Cognitive memory architecture
 // Selective encoding, episodic batching, error-triggered recall
 // Hooks (fast <100ms): post-tool-use, session-start, stop
 // Background workers (slow): llm-episode, llm-summary
@@ -62,7 +62,7 @@ import {
   explainSignificance,
 } from './hook-episode.mjs';
 // CODE_DIR, not DB_DIR: the schema-skew notice asks which CODE homes exist, and those are
-// always homedir-rooted even when CLAUDE_MEM_DIR relocates the data.
+// always homedir-rooted even when QWEN_MEM_DIR relocates the data.
 import { DB_DIR, DB_PATH, CODE_DIR } from './schema.mjs';
 import { cleanupClaudeMdLegacyBlock, buildSessionContextLines } from './hook-context.mjs';
 import { entry as preCompactEntry } from './hook-precompact.mjs';
@@ -199,7 +199,7 @@ import { DAY_MS } from './lib/time-constants.mjs';
 // Prevent recursive hooks from background claude -p calls
 // Background workers (llm-episode, llm-summary) are exempt — they're ours
 const event = process.argv[2];
-// Events allowed to run under CLAUDE_MEM_HOOK_RUNNING=1 (the recursion guard at
+// Events allowed to run under QWEN_MEM_HOOK_RUNNING=1 (the recursion guard at
 // the dispatch below exits everything else). EVERY spawnBackground/queue* event
 // MUST be listed here — a missing entry makes the detached worker exit(0)
 // silently, which looks identical to "worker ran and found nothing" from the
@@ -239,7 +239,7 @@ function pluginDisabledHere() {
 }
 
 if (event && pluginDisabledHere()) process.exit(0);
-if (process.env.CLAUDE_MEM_HOOK_RUNNING && !BG_EVENTS.has(event)) process.exit(0);
+if (process.env.QWEN_MEM_HOOK_RUNNING && !BG_EVENTS.has(event)) process.exit(0);
 
 // Crash-safe: flush episode buffer on unexpected termination to prevent data loss
 // Uses flag-based approach to avoid calling file I/O inside signal handlers,
@@ -274,7 +274,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
           // salvages the in-flight episode on abnormal termination (audit #6). A
           // detached llm-episode child can't be spawned from a dying process, so no
           // ep-flush-* file is written here: it would have NO consumer AND would make
-          // every later handleLLMSummary poll the full CLAUDE_MEM_FLUSH_TIMEOUT (~15s)
+          // every later handleLLMSummary poll the full QWEN_MEM_FLUSH_TIMEOUT (~15s)
           // waiting for a file that only the 24h orphan-sweep ever removes.
           // Split by CC session first (v3.35.2 parity): the normal flush and the Stop
           // lock-contended fallback both planEpisodeFlush, but this crash path flushed the
@@ -360,7 +360,7 @@ function flushEpisode(episode, hookEventName = 'PostToolUse') {
   }
 }
 
-// D#178 safety valve. With CLAUDE_MEM_READS_CARRY on, an insignificant flush leaves
+// D#178 safety valve. With QWEN_MEM_READS_CARRY on, an insignificant flush leaves
 // `reads-<project>.txt` in place, so a long insignificant streak keeps appending to it.
 //
 // THE CAP COUNTS LINES, NOT DISTINCT PATHS, and that is the whole point. The writer
@@ -431,12 +431,12 @@ function flushEpisodeWithDb(db, episode, hookEventName) {
   // today, which is the whole cost — a read carried across two insignificant flushes
   // lands on the edit it preceded rather than on nothing.
   //
-  // ON by default since v3.83.0. `CLAUDE_MEM_READS_CARRY=0` restores the pre-D#178
+  // ON by default since v3.83.0. `QWEN_MEM_READS_CARRY=0` restores the pre-D#178
   // behavior byte for byte — kept as an off switch because this changes what a released
   // artifact stores, and a defect here is invisible from the outside (the symptom is an
   // absent field, which reads exactly like "there was nothing to record").
   const carryReads = !['0', 'off', 'false', 'no'].includes(
-    String(process.env.CLAUDE_MEM_READS_CARRY ?? '').toLowerCase(),
+    String(process.env.QWEN_MEM_READS_CARRY ?? '').toLowerCase(),
   );
   const willPersist = !carryReads || subs.some((s) => episodeHasSignificantContent(s));
 
@@ -498,7 +498,7 @@ function flushEpisodeWithDb(db, episode, hookEventName) {
     if (r === 'significant') anySignificant = true;
   }
 
-  // D#178 instrument, and the ruler for the flag above. With CLAUDE_MEM_READS_CARRY
+  // D#178 instrument, and the ruler for the flag above. With QWEN_MEM_READS_CARRY
   // off, a row with `significant: false` and `readsConsumed > 0` is that many Read
   // paths collected and dropped on the floor. With it on, those rows become
   // `readsConsumed: 0, readsHeld: N` — the same event, now recording a deferral
@@ -513,7 +513,7 @@ function flushEpisodeWithDb(db, episode, hookEventName) {
   // file outside the significance branch, so an insignificant flush can fail there too —
   // and with the flag on that case is strictly better than before, because the reads file
   // was never touched and the retry still finds it.
-  // Off unless CLAUDE_MEM_METRICS=1, like every other row in this sink.
+  // Off unless QWEN_MEM_METRICS=1, like every other row in this sink.
   recordMetric(DB_DIR, {
     event: 'episode_reads',
     readsConsumed: (episode.filesRead || []).length,
@@ -571,9 +571,9 @@ function flushEpisodeWithDb(db, episode, hookEventName) {
 // flushEpisode so each CC-session slice (from planEpisodeFlush) flushes
 // independently and carries its OWN savedId into its OWN flush file — the
 // llm-episode worker upgrades the pre-saved obs by that id. Returns
-// 'significant' | 'insignificant' | 'writefail'. CLAUDE_MEM_SKIP_EPISODE_LLM
+// 'significant' | 'insignificant' | 'writefail'. QWEN_MEM_SKIP_EPISODE_LLM
 // suppresses the detached enrichment spawn (test determinism; sibling of
-// CLAUDE_MEM_SKIP_COMPRESS / _OPTIMIZE) — the synchronous immediate obs still lands.
+// QWEN_MEM_SKIP_COMPRESS / _OPTIMIZE) — the synchronous immediate obs still lands.
 function flushEpisodeGroup(ep, db) {
   const verdict = explainSignificance(ep);
   const isSignificant = verdict.significant;
@@ -581,7 +581,7 @@ function flushEpisodeGroup(ep, db) {
   // (91.2ms handoff vs 6.1ms for the already-skipped Read), but nothing records how many
   // episodes are kept ONLY because of their Greps — and demoting what the product
   // remembers on a deduction is how work disappears silently. This is that counter.
-  // Off unless CLAUDE_MEM_METRICS=1, like every other row in this sink.
+  // Off unless QWEN_MEM_METRICS=1, like every other row in this sink.
   recordMetric(DB_DIR, {
     event: 'episode_significance',
     rule: verdict.rule,
@@ -608,7 +608,7 @@ function flushEpisodeGroup(ep, db) {
     return 'writefail';
   }
 
-  if (isSignificant && !process.env.CLAUDE_MEM_SKIP_EPISODE_LLM) {
+  if (isSignificant && !process.env.QWEN_MEM_SKIP_EPISODE_LLM) {
     spawnBackground('llm-episode', flushFile);
   } else {
     try {
@@ -863,10 +863,10 @@ function triggerErrorRecall(db, toolInput, response, opts = {}) {
  * can now. That is the coverage this event was wired for, not an oversight — but it does
  * mean ERROR_NAMER_RE's `SIG…`/`panicked` alternatives went live here first.
  *
- * Off switch: CLAUDE_MEM_ERROR_RECALL_ON_FAILURE=off.
+ * Off switch: QWEN_MEM_ERROR_RECALL_ON_FAILURE=off.
  */
 async function handlePostToolFailure() {
-  if (String(process.env.CLAUDE_MEM_ERROR_RECALL_ON_FAILURE || '').toLowerCase() === 'off') return;
+  if (String(process.env.QWEN_MEM_ERROR_RECALL_ON_FAILURE || '').toLowerCase() === 'off') return;
 
   let raw;
   try {
@@ -1032,7 +1032,7 @@ function flushEpisodeAtStop(sessionId, project) {
           // flush-file write (same ordering as flushEpisodeGroup) so a worker crash can't lose it.
           // One body for both paths (audit 2026-08-22 P2-9). This loop used to be a
           // hand-copy of flushEpisodeGroup carrying three comments asserting parity with
-          // it, and it was not in parity: it ignored CLAUDE_MEM_SKIP_EPISODE_LLM, so a
+          // it, and it was not in parity: it ignored QWEN_MEM_SKIP_EPISODE_LLM, so a
           // lock-contended Stop under test spawned a real background worker; and a failed
           // flush-file write threw out of the whole loop into the outer catch, whose
           // `finally` then deleted the claim file — abandoning the subs that had not been
@@ -1162,15 +1162,15 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
   // and bump access_count for matched rows. Closes the loop on the "cite #NN"
   // contract — before P4 this was a one-way obligation with no feedback.
   //
-  // CLAUDE_MEM_NO_CITATION_TRACK=1 disables BOTH the P4 access_count bump
+  // QWEN_MEM_NO_CITATION_TRACK=1 disables BOTH the P4 access_count bump
   // AND the v32 citation-decay loop nested below — anything that needs the
   // transcript scan lives inside this guard. To disable just the decay
   // loop (keep access_count bumps), use MEM_DISABLE_CITATION_DECAY=1 which
   // applyCitationDecay checks separately.
   try {
-    if (transcriptPath && !process.env.CLAUDE_MEM_NO_CITATION_TRACK) {
+    if (transcriptPath && !process.env.QWEN_MEM_NO_CITATION_TRACK) {
       // D#152/D#177: the `subagent` face, collected ONCE, up front, and used twice —
-      // by the decay block below (only under CLAUDE_MEM_SUBAGENT_DECAY) and by its own
+      // by the decay block below (only under QWEN_MEM_SUBAGENT_DECAY) and by its own
       // metering call at the tail. It used to be collected at the tail only, with a
       // comment saying the position was load-bearing because lib/transcript-scan.mjs
       // memoizes ONE file and reading the sidechains evicts the parent. That constraint
@@ -1266,7 +1266,7 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
         // level and gated out at another, which is how UPS went unmetered for a whole
         // minor version.
         const subDecayOn = !['0', 'off', 'false', 'no'].includes(
-          String(process.env.CLAUDE_MEM_SUBAGENT_DECAY ?? '').toLowerCase(),
+          String(process.env.QWEN_MEM_SUBAGENT_DECAY ?? '').toLowerCase(),
         );
         if (injected.size > 0 || keyCtxIds.size > 0 || (subDecayOn && sub.injected.size > 0)) {
           // Text-floor gate: skip decay on tool-only Stops. Without this,
@@ -1311,7 +1311,7 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
             // decay faces inside subagent-bearing sessions (0.25%), or 3 of 2738 the same
             // way corpus-wide (0.11%) — ids the main thread never cited but a subagent did.
             //
-            // ON by default since v3.83.0; `CLAUDE_MEM_SUBAGENT_DECAY=0` restores the
+            // ON by default since v3.83.0; `QWEN_MEM_SUBAGENT_DECAY=0` restores the
             // metered-but-never-decaying state the face sat in from v3.77 to v3.82.
             //
             // The denominator is a COPY, not a mutation of `injected`: the edge
@@ -1522,7 +1522,7 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
       // applyCitationDecay, through the `decayInjected` / `decayCited` copies above.
       // The sentence above about folding cites into `citedMain` still holds and is the
       // reason those are copies — this call, `resolveEdgeAttribution` and the keyctx
-      // promotion all keep the un-widened set. `CLAUDE_MEM_SUBAGENT_DECAY=0` returns
+      // promotion all keep the un-widened set. `QWEN_MEM_SUBAGENT_DECAY=0` returns
       // the face to metering-only.
       //
       // The "placed LAST" note below is now historical: `collectSubagentSurface` runs
@@ -1598,14 +1598,14 @@ async function handleStop() {
   }
 
   // Spawn background for session summary (pass sessionId and project).
-  // CLAUDE_MEM_SKIP_SUMMARY brings this in line with every other background
+  // QWEN_MEM_SKIP_SUMMARY brings this in line with every other background
   // worker (auto-compress / llm-optimize / auto-maintain all have one). It was
   // the only ungated spawnBackground, which made Stop untestable end-to-end
   // without residue: the detached child outlives the parent process an e2e test
   // waits on, then recreates the sandbox tree behind the test's cleanup. Any
   // grace period for that is a race, not a barrier — the post-tag review timed a
   // recreate at 432ms and watched a 300ms grace lose.
-  if (!process.env.CLAUDE_MEM_SKIP_SUMMARY) spawnBackground('llm-summary', sessionId, project);
+  if (!process.env.QWEN_MEM_SKIP_SUMMARY) spawnBackground('llm-summary', sessionId, project);
 
   // The session file deliberately SURVIVES Stop (R10-P1-1). It used to be unlinked here,
   // on the model "Stop = /exit = the session is over". The host does not work that way:
@@ -1623,12 +1623,12 @@ async function handleStop() {
   // SessionStart overwrites it via createSessionId(), so "one mem session per host
   // session" holds without anything having to delete it.
   //
-  // CLAUDE_MEM_LEGACY_STOP_UNLINK=1 restores the pre-v5.4.0 unlink. It exists because the
+  // QWEN_MEM_LEGACY_STOP_UNLINK=1 restores the pre-v5.4.0 unlink. It exists because the
   // measurements above are from ONE host build; a host that fires Stop once per session
   // instead of once per turn would be better served by the old shape, and a user who hits
   // that has no other lever. It is not a supported configuration — it re-breaks the /clear
   // handoff by design.
-  if (process.env.CLAUDE_MEM_LEGACY_STOP_UNLINK === '1') {
+  if (process.env.QWEN_MEM_LEGACY_STOP_UNLINK === '1') {
     try {
       unlinkSync(sessionFile());
     } catch {}
@@ -1641,7 +1641,7 @@ async function handleStop() {
 // fell below threshold. Empty string = no surface (insufficient signal, recall
 // already healthy, or feature opted-out via env). Default threshold 0.4 against the
 // HOOK-INJECTED denominator (v6.6.0, D#19), min injected 5 — both env-overridable for
-// ops tuning + tests; CLAUDE_MEM_CITE_NUDGE_WIDE_DENOMINATOR=1 restores the wide one.
+// ops tuning + tests; QWEN_MEM_CITE_NUDGE_WIDE_DENOMINATOR=1 restores the wide one.
 // Thin wrapper: lib/cite-back-hint.mjs owns the logic so it stays unit-tested.
 // Passing module-level RUNTIME_DIR keeps the call site identical to pre-v2.83.1.
 function buildCiteRecallNudge(project) {
@@ -1662,7 +1662,10 @@ function gcStalePreRecallCooldowns() {
       // shape as the cooldown files, same 24h GC (dedup window is 5 min).
       const isCooldown = name.startsWith('pre-recall-cooldown-') && name.endsWith('.json');
       const isInjectedMarker =
-        name.startsWith('.claude-mem-injected-') || name.startsWith('.claude-mem-keyctx-'); // D#123 Key Context marker — same per-session growth, same 24h GC
+        name.startsWith('.qwen-mem-injected-') ||
+        name.startsWith('.qwen-mem-keyctx-') ||
+        name.startsWith('.claude-mem-injected-') ||
+        name.startsWith('.claude-mem-keyctx-'); // D#123 Key Context marker — same per-session growth, same 24h GC
       if (!isCooldown && !isInjectedMarker) continue;
       try {
         const p = join(RUNTIME_DIR, name);
@@ -1884,7 +1887,7 @@ function runSessionStartAutoMaintain(db, project) {
       // well clear of legit "two updates same area" pairs (those typically
       // score 0.7–0.85, surfaced via `maintain scan` for manual review).
       // Bounded by ${SCAN_LIMIT} recent rows × ${FUZZY_MAX_MERGES}-merge cap.
-      if (!process.env.CLAUDE_MEM_SKIP_AUTO_DEDUP_FUZZY) {
+      if (!process.env.QWEN_MEM_SKIP_AUTO_DEDUP_FUZZY) {
         const SCAN_LIMIT = 500;
         const FUZZY_MAX_MERGES = 20;
         const recent = db
@@ -2009,8 +2012,8 @@ function runSessionStartAutoMaintain(db, project) {
       // Mark maintenance as done (24h gate) — even though compression runs in background
       writeFileSync(maintainFile, JSON.stringify({ epoch: Date.now() }));
       // Weekly summary grouping runs in background to avoid blocking SessionStart
-      if (!process.env.CLAUDE_MEM_SKIP_COMPRESS) spawnBackground('auto-compress');
-      if (!process.env.CLAUDE_MEM_SKIP_OPTIMIZE) spawnBackground('llm-optimize');
+      if (!process.env.QWEN_MEM_SKIP_COMPRESS) spawnBackground('auto-compress');
+      if (!process.env.QWEN_MEM_SKIP_OPTIMIZE) spawnBackground('llm-optimize');
     } catch (e) {
       debugCatch(e, 'auto-maintain');
     }
@@ -2037,7 +2040,7 @@ function scheduleSessionStartAutoMaintain(project) {
   const maintainDue = due(join(RUNTIME_DIR, 'last-auto-maintain.json'));
   const markingDue = Boolean(project) && due(markCompressibleGateFile(project));
   if (!maintainDue && !markingDue) return;
-  if (!process.env.CLAUDE_MEM_SKIP_MAINTAIN) spawnBackground('auto-maintain', project);
+  if (!process.env.QWEN_MEM_SKIP_MAINTAIN) spawnBackground('auto-maintain', project);
 }
 
 // The maintenance mutex deliberately does NOT end in `.lock`, so cleanStaleLockFiles()
@@ -2137,12 +2140,12 @@ function saveHandoffAndFastSummary(
     } catch {}
 
     // Generate session summary for previous session (background Haiku — richer version).
-    // Honours CLAUDE_MEM_SKIP_SUMMARY like the handleStop site does. This is the SAME
+    // Honours QWEN_MEM_SKIP_SUMMARY like the handleStop site does. This is the SAME
     // worker, and the flag's whole purpose (see the comment at its other call site) is
     // that llm-summary recreates a test's sandbox tree behind its cleanup — timed at
     // 432ms there. Gating one of two call sites left the flag unable to do the one job
     // it exists for whenever this branch is reached.
-    if (!process.env.CLAUDE_MEM_SKIP_SUMMARY) {
+    if (!process.env.QWEN_MEM_SKIP_SUMMARY) {
       spawnBackground('llm-summary', prevSessionId, prevProject || project);
     }
 
@@ -2291,7 +2294,7 @@ async function buildStartupDashboardText(db, project) {
   // T10c: Startup dashboard — aggregate git/tasks/plans/handoff/events into text.
   //
   // Returns the text rather than writing it: SessionStart has three would-be
-  // stdout contributors (this, the <claude-mem-context> block, the update
+  // stdout contributors (this, the <qwen-mem-context> block, the update
   // banner) and handleSessionStart merges them into ONE envelope. Writing here
   // put a JSON document and raw prose on the same stdout, which stopped the
   // host from parsing the envelope at all — the whole `{"suppressOutput":true,
@@ -2328,7 +2331,7 @@ async function buildStartupDashboardText(db, project) {
           /* corrupt flag — surface the fact only */
         }
         const nudgeLines = [
-          '⚠️ [claude-mem-lite] Hook dependencies failed to install on the last SessionStart.',
+          '⚠️ [qwen-mem-lite] Hook dependencies failed to install on the last SessionStart.',
           `   Reason: ${detail}`,
         ];
         if (repair) nudgeLines.push(`   Repair: ${repair}`);
@@ -2372,7 +2375,7 @@ async function emitSchemaSkewNotice() {
     // WHICH tree is running this hook, not which trees exist. CLAUDE_PLUGIN_ROOT is set in
     // every hook process Claude Code spawns, so on a machine holding BOTH a managed install
     // and a plugin cache it is the only thing that knows which one is behind. Deciding from
-    // the machine's global shape printed `claude-mem-lite self-update` beneath a line naming
+    // the machine's global shape printed `qwen-mem-lite self-update` beneath a line naming
     // the plugin cache — a repair that cannot advance the tree it had just named.
     const runningRoot = process.env.CLAUDE_PLUGIN_ROOT || CODE_DIR;
     const remedy = skewMod.schemaSkewRemedy({
@@ -2461,7 +2464,7 @@ async function handleSessionStart() {
   //
   // The gate is hasLiveInstallManagedHooks, not the bare hasInstallManagedHooks: this
   // branch EMPTIES the manifest, which is a dedup only while settings.json is really the
-  // other registration. A settings.json entry naming a deleted `~/.claude-mem-lite`
+  // other registration. A settings.json entry naming a deleted `~/.qwen-mem-lite`
   // launcher (global install removed by hand, plugin kept) satisfies the string test and
   // fires nothing — so the self-heal read a dead registration as live and wiped the one
   // that worked, every SessionStart. `?? hasInstallManagedHooks` keeps a guard module
@@ -2497,9 +2500,9 @@ async function handleSessionStart() {
   // consent to integration. Scope:
   //   - gated by !MEM_NO_AUTO_ADOPT (explicit global escape hatch)
   //   - per-project opt-out via `<memdir>/.mem-no-auto-adopt` sentinel (managed
-  //     by `claude-mem-lite adopt --disable / --enable`; checked inside
+  //     by `qwen-mem-lite adopt --disable / --enable`; checked inside
   //     silentAutoAdopt).
-  //   - CLAUDE_MEM_NO_TEMPLATE_REFRESH=1 freezes the block against drift refresh.
+  //   - QWEN_MEM_NO_TEMPLATE_REFRESH=1 freezes the block against drift refresh.
   // Note v2.82.0: removed MEM_QUIET_HOOKS gate. That env var suppresses stdout
   // noise; it must NOT also disable side-effect work (PostToolUse writes the
   // DB unconditionally — auto-adopt follows the same rule). Failures are
@@ -2665,14 +2668,14 @@ async function handleSessionStart() {
     // of honouring it.
     //
     // Skip the wrapper entirely when there is no body. On a brand-new install every
-    // section is empty, and the hook still emitted `<claude-mem-context>\n\n</...>` —
+    // section is empty, and the hook still emitted `<qwen-mem-context>\n\n</...>` —
     // a framing block that asserts a memory surface and then shows nothing, which is
     // both wasted context and an active misread ("memory exists and is empty" is a
     // reason NOT to call mem_*).
     const stdoutParts = [];
     if (dashboardText) stdoutParts.push(dashboardText);
     if (fullContext.trim()) {
-      stdoutParts.push(`<claude-mem-context>\n${fullContext}\n</claude-mem-context>`);
+      stdoutParts.push(`<qwen-mem-context>\n${fullContext}\n</qwen-mem-context>`);
     }
 
     // Auto-update banner (audit P3d): NON-BLOCKING — read from cached state
@@ -3021,7 +3024,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
           // prompts already inject nothing) and the `ups` cite-rate is 8.1%.
           //
           // The ruler that settles it is now BUILT and sits at the bottom of this same
-          // function: `lib/patha-exclude-meter.mjs`, off unless CLAUDE_MEM_METRICS=1. It
+          // function: `lib/patha-exclude-meter.mjs`, off unless QWEN_MEM_METRICS=1. It
           // does not persist the marker for an offline replay — reconstructing per-prompt
           // exclude sets that way needs a file that rotates after DEDUP_STALE_MS, and the
           // replay would then run against a drifted database. Both arms run at this read
@@ -3036,7 +3039,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
         /* file may not exist — that's fine */
       }
 
-      // Phase-2 task-imperative (EXPERIMENTAL, default OFF — CLAUDE_MEM_TASK_IMPERATIVE):
+      // Phase-2 task-imperative (EXPERIMENTAL, default OFF — QWEN_MEM_TASK_IMPERATIVE):
       // the single highest-value lesson relevant to THIS prompt, delivered at the prompt
       // position under an imperative template. Excluded from the <memory-context> list so it
       // is never injected twice. Channel-isolation measure (efficacy arm U, 2026-06-29):
@@ -3051,7 +3054,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
       // Reviving the flip needs a CJK-viable anchor proven in A/B without a precision loss;
       // until then this stays experimental and off.
       const taskImperativeOn =
-        process.env.CLAUDE_MEM_TASK_IMPERATIVE === 'on' || process.env.CLAUDE_MEM_TASK_IMPERATIVE === '1';
+        process.env.QWEN_MEM_TASK_IMPERATIVE === 'on' || process.env.QWEN_MEM_TASK_IMPERATIVE === '1';
       // ── D#214 arm B (counterfactual), computed BEFORE the delivered arm ─────────
       // Ordering is the whole correctness argument, so it is stated where the order is:
       // arm A's search legitimately bumps `injection_count` on every row it delivers,
@@ -3069,7 +3072,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
       // repaired system would not have made into arm B's exclude, so on any prompt where
       // the pick changed, the delta described a system that does not exist.
       // Lazy on "the marker carried ids", NOT on the metrics env. Gating the import on
-      // `CLAUDE_MEM_METRICS === '1'` would read cheaper still, and would put a second copy
+      // `QWEN_MEM_METRICS === '1'` would read cheaper still, and would put a second copy
       // of `pathAMeterEnabled`'s own predicate here — the twin shape this meter's tests
       // exist to pin. `pathAMeterEnabled()` stays the only place that predicate lives; the
       // module still stops loading on every OTHER event, which is what P1-8 is about.
@@ -3152,7 +3155,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
       // and so a throw here cannot corrupt what was already emitted.
       //
       // `meterCoerced` being non-null is the gate — it is null unless
-      // CLAUDE_MEM_METRICS=1 AND the marker carried ids, which is what keeps both the
+      // QWEN_MEM_METRICS=1 AND the marker carried ids, which is what keeps both the
       // counterfactual search and the second lesson selection off a stock install.
       try {
         if (meterCoerced) {

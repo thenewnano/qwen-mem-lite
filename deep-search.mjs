@@ -1,4 +1,4 @@
-// claude-mem-lite: Opt-in LLM multi-query / HyDE deep search.
+// qwen-mem-lite: Opt-in LLM multi-query / HyDE deep search.
 //
 // This is the EXPLICIT "search harder" path — it is NOT on the passive hook
 // pipeline, which stays sub-millisecond single-query (see feedback_passive_first
@@ -87,7 +87,7 @@ export function hasEscalatableCorpus(db, project, min = AUTO_DEEP_MIN_CORPUS) {
  * Is a usable LLM available for AUTO escalation? True when a stub/real llm is
  * injected (tests), a FAST provider key is set, OR the claude-CLI fallback is
  * enabled (D#40: default-on for CLI-auth users; kill switch
- * CLAUDE_MEM_AUTO_DEEP_CLI=0). The CLI path is made safe for the long-lived
+ * QWEN_MEM_AUTO_DEEP_CLI=0). The CLI path is made safe for the long-lived
  * server hot path by the async/fail-fast/throttled auto provider (deepSearch
  * auto), not by being excluded as it was before D#40.
  * @param {object} [env=process.env]
@@ -113,7 +113,7 @@ export function autoDeepLlmReady(env = process.env, injectedLlm) {
   // escalation by default; the burst/latency cost is bounded by the auto
   // provider (fail-fast + throttle) and a failed rewrite degrades to baseline.
   // Kill switch honors the common disable spellings, not just the exact '0'.
-  const off = String(env.CLAUDE_MEM_AUTO_DEEP_CLI ?? '')
+  const off = String(env.QWEN_MEM_AUTO_DEEP_CLI ?? '')
     .trim()
     .toLowerCase();
   return !(off === '0' || off === 'false' || off === 'no' || off === 'off');
@@ -190,7 +190,7 @@ export function shouldEscalateToDeep(
 export function resolveDeepMode(explicitDeep, { surface, env = process.env } = {}) {
   if (explicitDeep === true) return 'deep';
   if (explicitDeep === false) return 'normal';
-  const flag = env.CLAUDE_MEM_AUTO_DEEP;
+  const flag = env.QWEN_MEM_AUTO_DEEP;
   if (flag === '0') return 'normal';
   if (flag === '1') return 'auto';
   return surface === 'mcp' ? 'auto' : 'normal';
@@ -238,7 +238,7 @@ export function resolveDeepMode(explicitDeep, { surface, env = process.env } = {
  * @param {number} [opts.escalatedObsCount] hits the plain search returned before widening
  * @param {number} [opts.variantCount] query variants fused (1 = rewrite produced nothing)
  * @param {number} [opts.rowCount] rows actually shown to the caller
- * @param {object} [opts.env=process.env] opt-out: CLAUDE_MEM_DEEP_DISCLOSURE=off
+ * @param {object} [opts.env=process.env] opt-out: QWEN_MEM_DEEP_DISCLOSURE=off
  * @returns {string} the note, or '' when it should not be shown
  */
 export function deepDisclosureNote({
@@ -248,7 +248,7 @@ export function deepDisclosureNote({
   rowCount = 0,
   env = process.env,
 } = {}) {
-  if (String(env.CLAUDE_MEM_DEEP_DISCLOSURE || '').toLowerCase() === 'off') return '';
+  if (String(env.QWEN_MEM_DEEP_DISCLOSURE || '').toLowerCase() === 'off') return '';
   if (!(variantCount > 1)) return '';
   if (!(rowCount > 0)) return '';
   const why = escalated

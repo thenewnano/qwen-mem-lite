@@ -1,7 +1,7 @@
 // install-legacy-db-backup.test.mjs — Bug 2 regression
 // install.mjs used to copyFileSync(~/.claude-mem/claude-mem.db, DB_PATH),
 // turning legacy claude-mem v16 schema (schema_versions plural table) into
-// the new claude-mem-lite v28 schema home. There is no v16→v28 bridge in
+// the new qwen-mem-lite v28 schema home. There is no v16→v28 bridge in
 // MIGRATIONS[]; the new code FATALs on first launch with
 // "no such column: memory_session_id". Instead, install must rename the
 // legacy DB to a timestamped backup so the new install creates a clean DB
@@ -17,7 +17,7 @@ import { migrateLegacyClaudeMemData } from '../install.mjs';
 function makeDirs() {
   const root = join(tmpdir(), `mem-legacy-${randomUUID().slice(0, 8)}`);
   const oldDir = join(root, '.claude-mem');
-  const newDir = join(root, '.claude-mem-lite');
+  const newDir = join(root, '.qwen-mem-lite');
   mkdirSync(oldDir, { recursive: true });
   mkdirSync(newDir, { recursive: true });
   return { root, oldDir, newDir };
@@ -30,10 +30,10 @@ describe('Bug 2: migrateLegacyClaudeMemData', () => {
       writeFileSync(join(oldDir, 'claude-mem.db'), 'legacy-content');
       const result = migrateLegacyClaudeMemData(oldDir, newDir, { now: 1700000000000 });
       expect(result.action).toBe('backed-up');
-      expect(result.backupPath).toContain('claude-mem-lite.db.legacy-backup-');
+      expect(result.backupPath).toContain('qwen-mem-lite.db.legacy-backup-');
       // Critically: new DB path must NOT exist after backup — new install
       // creates a fresh v28 schema.
-      expect(existsSync(join(newDir, 'claude-mem-lite.db'))).toBe(false);
+      expect(existsSync(join(newDir, 'qwen-mem-lite.db'))).toBe(false);
       // Backup file exists and contains the original bytes.
       expect(existsSync(result.backupPath)).toBe(true);
       // Old location no longer holds the DB (renamed, not copied).
@@ -71,15 +71,15 @@ describe('Bug 2: migrateLegacyClaudeMemData', () => {
     }
   });
 
-  it('returns action "skip" and touches nothing when newDir already has claude-mem-lite.db', () => {
+  it('returns action "skip" and touches nothing when newDir already has qwen-mem-lite.db', () => {
     const { root, oldDir, newDir } = makeDirs();
     try {
       writeFileSync(join(oldDir, 'claude-mem.db'), 'legacy');
-      writeFileSync(join(newDir, 'claude-mem-lite.db'), 'fresh');
+      writeFileSync(join(newDir, 'qwen-mem-lite.db'), 'fresh');
       const result = migrateLegacyClaudeMemData(oldDir, newDir, { now: 1700000000000 });
       expect(result.action).toBe('skip');
       // Working DB untouched
-      expect(existsSync(join(newDir, 'claude-mem-lite.db'))).toBe(true);
+      expect(existsSync(join(newDir, 'qwen-mem-lite.db'))).toBe(true);
       // Old DB also untouched (don't surprise users with mutations on skip)
       expect(existsSync(join(oldDir, 'claude-mem.db'))).toBe(true);
     } finally {

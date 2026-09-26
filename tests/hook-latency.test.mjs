@@ -9,7 +9,7 @@
 // but well under the timeout each hook is gated to in production
 // (pre-tool-recall: 3s, post-tool-use: 5s, user-prompt-search: 2s).
 //
-// CLAUDE_MEM_HOOK_LATENCY_BUDGET_MS env override allows local tightening or
+// QWEN_MEM_HOOK_LATENCY_BUDGET_MS env override allows local tightening or
 // CI-loosening without touching code.
 
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
@@ -22,8 +22,8 @@ import { createTestDb } from './test-helpers.mjs';
 // CI runners and slow laptops both inflate cold-start latency. The budget is
 // intentionally above typical observed (≤300ms locally) so a CI hiccup doesn't
 // cause flakes — a 4× regression vs typical is what we actually want to flag.
-const PRE_TOOL_RECALL_BUDGET_MS = Number(process.env.CLAUDE_MEM_HOOK_LATENCY_BUDGET_MS) || 1500;
-const POST_TOOL_USE_BUDGET_MS = Number(process.env.CLAUDE_MEM_HOOK_LATENCY_BUDGET_MS) || 1500;
+const PRE_TOOL_RECALL_BUDGET_MS = Number(process.env.QWEN_MEM_HOOK_LATENCY_BUDGET_MS) || 1500;
+const POST_TOOL_USE_BUDGET_MS = Number(process.env.QWEN_MEM_HOOK_LATENCY_BUDGET_MS) || 1500;
 
 const PRE_TOOL_RECALL_SCRIPT = resolve(import.meta.dirname, '../scripts/pre-tool-recall.js');
 const POST_TOOL_USE_SCRIPT = resolve(import.meta.dirname, '../scripts/post-tool-use.sh');
@@ -45,12 +45,7 @@ describe('hook latency regression', () => {
   //
   // Absent→present rather than "must be absent", so a stale file left by a pre-fix
   // run cannot masquerade as a fresh regression.
-  const REAL_READS_TEST = join(
-    process.env.HOME || homedir(),
-    '.claude-mem-lite',
-    'runtime',
-    'reads-test.txt',
-  );
+  const REAL_READS_TEST = join(process.env.HOME || homedir(), '.qwen-mem-lite', 'runtime', 'reads-test.txt');
   let realReadsTestPreexisted;
   beforeAll(() => {
     realReadsTestPreexisted = existsSync(REAL_READS_TEST);
@@ -59,8 +54,8 @@ describe('hook latency regression', () => {
     if (realReadsTestPreexisted) return;
     expect(
       existsSync(REAL_READS_TEST),
-      `a hook subprocess wrote ${REAL_READS_TEST}: the child env is missing CLAUDE_MEM_DIR, so ` +
-        "scripts/post-tool-use.sh:80 resolved $HOME/.claude-mem-lite/runtime instead of this test's sandbox",
+      `a hook subprocess wrote ${REAL_READS_TEST}: the child env is missing QWEN_MEM_DIR, so ` +
+        "scripts/post-tool-use.sh:80 resolved $HOME/.qwen-mem-lite/runtime instead of this test's sandbox",
     ).toBe(false);
   });
 
@@ -96,11 +91,11 @@ describe('hook latency regression', () => {
   /**
    * Env for one hook subprocess, fully contained in this test's sandbox.
    *
-   * CLAUDE_MEM_DIR is the one the BASH prefilter reads: scripts/post-tool-use.sh:80
-   * resolves `${CLAUDE_MEM_DIR:-$HOME/.claude-mem-lite}/runtime` and has never known
-   * about CLAUDE_MEM_RUNTIME_DIR (a JS-side name). Without it the post-tool-use case
+   * QWEN_MEM_DIR is the one the BASH prefilter reads: scripts/post-tool-use.sh:80
+   * resolves `${QWEN_MEM_DIR:-$HOME/.qwen-mem-lite}/runtime` and has never known
+   * about QWEN_MEM_RUNTIME_DIR (a JS-side name). Without it the post-tool-use case
    * below appended `/test/foo.mjs` to the DEVELOPER'S REAL
-   * ~/.claude-mem-lite/runtime/reads-test.txt on every run — 69 lines had piled up
+   * ~/.qwen-mem-lite/runtime/reads-test.txt on every run — 69 lines had piled up
    * before anyone looked, and every run was GREEN, because latency is the only thing
    * this file asserts. The guard at the bottom of the file is what makes that
    * failure mode visible; this helper is what fixes it.
@@ -111,9 +106,9 @@ describe('hook latency regression', () => {
    */
   const hookEnv = (dbPath, extra = {}) => ({
     ...process.env,
-    CLAUDE_MEM_DB_PATH: dbPath,
-    CLAUDE_MEM_DIR: testDir,
-    CLAUDE_MEM_RUNTIME_DIR: runtimeDir,
+    QWEN_MEM_DB_PATH: dbPath,
+    QWEN_MEM_DIR: testDir,
+    QWEN_MEM_RUNTIME_DIR: runtimeDir,
     CLAUDE_PROJECT_DIR: '/test',
     ...extra,
   });
@@ -162,7 +157,7 @@ describe('hook latency regression', () => {
   });
 
   it('post-tool-use.sh fast-filter completes within latency budget', () => {
-    // Mock CLAUDE_MEM_LITE_HOOK_NODE so the bash filter doesn't recurse into
+    // Mock QWEN_MEM_LITE_HOOK_NODE so the bash filter doesn't recurse into
     // a real hook.mjs run during this test — we only want to measure the bash
     // pre-filter path, which is the per-tool-call overhead.
     const hookData = {
@@ -177,9 +172,9 @@ describe('hook latency regression', () => {
       input: JSON.stringify(hookData),
       // Tell the shell filter not to spawn the heavy Node hook — a no-op binary.
       // The bash filter logic still runs end-to-end, including the Read fast-path
-      // that writes reads-<project>.txt, which is why hookEnv's CLAUDE_MEM_DIR
+      // that writes reads-<project>.txt, which is why hookEnv's QWEN_MEM_DIR
       // matters most on THIS case.
-      env: hookEnv(dbPath, { CLAUDE_MEM_LITE_HOOK_NODE: '/bin/true' }),
+      env: hookEnv(dbPath, { QWEN_MEM_LITE_HOOK_NODE: '/bin/true' }),
       encoding: 'utf8',
       timeout: 5000,
     });

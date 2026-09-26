@@ -89,7 +89,7 @@ describe('CLI routing contract (#8414 — three-edits invariant)', () => {
     const undocumented = cliCmds.filter((c) => c !== 'help' && !documented.has(c));
     expect(
       undocumented,
-      `cli.mjs CLI_COMMANDS exposes these subcommands but cmdHelp() never lists them — users running 'claude-mem-lite help' see nothing about them: ${undocumented.join(', ')}`,
+      `cli.mjs CLI_COMMANDS exposes these subcommands but cmdHelp() never lists them — users running 'qwen-mem-lite help' see nothing about them: ${undocumented.join(', ')}`,
     ).toEqual([]);
   });
 });

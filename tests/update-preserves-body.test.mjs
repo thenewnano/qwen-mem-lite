@@ -9,12 +9,12 @@
 //
 // Reproduced on v3.68.1 against a real import:
 //
-//   $ claude-mem-lite import-jsonl session.jsonl     # 1 observation
-//   $ claude-mem-lite get 1 --fields title,text
+//   $ qwen-mem-lite import-jsonl session.jsonl     # 1 observation
+//   $ qwen-mem-lite get 1 --fields title,text
 //     text: {"file_path":"src/CartService.java","old_string":"items.size()", …}
-//   $ claude-mem-lite update 1 --importance 3
+//   $ qwen-mem-lite update 1 --importance 3
 //     [mem] Updated #1: importance
-//   $ claude-mem-lite get 1 --fields title,text
+//   $ qwen-mem-lite get 1 --fields title,text
 //     text: Edit: src/CartService.java              ← the payload is gone, unrecoverably
 //
 // Note the trigger: `--importance`, a field that has nothing to do with the body. No

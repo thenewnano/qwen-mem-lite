@@ -12,7 +12,7 @@
 // Why TWO files, and which two: see the LAYOUTS comment below.
 //
 // The managed block is plugin-owned: it auto-refreshes when the shipped content
-// drifts (version bump or template change), UNLESS CLAUDE_MEM_NO_TEMPLATE_REFRESH=1.
+// drifts (version bump or template change), UNLESS QWEN_MEM_NO_TEMPLATE_REFRESH=1.
 // User prose OUTSIDE the slug-scoped sentinel is never touched. The slug scope is
 // what keeps this independent from code-graph-mcp's own block in the same file.
 //
@@ -243,7 +243,7 @@ export function hasResidue(cwd, slug) {
  * a version bump or a template edit means we should refresh. Returns true when
  * the block is missing, the version differs, the block body differs, or the
  * detail doc is missing / differs. The block is plugin-managed: drift is
- * overwritten on refresh (opt out with CLAUDE_MEM_NO_TEMPLATE_REFRESH=1 at the
+ * overwritten on refresh (opt out with QWEN_MEM_NO_TEMPLATE_REFRESH=1 at the
  * caller). User content lives OUTSIDE the sentinel and is never compared.
  */
 export function needsRefresh(cwd, args) {

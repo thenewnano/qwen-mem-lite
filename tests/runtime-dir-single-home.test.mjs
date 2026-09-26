@@ -1,4 +1,4 @@
-// Audit 2026-09-02 P1-14: `CLAUDE_MEM_RUNTIME_DIR` did not relocate the runtime directory,
+// Audit 2026-09-02 P1-14: `QWEN_MEM_RUNTIME_DIR` did not relocate the runtime directory,
 // it SPLIT it.
 //
 // Six places honoured it (the five standalone hook scripts + hook-launcher) and two did
@@ -29,8 +29,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  delete process.env.CLAUDE_MEM_RUNTIME_DIR;
-  delete process.env.CLAUDE_MEM_DIR;
+  delete process.env.QWEN_MEM_RUNTIME_DIR;
+  delete process.env.QWEN_MEM_DIR;
   try {
     rmSync(sandbox, { recursive: true, force: true });
   } catch {
@@ -47,31 +47,31 @@ describe('resolveRuntimeDir', () => {
     // `env || join(...)` handled this by accident; an `in`-style check would not, and a
     // runtime dir of '' resolves to cwd — state scattered across whatever directory the
     // hook happened to start in.
-    expect(resolveRuntimeDir('/data', { CLAUDE_MEM_RUNTIME_DIR: '' })).toBe(join('/data', 'runtime'));
-    expect(resolveRuntimeDir('/data', { CLAUDE_MEM_RUNTIME_DIR: undefined })).toBe(join('/data', 'runtime'));
+    expect(resolveRuntimeDir('/data', { QWEN_MEM_RUNTIME_DIR: '' })).toBe(join('/data', 'runtime'));
+    expect(resolveRuntimeDir('/data', { QWEN_MEM_RUNTIME_DIR: undefined })).toBe(join('/data', 'runtime'));
   });
 
   it('honours an absolute override', () => {
-    expect(resolveRuntimeDir('/data', { CLAUDE_MEM_RUNTIME_DIR: '/tmp/rt' })).toBe('/tmp/rt');
+    expect(resolveRuntimeDir('/data', { QWEN_MEM_RUNTIME_DIR: '/tmp/rt' })).toBe('/tmp/rt');
   });
 
   it('makes a relative override absolute rather than rejecting it', () => {
-    // Deliberately unlike CLAUDE_MEM_DIR, which throws. This variable is set by test
+    // Deliberately unlike QWEN_MEM_DIR, which throws. This variable is set by test
     // harnesses that predate that check, and turning a previously-working relative path
     // into a throw would break isolation setups to enforce tidiness. Resolving keeps the
     // value usable AND absolute by the time anything writes to it.
-    const got = resolveRuntimeDir('/data', { CLAUDE_MEM_RUNTIME_DIR: 'rel/rt' });
+    const got = resolveRuntimeDir('/data', { QWEN_MEM_RUNTIME_DIR: 'rel/rt' });
     expect(isAbsolute(got)).toBe(true);
     expect(got.endsWith(join('rel', 'rt'))).toBe(true);
   });
 });
 
 describe('the override reaches the modules that ignored it', () => {
-  it('hook-shared.mjs RUNTIME_DIR follows CLAUDE_MEM_RUNTIME_DIR', async () => {
+  it('hook-shared.mjs RUNTIME_DIR follows QWEN_MEM_RUNTIME_DIR', async () => {
     // The defect itself. hook.mjs / server.mjs / hook-context.mjs / hook-episode.mjs all
     // read RUNTIME_DIR from here, so this one module is most of the split.
-    process.env.CLAUDE_MEM_DIR = sandbox;
-    process.env.CLAUDE_MEM_RUNTIME_DIR = override;
+    process.env.QWEN_MEM_DIR = sandbox;
+    process.env.QWEN_MEM_RUNTIME_DIR = override;
     const { RUNTIME_DIR } = await import('../hook-shared.mjs');
     expect(RUNTIME_DIR).toBe(override);
   });
@@ -79,7 +79,7 @@ describe('the override reaches the modules that ignored it', () => {
   it('hook-shared.mjs still defaults under the data dir when the override is absent', async () => {
     // Premise for the case above: it must be following the OVERRIDE, not merely reporting
     // a path that happens to sit inside the sandbox either way.
-    process.env.CLAUDE_MEM_DIR = sandbox;
+    process.env.QWEN_MEM_DIR = sandbox;
     const { RUNTIME_DIR } = await import('../hook-shared.mjs');
     expect(RUNTIME_DIR).toBe(join(sandbox, 'runtime'));
     expect(RUNTIME_DIR).not.toBe(override);
@@ -108,7 +108,7 @@ describe('the rule has one home', () => {
   // sitting in them, one created by that release. A file-level reason cannot express "this
   // file has both kinds". A constructing line now needs `// runtime-dir:stays-put — <reason>`
   // on the line itself.
-  const INLINE_RE = /process\.env\.CLAUDE_MEM_RUNTIME_DIR\s*\|\|/;
+  const INLINE_RE = /process\.env\.QWEN_MEM_RUNTIME_DIR\s*\|\|/;
   // `join` or `resolve`; `\s*\(`; TWO levels of nested parens in the first argument, because
   // `join(dirname(fileURLToPath(import.meta.url)), 'runtime')` is an idiom this repo uses and
   // one level cannot cross it. A JS regex cannot recurse, so this is a bounded depth, not a
@@ -194,7 +194,7 @@ describe('the rule has one home', () => {
     const fires = [
       "const d = join(DATA_DIR, 'runtime', 'marker');",
       'const d = join(DATA_DIR, "runtime");',
-      "const d = join(resolveDataDir(process.env.CLAUDE_MEM_DIR), 'runtime');",
+      "const d = join(resolveDataDir(process.env.QWEN_MEM_DIR), 'runtime');",
       "const d = join(resolveDataDir(env || fallback()), 'runtime');",
       "const d = join(dirname(fileURLToPath(import.meta.url)), 'runtime');",
       "const d = resolve(DATA_DIR, 'runtime');",

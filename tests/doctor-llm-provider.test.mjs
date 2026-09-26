@@ -32,7 +32,7 @@ describe('llmProviderStatus', () => {
     // selected by a key OR a base URL, so both need the same scrub. So does the pin.
     vi.stubEnv('OPENAI_API_KEY', '');
     vi.stubEnv('OPENAI_BASE_URL', '');
-    vi.stubEnv('CLAUDE_MEM_LLM_PROVIDER', '');
+    vi.stubEnv('QWEN_MEM_LLM_PROVIDER', '');
   }
 
   it('reports the CLI provider without probing anything when no key is set', async () => {
@@ -87,13 +87,13 @@ describe('llmProviderStatus', () => {
     expect(s.message).not.toMatch(/key set/);
   });
 
-  it('honours CLAUDE_MEM_LLM_PROVIDER, so doctor reports the leg the workers use', async () => {
+  it('honours QWEN_MEM_LLM_PROVIDER, so doctor reports the leg the workers use', async () => {
     // The pin is part of the shared detection contract now; a doctor that ignored
     // it would report the provider the workers are NOT calling.
     noProxy();
     vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant');
     vi.stubEnv('OPENAI_BASE_URL', 'http://127.0.0.1:11434/v1');
-    vi.stubEnv('CLAUDE_MEM_LLM_PROVIDER', 'openai');
+    vi.stubEnv('QWEN_MEM_LLM_PROVIDER', 'openai');
     const probe = vi.fn(async () => ({ reachable: true }));
     const s = await llmProviderStatus({ _probe: probe });
     expect(s.mode).toBe('openai');

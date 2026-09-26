@@ -64,8 +64,8 @@ describe('startup dashboard (T10c)', () => {
           adopted: false,
         },
       });
-      expect(text).toMatch(/Invited-memory 未启用/);
-      expect(text).toMatch(/claude-mem-lite adopt/);
+      expect(text).toMatch(/Invited-memory not enabled/);
+      expect(text).toMatch(/qwen-mem-lite adopt/);
       expect(text).toMatch(/MEM_NO_ADOPT_HINT=1/);
     } finally {
       if (prevNoHint === undefined) delete process.env.MEM_NO_ADOPT_HINT;
@@ -90,7 +90,7 @@ describe('startup dashboard (T10c)', () => {
       },
     });
     expect(text).toMatch(/uncommitted/);
-    expect(text).not.toMatch(/Invited-memory 未启用/);
+    expect(text).not.toMatch(/Invited-memory not enabled/);
   });
 
   test('MEM_NO_ADOPT_HINT=1 silences the hint even when not adopted', () => {

@@ -33,7 +33,7 @@ export const SOURCE_FILES = [
   'package.json',
   'package-lock.json',
   'skill.md',
-  // Shared SOURCE_FILES manifest — self-reference so `~/.claude-mem-lite/` can
+  // Shared SOURCE_FILES manifest — self-reference so `~/.qwen-mem-lite/` can
   // re-run install.mjs (which imports this module) after an auto-update.
   'source-files.mjs',
   'install.mjs',
@@ -49,7 +49,7 @@ export const SOURCE_FILES = [
   'format-utils.mjs',
   'hash-utils.mjs',
   'bash-utils.mjs',
-  // Single source of truth for the CLAUDE_MEM_DIR → data-dir resolver (rejects a
+  // Single source of truth for the QWEN_MEM_DIR → data-dir resolver (rejects a
   // stringified "undefined"/"null"/relative env instead of creating a stray dir).
   // Statically imported by schema.mjs / cli.mjs / install.mjs
   // AND hook scripts (pre-tool-recall / post-tool-recall) — ship it
@@ -123,9 +123,9 @@ export const SOURCE_FILES = [
   'lib/lesson-idents.mjs',
   // Phase-2 task-imperative framing helper (2026-06-29): formatTaskImperative, the single
   // source of the imperative line. Statically imported by hook.mjs (live emitter, gated by
-  // CLAUDE_MEM_TASK_IMPERATIVE) — must ship even with the flag off.
+  // QWEN_MEM_TASK_IMPERATIVE) — must ship even with the flag off.
   'lib/task-imperative.mjs',
-  // comprehension-bridge forcing-function (CLAUDE_MEM_SALIENCE=bridge): rewrites
+  // comprehension-bridge forcing-function (QWEN_MEM_SALIENCE=bridge): rewrites
   // a recalled lesson into a check bound to the change hunk. Dynamic-imported by
   // scripts/pre-tool-recall.js ONLY under the flag, but must still ship so the
   // hook can resolve it at runtime when a user opts in.
@@ -135,7 +135,7 @@ export const SOURCE_FILES = [
   // self-heal after Node ABI changes). Missing from manifest → auto-update
   // ships a stale install that FATALs on first DB open after Node upgrade.
   'lib/binding-probe.mjs',
-  // Which code homes this machine runs (plugin cache / ~/.claude-mem-lite /
+  // Which code homes this machine runs (plugin cache / ~/.qwen-mem-lite /
   // npm-global) — imported by install.mjs for doctor, status and rebuild-binding.
   // Missing from the manifest → an updated install ships a doctor that throws
   // ERR_MODULE_NOT_FOUND on the command users run when something is already wrong.
@@ -333,7 +333,7 @@ export const SOURCE_FILES = [
 
 /**
  * Hook scripts that direct-install (non-plugin) mode must materialize under
- * ~/.claude-mem-lite/scripts/ — settings.json hook commands resolve to these
+ * ~/.qwen-mem-lite/scripts/ — settings.json hook commands resolve to these
  * absolute paths. Plugin mode does not consume this directory (it runs scripts
  * from ${CLAUDE_PLUGIN_ROOT} instead).
  *
@@ -350,7 +350,7 @@ export const HOOK_SCRIPT_FILES = [
   'pre-tool-recall.js',
   'post-tool-recall.js',
   // The Agent|Task hook command in BOTH registration sites is now the .sh prefilter,
-  // which execs the .js only when CLAUDE_MEM_SUBAGENT_INJECT is on (audit P2-5). Both
+  // which execs the .js only when QWEN_MEM_SUBAGENT_INJECT is on (audit P2-5). Both
   // must be materialized: shipping the prefilter without its target turns every
   // opt-in dispatch into a silent no-op, and shipping the target without the
   // prefilter leaves the registered hook command pointing at a file that is not there.
@@ -364,7 +364,7 @@ export const HOOK_SCRIPT_FILES = [
 ];
 
 // Executable scripts that are NOT direct-install hook scripts (so they don't belong in
-// HOOK_SCRIPT_FILES, which install.mjs materializes into ~/.claude-mem-lite/scripts/) but
+// HOOK_SCRIPT_FILES, which install.mjs materializes into ~/.qwen-mem-lite/scripts/) but
 // ARE run at runtime and MUST be signed:
 //   - launch.mjs / launch-preflight.mjs: the plugin MCP server (.mcp.json runs
 //     ${CLAUDE_PLUGIN_ROOT}/scripts/launch.mjs; launch.mjs imports launch-preflight.mjs).

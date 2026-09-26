@@ -30,15 +30,15 @@ const TASK = {
 describe('buildEnv', () => {
   test('control arm disables injection (no DB path) but keeps experiment isolation', () => {
     const env = buildEnv(ARMS.control, { dbPath: '/x/db', runtimeDir: '/x/rt' });
-    expect(env.CLAUDE_MEM_DB_PATH).toBeUndefined();
+    expect(env.QWEN_MEM_DB_PATH).toBeUndefined();
     expect(env.MEM_DISABLE_CITATION_DECAY).toBe('1');
-    expect(env.CLAUDE_MEM_SKIP_UPDATE).toBe('1');
+    expect(env.QWEN_MEM_SKIP_UPDATE).toBe('1');
   });
 
   test('treatment arm points the hooks at the seeded DB', () => {
     const env = buildEnv(ARMS.treatment, { dbPath: '/x/db', runtimeDir: '/x/rt' });
-    expect(env.CLAUDE_MEM_DB_PATH).toBe('/x/db');
-    expect(env.CLAUDE_MEM_RUNTIME_DIR).toBe('/x/rt');
+    expect(env.QWEN_MEM_DB_PATH).toBe('/x/db');
+    expect(env.QWEN_MEM_RUNTIME_DIR).toBe('/x/rt');
   });
 });
 

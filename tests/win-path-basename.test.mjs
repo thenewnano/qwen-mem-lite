@@ -36,7 +36,7 @@ describe('fileMatchParams derives basenames on either separator', () => {
   });
 
   it('splits POSIX forward-slash paths', () => {
-    expect(derivedBasename('/mnt/Sda2/dev/claude-mem-lite/utils.mjs')).toBe('utils.mjs');
+    expect(derivedBasename('/mnt/Sda2/dev/qwen-mem-lite/utils.mjs')).toBe('utils.mjs');
   });
 
   it('splits mixed-separator paths on the last separator of either kind', () => {
@@ -199,9 +199,9 @@ describe('install prune log derives basenames with node:path', () => {
   // not a hardcoded '/' split. On a POSIX host these two agree, so this suite
   // locks the invariant rather than reproducing a Linux-visible failure.
   it('basename resolves both separator styles per host implementation', () => {
-    expect(win32.basename('C:\\Users\\me\\.claude-mem-lite\\dispatch.mjs')).toBe('dispatch.mjs');
-    expect(win32.basename('C:/Users/me/.claude-mem-lite/dispatch.mjs')).toBe('dispatch.mjs');
-    expect(posix.basename('/home/me/.claude-mem-lite/dispatch.mjs')).toBe('dispatch.mjs');
+    expect(win32.basename('C:\\Users\\me\\.qwen-mem-lite\\dispatch.mjs')).toBe('dispatch.mjs');
+    expect(win32.basename('C:/Users/me/.qwen-mem-lite/dispatch.mjs')).toBe('dispatch.mjs');
+    expect(posix.basename('/home/me/.qwen-mem-lite/dispatch.mjs')).toBe('dispatch.mjs');
   });
 
   it('maps real pruneStaleInstallFiles output to bare filenames', async () => {

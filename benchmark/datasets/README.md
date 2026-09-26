@@ -1,7 +1,7 @@
 # Benchmark datasets
 
 Standard long-term-memory retrieval benchmarks, used by the runners in
-`benchmark/` to measure claude-mem-lite against the field. The dataset files
+`benchmark/` to measure qwen-mem-lite against the field. The dataset files
 themselves are **large and not committed** (`.gitignore` excludes
 `benchmark/datasets/*.json` / `*.jsonl`); only the download scripts live here.
 

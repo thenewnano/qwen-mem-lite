@@ -77,9 +77,9 @@ describe('hook.mjs UserPromptSubmit task-imperative wiring (default off)', () =>
   });
 
   function initHomeDb() {
-    const dbDir = join(tmpHome, '.claude-mem-lite');
+    const dbDir = join(tmpHome, '.qwen-mem-lite');
     mkdirSync(join(dbDir, 'runtime'), { recursive: true });
-    const db = new Database(join(dbDir, 'claude-mem-lite.db'));
+    const db = new Database(join(dbDir, 'qwen-mem-lite.db'));
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = OFF');
     initSchema(db);
@@ -95,13 +95,13 @@ describe('hook.mjs UserPromptSubmit task-imperative wiring (default off)', () =>
           ...process.env,
           HOME: tmpHome,
           CLAUDE_PROJECT_DIR: projDir,
-          CLAUDE_MEM_SKIP_UPDATE: '1',
-          CLAUDE_MEM_SKIP_COMPRESS: '1',
-          CLAUDE_MEM_SKIP_OPTIMIZE: '1',
+          QWEN_MEM_SKIP_UPDATE: '1',
+          QWEN_MEM_SKIP_COMPRESS: '1',
+          QWEN_MEM_SKIP_OPTIMIZE: '1',
           MEM_NO_AUTO_ADOPT: '1',
           MEM_QUIET_HOOKS: '1',
-          CLAUDE_MEM_HOOK_RUNNING: undefined,
-          CLAUDE_MEM_TASK_IMPERATIVE: undefined,
+          QWEN_MEM_HOOK_RUNNING: undefined,
+          QWEN_MEM_TASK_IMPERATIVE: undefined,
           ...extraEnv,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -135,7 +135,7 @@ describe('hook.mjs UserPromptSubmit task-imperative wiring (default off)', () =>
   });
   it('flag ON: emits the imperative line for an overlapping high-value lesson', () => {
     seedLesson();
-    const out = runUserPrompt(stdin, { CLAUDE_MEM_TASK_IMPERATIVE: 'on' });
+    const out = runUserPrompt(stdin, { QWEN_MEM_TASK_IMPERATIVE: 'on' });
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toContain(
       'Memory — a past lesson applies to THIS task. You must: always call recoverChildrenOf before hard delete.',

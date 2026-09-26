@@ -35,7 +35,7 @@ describe('MCP tool descriptions use discouragement style', () => {
       .filter((t) => !t.hidden)
       .map((t) => t.name)
       .sort();
-    // The original six back the claude-mem-lite invited-memory contract; the
+    // The original six back the qwen-mem-lite invited-memory contract; the
     // three mem_defer_* tools (v2.70) are first-class carry-forward primitives.
     // Changing this list is an MCP surface-area change — update adopt-content.mjs
     // and CLAUDE.md in the same PR.

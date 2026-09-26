@@ -49,7 +49,7 @@ function launcherFixture(osField) {
   fixtures.push(root);
   mkdirSync(join(root, 'scripts'));
   mkdirSync(join(root, 'lib'));
-  const pkg = { name: 'claude-mem-lite', version: '0.0.0-fixture', type: 'module' };
+  const pkg = { name: 'qwen-mem-lite', version: '0.0.0-fixture', type: 'module' };
   if (osField !== undefined) pkg.os = osField;
   writeFileSync(join(root, 'package.json'), JSON.stringify(pkg, null, 2));
   copyFileSync(join(REPO, 'scripts', 'launch.mjs'), join(root, 'scripts', 'launch.mjs'));
@@ -66,7 +66,7 @@ function runLauncher(root) {
         CLAUDE_PLUGIN_ROOT: root,
         // The outer session may have either of these pointing at a real install; the
         // blocked path must not depend on them, and the control path must not reach them.
-        CLAUDE_MEM_DIR: join(root, 'data'),
+        QWEN_MEM_DIR: join(root, 'data'),
       },
       encoding: 'utf8',
       timeout: 20_000,

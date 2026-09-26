@@ -1,9 +1,9 @@
 // A remedy doctor prints has to be a command the reader can actually run.
 //
-// On a HOME with no claude-mem-lite deployed, doctor said:
+// On a HOME with no qwen-mem-lite deployed, doctor said:
 //
-//   Hook scripts: <home>/.claude-mem-lite/scripts is absent — ... Fix: claude-mem-lite
-//   self-update (or: node <home>/.claude-mem-lite/cli.mjs repair)
+//   Hook scripts: <home>/.qwen-mem-lite/scripts is absent — ... Fix: qwen-mem-lite
+//   self-update (or: node <home>/.qwen-mem-lite/cli.mjs repair)
 //
 // `cli.mjs` is one of the files whose absence produced that verdict, so the alternative it
 // offers cannot start. The managed-files check carries the same remedy and reaches the same
@@ -41,7 +41,7 @@ function doctorIn(home) {
     out = execFileSync(process.execPath, [INSTALLER, 'doctor', '--json'], {
       encoding: 'utf8',
       timeout: 120_000,
-      env: { ...process.env, HOME: home, CLAUDE_MEM_DIR: '', MEM_NO_AUTO_ADOPT: '1' },
+      env: { ...process.env, HOME: home, QWEN_MEM_DIR: '', MEM_NO_AUTO_ADOPT: '1' },
     });
   } catch (e) {
     // doctor exits non-zero when it finds issues, and a HOME with no install certainly will.
@@ -83,13 +83,13 @@ describe('doctor remedies name commands that can run', () => {
     // The data dir exists (anything that opens the DB creates it) while no code was ever
     // deployed into it — the shape a `git clone` user who has not run install yet is in, and
     // the one where BOTH drift checks fire.
-    mkdirSync(join(home, '.claude-mem-lite'), { recursive: true });
-    writeFileSync(join(home, '.claude-mem-lite', 'claude-mem-lite.db'), '');
+    mkdirSync(join(home, '.qwen-mem-lite'), { recursive: true });
+    writeFileSync(join(home, '.qwen-mem-lite', 'qwen-mem-lite.db'), '');
 
     const lines = messages(doctorIn(home)).join('\n');
 
     expect(lines).toMatch(/install\.mjs install/);
-    expect(lines).toMatch(/no (claude-mem-lite )?(code|install)/i);
+    expect(lines).toMatch(/no (qwen-mem-lite )?(code|install)/i);
   });
 
   it('still prescribes repair when the install is DAMAGED rather than absent', () => {
@@ -104,7 +104,7 @@ describe('doctor remedies name commands that can run', () => {
     // `shape.managed`.
     const home = mkdtempSync(join(tmpdir(), 'doctor-remedy-'));
     homes.push(home);
-    const dir = join(home, '.claude-mem-lite');
+    const dir = join(home, '.qwen-mem-lite');
     mkdirSync(dir, { recursive: true });
     for (const f of ['cli.mjs', 'server.mjs', 'mem-cli.mjs']) {
       writeFileSync(join(dir, f), '// stub\n');
@@ -115,7 +115,7 @@ describe('doctor remedies name commands that can run', () => {
     const lines = messages(doctorIn(home)).join('\n');
 
     expect(lines).toMatch(/repair/);
-    expect(lines).not.toMatch(/no claude-mem-lite code is deployed/);
+    expect(lines).not.toMatch(/no qwen-mem-lite code is deployed/);
   });
 
   it('does not call an install "never deployed" while forty of its files are present', async () => {
@@ -131,7 +131,7 @@ describe('doctor remedies name commands that can run', () => {
     const { SOURCE_FILES } = await import('../source-files.mjs');
     const home = mkdtempSync(join(tmpdir(), 'doctor-remedy-'));
     homes.push(home);
-    const dir = join(home, '.claude-mem-lite');
+    const dir = join(home, '.qwen-mem-lite');
     const present = SOURCE_FILES.filter((f) => f !== 'server.mjs' && f !== 'hook.mjs');
     for (const f of present) {
       mkdirSync(dirname(join(dir, f)), { recursive: true });
@@ -146,7 +146,7 @@ describe('doctor remedies name commands that can run', () => {
     const lines = messages(doctorIn(home)).join('\n');
 
     expect(lines, `doctor called this a data-only directory:\n${lines}`).not.toMatch(
-      /no claude-mem-lite code is deployed/,
+      /no qwen-mem-lite code is deployed/,
     );
     expect(lines).toMatch(/repair/);
   });

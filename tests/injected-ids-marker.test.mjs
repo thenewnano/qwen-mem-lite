@@ -321,7 +321,7 @@ describe('injectedIdsFileName — one file per session', () => {
     const a = injectedIdsFileName('proj', 'sess-a');
     const b = injectedIdsFileName('proj', 'sess-b');
     expect(a).not.toBe(b); // D#120: not one shared file
-    expect(injectedIdsFileName('proj')).toBe('.claude-mem-injected-proj');
+    expect(injectedIdsFileName('proj')).toBe('.qwen-mem-injected-proj');
     // Sanitized and capped, so a session id with path separators cannot escape the dir.
     expect(injectedIdsFileName('proj', '../../etc/passwd')).not.toContain('/');
   });

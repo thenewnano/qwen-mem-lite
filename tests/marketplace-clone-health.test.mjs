@@ -110,9 +110,9 @@ describe('doctor reports marketplace clone updatability', () => {
       env: {
         ...process.env,
         HOME: home,
-        CLAUDE_MEM_DIR: dataDir,
-        CLAUDE_MEM_SKIP_UPDATE: '1',
-        CLAUDE_MEM_SKIP_MAINTAIN: '1',
+        QWEN_MEM_DIR: dataDir,
+        QWEN_MEM_SKIP_UPDATE: '1',
+        QWEN_MEM_SKIP_MAINTAIN: '1',
         MEM_NO_AUTO_ADOPT: '1',
       },
     }).stdout;

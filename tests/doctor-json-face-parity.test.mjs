@@ -51,10 +51,10 @@ function makeHome({ corruptDb = false, install = null, omitEntries = [], partial
   if (corruptDb) {
     // Not SQLite, so `new Database()` throws SQLITE_NOTADB — the one failure that
     // carries a multi-command remedy, and the audit's own repro.
-    writeFileSync(join(data, 'claude-mem-lite.db'), Buffer.alloc(4096, 7));
+    writeFileSync(join(data, 'qwen-mem-lite.db'), Buffer.alloc(4096, 7));
   }
   if (install) {
-    const dir = join(home, '.claude-mem-lite');
+    const dir = join(home, '.qwen-mem-lite');
     mkdirSync(dir, { recursive: true });
     // Every lib/* module deliberately absent — that is what the drift checks grade.
     for (const rel of ENTRIES) {
@@ -83,8 +83,8 @@ function runDoctor(home, { json }) {
       env: {
         ...process.env,
         HOME: home,
-        CLAUDE_MEM_DIR: join(home, 'data'),
-        CLAUDE_MEM_SKIP_UPDATE: '1',
+        QWEN_MEM_DIR: join(home, 'data'),
+        QWEN_MEM_SKIP_UPDATE: '1',
         MEM_QUIET_HOOKS: '1',
         MEM_NO_AUTO_ADOPT: '1',
       },

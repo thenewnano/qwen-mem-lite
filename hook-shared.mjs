@@ -1,4 +1,4 @@
-// claude-mem-lite: Shared infrastructure for hook.mjs and hook-llm.mjs
+// qwen-mem-lite: Shared infrastructure for hook.mjs and hook-llm.mjs
 // Constants, session management, DB access, LLM calls, process utilities
 
 import { spawn } from 'child_process';
@@ -49,7 +49,7 @@ export {
 import { DAY_MS, ORPHAN_EPISODE_AGE_MS } from './lib/time-constants.mjs';
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-// P1-14: one resolver, so this module honours CLAUDE_MEM_RUNTIME_DIR like the five
+// P1-14: one resolver, so this module honours QWEN_MEM_RUNTIME_DIR like the five
 // standalone hook scripts already did. It did not, and hook.mjs / server.mjs /
 // hook-context.mjs / hook-episode.mjs all take RUNTIME_DIR from here — so the override
 // split the runtime dir in half instead of relocating it.
@@ -328,9 +328,9 @@ export function sweepStaleProjectMarkers(
   // this is the only sweep that deletes files a user might want to inspect, so a
   // released default that reclaims state needs a documented way back out.
   // R10 P3-6: exact '1', not a truthy check, and that is on purpose — the truthy form the
-  // sibling CLAUDE_MEM_SKIP_* flags use makes `=0` mean "skip", the opposite of intent.
+  // sibling QWEN_MEM_SKIP_* flags use makes `=0` mean "skip", the opposite of intent.
   // README documents the difference; do not "align" this without aligning the others too.
-  if (env.CLAUDE_MEM_SKIP_MARKER_GC === '1') return 0;
+  if (env.QWEN_MEM_SKIP_MARKER_GC === '1') return 0;
   let entries;
   try {
     entries = readdirSync(runtimeDir);
@@ -509,7 +509,7 @@ export function spawnBackground(bgEvent, ...extraArgs) {
     const child = spawn(process.execPath, args, {
       detached: true,
       stdio: 'ignore',
-      env: { ...process.env, CLAUDE_MEM_HOOK_RUNNING: '1' },
+      env: { ...process.env, QWEN_MEM_HOOK_RUNNING: '1' },
     });
     child.on('error', (err) => {
       debugCatch(err, 'spawnBackground');

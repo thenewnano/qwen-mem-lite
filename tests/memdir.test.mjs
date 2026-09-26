@@ -59,7 +59,7 @@ describe('memdirPath', () => {
 
 describe('sentinel IO (writePluginSection / readMemoryIndex / removePluginSection)', () => {
   let tmp, memdir;
-  const slug = 'claude-mem-lite';
+  const slug = 'qwen-mem-lite';
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), 'memdir-sentinel-'));
@@ -79,7 +79,7 @@ describe('sentinel IO (writePluginSection / readMemoryIndex / removePluginSectio
 
   it('writes state sidecar alongside MEMORY.md', () => {
     writePluginSection(memdir, { slug, version: 'v1', contentLine: 'line' });
-    expect(existsSync(join(memdir, '.plugin_claude_mem_lite_state.json'))).toBe(true);
+    expect(existsSync(join(memdir, '.plugin_qwen_mem_lite_state.json'))).toBe(true);
   });
 
   it('is idempotent — second write with same inputs returns unchanged', () => {
@@ -143,7 +143,7 @@ describe('sentinel IO (writePluginSection / readMemoryIndex / removePluginSectio
 
   it('throws UserEditedError when sentinel exists but state file is missing', () => {
     writePluginSection(memdir, { slug, version: 'v1', contentLine: 'x' });
-    rmSync(join(memdir, '.plugin_claude_mem_lite_state.json'));
+    rmSync(join(memdir, '.plugin_qwen_mem_lite_state.json'));
     expect(() => writePluginSection(memdir, { slug, version: 'v1', contentLine: 'x' })).toThrow(
       UserEditedError,
     );
@@ -169,7 +169,7 @@ describe('sentinel IO (writePluginSection / readMemoryIndex / removePluginSectio
     writePluginSection(memdir, { slug, version: 'v1', contentLine: 'line' });
     const r1 = readMemoryIndex(memdir, slug);
     expect(r1.exists).toBe(true);
-    expect(r1.section).toMatch(/claude-mem-lite:begin v1/);
+    expect(r1.section).toMatch(/qwen-mem-lite:begin v1/);
     expect(r1.version).toBe('v1');
     expect(r1.lineCount).toBeGreaterThan(0);
   });
@@ -188,7 +188,7 @@ describe('sentinel IO (writePluginSection / readMemoryIndex / removePluginSectio
 
   it('removePluginSection cleans state sidecar', () => {
     writePluginSection(memdir, { slug, version: 'v1', contentLine: 'x' });
-    const state = join(memdir, '.plugin_claude_mem_lite_state.json');
+    const state = join(memdir, '.plugin_qwen_mem_lite_state.json');
     expect(existsSync(state)).toBe(true);
     removePluginSection(memdir, slug);
     expect(existsSync(state)).toBe(false);
@@ -260,12 +260,12 @@ describe('sentinel IO (writePluginSection / readMemoryIndex / removePluginSectio
 
   it('removePluginSection normalizes leading whitespace after removing the first sentinel', () => {
     // Two plugins coexist; remove plugin-A (first) → tail must not start with blank lines.
-    writePluginSection(memdir, { slug: 'claude-mem-lite', version: 'v1', contentLine: 'A' });
+    writePluginSection(memdir, { slug: 'qwen-mem-lite', version: 'v1', contentLine: 'A' });
     // Simulate a second plugin appending its own sentinel.
     const path = join(memdir, 'MEMORY.md');
     const tail = '\n\n<!-- other-plugin:begin v1 -->\n## 插件契约\nB\n<!-- other-plugin:end -->\n';
     writeFileSync(path, readFileSync(path, 'utf8') + tail);
-    removePluginSection(memdir, 'claude-mem-lite');
+    removePluginSection(memdir, 'qwen-mem-lite');
     const body = readFileSync(path, 'utf8');
     expect(body.startsWith('\n')).toBe(false);
     expect(body.startsWith('<!-- other-plugin')).toBe(true);
@@ -289,7 +289,7 @@ describe('sentinel IO (writePluginSection / readMemoryIndex / removePluginSectio
 
 describe('isAdopted', () => {
   let tmp, memdir;
-  const slug = 'claude-mem-lite';
+  const slug = 'qwen-mem-lite';
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), 'memdir-adopt-'));
@@ -330,7 +330,7 @@ describe('isAdopted', () => {
 
 describe('plugin doc IO (writePluginDoc / removePluginDoc)', () => {
   let tmp, memdir;
-  const slug = 'claude-mem-lite';
+  const slug = 'qwen-mem-lite';
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), 'memdir-doc-'));
@@ -341,7 +341,7 @@ describe('plugin doc IO (writePluginDoc / removePluginDoc)', () => {
 
   it('writes plugin_<slug_snake>.md with given body', () => {
     writePluginDoc(memdir, slug, '# detail\n\nbody content\n');
-    const path = join(memdir, 'plugin_claude_mem_lite.md');
+    const path = join(memdir, 'plugin_qwen_mem_lite.md');
     expect(existsSync(path)).toBe(true);
     expect(readFileSync(path, 'utf8')).toContain('# detail');
   });
@@ -349,18 +349,18 @@ describe('plugin doc IO (writePluginDoc / removePluginDoc)', () => {
   it('creates memdir automatically when absent', () => {
     const newDir = join(tmp, 'fresh_memdir');
     writePluginDoc(newDir, slug, '# body');
-    expect(existsSync(join(newDir, 'plugin_claude_mem_lite.md'))).toBe(true);
+    expect(existsSync(join(newDir, 'plugin_qwen_mem_lite.md'))).toBe(true);
   });
 
   it('overwrites existing doc', () => {
     writePluginDoc(memdir, slug, '# v1');
     writePluginDoc(memdir, slug, '# v2');
-    expect(readFileSync(join(memdir, 'plugin_claude_mem_lite.md'), 'utf8')).toContain('# v2');
+    expect(readFileSync(join(memdir, 'plugin_qwen_mem_lite.md'), 'utf8')).toContain('# v2');
   });
 
   it('removePluginDoc deletes the file', () => {
     writePluginDoc(memdir, slug, 'x');
-    const path = join(memdir, 'plugin_claude_mem_lite.md');
+    const path = join(memdir, 'plugin_qwen_mem_lite.md');
     removePluginDoc(memdir, slug);
     expect(existsSync(path)).toBe(false);
   });
@@ -463,7 +463,7 @@ describe('auditMemdir', () => {
   });
 
   it('skips state sidecars and dotfiles', () => {
-    writeFileSync(join(memdir, '.plugin_claude_mem_lite_state.json'), '{}');
+    writeFileSync(join(memdir, '.plugin_qwen_mem_lite_state.json'), '{}');
     writeFileSync(join(memdir, '.DS_Store'), '');
     const r = auditMemdir(memdir);
     expect(r.total).toBe(0);

@@ -50,7 +50,7 @@ describe('pre-tool-recall project derivation', () => {
     //
     // Uses a purpose-built repo under tmp rather than this checkout. An earlier version
     // asserted 'mem--lib' against ../lib and went red on CI, where the checkout is named
-    // claude-mem-lite — the expectation was a property of the directory name, not of the
+    // qwen-mem-lite — the expectation was a property of the directory name, not of the
     // behaviour. Here both the repo name and the subdirectory are fixed by the fixture.
     const saved = { p: process.env.CLAUDE_PROJECT_DIR, w: process.env.PWD };
     const root = mkdtempSync(join(tmpdir(), 'infer-shared-'));

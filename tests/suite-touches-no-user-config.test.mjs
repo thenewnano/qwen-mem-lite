@@ -3,7 +3,7 @@
 // It did. `installExtractedRelease` gained a post-swap hook reconcile that writes
 // `join(homedir(), '.claude', 'settings.json')`, and 78 of the 80 `loadModule` call
 // sites in tests/hook-update.test.mjs passed no HOME — so `os.homedir()` resolved to the
-// real one. On a machine whose settings.json holds a dangling claude-mem-lite hook entry
+// real one. On a machine whose settings.json holds a dangling qwen-mem-lite hook entry
 // (exactly the state an upgrade past the skill-registry removal creates), `npx vitest run`
 // rewrote it and left a .bak. Measured before the fix: 289 B → 42 B.
 //
@@ -28,10 +28,10 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'mem-userconfig-'));
   fakeHome = join(root, 'home');
   mkdirSync(join(fakeHome, '.claude'), { recursive: true });
-  mkdirSync(join(fakeHome, '.claude-mem-lite', 'scripts'), { recursive: true });
+  mkdirSync(join(fakeHome, '.qwen-mem-lite', 'scripts'), { recursive: true });
   copyFileSync(
     join(REPO, 'scripts', 'hook-launcher.mjs'),
-    join(fakeHome, '.claude-mem-lite', 'scripts', 'hook-launcher.mjs'),
+    join(fakeHome, '.qwen-mem-lite', 'scripts', 'hook-launcher.mjs'),
   );
   savedHome = process.env.HOME;
 });
@@ -48,7 +48,7 @@ afterEach(() => {
 
 /** settings.json with one DANGLING mem hook — the shape the reconcile acts on. */
 function seedDanglingSettings(home) {
-  const launcher = join(home, '.claude-mem-lite', 'scripts', 'hook-launcher.mjs');
+  const launcher = join(home, '.qwen-mem-lite', 'scripts', 'hook-launcher.mjs');
   const s = {
     hooks: {
       PreToolUse: [
@@ -70,10 +70,7 @@ describe('the reconcile only ever writes the HOME it was pointed at', () => {
     const before = readFileSync(p, 'utf8');
     process.env.HOME = fakeHome;
     const { pruneDanglingMemHooks } = await import('../lib/hook-prune.mjs');
-    const { settings, removed } = pruneDanglingMemHooks(
-      JSON.parse(before),
-      join(fakeHome, '.claude-mem-lite'),
-    );
+    const { settings, removed } = pruneDanglingMemHooks(JSON.parse(before), join(fakeHome, '.qwen-mem-lite'));
     expect(removed, 'fixture is not the shape the reconcile acts on').toEqual([
       'scripts/pre-skill-bridge.js',
     ]);

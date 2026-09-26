@@ -17,8 +17,8 @@
 // Every case states, in a comment, the input that makes it fail — an assertion whose
 // failing input nobody can name is not a test.
 //
-// ISOLATION: every spawned process gets CLAUDE_MEM_DIR + HOME pointed at a mkdtemp
-// sandbox, and a cwd inside it, so nothing can reach the live ~/.claude-mem-lite DB or
+// ISOLATION: every spawned process gets QWEN_MEM_DIR + HOME pointed at a mkdtemp
+// sandbox, and a cwd inside it, so nothing can reach the live ~/.qwen-mem-lite DB or
 // write into this repo. The sandbox is removed in an afterAll `finally`.
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
@@ -59,21 +59,21 @@ beforeAll(() => {
   // The developer's own plugin flags would otherwise flip default-OFF surfaces on in the
   // child (the #8608 leak class). Everything needed is set explicitly below.
   for (const k of Object.keys(BASE_ENV)) {
-    if (/^(CLAUDE_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete BASE_ENV[k];
+    if (/^(QWEN_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete BASE_ENV[k];
   }
   Object.assign(BASE_ENV, {
     HOME: HOME_DIR,
     CLAUDE_CODE_PATH: join(ROOT, 'no-such-claude-binary'), // no LLM spend, no network
     ANTHROPIC_API_KEY: '',
     OPENROUTER_API_KEY: '',
-    CLAUDE_MEM_SKIP_UPDATE: '1',
-    CLAUDE_MEM_SKIP_EPISODE_LLM: '1',
-    CLAUDE_MEM_SKIP_COMPRESS: '1',
-    CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-    CLAUDE_MEM_SKIP_MAINTAIN: '1',
-    CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
-    CLAUDE_MEM_SKIP_REPOS: '1',
-    CLAUDE_MEM_NO_DELAY: '1',
+    QWEN_MEM_SKIP_UPDATE: '1',
+    QWEN_MEM_SKIP_EPISODE_LLM: '1',
+    QWEN_MEM_SKIP_COMPRESS: '1',
+    QWEN_MEM_SKIP_OPTIMIZE: '1',
+    QWEN_MEM_SKIP_MAINTAIN: '1',
+    QWEN_MEM_SKIP_SAVE_ENRICH: '1',
+    QWEN_MEM_SKIP_REPOS: '1',
+    QWEN_MEM_NO_DELAY: '1',
   });
   delete BASE_ENV.CLAUDE_PROJECT_DIR; // cwd is the only project source
   delete BASE_ENV.PWD;
@@ -235,7 +235,7 @@ describe('B2 — recall does not serve, or re-promote, a superseded observation'
     const target = join(cwd, 'transport.mjs');
     writeFileSync(target, 'export const transport = 1;\n');
     const run = (args) =>
-      fire(process.execPath, [CLI_PATH, ...args], { cwd, env: { CLAUDE_MEM_DIR: dataDir } });
+      fire(process.execPath, [CLI_PATH, ...args], { cwd, env: { QWEN_MEM_DIR: dataDir } });
 
     const first = await run([
       'save',
@@ -270,7 +270,7 @@ describe('B2 — recall does not serve, or re-promote, a superseded observation'
 
     // The retraction really landed — otherwise this case would pass on a store where the
     // stale row was simply never marked.
-    const raw = new Database(join(dataDir, 'claude-mem-lite.db'), { readonly: true });
+    const raw = new Database(join(dataDir, 'qwen-mem-lite.db'), { readonly: true });
     try {
       expect(
         raw.prepare('SELECT superseded_at FROM observations WHERE id = ?').get(staleId).superseded_at,
@@ -303,7 +303,7 @@ describe('B2 — recall does not serve, or re-promote, a superseded observation'
  * it produced: the generated settings.json hooks, the shipped manifest hooks, and the
  * paths the install used. `--dev` symlinks this repo instead of running npm install, so
  * the run is offline; a no-op `claude` shim on PATH keeps registerMcpServer() from
- * reaching the developer's real CLI, and HOME/CLAUDE_MEM_DIR/cwd all point into the
+ * reaching the developer's real CLI, and HOME/QWEN_MEM_DIR/cwd all point into the
  * sandbox. Memoized: B3 and B6 both read the same produced artifact.
  */
 let _installPromise = null;
@@ -325,8 +325,8 @@ function installedRegistries() {
       cwd,
       env: {
         HOME: installHome,
-        CLAUDE_MEM_DIR: dataDir,
-        CLAUDE_MEM_SKIP_REPOS: '1',
+        QWEN_MEM_DIR: dataDir,
+        QWEN_MEM_SKIP_REPOS: '1',
         PATH: `${binDir}:${process.env.PATH}`,
       },
       timeout: 120000,
@@ -442,7 +442,7 @@ describe('B3 — install.mjs and hooks/hooks.json register the same hook events'
         '--lesson',
         'Compaction drops context unless PreCompact re-emits it',
       ],
-      { cwd, env: { CLAUDE_MEM_DIR: dataDir } },
+      { cwd, env: { QWEN_MEM_DIR: dataDir } },
     );
     expect(seeded.code, seeded.stderr).toBe(0);
 
@@ -457,10 +457,10 @@ describe('B3 — install.mjs and hooks/hooks.json register the same hook events'
     const r = await fire('/bin/sh', ['-c', command], {
       cwd,
       stdin: JSON.stringify({ session_id: 'cc-b3-precompact', trigger: 'auto' }),
-      env: { HOME: installHome, CLAUDE_MEM_DIR: dataDir },
+      env: { HOME: installHome, QWEN_MEM_DIR: dataDir },
     });
     expect(r.code, `registered PreCompact command exited ${r.code}\n${r.stderr}`).toBe(0);
-    expect(r.stdout.startsWith('<claude-mem-context>'), `stdout was:\n${r.stdout}`).toBe(true);
+    expect(r.stdout.startsWith('<qwen-mem-context>'), `stdout was:\n${r.stdout}`).toBe(true);
     // The rendered table truncates long titles, so match the head of the seeded row.
     expect(r.stdout).toContain('Traced the compaction memory loss to the missing');
   }, 60000);
@@ -472,12 +472,12 @@ describe('B3 — install.mjs and hooks/hooks.json register the same hook events'
 // had ZERO hits in hooks/hooks.json and install.mjs. The only thing that invoked it was
 // benchmark/efficacy-harness.mjs. It is component 2 of the bind-salience forcing function
 // (component 1 = the pre-edit directive from scripts/pre-tool-recall.js), so a user who
-// set CLAUDE_MEM_SALIENCE=bind got component 1 and, silently, nothing else: the post-edit
+// set QWEN_MEM_SALIENCE=bind got component 1 and, silently, nothing else: the post-edit
 // "you dropped the identifier the lesson named" nudge could not fire in production at all.
 // It is opt-in, so the default path must stay silent — that half is asserted here too,
 // and tests/feature-sweep-hooks.test.mjs pins it independently at the script level.
 
-describe('B6 — post-tool-recall is registered, and inert unless CLAUDE_MEM_SALIENCE=bind', () => {
+describe('B6 — post-tool-recall is registered, and inert unless QWEN_MEM_SALIENCE=bind', () => {
   let settingsHooks, manifestHooks, isMemHook, installHome, dataDir;
   const SESSION = 'cc-b6-bind';
   let cwd, target;
@@ -537,7 +537,7 @@ describe('B6 — post-tool-recall is registered, and inert unless CLAUDE_MEM_SAL
         '--lesson',
         'Always call invalidateWidgetCache after a write, never on read',
       ],
-      { cwd, env: { CLAUDE_MEM_DIR: dataDir } },
+      { cwd, env: { QWEN_MEM_DIR: dataDir } },
     );
     expect(saved.code, saved.stderr).toBe(0);
     const id = Number(saved.stdout.match(/#(\d+)/)[1]);
@@ -547,7 +547,7 @@ describe('B6 — post-tool-recall is registered, and inert unless CLAUDE_MEM_SAL
       tool_name: 'Edit',
       tool_input: { file_path: target, old_string: 'invalidateWidgetCache()', new_string: 'noop()' },
     });
-    const bindEnv = { HOME: installHome, CLAUDE_MEM_DIR: dataDir, CLAUDE_MEM_SALIENCE: 'bind' };
+    const bindEnv = { HOME: installHome, QWEN_MEM_DIR: dataDir, QWEN_MEM_SALIENCE: 'bind' };
 
     // Component 1 records which identifiers the lesson names AND the file still has.
     const preCmd = registeredCommand(settingsHooks, 'PreToolUse', 'scripts/pre-tool-recall.js');
@@ -569,7 +569,7 @@ describe('B6 — post-tool-recall is registered, and inert unless CLAUDE_MEM_SAL
   // Wiring an opt-in surface into the default hook chain must not make the default noisy.
   // Runs AFTER the bind case, so the cooldown state that WOULD produce a nudge is present
   // — silence here is the salience gate, not an empty fixture.
-  // FAILS IF: the CLAUDE_MEM_SALIENCE gate at the top of post-tool-recall.js is removed —
+  // FAILS IF: the QWEN_MEM_SALIENCE gate at the top of post-tool-recall.js is removed —
   // the same stdin then emits the same envelope with no env var set.
   it('the registered command stays silent at default salience', async () => {
     const stdin = JSON.stringify({
@@ -581,7 +581,7 @@ describe('B6 — post-tool-recall is registered, and inert unless CLAUDE_MEM_SAL
     const off = await fire('/bin/sh', ['-c', postCmd.command], {
       cwd,
       stdin,
-      env: { HOME: installHome, CLAUDE_MEM_DIR: dataDir },
+      env: { HOME: installHome, QWEN_MEM_DIR: dataDir },
     });
     expect(off.code, off.stderr).toBe(0);
     expect(off.stdout, 'an opt-in surface must add nothing to the default hook chain').toBe('');
@@ -605,13 +605,13 @@ describe('B1 — an unopenable DB is recorded, and does not destroy the episode 
     fire(process.execPath, [HOOK_PATH, 'post-tool-use'], {
       cwd,
       stdin: JSON.stringify(payload),
-      env: { CLAUDE_MEM_DIR: dataDir },
+      env: { QWEN_MEM_DIR: dataDir },
     });
   const stop = () =>
     fire(process.execPath, [HOOK_PATH, 'stop'], {
       cwd,
       stdin: JSON.stringify({ session_id: 'cc-b1' }),
-      env: { CLAUDE_MEM_DIR: dataDir },
+      env: { QWEN_MEM_DIR: dataDir },
     });
 
   const episodeFile = () => join(runtimeDir, `ep-${project}.json`);
@@ -667,7 +667,7 @@ describe('B1 — an unopenable DB is recorded, and does not destroy the episode 
 
   /** Replace the DB file with a DIRECTORY: every open fails with SQLITE_CANTOPEN. */
   function breakDb() {
-    const dbPath = join(dataDir, 'claude-mem-lite.db');
+    const dbPath = join(dataDir, 'qwen-mem-lite.db');
     if (existsSync(dbPath)) rmSync(dbPath, { force: true });
     mkdirSync(dbPath, { recursive: true });
   }
@@ -722,7 +722,7 @@ describe('B1 — an unopenable DB is recorded, and does not destroy the episode 
     expect(r.code, `stop exited ${r.code}\n${r.stderr}`).toBe(0);
     expect(existsSync(episodeFile()), 'a successful flush must still remove the buffer').toBe(false);
 
-    const db = new Database(join(dataDir, 'claude-mem-lite.db'), { readonly: true });
+    const db = new Database(join(dataDir, 'qwen-mem-lite.db'), { readonly: true });
     try {
       const row = db.prepare('SELECT COUNT(*) AS c FROM observations').get();
       expect(row.c, 'the flush persisted nothing').toBeGreaterThan(0);
@@ -768,7 +768,7 @@ describe('F1 — PostToolUse error-recall serves neither retracted nor compresse
     const dataDir = sandboxDir('data-' + slug);
     const cwd = sandboxDir('work', slug);
     const run = (args) =>
-      fire(process.execPath, [CLI_PATH, ...args], { cwd, env: { CLAUDE_MEM_DIR: dataDir } });
+      fire(process.execPath, [CLI_PATH, ...args], { cwd, env: { QWEN_MEM_DIR: dataDir } });
 
     const first = await run([
       'save',
@@ -798,7 +798,7 @@ describe('F1 — PostToolUse error-recall serves neither retracted nor compresse
     expect(second.code, second.stderr).toBe(0);
     const liveId = Number(second.stdout.match(/#(\d+)/)[1]);
 
-    const dbPath = join(dataDir, 'claude-mem-lite.db');
+    const dbPath = join(dataDir, 'qwen-mem-lite.db');
     const raw = new Database(dbPath);
     try {
       if (mark) raw.prepare(`UPDATE observations SET ${mark.col} = ? WHERE id = ?`).run(mark.value, staleId);
@@ -821,7 +821,7 @@ describe('F1 — PostToolUse error-recall serves neither retracted nor compresse
         tool_input: { command: HARD_FAIL.command },
         tool_response: HARD_FAIL.response,
       }),
-      env: { CLAUDE_MEM_DIR: dataDir },
+      env: { QWEN_MEM_DIR: dataDir },
     });
     expect(r.code, `post-tool-use exited ${r.code}\n${r.stderr}`).toBe(0);
 

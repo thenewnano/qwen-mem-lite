@@ -126,10 +126,7 @@ describe('the diagnosis reaches every surface that renders it', () => {
         join(REPO, 'scripts', 'binding-probe-cli.mjs'),
         join(root, 'scripts', 'binding-probe-cli.mjs'),
       );
-      writeFileSync(
-        join(root, 'package.json'),
-        JSON.stringify({ name: 'claude-mem-lite', version: '9.9.9' }),
-      );
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'qwen-mem-lite', version: '9.9.9' }));
       // No lib/ at all → the helper import throws → bareProbe is the only path left.
       const pkgDir = join(root, 'node_modules', 'better-sqlite3');
       mkdirSync(pkgDir, { recursive: true });
@@ -143,7 +140,7 @@ describe('the diagnosis reaches every surface that renders it', () => {
       const r = spawnSync(process.execPath, [join(root, 'scripts', 'binding-probe-cli.mjs')], {
         encoding: 'utf8',
         timeout: 60_000,
-        env: { ...process.env, PROBE_ROOT: root, CLAUDE_MEM_DIR: root },
+        env: { ...process.env, PROBE_ROOT: root, QWEN_MEM_DIR: root },
       });
       const err = r.stderr || '';
       expect(err, `bareProbe printed nothing usable:\n${err}`).toMatch(/binding probe:/);
@@ -250,7 +247,7 @@ describe('launch.mjs npm-install failure: npm speaks for itself on inherited std
           ...process.env,
           PATH: `${binDir}:${process.env.PATH}`,
           CLAUDE_PLUGIN_ROOT: root,
-          CLAUDE_MEM_DIR: root,
+          QWEN_MEM_DIR: root,
         },
       });
       const err = r.stderr || '';

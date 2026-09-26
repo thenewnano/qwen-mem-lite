@@ -24,12 +24,12 @@ import {
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 
-// server.mjs resolves RUNTIME_DIR from CLAUDE_MEM_DIR at import time and does its
+// server.mjs resolves RUNTIME_DIR from QWEN_MEM_DIR at import time and does its
 // spawn-telemetry write at module scope. Point the data dir at a throwaway sandbox
 // BEFORE the dynamic import so importing the module under test never touches the
-// developer's real ~/.claude-mem-lite (vitest.config forces CLAUDE_MEM_DIR='').
+// developer's real ~/.qwen-mem-lite (vitest.config forces QWEN_MEM_DIR='').
 const SANDBOX = mkdtempSync(join(tmpdir(), 'mem-runtime-harden-'));
-process.env.CLAUDE_MEM_DIR = SANDBOX;
+process.env.QWEN_MEM_DIR = SANDBOX;
 
 const { pruneSpawnLog, hardenRuntimeFiles, SPAWN_LOG_RETENTION_MS, SPAWN_LOG_MAX_LINES } =
   await import('../server.mjs');
@@ -139,7 +139,7 @@ describe('P2-7 spawn-log retention', () => {
     writeFileSync(log, [spawnLine(30 * DAY_MS), spawnLine(20 * DAY_MS)].join('\n') + '\n');
 
     const proc = spawn(process.execPath, [SERVER_PATH], {
-      env: { ...process.env, CLAUDE_MEM_DIR: memDir, MEM_QUIET_HOOKS: '1' },
+      env: { ...process.env, QWEN_MEM_DIR: memDir, MEM_QUIET_HOOKS: '1' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     proc.stdout.on('data', () => {});
@@ -226,9 +226,9 @@ describe('P3-2 runtime file permissions', () => {
         }),
         env: {
           ...process.env,
-          CLAUDE_MEM_DIR: memDir,
+          QWEN_MEM_DIR: memDir,
           CLAUDE_PROJECT_DIR: '/tmp/org/proj',
-          CLAUDE_MEM_HOOK_RUNNING: '',
+          QWEN_MEM_HOOK_RUNNING: '',
         },
         encoding: 'utf8',
       });
@@ -253,7 +253,7 @@ describe('P3-2 runtime file permissions', () => {
     const memDir = freshDir('hookdir-fresh-');
     try {
       const r = spawnSync(process.execPath, ['-e', `import(${JSON.stringify(HOOK_SHARED_PATH)})`], {
-        env: { ...process.env, CLAUDE_MEM_DIR: memDir },
+        env: { ...process.env, QWEN_MEM_DIR: memDir },
         encoding: 'utf8',
       });
       expect(r.status).toBe(0);
@@ -272,7 +272,7 @@ describe('P3-2 runtime file permissions', () => {
       mkdirSync(runtimeDir, { recursive: true });
       chmodSync(runtimeDir, 0o755); // simulate a dir created by an older version at default umask
       const r = spawnSync(process.execPath, ['-e', `import(${JSON.stringify(HOOK_SHARED_PATH)})`], {
-        env: { ...process.env, CLAUDE_MEM_DIR: memDir },
+        env: { ...process.env, QWEN_MEM_DIR: memDir },
         encoding: 'utf8',
       });
       expect(r.status).toBe(0);

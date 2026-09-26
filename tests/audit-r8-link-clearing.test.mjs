@@ -57,7 +57,7 @@ const present = (p) => {
 describe('clearLinkPath sees what existsSync cannot', () => {
   it('clears a DANGLING symlink, so the relink that follows it succeeds', () => {
     const d = sandbox();
-    const link = join(d, 'claude-mem-lite');
+    const link = join(d, 'qwen-mem-lite');
     symlinkSync(join(d, 'never-existed'), link);
 
     // Premise: this is exactly the state existsSync mis-reports. Without it the case

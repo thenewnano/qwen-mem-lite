@@ -79,7 +79,7 @@ function bareProbe(root) {
     : spawnErr
       ? flattenLocal(spawnErr)
       : `probe exited ${r.status ?? `on signal ${r.signal}`}`;
-  process.stderr.write(`[claude-mem-lite] binding probe: ${why}\n`);
+  process.stderr.write(`[qwen-mem-lite] binding probe: ${why}\n`);
   return false;
 }
 
@@ -107,17 +107,17 @@ if (first.ok) process.exit(0);
 // .node mid-compile.
 let lockPath;
 try {
-  lockPath = join(helpers.resolveDataDir(process.env.CLAUDE_MEM_DIR), 'runtime', 'install.lock'); // runtime-dir:stays-put — install lock serialises real installers
+  lockPath = join(helpers.resolveDataDir(process.env.QWEN_MEM_DIR), 'runtime', 'install.lock'); // runtime-dir:stays-put — install lock serialises real installers
 } catch (e) {
-  // resolveDataDir THROWS on a non-absolute CLAUDE_MEM_DIR. Unhandled, that
+  // resolveDataDir THROWS on a non-absolute QWEN_MEM_DIR. Unhandled, that
   // prints an 8-line rejection stack onto SessionStart stderr; one line is enough.
-  process.stderr.write(`[claude-mem-lite] binding probe: ${e.message}\n`);
+  process.stderr.write(`[qwen-mem-lite] binding probe: ${e.message}\n`);
   process.exit(1);
 }
 const release = helpers.acquireLock(lockPath);
 if (!release) {
   process.stderr.write(
-    `[claude-mem-lite] binding probe: ${helpers.flattenBindingError(first.error)} ` +
+    `[qwen-mem-lite] binding probe: ${helpers.flattenBindingError(first.error)} ` +
       '(another install/repair in flight — deferring heal)\n',
   );
   process.exit(1);
@@ -138,7 +138,7 @@ try {
     // harmlessly, it destroys a binding that was working (measured: DB opens YES → NO, .node
     // gone, SIGTERM at 20.02 s), and repeats every SessionStart because setup.sh writes its
     // marker only on success. The compile belongs on a foreground path with no cap:
-    // `claude-mem-lite rebuild-binding`, which is what the repair hints now print.
+    // `qwen-mem-lite rebuild-binding`, which is what the repair hints now print.
     sourceBuild: false,
   });
 } finally {
@@ -148,10 +148,10 @@ try {
 }
 
 if (!result.ok) {
-  process.stderr.write(`[claude-mem-lite] binding probe: ${result.error}\n`);
+  process.stderr.write(`[qwen-mem-lite] binding probe: ${result.error}\n`);
   process.exit(1);
 }
 if (result.action === 'rebuilt') {
-  process.stderr.write('[claude-mem-lite] rebuilt better-sqlite3 binding for current Node ABI\n');
+  process.stderr.write('[qwen-mem-lite] rebuilt better-sqlite3 binding for current Node ABI\n');
 }
 process.exit(0);

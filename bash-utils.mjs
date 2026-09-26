@@ -1,4 +1,4 @@
-// claude-mem-lite: Bash command analysis and file path extraction
+// qwen-mem-lite: Bash command analysis and file path extraction
 // Extracted from utils.mjs for focused responsibility
 
 import { basename } from 'path';

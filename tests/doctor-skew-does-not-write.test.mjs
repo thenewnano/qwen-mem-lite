@@ -2,7 +2,7 @@
 //
 // R12 audit 2026-09-08, partition C (P2-5). The schema-skew check exists for one
 // reason, stated in lib/schema-skew.mjs's own header: a DB written by a NEWER
-// claude-mem-lite locks every older code home out, permanently. doctor computes
+// qwen-mem-lite locks every older code home out, permanently. doctor computes
 // that verdict, prints it as a `fail` — and then, with nothing gating it, opens
 // the same file READ-WRITE, runs `checkFTSIntegrity` (an
 // `INSERT INTO fts VALUES('integrity-check')`, which needs a write lock), and on
@@ -42,7 +42,7 @@ let home;
 let dataDir;
 
 function seedDb({ version }) {
-  const db = new Database(join(dataDir, 'claude-mem-lite.db'));
+  const db = new Database(join(dataDir, 'qwen-mem-lite.db'));
   initSchema(db);
   if (version !== undefined) db.prepare('UPDATE schema_version SET version = ?').run(version);
   db.close();
@@ -53,7 +53,7 @@ function doctorChecks() {
   try {
     stdout = execFileSync(process.execPath, [INSTALL_PATH, 'doctor', '--json'], {
       encoding: 'utf8',
-      env: { ...process.env, HOME: home, MEM_NO_AUTO_ADOPT: '1', CLAUDE_MEM_DIR: dataDir },
+      env: { ...process.env, HOME: home, MEM_NO_AUTO_ADOPT: '1', QWEN_MEM_DIR: dataDir },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) {
@@ -155,7 +155,7 @@ describe('doctor does not write to a database it has declared too new', () => {
      * premise case above exists because that is exactly what happened first.
      */
     function seedStalePluginCache(version, supportedSchema) {
-      const root = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite', version);
+      const root = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', version);
       mkdirSync(join(root, 'scripts'), { recursive: true });
       // listPluginCacheVersions requires scripts/launch.mjs before it counts a dir.
       writeFileSync(join(root, 'scripts', 'launch.mjs'), '// fixture\n');

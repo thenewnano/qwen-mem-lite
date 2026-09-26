@@ -100,10 +100,10 @@ describe('P0-5 memdir.writePluginSection writes through a symlinked MEMORY.md', 
 describe('P0-5 hook-context.cleanupClaudeMdLegacyBlock writes through a symlinked CLAUDE.md', () => {
   const saved = {};
   beforeEach(() => {
-    for (const k of ['CLAUDE_PROJECT_DIR', 'CLAUDE_MEM_DIR']) saved[k] = process.env[k];
+    for (const k of ['CLAUDE_PROJECT_DIR', 'QWEN_MEM_DIR']) saved[k] = process.env[k];
   });
   afterEach(() => {
-    for (const k of ['CLAUDE_PROJECT_DIR', 'CLAUDE_MEM_DIR']) {
+    for (const k of ['CLAUDE_PROJECT_DIR', 'QWEN_MEM_DIR']) {
       if (saved[k] === undefined) delete process.env[k];
       else process.env[k] = saved[k];
     }
@@ -116,8 +116,8 @@ describe('P0-5 hook-context.cleanupClaudeMdLegacyBlock writes through a symlinke
     const { project, real, link } = symlinkedConfig('CLAUDE.md', legacy);
     process.env.CLAUDE_PROJECT_DIR = project;
     // Point RUNTIME_DIR's parent at the sandbox so the idempotency marker never lands in
-    // the real ~/.claude-mem-lite (and so a previous run's marker cannot short-circuit us).
-    process.env.CLAUDE_MEM_DIR = join(root, 'memdir');
+    // the real ~/.qwen-mem-lite (and so a previous run's marker cannot short-circuit us).
+    process.env.QWEN_MEM_DIR = join(root, 'memdir');
 
     const { cleanupClaudeMdLegacyBlock } = await import('../hook-context.mjs');
     cleanupClaudeMdLegacyBlock();

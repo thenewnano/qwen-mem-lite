@@ -504,7 +504,7 @@ async function main() {
     }
   }
 
-  const db = new Database(process.env.CLAUDE_MEM_DB_PATH || join(DB_DIR, 'claude-mem-lite.db'), {
+  const db = new Database(process.env.QWEN_MEM_DB_PATH || join(DB_DIR, 'qwen-mem-lite.db'), {
     readonly: true,
   });
   assertCannotWrite(db);

@@ -102,7 +102,7 @@ function writeTranscript(text) {
         attachment: {
           type: 'hook_success',
           hookName: 'PreToolUse:Edit',
-          command: 'node /home/u/.claude-mem-lite/scripts/pre-tool-recall.js',
+          command: 'node /home/u/.qwen-mem-lite/scripts/pre-tool-recall.js',
           stdout: JSON.stringify({
             suppressOutput: true,
             hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text },

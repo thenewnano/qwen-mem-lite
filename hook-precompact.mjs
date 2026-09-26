@@ -1,6 +1,6 @@
-// claude-mem-lite: PreCompact hook handler.
+// qwen-mem-lite: PreCompact hook handler.
 // Fires immediately before Claude Code auto-compaction begins. Emits a
-// fresh <claude-mem-context> block on stdout so the summarizer that
+// fresh <qwen-mem-context> block on stdout so the summarizer that
 // produces the compacted context has the most relevant memory in scope.
 // Differs from SessionStart-on-compact (which fires AFTER compaction):
 // PreCompact ensures memory survives the compaction step itself.
@@ -27,7 +27,7 @@ export function handlePreCompact({ db, project, sessionId, runtimeDir = RUNTIME_
     const body = buildSessionContextLines(db, project, new Date(), sessionId || null, collector);
     const rendered = body && String(body).trim() !== '';
     if (rendered) {
-      process.stdout.write(`<claude-mem-context>\n${body}\n</claude-mem-context>\n`);
+      process.stdout.write(`<qwen-mem-context>\n${body}\n</qwen-mem-context>\n`);
     }
     // Recorded even when NOTHING was re-rendered, matching handleSessionStart — the two
     // callers must describe the same set (keyctx-marker.mjs header), and the marker is an

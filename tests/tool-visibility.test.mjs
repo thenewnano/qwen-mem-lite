@@ -27,7 +27,7 @@ const EXPECTED_CORE = [
 
 function startServer(memDir, extraEnv = {}) {
   const proc = spawn(process.execPath, [SERVER_PATH], {
-    env: { ...process.env, CLAUDE_MEM_DIR: memDir, MEM_QUIET_HOOKS: '1', ...extraEnv },
+    env: { ...process.env, QWEN_MEM_DIR: memDir, MEM_QUIET_HOOKS: '1', ...extraEnv },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   proc.stderr.on('data', () => {}); // swallow startup chatter
@@ -105,7 +105,7 @@ describe('MCP tools/list filter (v2.34.0 hidden-but-callable)', () => {
     expect(names).toEqual(EXPECTED_CORE);
   });
 
-  it('CLAUDE_MEM_ALL_TOOLS=1 restores all 18 tools in tools/list (opt-out)', async () => {
+  it('QWEN_MEM_ALL_TOOLS=1 restores all 18 tools in tools/list (opt-out)', async () => {
     // Spin up a dedicated server with the env var set — the default fixture
     // runs without it, so we need a separate process for this case.
     try {
@@ -114,7 +114,7 @@ describe('MCP tools/list filter (v2.34.0 hidden-but-callable)', () => {
     } catch {
       /* ignore */
     }
-    proc = startServer(tmp, { CLAUDE_MEM_ALL_TOOLS: '1' });
+    proc = startServer(tmp, { QWEN_MEM_ALL_TOOLS: '1' });
     await rpc(proc, 1, 'initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},

@@ -53,11 +53,11 @@ beforeAll(async () => {
     args: [SERVER_PATH],
     env: {
       ...process.env,
-      CLAUDE_MEM_DIR: DB_DIR,
+      QWEN_MEM_DIR: DB_DIR,
       CLAUDE_PROJECT_DIR: '/test/project',
       PWD: '/test/project',
-      CLAUDE_MEM_AUTO_DEEP: '0',
-      CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
+      QWEN_MEM_AUTO_DEEP: '0',
+      QWEN_MEM_SKIP_SAVE_ENRICH: '1',
     },
   });
   client = new Client({ name: 'mem-defang-client', version: '0.0.0' });

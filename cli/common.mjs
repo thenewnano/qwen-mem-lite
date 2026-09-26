@@ -195,7 +195,7 @@ export function inertFilterFlagNotice(cmd, inert) {
   const verb = inert.length > 1 ? 'were' : 'was';
   return (
     `[mem] ${names} ${verb} ignored — \`${cmd}\` does not filter on ${inert.length > 1 ? 'them' : 'it'}, ` +
-    `so the results above are UNFILTERED. Run "claude-mem-lite help" for the flags this command reads.`
+    `so the results above are UNFILTERED. Run "qwen-mem-lite help" for the flags this command reads.`
   );
 }
 
@@ -399,7 +399,7 @@ export const KNOWN_CLI_FLAGS = new Set([
   // warn-on-every-unknown-flag flip turned the omission into a false warning on a
   // documented, working command.
   'prompts-limit',
-  // Entries here MUST be read by a `claude-mem-lite` subcommand. A flag that no
+  // Entries here MUST be read by a `qwen-mem-lite` subcommand. A flag that no
   // command reads is worse than an absent one: it converts the "ignored, it had no
   // effect" warning into silence, so the user's dropped flag reads as accepted.
   // `out` sat here until the 2026-08-17 e2e round for that exact reason: `--out` is a

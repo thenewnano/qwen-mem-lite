@@ -254,7 +254,7 @@ describe('runDeferredCleanups sentinel + retry (audit P1-5)', () => {
 describe('forward-incompat guard (v2.41)', () => {
   test('initSchema throws when DB schema_version exceeds CURRENT_SCHEMA_VERSION', () => {
     const db = createTestDb();
-    // Simulate a newer claude-mem-lite having written v999
+    // Simulate a newer qwen-mem-lite having written v999
     db.prepare(`DELETE FROM schema_version`).run();
     db.prepare(`INSERT INTO schema_version (version) VALUES (?)`).run(999);
     expect(() => initSchema(db)).toThrow(/DB schema is v999/);

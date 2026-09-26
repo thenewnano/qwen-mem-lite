@@ -1,4 +1,4 @@
-// claude-mem-lite: LLM-powered database optimization
+// qwen-mem-lite: LLM-powered database optimization
 // SHARED ENGINE — the `hook-` prefix is historical, not a scope. All three entry
 // surfaces import this: hook.mjs (handleLLMOptimize), server.mjs and mem-cli.mjs
 // (optimizePreview/optimizeRun), plus a lazy import from lib/save-enrich.mjs. Do not
@@ -35,7 +35,7 @@ import { MEMORY_INPUT_GUARD } from './lib/memory-input-guard.mjs';
 
 import { DAY_MS } from './lib/time-constants.mjs';
 // P1-14: same resolver as hook-shared.mjs — this was the second module that had never
-// heard of CLAUDE_MEM_RUNTIME_DIR, and a third hand-written copy of the join().
+// heard of QWEN_MEM_RUNTIME_DIR, and a third hand-written copy of the join().
 const RUNTIME_DIR = resolveRuntimeDir(DB_DIR);
 
 // ─── Budget ─────────────────────────────────────────────────────────────────
@@ -97,7 +97,7 @@ export function findReenrichCandidates(db, limit = 10, { scope = 'narrow', proje
     // gated on optimized_at (the alias branch's precedent — an optimized row can
     // still be unclassified) and it never SETS optimized_at, so the wide pass
     // keeps its own candidates.
-    // Lesson-bearing first: CLAUDE_MEM_SCOPE_FILTER gates pre-tool recall, which
+    // Lesson-bearing first: QWEN_MEM_SCOPE_FILTER gates pre-tool recall, which
     // injects lesson-bearing rows — classifying those first is what makes the
     // lever usable before the backlog is fully drained.
     const stmt = db.prepare(`
@@ -945,27 +945,27 @@ export async function executeNormalize(db, force = false, { project } = {}) {
   // that `--project` exists to prevent exactly this contamination — the unattended caller
   // was simply still using the legacy unscoped mode.
   if (!project) {
-    if (String(process.env.CLAUDE_MEM_NORMALIZE_CROSS_PROJECT || '') === '1') {
+    if (String(process.env.QWEN_MEM_NORMALIZE_CROSS_PROJECT || '') === '1') {
       // This reaches a caller that OWNS ITS STDERR, and that bound is the whole story of
       // the line. Three callers reach here: the CLI (`optimize --run --task normalize`,
       // the user's own terminal), the MCP server (`mem_optimize`, server.mjs:1545 — its
       // stderr is the host's MCP log, so this does land somewhere a human can reach), and
       // the daily unattended pass, which is the one that cannot.
       // Second review moved it off `debugLog` (which returns early unless
-      // CLAUDE_MEM_DEBUG is set, and the detached worker does not set it) and the test
+      // QWEN_MEM_DEBUG is set, and the detached worker does not set it) and the test
       // certifying the repair spied on `console.error` IN PROCESS — which proves the
       // function emits, not that anyone receives. Nobody does, on the path that matters:
       // `hook.mjs` reaches this via `spawnBackground('llm-optimize')`, and hook-shared.mjs
       // spawns with `stdio: 'ignore'`, so the child's fd 2 IS /dev/null. Dropping the
-      // CLAUDE_MEM_DEBUG gate removed one of two blockers and the remaining one is
+      // QWEN_MEM_DEBUG gate removed one of two blockers and the remaining one is
       // sufficient on its own.
-      // So: useful for `claude-mem-lite optimize --run --task normalize`, silent for the
+      // So: useful for `qwen-mem-lite optimize --run --task normalize`, silent for the
       // daily unattended pass. The unattended disclosure is carried by `doctor`, which the
       // user runs in their own terminal — same shape and prefix as install.mjs's
-      // CLAUDE_MEM_SKIP_SIG_VERIFY notice. Do not delete either half; they cover different
+      // QWEN_MEM_SKIP_SIG_VERIFY notice. Do not delete either half; they cover different
       // paths, and tests/normalize-cross-project-disclosure.test.mjs pins both.
       console.error(
-        '[claude-mem-lite] WARNING: CLAUDE_MEM_NORMALIZE_CROSS_PROJECT=1 — normalize is ' +
+        '[qwen-mem-lite] WARNING: QWEN_MEM_NORMALIZE_CROSS_PROJECT=1 — normalize is ' +
           'running over every project at once, so one project’s stored content can steer the ' +
           'synonym groups applied to all of them (R10-P3-21). Unset it to return to the ' +
           'per-project default.',

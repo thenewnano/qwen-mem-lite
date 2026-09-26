@@ -68,14 +68,14 @@ const INJECT_MARKER = /\[mem\]/;
 // always separate attachments (never co-located), so per-attachment marker routing
 // cleanly splits them.
 const MEMCTX_MARKER = /<memory-context/;
-// Task-imperative line (CLAUDE_MEM_TASK_IMPERATIVE, default off): `Memory — a past
+// Task-imperative line (QWEN_MEM_TASK_IMPERATIVE, default off): `Memory — a past
 // lesson applies to THIS task. You must: … (#NN)`. It is co-located with the
 // <memory-context> block in the SAME UserPromptSubmit attachment, so per-attachment
 // routing would fold its #NN into :memory-context. Per-line routing (below) credits
 // it to a distinct :imperative bucket so its cite-recall is measurable on its own.
 const IMP_MARKER = /Memory — a past lesson applies to THIS task\. You must:/;
 // PostToolUse error-recall hint (hook.mjs triggerErrorRecall → post-tool-use.sh):
-// `[claude-mem-lite] Related memories found for this error:` then `  #NN [type] body`
+// `[qwen-mem-lite] Related memories found for this error:` then `  #NN [type] body`
 // rows. Routed to its own :error-recall bucket with row-anchored extraction — mirroring
 // production lib/citation-tracker.mjs INJECTED_ROW_RE — so the benchmark's injected
 // denominator matches the runtime's channel definition. Before D#51 the error-recall

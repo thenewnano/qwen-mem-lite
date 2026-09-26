@@ -1,5 +1,5 @@
 // debugCatch is the error-handler-of-last-resort: every swallowed exception in this
-// codebase ends here, and CLAUDE_MEM_CATCH_SAMPLE turns it into the post-mortem trail.
+// codebase ends here, and QWEN_MEM_CATCH_SAMPLE turns it into the post-mortem trail.
 // So what it depends on matters more than what anything else depends on — a dependency
 // that is broken in the situation you are sampling takes the evidence down with it.
 //
@@ -14,7 +14,7 @@
 //
 // It now imports lib/resolve-data-dir.mjs, whose only imports are node:os and node:path.
 // The second benefit is timing: DB_DIR is evaluated at schema.mjs module load, so a test
-// (or CLAUDE_MEM_TEST_GUARD) that redirects the data dir afterwards was ignored here;
+// (or QWEN_MEM_TEST_GUARD) that redirects the data dir afterwards was ignored here;
 // calling resolveDataDir at sample time honours it.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'child_process';
@@ -82,7 +82,7 @@ describe('debugCatch sampling path dependencies', () => {
       ],
       {
         cwd: REPO,
-        env: { ...process.env, CLAUDE_MEM_CATCH_SAMPLE: '1', CLAUDE_MEM_DIR: dir, CLAUDE_MEM_DEBUG: '' },
+        env: { ...process.env, QWEN_MEM_CATCH_SAMPLE: '1', QWEN_MEM_DIR: dir, QWEN_MEM_DEBUG: '' },
         stdio: 'pipe',
         timeout: 30_000,
       },
@@ -107,6 +107,6 @@ describe('debugCatch sampling path dependencies', () => {
     // The substitution must be exact, or samples land somewhere nobody looks.
     const { resolveDataDir } = await import('../lib/resolve-data-dir.mjs');
     const { DB_DIR } = await import('../schema.mjs');
-    expect(resolveDataDir(process.env.CLAUDE_MEM_DIR)).toBe(DB_DIR);
+    expect(resolveDataDir(process.env.QWEN_MEM_DIR)).toBe(DB_DIR);
   });
 });

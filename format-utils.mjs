@@ -1,5 +1,5 @@
 import { DAY_MS } from './lib/time-constants.mjs';
-// claude-mem-lite: String formatting and display utilities
+// qwen-mem-lite: String formatting and display utilities
 // Extracted from utils.mjs for focused responsibility
 
 /**
@@ -91,7 +91,7 @@ export function queryLabel(query) {
 }
 
 // Two delimiter classes are defanged here:
-//   1. The blocks claude-mem-lite wraps injected context in (claude-mem-context /
+//   1. The blocks qwen-mem-lite wraps injected context in (qwen-mem-context / claude-mem-context /
 //      memory-context / session-handoff). User-derived text containing one LITERALLY
 //      would prematurely open/close the block it lands in, spilling the rest as
 //      undelimited context.
@@ -110,10 +110,10 @@ export function queryLabel(query) {
 //      These carry attributes, so the match allows an optional attribute tail before the
 //      closing `>` \u2014 which also catches an attribute-bearing forgery of an authority tag
 //      (<system-reminder foo="\u2026">). Unrelated tags (<other-tag>) are left intact.
-// Reachable by editing files that contain these tokens \u2014 e.g. developing claude-mem-lite
+// Reachable by editing files that contain these tokens \u2014 e.g. developing qwen-mem-lite
 // itself, where source/observations carry the delimiter names.
 const CONTEXT_DELIMITER_RE =
-  /<\/?(?:claude-mem-context|memory-context|session-handoff|system-reminder|task-notification|(?:antml:)?function_calls|(?:antml:)?function_results|(?:antml:)?invoke|(?:antml:)?parameter)(?:\s[^>]*)?>/gi;
+  /<\/?(?:qwen-mem-context|claude-mem-context|memory-context|session-handoff|system-reminder|task-notification|(?:antml:)?function_calls|(?:antml:)?function_results|(?:antml:)?invoke|(?:antml:)?parameter)(?:\s[^>]*)?>/gi;
 
 // Pass cap for the fixpoint loop below. 32 nested layers of a forged delimiter is far past
 // anything prose produces; the cap exists only to bound the ADVERSARIAL cost (an unbounded
@@ -158,7 +158,7 @@ function defangToFixpoint(s, re) {
 
 /**
  * Defang the literal context-block delimiter tags in user-derived text. Strips just the
- * angle brackets, so `</claude-mem-context>` renders as `/claude-mem-context` \u2014 still
+ * angle brackets, so `</qwen-mem-context>` renders as `/qwen-mem-context` \u2014 still
  * readable, but no longer a structural delimiter. Complements `mdCell`'s pipe-escaping.
  * Iterated to a fixpoint (see defangToFixpoint): a single pass let `<<system-reminder>>`
  * come back live.
@@ -279,7 +279,7 @@ export function formatErrorRecallHints(rows) {
     return head;
   });
   const ids = rows.map((r) => r.id).join(',');
-  return `[claude-mem-lite] Related memories found for this error:\n${lines.join('\n')}\n  \u2192 Use mem_get(ids=[${ids}]) for details.\n`;
+  return `[qwen-mem-lite] Related memories found for this error:\n${lines.join('\n')}\n  \u2192 Use mem_get(ids=[${ids}]) for details.\n`;
 }
 
 /**

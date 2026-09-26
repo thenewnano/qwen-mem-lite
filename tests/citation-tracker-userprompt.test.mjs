@@ -42,7 +42,7 @@ describe('extractInjectedFromUserPromptSubmit', () => {
         type: 'attachment',
         attachment: {
           type: 'hook_success',
-          command: 'node /home/sds/.claude-mem-lite/hook.mjs user-prompt',
+          command: 'node /home/sds/.qwen-mem-lite/hook.mjs user-prompt',
           stdout:
             '<memory-context relevance="high">\n' +
             '- [decision] picked X over Y | Lesson: Z (#8005)\n' +
@@ -109,7 +109,7 @@ describe('extractInjectedFromUserPromptSubmit', () => {
         type: 'attachment',
         attachment: {
           type: 'hook_success',
-          command: 'node /home/sds/.claude-mem-lite/scripts/pre-tool-recall.js',
+          command: 'node /home/sds/.qwen-mem-lite/scripts/pre-tool-recall.js',
           stdout: '{"hookSpecificOutput":{"additionalContext":"  #42 [bugfix] body"}}',
         },
       },
@@ -159,7 +159,7 @@ describe('extractInjectedFromUserPromptSubmit', () => {
         type: 'attachment',
         attachment: {
           type: 'hook_success',
-          command: 'node "/home/sds/.claude-mem-lite/hook.mjs" user-prompt',
+          command: 'node "/home/sds/.qwen-mem-lite/hook.mjs" user-prompt',
           stdout: '<memory-context relevance="high">\n- [bugfix] real prod shape (#7972)\n</memory-context>',
         },
       },
@@ -180,7 +180,7 @@ describe('extractInjectedFromUserPromptSubmit', () => {
         type: 'attachment',
         attachment: {
           type: 'hook_success',
-          command: 'node "/home/sds/.claude-mem-lite/hook.mjs" user-prompt',
+          command: 'node "/home/sds/.qwen-mem-lite/hook.mjs" user-prompt',
           stdout:
             '<memory-context relevance="events">\n' +
             '- E#42 [bugfix] redis timeout fix — raise pool size and add backoff\n' +
@@ -235,7 +235,7 @@ describe('extractInjectedFromErrorRecall', () => {
   }
 
   it('extracts IDs from the PostToolUse error-recall hint (triggerErrorRecall raw stdout)', () => {
-    // hook.mjs:352 writes `[claude-mem-lite] Related memories found for this error:`
+    // hook.mjs:352 writes `[qwen-mem-lite] Related memories found for this error:`
     // followed by `  #NN [type] title` lines, delivered via post-tool-use.sh.
     // Neither pre-tool-recall nor UserPromptSubmit extractor matched this surface,
     // so 22+ distinct obs/transcript were invisible to decay.
@@ -244,9 +244,9 @@ describe('extractInjectedFromErrorRecall', () => {
         type: 'attachment',
         attachment: {
           type: 'hook_success',
-          command: 'bash "/home/sds/.claude-mem-lite/scripts/post-tool-use.sh"',
+          command: 'bash "/home/sds/.qwen-mem-lite/scripts/post-tool-use.sh"',
           stdout:
-            '[claude-mem-lite] Related memories found for this error:\n' +
+            '[qwen-mem-lite] Related memories found for this error:\n' +
             '  #7933 [bugfix] some prior failure title\n' +
             '  #8455 [decision] related design note\n' +
             '  → Use mem_get(ids=[7933,8455]) for details.\n',
@@ -267,7 +267,7 @@ describe('extractInjectedFromErrorRecall', () => {
           type: 'hook_success',
           command: 'bash post-tool-use.sh',
           stdout:
-            '[claude-mem-lite] Related memories found for this error:\n' +
+            '[qwen-mem-lite] Related memories found for this error:\n' +
             '  #100 [bugfix] x\n' +
             '  → Use mem_get(ids=[100,200,300]) for details.\n',
         },
@@ -316,7 +316,7 @@ describe('extractInjectedFromFyi', () => {
         type: 'attachment',
         attachment: {
           type: 'hook_success',
-          command: 'node "/home/sds/.claude-mem-lite/scripts/user-prompt-search.js"',
+          command: 'node "/home/sds/.qwen-mem-lite/scripts/user-prompt-search.js"',
           stdout:
             '[mem] FYI — Related memories (continue your task):\n' +
             '#8587 🔴 env-gate cross-check — bugfix lesson\n' +
@@ -462,7 +462,7 @@ describe('extractAllInjected (union wrapper)', () => {
         attachment: {
           type: 'hook_success',
           command: 'bash "/p/scripts/post-tool-use.sh"',
-          stdout: '[claude-mem-lite] Related memories found for this error:\n  #300 [bugfix] c\n',
+          stdout: '[qwen-mem-lite] Related memories found for this error:\n  #300 [bugfix] c\n',
         },
       },
       {

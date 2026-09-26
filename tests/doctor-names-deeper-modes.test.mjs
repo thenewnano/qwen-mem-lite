@@ -37,7 +37,7 @@ function runDoctor(extra = []) {
   mkdirSync(home, { recursive: true });
   mkdirSync(work, { recursive: true });
   const env = { ...process.env };
-  for (const k of Object.keys(env)) if (/^(CLAUDE_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete env[k];
+  for (const k of Object.keys(env)) if (/^(QWEN_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete env[k];
   delete env.CLAUDE_PROJECT_DIR;
   delete env.PWD;
   try {
@@ -46,9 +46,9 @@ function runDoctor(extra = []) {
       env: {
         ...env,
         HOME: home,
-        CLAUDE_MEM_DIR: join(home, '.claude-mem-lite'),
+        QWEN_MEM_DIR: join(home, '.qwen-mem-lite'),
         MEM_NO_AUTO_ADOPT: '1',
-        CLAUDE_MEM_SKIP_UPDATE: '1',
+        QWEN_MEM_SKIP_UPDATE: '1',
       },
       encoding: 'utf8',
       timeout: 120000,
@@ -83,9 +83,9 @@ describe('plain doctor tells the user the deeper modes exist', () => {
   });
 
   it('prints the modes as a list, not as something a shell would run', () => {
-    // The first draft printed `claude-mem-lite doctor --benchmark | --metrics |
+    // The first draft printed `qwen-mem-lite doctor --benchmark | --metrics |
     // --session-audit`. A line shaped like a command gets copy-pasted, and `|` is a pipe:
-    //     $ claude-mem-lite doctor --benchmark | --metrics | --session-audit
+    //     $ qwen-mem-lite doctor --benchmark | --metrics | --session-audit
     //     bash: --metrics: command not found
     // Which is the defect 32c8923 fixed one commit earlier in this same branch — a remedy
     // naming something that cannot run — coming back in a different spelling.
@@ -97,7 +97,7 @@ describe('plain doctor tells the user the deeper modes exist', () => {
 
   it('still exits non-zero when there are real issues', () => {
     // The pointer is a line of prose; it must not touch the exit-code contract that
-    // `claude-mem-lite doctor || alert` depends on.
+    // `qwen-mem-lite doctor || alert` depends on.
     const r = runDoctor();
     expect(r.stdout).toMatch(/issue\(s\) found|All (critical )?checks passed/);
     expect([0, 1]).toContain(r.status);

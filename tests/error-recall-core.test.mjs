@@ -37,7 +37,7 @@ const PROJECT = 'p-main';
 
 /** Run `fn` with the D#167 rerank kill-switch set (and restored afterwards). */
 function withRerank(value, fn) {
-  const KEY = 'CLAUDE_MEM_ERROR_RECALL_RERANK';
+  const KEY = 'QWEN_MEM_ERROR_RECALL_RERANK';
   const saved = process.env[KEY];
   if (value === undefined) delete process.env[KEY];
   else process.env[KEY] = value;
@@ -327,7 +327,7 @@ describe('error-recall core — gate', () => {
 });
 
 describe('error-recall core — relevance floor (SET-LEVEL, default OFF)', () => {
-  const FLOOR_ENV = 'CLAUDE_MEM_ERROR_RECALL_BM25_MIN';
+  const FLOOR_ENV = 'QWEN_MEM_ERROR_RECALL_BM25_MIN';
   const withEnv = (v, fn) => {
     const saved = process.env[FLOOR_ENV];
     if (v === undefined) delete process.env[FLOOR_ENV];

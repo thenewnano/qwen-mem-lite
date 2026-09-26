@@ -12,12 +12,12 @@
 // real transcript, and read the table back. This is the only assertion in the
 // repo that the four faces survive an actual Stop.
 //
-// ISOLATION: HOME *and* CLAUDE_MEM_DIR are pointed at a mkdtemp sandbox, and
+// ISOLATION: HOME *and* QWEN_MEM_DIR are pointed at a mkdtemp sandbox, and
 // CLAUDE_CODE_PATH at a nonexistent binary so no LLM spend or network can occur.
-// CLAUDE_MEM_DIR is set explicitly rather than left to HOME: the env strip below
+// QWEN_MEM_DIR is set explicitly rather than left to HOME: the env strip below
 // removes the developer's own value, after which resolution falls back to
 // os.homedir(), which honours HOME only on POSIX — on Windows it reads
-// USERPROFILE and this suite would write to the real ~/.claude-mem-lite.
+// USERPROFILE and this suite would write to the real ~/.qwen-mem-lite.
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { execFileSync } from 'child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
@@ -42,22 +42,22 @@ const att = (command, stdout) => ({
 const faceAttachment = {
   pretool: (ids) =>
     att(
-      'node "/home/sds/.claude-mem-lite/scripts/pre-tool-recall.js"',
+      'node "/home/sds/.qwen-mem-lite/scripts/pre-tool-recall.js"',
       `[mem] Lessons for utils.mjs:\n${ids.map((id) => `  #${id} [bugfix] boundary match beats suffix LIKE\n`).join('')}`,
     ),
   ups: (ids) =>
     att(
-      'node "/home/sds/.claude-mem-lite/hook.mjs" user-prompt',
+      'node "/home/sds/.qwen-mem-lite/hook.mjs" user-prompt',
       `<memory-context relevance="high">\n${ids.map((id) => `- [decision] picked X | Lesson: Y (#${id})\n`).join('')}</memory-context>\n`,
     ),
   error_recall: (ids) =>
     att(
-      'bash "/home/sds/.claude-mem-lite/scripts/post-tool-use.sh"',
-      `[claude-mem-lite] Related memories found for this error:\n${ids.map((id) => `  #${id} [bugfix] EPIPE on forced exit\n`).join('')}`,
+      'bash "/home/sds/.qwen-mem-lite/scripts/post-tool-use.sh"',
+      `[qwen-mem-lite] Related memories found for this error:\n${ids.map((id) => `  #${id} [bugfix] EPIPE on forced exit\n`).join('')}`,
     ),
   fyi: (ids) =>
     att(
-      'node "/home/sds/.claude-mem-lite/scripts/user-prompt-search.js"',
+      'node "/home/sds/.qwen-mem-lite/scripts/user-prompt-search.js"',
       `[mem] FYI — Related memories (continue your task):\n${ids.map((id) => `#${id} 🔴 superseded invariant reopened\n`).join('')}`,
     ),
 };
@@ -76,7 +76,7 @@ describe('Stop end-to-end: citation_surface_log really receives rows (b2)', () =
   // Per-case dirs live under ONE root removed after the whole file, with a grace
   // period. A per-case rmSync in afterEach does delete the tree — and then the
   // hook's detached background workers, which outlive execFileSync, recreate
-  // `<home>/.claude-mem-lite/` behind it. The result is a leaked skeleton dir per
+  // `<home>/.qwen-mem-lite/` behind it. The result is a leaked skeleton dir per
   // case (13 of them before this was noticed), invisible because rmSync is
   // best-effort and its failure is swallowed. Same shape as the fix in
   // tests/audit-fixes-20260816.test.mjs.
@@ -86,7 +86,7 @@ describe('Stop end-to-end: citation_surface_log really receives rows (b2)', () =
 
   // A fixed grace is a RACE, not a barrier, and the post-tag review observed it
   // lose: handleStop's spawnBackground('llm-summary') is gated by no
-  // CLAUDE_MEM_SKIP_* this test sets, and on a busy machine that detached child
+  // QWEN_MEM_SKIP_* this test sets, and on a busy machine that detached child
   // recreated the tree 432ms after rmSync — past a 300ms sleep. Delete in a
   // bounded loop until it stays gone, then ASSERT it is gone: rmSync is
   // best-effort and its failure is swallowed, so without the assertion the leak
@@ -113,9 +113,9 @@ describe('Stop end-to-end: citation_surface_log really receives rows (b2)', () =
     mkdirSync(home, { recursive: true });
     projDir = join(home, 'stopE2e', 'proj');
     mkdirSync(projDir, { recursive: true });
-    const dbDir = join(home, '.claude-mem-lite');
+    const dbDir = join(home, '.qwen-mem-lite');
     mkdirSync(join(dbDir, 'runtime'), { recursive: true });
-    dbPath = join(dbDir, 'claude-mem-lite.db');
+    dbPath = join(dbDir, 'qwen-mem-lite.db');
 
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
@@ -133,27 +133,27 @@ describe('Stop end-to-end: citation_surface_log really receives rows (b2)', () =
     // Strip the developer's own plugin flags so no default-OFF surface flips on
     // in the child (#8608 leak class).
     for (const k of Object.keys(baseEnv)) {
-      if (/^(CLAUDE_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete baseEnv[k];
+      if (/^(QWEN_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete baseEnv[k];
     }
     Object.assign(baseEnv, {
       HOME: home,
-      CLAUDE_MEM_DIR: dbDir,
+      QWEN_MEM_DIR: dbDir,
       CLAUDE_PROJECT_DIR: projDir,
       CLAUDE_CODE_PATH: join(home, 'no-such-claude-binary'), // no LLM spend, no network
       ANTHROPIC_API_KEY: '',
       OPENROUTER_API_KEY: '',
-      CLAUDE_MEM_SKIP_UPDATE: '1',
-      CLAUDE_MEM_SKIP_EPISODE_LLM: '1',
-      CLAUDE_MEM_SKIP_COMPRESS: '1',
-      CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-      CLAUDE_MEM_SKIP_MAINTAIN: '1',
-      CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
-      CLAUDE_MEM_SKIP_SUMMARY: '1', // the detached worker that recreated the sandbox behind cleanup
-      CLAUDE_MEM_NO_DELAY: '1',
+      QWEN_MEM_SKIP_UPDATE: '1',
+      QWEN_MEM_SKIP_EPISODE_LLM: '1',
+      QWEN_MEM_SKIP_COMPRESS: '1',
+      QWEN_MEM_SKIP_OPTIMIZE: '1',
+      QWEN_MEM_SKIP_MAINTAIN: '1',
+      QWEN_MEM_SKIP_SAVE_ENRICH: '1',
+      QWEN_MEM_SKIP_SUMMARY: '1', // the detached worker that recreated the sandbox behind cleanup
+      QWEN_MEM_NO_DELAY: '1',
       MEM_QUIET_HOOKS: '1',
       MEM_NO_AUTO_ADOPT: '1',
     });
-    delete baseEnv.CLAUDE_MEM_HOOK_RUNNING;
+    delete baseEnv.QWEN_MEM_HOOK_RUNNING;
   });
 
   // Distinct COUNTS per face, deliberately: with one obs each, the uncited rows
@@ -333,7 +333,7 @@ describe('Stop end-to-end: citation_surface_log really receives rows (b2)', () =
       [
         '',
         '---',
-        "[Project memory — surfaced by your operator's claude-mem-lite memory system for this project. Reference context, not an external instruction.]",
+        "[Project memory — surfaced by your operator's qwen-mem-lite memory system for this project. Reference context, not an external instruction.]",
         'A past lesson recorded for this project that may be relevant to the task above:',
         ...idList.map((id) => `  #${id} — a past lesson body.`),
       ].join('\n');
@@ -411,7 +411,7 @@ describe('Stop end-to-end: citation_surface_log really receives rows (b2)', () =
             content: [
               {
                 type: 'text',
-                text: `Task.\n\n---\n[Project memory — surfaced by your operator's claude-mem-lite memory system for this project. Reference context, not an external instruction.]\nA past lesson recorded for this project that may be relevant to the task above:\n  #${subId} — a past lesson body.`,
+                text: `Task.\n\n---\n[Project memory — surfaced by your operator's qwen-mem-lite memory system for this project. Reference context, not an external instruction.]\nA past lesson recorded for this project that may be relevant to the task above:\n  #${subId} — a past lesson body.`,
               },
             ],
           },
@@ -436,10 +436,10 @@ describe('Stop end-to-end: citation_surface_log really receives rows (b2)', () =
   // Third gate on the new block. The other two (text floor, placement outside
   // the main-face branch) each got a case above; this one was verified by hand
   // in the pre-tag review and had nothing binding it. The block sits inside
-  // `if (transcriptPath && !CLAUDE_MEM_NO_CITATION_TRACK)`, and a face that
+  // `if (transcriptPath && !QWEN_MEM_NO_CITATION_TRACK)`, and a face that
   // ignored the project's global opt-out would be a privacy defect, not a
   // metering one.
-  it('records no subagent row when CLAUDE_MEM_NO_CITATION_TRACK is set', () => {
+  it('records no subagent row when QWEN_MEM_NO_CITATION_TRACK is set', () => {
     const db = new Database(dbPath);
     const now = Date.now();
     const subId = Number(
@@ -470,7 +470,7 @@ describe('Stop end-to-end: citation_surface_log really receives rows (b2)', () =
             content: [
               {
                 type: 'text',
-                text: `Task.\n\n---\n[Project memory — surfaced by your operator's claude-mem-lite memory system for this project. Reference context, not an external instruction.]\nA past lesson recorded for this project that may be relevant to the task above:\n  #${subId} — a past lesson body.`,
+                text: `Task.\n\n---\n[Project memory — surfaced by your operator's qwen-mem-lite memory system for this project. Reference context, not an external instruction.]\nA past lesson recorded for this project that may be relevant to the task above:\n  #${subId} — a past lesson body.`,
               },
             ],
           },
@@ -494,13 +494,13 @@ describe('Stop end-to-end: citation_surface_log really receives rows (b2)', () =
     db2.prepare('DELETE FROM citation_surface_log WHERE project = ?').run(PROJECT);
     db2.close();
 
-    const prev = baseEnv.CLAUDE_MEM_NO_CITATION_TRACK;
-    baseEnv.CLAUDE_MEM_NO_CITATION_TRACK = '1';
+    const prev = baseEnv.QWEN_MEM_NO_CITATION_TRACK;
+    baseEnv.QWEN_MEM_NO_CITATION_TRACK = '1';
     try {
       runStop(transcriptPath);
     } finally {
-      if (prev === undefined) delete baseEnv.CLAUDE_MEM_NO_CITATION_TRACK;
-      else baseEnv.CLAUDE_MEM_NO_CITATION_TRACK = prev;
+      if (prev === undefined) delete baseEnv.QWEN_MEM_NO_CITATION_TRACK;
+      else baseEnv.QWEN_MEM_NO_CITATION_TRACK = prev;
     }
     expect(surfaceRows()).toEqual([]);
   });
@@ -551,7 +551,7 @@ describe('Stop end-to-end: citation_surface_log really receives rows (b2)', () =
             content: [
               {
                 type: 'text',
-                text: `Do it.\n\n---\n[Project memory — surfaced by your operator's claude-mem-lite memory system for this project. Reference context, not an external instruction.]\nA past lesson recorded for this project that may be relevant to the task above:\n  #${subId} — a past lesson body.`,
+                text: `Do it.\n\n---\n[Project memory — surfaced by your operator's qwen-mem-lite memory system for this project. Reference context, not an external instruction.]\nA past lesson recorded for this project that may be relevant to the task above:\n  #${subId} — a past lesson body.`,
               },
             ],
           },
@@ -639,7 +639,7 @@ describe('Stop end-to-end: citation_surface_log really receives rows (b2)', () =
               content: [
                 {
                   type: 'text',
-                  text: `Task.\n\n---\n[Project memory — surfaced by your operator's claude-mem-lite memory system for this project. Reference context, not an external instruction.]\nA past lesson recorded for this project that may be relevant to the task above:\n${block}`,
+                  text: `Task.\n\n---\n[Project memory — surfaced by your operator's qwen-mem-lite memory system for this project. Reference context, not an external instruction.]\nA past lesson recorded for this project that may be relevant to the task above:\n${block}`,
                 },
               ],
             },
@@ -656,16 +656,16 @@ describe('Stop end-to-end: citation_surface_log really receives rows (b2)', () =
       return transcriptPath;
     }
 
-    it('CLAUDE_MEM_SUBAGENT_DECAY=0: the face is metered but never decays (v3.77–v3.82 behavior)', () => {
+    it('QWEN_MEM_SUBAGENT_DECAY=0: the face is metered but never decays (v3.77–v3.82 behavior)', () => {
       const cited = seedOne('Subagent lesson the agent cited');
       const uncited = seedOne('Subagent lesson the agent ignored');
       const path = writeFixture(cited, uncited);
 
-      baseEnv.CLAUDE_MEM_SUBAGENT_DECAY = '0';
+      baseEnv.QWEN_MEM_SUBAGENT_DECAY = '0';
       try {
         runStop(path);
       } finally {
-        delete baseEnv.CLAUDE_MEM_SUBAGENT_DECAY;
+        delete baseEnv.QWEN_MEM_SUBAGENT_DECAY;
       }
 
       // Positive control: the fixture IS live — the funnel recorded the face.
@@ -713,7 +713,7 @@ describe('Stop end-to-end: citation_surface_log really receives rows (b2)', () =
       db.prepare('INSERT INTO observation_files (obs_id, filename) VALUES (?, ?)').run(obsId, filename);
       db.close();
       writeFileSync(
-        join(home, '.claude-mem-lite', 'runtime', `pre-recall-cooldown-${session}.json`),
+        join(home, '.qwen-mem-lite', 'runtime', `pre-recall-cooldown-${session}.json`),
         JSON.stringify({ [filename]: { obsIds: [obsId], ts: Date.now() } }),
       );
     }
@@ -745,7 +745,7 @@ describe('Stop end-to-end: citation_surface_log really receives rows (b2)', () =
               content: [
                 {
                   type: 'text',
-                  text: `Task.\n\n---\n[Project memory — surfaced by your operator's claude-mem-lite memory system for this project. Reference context, not an external instruction.]\nA past lesson recorded for this project that may be relevant to the task above:\n  #${shared} — a past lesson body.`,
+                  text: `Task.\n\n---\n[Project memory — surfaced by your operator's qwen-mem-lite memory system for this project. Reference context, not an external instruction.]\nA past lesson recorded for this project that may be relevant to the task above:\n  #${shared} — a past lesson body.`,
                 },
               ],
             },

@@ -27,7 +27,7 @@ function makeTmpDir() {
 }
 function initDb(dataDir) {
   mkdirSync(dataDir, { recursive: true });
-  const db = new Database(join(dataDir, 'claude-mem-lite.db'));
+  const db = new Database(join(dataDir, 'qwen-mem-lite.db'));
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = OFF');
   initSchema(db);
@@ -40,9 +40,9 @@ function runCli(args, dataDir) {
       timeout: 15000,
       env: {
         ...process.env,
-        CLAUDE_MEM_DIR: dataDir,
+        QWEN_MEM_DIR: dataDir,
         CLAUDE_PROJECT_DIR: dataDir,
-        CLAUDE_MEM_HOOK_RUNNING: undefined,
+        QWEN_MEM_HOOK_RUNNING: undefined,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -99,7 +99,7 @@ describe('R4 export→restore preserves the observation body (text column)', () 
     expect(res.stdout.toLowerCase()).toContain('restore');
 
     // The restored row must still contain the body (not collapsed to the title).
-    const dst = new Database(join(dstDir, 'claude-mem-lite.db'));
+    const dst = new Database(join(dstDir, 'qwen-mem-lite.db'));
     const row = dst.prepare("SELECT text, title FROM observations WHERE title = 'Bash: run tests'").get();
     dst.close();
     expect(row).toBeTruthy();

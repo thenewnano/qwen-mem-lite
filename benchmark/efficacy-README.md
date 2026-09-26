@@ -1,6 +1,6 @@
 # Memory-efficacy validation
 
-A three-step rig that answers one question: **does claude-mem-lite's lesson
+A three-step rig that answers one question: **does qwen-mem-lite's lesson
 injection actually make Claude write better code?** — not "does it retrieve the
 right memory" (that's `cite-recall.mjs`), but "does seeing the memory change the
 code the model ships."
@@ -13,7 +13,7 @@ code the model ships."
 ## The conclusion (read this first — the experiment already ran)
 
 The instrument is the point; the headline result is settled and lives in memory
-(`claude-mem-lite get 8646,8650,8651`). Re-run the rig to **re-measure after a
+(`qwen-mem-lite get 8646,8650,8651`). Re-run the rig to **re-measure after a
 product change**, not to rediscover these:
 
 1. **Observation cannot identify the effect** (`#8646`). In a fully-dogfooded
@@ -72,7 +72,7 @@ point, run STEP 3 on `bac2e85` again and check whether arm A moves above 4/8.
 |------|------|--------------|------|
 | `efficacy-observational.mjs` | 1 — go/no-go gate | Read-only. Mines transcripts + git history: do lesson-injected edits get *fewer* later `fix:` commits than uninjected ones? Reports a hotness-controlled within-file DiD vs a maturation placebo. **Sign-only verdict** — never trusts magnitude; confounded by construction (see #8646). | ~free |
 | `efficacy-power.mjs` | 2 — power analysis | Monte-Carlo over the A/C pilot: minimum detectable effect at each (#commits, k) + the Claude-session cost, so step 3 never returns a number it has no power to interpret. Unit of replication = **commit**, not run (no pseudo-replication). | ~free |
-| `efficacy-harness.mjs` | 3b — severe test | The real instrument. For each commit in `efficacy-commits.json`: surgical `git revert -n C` reintroduces the bug at HEAD (oracle test kept OUT of the worktree, applied only at scoring), arm A runs with the commit's real lesson seeded in a `CLAUDE_MEM_DIR` sandbox, arm C runs empty, score = bug-set tests green after the edit. Injection is verified per run via a direct hook probe (not CLI recall, which filters differently). | **real Claude sessions** |
+| `efficacy-harness.mjs` | 3b — severe test | The real instrument. For each commit in `efficacy-commits.json`: surgical `git revert -n C` reintroduces the bug at HEAD (oracle test kept OUT of the worktree, applied only at scoring), arm A runs with the commit's real lesson seeded in a `QWEN_MEM_DIR` sandbox, arm C runs empty, score = bug-set tests green after the edit. Injection is verified per run via a direct hook probe (not CLI recall, which filters differently). | **real Claude sessions** |
 
 `efficacy-commits.json` — the curated Goldilocks commit set (`bac2e85` is the
 airtight construction; `3f26b7a`/`aacab0c` are exploratory and may hit revert
@@ -101,7 +101,7 @@ node benchmark/efficacy-harness.mjs                  # STEP 3 driver — spawns 
 - **Environment isolation is NOT guaranteed (2026-06-13 contamination diagnosis).**
   `claude -p --allowedTools 'Read,Edit'` does not confine a session whose global
   `~/.claude` config auto-dispatches subagents: an orchestrator-mode setup spawned
-  a worker with full Bash, which ran `claude-mem-lite recall/get`, `git diff`
+  a worker with full Bash, which ran `qwen-mem-lite recall/get`, `git diff`
   (reading the construction diff — oracle leak, now closed by committing the
   construction inside the worktree), and `vitest` on the worktree oracle. Two
   consequences: (1) **runs are only comparable under the same global config** —
@@ -113,9 +113,9 @@ node benchmark/efficacy-harness.mjs                  # STEP 3 driver — spawns 
   (PreToolUse `pre-tool-recall.js`, UserPromptSubmit `user-prompt-search.js`)
   wired to this checkout — no global plugins, no orchestrator, no
   subagent-dispatch escape. `setup.sh`/`post-tool-use.sh` are deliberately
-  excluded (they hardcode `$HOME/.claude-mem-lite` and would touch live data).
+  excluded (they hardcode `$HOME/.qwen-mem-lite` and would touch live data).
   `--arms=A,AL,C` adds the salience-format comparison in the same env:
-  `AL` = arm A under `CLAUDE_MEM_SALIENCE=legacy`. Isolated cells carry
+  `AL` = arm A under `QWEN_MEM_SALIENCE=legacy`. Isolated cells carry
   `env: "isolated-v1"` in `tasks/efficacy-results.json` and must not be pooled
   with non-isolated cells.
 - **Ack ≠ comprehension (single-case but vivid, from the same diagnosis).** With
@@ -135,7 +135,7 @@ fires — closing the plumbing artifact that floored the 2026-06-13 isolated run
 
 Arms (same isolated env, `--k=8`):
 - `C` empty control · `A` v2.98 ack directive · `F` bind directive + PostToolUse diff
-  re-inject (`CLAUDE_MEM_SALIENCE=bind`) · `T` empty sandbox + the fix spelled into the
+  re-inject (`QWEN_MEM_SALIENCE=bind`) · `T` empty sandbox + the fix spelled into the
   task (`requirement`) = gauge sanity.
 
 Run: `node benchmark/efficacy-harness.mjs --isolated --arms=C,A,F,T --k=8 --commit=bac2e85 --model='claude-sonnet-4-6'`
@@ -181,13 +181,13 @@ out), yet neither the v2.98 ack directive NOR the comprehension-binding bind for
 moves shipped-code correctness at all. Corrected reading of #8711's "ACTING is the bottleneck":
 with the lesson now demonstrably seen, the model still doesn't apply it — the gap is
 **comprehension/application, not salience/seeing**, so forcing *engagement* (bind) doesn't help.
-**Do NOT flip the `CLAUDE_MEM_SALIENCE` default; bind stays opt-in.** Caveat: one cell, one model,
+**Do NOT flip the `QWEN_MEM_SALIENCE` default; bind stays opt-in.** Caveat: one cell, one model,
 upper-bound — a null here ≠ "bind is useless everywhere" (component 2 never fires on bac2e85;
 other lesson shapes untested).
 
 ## comprehension-bridge measure (2026-06-27)
 
-Added arm **B** = `CLAUDE_MEM_SALIENCE=bridge`: at the PreToolUse edit point, a Haiku call rewrites the
+Added arm **B** = `QWEN_MEM_SALIENCE=bridge`: at the PreToolUse edit point, a Haiku call rewrites the
 recalled lesson into a check **bound to the actual edit hunk** (the specificity arm T has but A/F lack).
 bac2e85 only (the other 2 commits in `efficacy-commits.json` are now unrevertable — region drifted), k=8,
 `claude-sonnet-4-6`, reusing the cached A/C/F/T cells from the bind re-measure above.
@@ -257,7 +257,7 @@ production. (2) **Power** — n=2 commits / 1 model, both commits now have a val
 but not equal to a genuine spec — the residual 2/8 is the attribution gap.
 
 **Verdict: NET-POSITIVE → the live UserPromptSubmit task-imperative emitter (Phase 2) is ship-eligible**,
-behind `CLAUDE_MEM_TASK_IMPERATIVE` (default off).
+behind `QWEN_MEM_TASK_IMPERATIVE` (default off).
 
 **Update 2026-08-16 (D#137) — the default flip is abandoned; the flag is EXPERIMENTAL.** The flip was
 gated on a live cite-recall canary, and the canary can never reach n. Replaying

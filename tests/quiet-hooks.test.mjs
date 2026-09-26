@@ -103,15 +103,15 @@ describe('server.mjs instructions-mode stderr trace', () => {
 
   // server.mjs opens the DB UNCONDITIONALLY at module load (ensureDbWithWalRecovery:
   // schema init, index creation, WAL recovery). These cases build `env` as a literal
-  // rather than spreading process.env, so an outer CLAUDE_MEM_DIR cannot reach the
+  // rather than spreading process.env, so an outer QWEN_MEM_DIR cannot reach the
   // subprocess — which meant every `vitest run` opened and migrated the developer's
-  // REAL ~/.claude-mem-lite DB three times. Point both HOME and CLAUDE_MEM_DIR at
+  // REAL ~/.qwen-mem-lite DB three times. Point both HOME and QWEN_MEM_DIR at
   // throwaway dirs; every assertion here is about stderr framing, not stored data.
   function hermeticEnv(base, home) {
     return {
       HOME: home || join(base, 'home'),
       PATH: process.env.PATH,
-      CLAUDE_MEM_DIR: join(base, 'memdir'),
+      QWEN_MEM_DIR: join(base, 'memdir'),
     };
   }
 
@@ -173,7 +173,7 @@ describe('server.mjs instructions-mode stderr trace', () => {
   // `~/.claude/projects` is read-only. The server subprocess already takes HOME from
   // this env object, so a temp HOME keeps the assertion identical and the blast radius
   // inside tmpdir().
-  it('emits BASE reason=adopted when project has claude-mem-lite sentinel', async () => {
+  it('emits BASE reason=adopted when project has qwen-mem-lite sentinel', async () => {
     const fresh = mkdtempSync(join(tmpdir(), 'mem-trace-'));
     const fakeHome = mkdtempSync(join(tmpdir(), 'mem-home-'));
     try {
@@ -184,7 +184,7 @@ describe('server.mjs instructions-mode stderr trace', () => {
       const fs = await import('fs');
       fs.writeFileSync(
         join(mdir, 'MEMORY.md'),
-        '# Index\n<!-- claude-mem-lite:begin v1 -->\n## 插件契约\n- stub\n<!-- claude-mem-lite:end -->\n',
+        '# Index\n<!-- qwen-mem-lite:begin v1 -->\n## 插件契约\n- stub\n<!-- qwen-mem-lite:end -->\n',
       );
       const env = { ...hermeticEnv(fresh, fakeHome), CLAUDE_PROJECT_DIR: fresh, PWD: fresh };
       const r = await runServer(env);
@@ -199,12 +199,12 @@ describe('server.mjs instructions-mode stderr trace', () => {
     }
   });
 
-  it('opts out with CLAUDE_MEM_QUIET_TRACE=0 — no trace on stderr', async () => {
+  it('opts out with QWEN_MEM_QUIET_TRACE=0 — no trace on stderr', async () => {
     const fresh = mkdtempSync(join(tmpdir(), 'mem-trace-'));
     try {
       const env = {
         ...hermeticEnv(fresh),
-        CLAUDE_MEM_QUIET_TRACE: '0',
+        QWEN_MEM_QUIET_TRACE: '0',
         CLAUDE_PROJECT_DIR: fresh,
         PWD: fresh,
       };

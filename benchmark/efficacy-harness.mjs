@@ -16,7 +16,7 @@
 //     oracle test kept OUT of the worktree, applied only at scoring time.
 //   - bug-set: tests that are RED at the reverted baseline = the bug's signature.
 //     A commit with an empty bug-set is unusable (skipped, logged).
-//   - arm A: CLAUDE_MEM_DIR sandbox seeded with the commit's real lesson, under
+//   - arm A: QWEN_MEM_DIR sandbox seeded with the commit's real lesson, under
 //     project=projects--mem; arm C: empty sandbox. BOTH set CLAUDE_PROJECT_DIR=REPO
 //     (else inferProject keys off the /tmp cwd and injection is silently empty — #8648).
 //   - injection is VERIFIED per arm-A run via a direct hook probe (not CLI recall,
@@ -33,7 +33,7 @@
 //   node benchmark/efficacy-harness.mjs --concurrency=3
 //   node benchmark/efficacy-harness.mjs --isolated --arms=A,AL,C
 //     # D#35 mode: pinned CLAUDE_CONFIG_DIR (mem-only hooks, no global plugins/
-//     # orchestrator), plus AL = arm A under CLAUDE_MEM_SALIENCE=legacy so
+//     # orchestrator), plus AL = arm A under QWEN_MEM_SALIENCE=legacy so
 //     # v2.98-salience vs legacy injection format is measured in the SAME env.
 
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, symlinkSync, copyFileSync, chmodSync } from 'fs';
@@ -55,9 +55,9 @@ const args = Object.fromEntries(
 );
 const K = parseInt(args.k || '3', 10);
 // Arms: A = lesson injected (current salience, v2.98 ack-directive),
-//       AL = lesson injected with CLAUDE_MEM_SALIENCE=legacy (pre-v2.98 format),
+//       AL = lesson injected with QWEN_MEM_SALIENCE=legacy (pre-v2.98 format),
 //       C = empty sandbox control,
-//       F = lesson injected under CLAUDE_MEM_SALIENCE=bind (bind forcing-function),
+//       F = lesson injected under QWEN_MEM_SALIENCE=bind (bind forcing-function),
 //       T = empty sandbox + spec.requirement appended to the task (positive control / gauge),
 //       U = empty sandbox + the lesson appended at the task-prompt position under the imperative
 //           template (channel-isolation vs T; gates the live Phase-2 emitter).
@@ -161,8 +161,8 @@ function dropWorktree(wt) {
 //   • PreToolUse pre-tool-recall.js  — the injection channel under test
 //   • UserPromptSubmit user-prompt-search.js — prompt-level injection parity
 // setup.sh and post-tool-use.sh are EXCLUDED: both hardcode
-// $HOME/.claude-mem-lite and would write to the user's live data dir from
-// inside the cells (the node paths honor the CLAUDE_MEM_DIR sandbox; the bash
+// $HOME/.qwen-mem-lite and would write to the user's live data dir from
+// inside the cells (the node paths honor the QWEN_MEM_DIR sandbox; the bash
 // ones don't). SessionStart/Stop (hook.mjs) are excluded too — Haiku
 // summarization is irrelevant to edit quality and just adds cost.
 // Credentials: Linux stores them in ~/.claude/.credentials.json; copy into
@@ -250,7 +250,7 @@ function seedSandbox(arm, spec) {
       'bash',
       [
         '-c',
-        `CLAUDE_MEM_DIR='${sb}' claude-mem-lite save --type bugfix --importance 2 --project projects--mem ` +
+        `QWEN_MEM_DIR='${sb}' qwen-mem-lite save --type bugfix --importance 2 --project projects--mem ` +
           `${filesArg} --title ${JSON.stringify(spec.lessonTitle)} --lesson ${JSON.stringify(spec.lesson)} ` +
           `${JSON.stringify(spec.lessonBody || spec.lesson)}`,
       ],
@@ -273,7 +273,7 @@ function probeInjection(sandbox, wt, srcFile) {
       'bash',
       [
         '-c',
-        `echo '${event.replace(/'/g, "'\\''")}' | CLAUDE_MEM_DIR='${sandbox}' CLAUDE_PROJECT_DIR='${REPO}' node scripts/pre-tool-recall.js`,
+        `echo '${event.replace(/'/g, "'\\''")}' | QWEN_MEM_DIR='${sandbox}' CLAUDE_PROJECT_DIR='${REPO}' node scripts/pre-tool-recall.js`,
       ],
       { cwd: REPO, encoding: 'utf8' },
     );
@@ -283,7 +283,7 @@ function probeInjection(sandbox, wt, srcFile) {
   return /\[mem\] Lessons for/.test(out); // true = lesson actually injected
 }
 
-// arm-B probe: run the hook with CLAUDE_MEM_SALIENCE=bridge and check if the
+// arm-B probe: run the hook with QWEN_MEM_SALIENCE=bridge and check if the
 // bridge marker (→ this edit must:) appears. Called AFTER the contamination-fix
 // runtime wipe; callers must wipe runtime again before the real session.
 // regionText (the fix-region diff) is fed as the Edit hunk: bridgeTopLesson
@@ -303,7 +303,7 @@ function probeBridgeFired(sandbox, wt, srcFile, regionText) {
       'bash',
       [
         '-c',
-        `echo '${event.replace(/'/g, "'\\''")}' | CLAUDE_MEM_DIR='${sandbox}' CLAUDE_PROJECT_DIR='${REPO}' CLAUDE_MEM_SALIENCE=bridge node scripts/pre-tool-recall.js`,
+        `echo '${event.replace(/'/g, "'\\''")}' | QWEN_MEM_DIR='${sandbox}' CLAUDE_PROJECT_DIR='${REPO}' QWEN_MEM_SALIENCE=bridge node scripts/pre-tool-recall.js`,
       ],
       { cwd: REPO, encoding: 'utf8' },
     );
@@ -352,7 +352,7 @@ async function runArmSeed(spec, arm, seed, cfgDir, model) {
       // session's first recall injects fresh. Arm T (not injected) never probes.
       rmSync(join(sb, 'runtime'), { recursive: true, force: true });
       if (arm === 'B') {
-        // Bridge-fired probe: run with CLAUDE_MEM_SALIENCE=bridge to check if the
+        // Bridge-fired probe: run with QWEN_MEM_SALIENCE=bridge to check if the
         // bridge marker fires. This is a pre-session proxy (the real session hook
         // outputs are not captured by execFileP). Wipe runtime again before the
         // real session so the bridge probe doesn't dedup the lesson away.
@@ -362,10 +362,10 @@ async function runArmSeed(spec, arm, seed, cfgDir, model) {
     }
     const task = spec.task + taskSuffixForArm(arm, spec) + TASK_SUFFIX;
     const envVars = [
-      `CLAUDE_MEM_DIR='${sb}'`,
+      `QWEN_MEM_DIR='${sb}'`,
       `CLAUDE_PROJECT_DIR='${REPO}'`,
       cfgDir ? `CLAUDE_CONFIG_DIR='${cfgDir}'` : '',
-      cfg.salience ? `CLAUDE_MEM_SALIENCE=${cfg.salience}` : '',
+      cfg.salience ? `QWEN_MEM_SALIENCE=${cfg.salience}` : '',
       // Non-isolated cells (no cfgDir) spawn `claude -p` under the real ~/.claude,
       // whose SessionStart auto-adopt (hook.mjs, gated on MEM_NO_AUTO_ADOPT) writes a
       // sentinel into a throwaway worktree memdir that outlives the deleted worktree.

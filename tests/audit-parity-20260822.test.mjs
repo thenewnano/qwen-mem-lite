@@ -14,8 +14,8 @@
 // through lib/registry-core.mjs directly — a shared core that no surface actually calls is
 // exactly the failure mode this pins against.
 //
-// ISOLATION: every child gets CLAUDE_MEM_DIR + HOME inside a mkdtemp sandbox and a cwd
-// inside it, so nothing touches the live ~/.claude-mem-lite DB or this repo.
+// ISOLATION: every child gets QWEN_MEM_DIR + HOME inside a mkdtemp sandbox and a cwd
+// inside it, so nothing touches the live ~/.qwen-mem-lite DB or this repo.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -42,21 +42,21 @@ beforeAll(() => {
   // The developer's own plugin flags would otherwise flip default-OFF surfaces on in the
   // child (the #8608 leak class).
   for (const k of Object.keys(BASE_ENV)) {
-    if (/^(CLAUDE_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete BASE_ENV[k];
+    if (/^(QWEN_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete BASE_ENV[k];
   }
   Object.assign(BASE_ENV, {
     HOME: HOME_DIR,
     CLAUDE_CODE_PATH: join(ROOT, 'no-such-claude-binary'), // no LLM spend, no network
     ANTHROPIC_API_KEY: '',
     OPENROUTER_API_KEY: '',
-    CLAUDE_MEM_SKIP_UPDATE: '1',
-    CLAUDE_MEM_SKIP_EPISODE_LLM: '1',
-    CLAUDE_MEM_SKIP_COMPRESS: '1',
-    CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-    CLAUDE_MEM_SKIP_MAINTAIN: '1',
-    CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
-    CLAUDE_MEM_SKIP_REPOS: '1',
-    CLAUDE_MEM_NO_DELAY: '1',
+    QWEN_MEM_SKIP_UPDATE: '1',
+    QWEN_MEM_SKIP_EPISODE_LLM: '1',
+    QWEN_MEM_SKIP_COMPRESS: '1',
+    QWEN_MEM_SKIP_OPTIMIZE: '1',
+    QWEN_MEM_SKIP_MAINTAIN: '1',
+    QWEN_MEM_SKIP_SAVE_ENRICH: '1',
+    QWEN_MEM_SKIP_REPOS: '1',
+    QWEN_MEM_NO_DELAY: '1',
   });
   delete BASE_ENV.CLAUDE_PROJECT_DIR;
   delete BASE_ENV.PWD;
@@ -108,8 +108,8 @@ function fire(cmd, args, { cwd, env = {}, timeout = 30000 } = {}) {
 }
 
 async function startMcp(dataDir, cwd) {
-  const env = { ...BASE_ENV, CLAUDE_MEM_DIR: dataDir, MEM_QUIET_HOOKS: '1', CLAUDE_MEM_AUTO_DEEP: '0' };
-  delete env.CLAUDE_MEM_HOOK_RUNNING;
+  const env = { ...BASE_ENV, QWEN_MEM_DIR: dataDir, MEM_QUIET_HOOKS: '1', QWEN_MEM_AUTO_DEEP: '0' };
+  delete env.QWEN_MEM_HOOK_RUNNING;
   for (const k of Object.keys(env)) if (env[k] === undefined) delete env[k];
   const transport = new StdioClientTransport({ command: process.execPath, args: [SERVER_PATH], cwd, env });
   const client = new Client({ name: 'mem-parity0822-client', version: '0.0.0' });
@@ -148,12 +148,12 @@ describe('P2-6 — get renders the same prompt/event fields on both faces', () =
         '--title',
         'Parity probe for the get detail face',
       ],
-      { cwd, env: { CLAUDE_MEM_DIR: dataDir } },
+      { cwd, env: { QWEN_MEM_DIR: dataDir } },
     );
     expect(r.code, `seed save failed:\n${r.stdout}\n${r.stderr}`).toBe(0);
 
     // A user_prompts row with a prompt_number — the field the CLI face was dropping.
-    const db = new Database(join(dataDir, 'claude-mem-lite.db'));
+    const db = new Database(join(dataDir, 'qwen-mem-lite.db'));
     try {
       const now = Date.now();
       const sess = db.prepare('SELECT content_session_id FROM sdk_sessions LIMIT 1').get();
@@ -176,7 +176,7 @@ describe('P2-6 — get renders the same prompt/event fields on both faces', () =
 
   /** The P# id of the seeded prompt row. */
   function promptId() {
-    const db = new Database(join(dataDir, 'claude-mem-lite.db'), { readonly: true });
+    const db = new Database(join(dataDir, 'qwen-mem-lite.db'), { readonly: true });
     try {
       return db.prepare('SELECT id FROM user_prompts ORDER BY id DESC LIMIT 1').get().id;
     } finally {
@@ -189,7 +189,7 @@ describe('P2-6 — get renders the same prompt/event fields on both faces', () =
   it('the CLI prompt detail renders prompt_number', async () => {
     const r = await fire(process.execPath, [CLI_PATH, 'get', `P#${promptId()}`], {
       cwd,
-      env: { CLAUDE_MEM_DIR: dataDir },
+      env: { QWEN_MEM_DIR: dataDir },
     });
     expect(r.stdout).toMatch(/Prompt number: 7/);
     expect(r.stdout).toMatch(/How did we fix the parser null deref\?/);
@@ -201,7 +201,7 @@ describe('P2-6 — get renders the same prompt/event fields on both faces', () =
     const id = promptId();
     const cli = await fire(process.execPath, [CLI_PATH, 'get', `P#${id}`], {
       cwd,
-      env: { CLAUDE_MEM_DIR: dataDir },
+      env: { QWEN_MEM_DIR: dataDir },
     });
 
     const { client, transport } = await startMcp(dataDir, cwd);

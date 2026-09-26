@@ -99,10 +99,10 @@ describe('metrics sink', () => {
   let tmp;
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), 'metrics-'));
-    delete process.env.CLAUDE_MEM_METRICS;
+    delete process.env.QWEN_MEM_METRICS;
   });
   afterEach(() => {
-    delete process.env.CLAUDE_MEM_METRICS;
+    delete process.env.QWEN_MEM_METRICS;
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -111,8 +111,8 @@ describe('metrics sink', () => {
     expect(existsSync(join(tmp, 'metrics'))).toBe(false);
   });
 
-  it('writes a JSONL row when CLAUDE_MEM_METRICS=1', () => {
-    process.env.CLAUDE_MEM_METRICS = '1';
+  it('writes a JSONL row when QWEN_MEM_METRICS=1', () => {
+    process.env.QWEN_MEM_METRICS = '1';
     recordMetric(tmp, { event: 'inject', durationMs: 12, candidates: 7, returned: 3 });
     const files = readdirSync(join(tmp, 'metrics'));
     expect(files.length).toBe(1);
@@ -126,13 +126,13 @@ describe('metrics sink', () => {
   });
 
   it('skips rows with missing event field', () => {
-    process.env.CLAUDE_MEM_METRICS = '1';
+    process.env.QWEN_MEM_METRICS = '1';
     recordMetric(tmp, { durationMs: 10 });
     expect(existsSync(join(tmp, 'metrics'))).toBe(false);
   });
 
   it('never throws when given bad dbDir', () => {
-    process.env.CLAUDE_MEM_METRICS = '1';
+    process.env.QWEN_MEM_METRICS = '1';
     expect(() => recordMetric('', { event: 'inject' })).not.toThrow();
     expect(() => recordMetric(null, { event: 'inject' })).not.toThrow();
   });
@@ -142,10 +142,10 @@ describe('timed() wrapper', () => {
   let tmp;
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), 'metrics-t-'));
-    process.env.CLAUDE_MEM_METRICS = '1';
+    process.env.QWEN_MEM_METRICS = '1';
   });
   afterEach(() => {
-    delete process.env.CLAUDE_MEM_METRICS;
+    delete process.env.QWEN_MEM_METRICS;
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -169,7 +169,7 @@ describe('timed() wrapper', () => {
   });
 
   it('is a direct call-through when metrics disabled', () => {
-    delete process.env.CLAUDE_MEM_METRICS;
+    delete process.env.QWEN_MEM_METRICS;
     const result = timed(tmp, 'search', () => 'x');
     expect(result).toBe('x');
     expect(existsSync(join(tmp, 'metrics'))).toBe(false);
@@ -180,10 +180,10 @@ describe('aggregateMetrics', () => {
   let tmp;
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), 'metrics-agg-'));
-    process.env.CLAUDE_MEM_METRICS = '1';
+    process.env.QWEN_MEM_METRICS = '1';
   });
   afterEach(() => {
-    delete process.env.CLAUDE_MEM_METRICS;
+    delete process.env.QWEN_MEM_METRICS;
     rmSync(tmp, { recursive: true, force: true });
   });
 

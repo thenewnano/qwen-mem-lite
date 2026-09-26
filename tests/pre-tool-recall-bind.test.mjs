@@ -14,7 +14,7 @@ const SCRIPT_PATH = resolve(import.meta.dirname, '../scripts/pre-tool-recall.js'
 function runScript(input, env = {}) {
   return new Promise((res, rej) => {
     const child = spawn('node', [SCRIPT_PATH], {
-      env: { ...process.env, CLAUDE_MEM_HOOK_RUNNING: '', ...env },
+      env: { ...process.env, QWEN_MEM_HOOK_RUNNING: '', ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -40,7 +40,7 @@ describe('pre-tool-recall bind directive (component 1)', () => {
     mkdirSync(projectDir, { recursive: true });
     fp = join(projectDir, 'maintain-core.mjs');
     writeFileSync(fp, 'export function purgeStale() {}\n');
-    const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+    const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
     db.pragma('foreign_keys = OFF');
     initSchema(db);
     insertSession(db, { id: 'sess-bind', project: 'parent--bindtest', memoryId: 'mem-bind' });
@@ -60,12 +60,12 @@ describe('pre-tool-recall bind directive (component 1)', () => {
       rmSync(tmpRoot, { recursive: true, force: true });
     } catch {}
   });
-  const env = (extra = {}) => ({ CLAUDE_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir, ...extra });
+  const env = (extra = {}) => ({ QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir, ...extra });
 
   it('Edit under =bind ends with the comprehension-binding directive', async () => {
     const { stdout } = await runScript(
       { tool_name: 'Edit', session_id: 'b1', tool_input: { file_path: fp } },
-      env({ CLAUDE_MEM_SALIENCE: 'bind' }),
+      env({ QWEN_MEM_SALIENCE: 'bind' }),
     );
     const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
     expect(ctx).toContain('[mem] Lessons for maintain-core.mjs:');
@@ -84,7 +84,7 @@ describe('pre-tool-recall bind directive (component 1)', () => {
   it('Edit under legacy emits lessons but NO directive', async () => {
     const { stdout } = await runScript(
       { tool_name: 'Edit', session_id: 'b3', tool_input: { file_path: fp } },
-      env({ CLAUDE_MEM_SALIENCE: 'legacy' }),
+      env({ QWEN_MEM_SALIENCE: 'legacy' }),
     );
     const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
     expect(ctx).toContain('[mem] Lessons for maintain-core.mjs:');
@@ -95,7 +95,7 @@ describe('pre-tool-recall bind directive (component 1)', () => {
     // lesson names recoverChildrenOf; ensure it is present in the pre-edit file
     const fp2 = join(projectDir, 'withident.mjs');
     writeFileSync(fp2, 'export function recoverChildrenOf() {}\nexport function purgeStale() {}\n');
-    const db = new Database(join(tmpRoot, 'claude-mem-lite.db'));
+    const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
     db.pragma('foreign_keys = OFF');
     initSchema(db);
     insertObs(db, {
@@ -111,7 +111,7 @@ describe('pre-tool-recall bind directive (component 1)', () => {
 
     await runScript(
       { tool_name: 'Edit', session_id: 'b4', tool_input: { file_path: fp2 } },
-      env({ CLAUDE_MEM_SALIENCE: 'bind' }),
+      env({ QWEN_MEM_SALIENCE: 'bind' }),
     );
 
     const cd = JSON.parse(readFileSync(join(tmpRoot, 'runtime', 'pre-recall-cooldown-b4.json'), 'utf8'));

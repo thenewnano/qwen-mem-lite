@@ -10,7 +10,7 @@
 // The case that motivated it is real and was found by RUNNING the harness: `os.tmpdir()`
 // reads `$TMPDIR`, a Claude Code session sets `$TMPDIR` to `~/.claude/tmp/claude-<uid>`,
 // and `/home/<user>/node_modules` on this machine holds both `better-sqlite3` and
-// `claude-mem-lite`. So the harness's documented default put its sandbox under HOME —
+// `qwen-mem-lite`. So the harness's documented default put its sandbox under HOME —
 // exactly what its README forbids, forty lines further down in a section the quickstart
 // reader never reaches — and every check still passed, against the wrong install tree.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';

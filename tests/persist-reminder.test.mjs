@@ -44,8 +44,8 @@ describe('countDeliberatePersistence (transcript scan)', () => {
   it('counts mem_save / mem_defer tool_use and CLI save / defer add', () => {
     const dir = mkdtempSync(join(tmpdir(), 'persist-rem-'));
     const p = writeTranscript(dir, [
-      assistantToolUse('mcp__plugin_claude-mem-lite_mem-lite__mem_save', { type: 'decision', content: 'x' }),
-      assistantToolUse('mcp__plugin_claude-mem-lite_mem-lite__mem_defer', { title: 'y' }),
+      assistantToolUse('mcp__plugin_qwen-mem-lite_mem-lite__mem_save', { type: 'decision', content: 'x' }),
+      assistantToolUse('mcp__plugin_qwen-mem-lite_mem-lite__mem_defer', { title: 'y' }),
       assistantToolUse('Bash', { command: 'node cli.mjs save "z" --type decision' }),
       assistantToolUse('Bash', { command: 'node cli.mjs defer add "w" --priority 2' }),
       assistantToolUse('Bash', { command: 'ls -la' }),
@@ -66,9 +66,9 @@ describe('countDeliberatePersistence (transcript scan)', () => {
   it('counts Skill lesson/memory/bug and memdir Write/Edit paths (G18)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'persist-rem-'));
     const p = writeTranscript(dir, [
-      assistantToolUse('Skill', { skill: 'claude-mem-lite:lesson', args: 'x' }),
+      assistantToolUse('Skill', { skill: 'qwen-mem-lite:lesson', args: 'x' }),
       assistantToolUse('Skill', { skill: 'memory' }),
-      assistantToolUse('Skill', { skill: 'claude-mem-lite:bug' }),
+      assistantToolUse('Skill', { skill: 'qwen-mem-lite:bug' }),
       assistantToolUse('Write', {
         file_path: '/home/u/.claude/projects/-x-y/memory/project_foo.md',
         content: 'f',
@@ -79,7 +79,7 @@ describe('countDeliberatePersistence (transcript scan)', () => {
         new_string: 'b',
       }),
       // NOT persistence: unrelated skill, non-memdir write, memdir-adjacent path
-      assistantToolUse('Skill', { skill: 'claude-mem-lite:mem' }),
+      assistantToolUse('Skill', { skill: 'qwen-mem-lite:mem' }),
       assistantToolUse('Write', { file_path: '/home/u/project/notes.md', content: 'n' }),
       assistantToolUse('Write', { file_path: '/home/u/.claude/projects/-x-y/tasks/t.md', content: 't' }),
     ]);
@@ -91,7 +91,7 @@ describe('countDeliberatePersistence (transcript scan)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'persist-rem-'));
     const p = writeTranscript(dir, [
       assistantToolUse('Bash', { command: 'node cli.mjs search "save enrichment"' }),
-      assistantToolUse('mcp__plugin_claude-mem-lite_mem-lite__mem_search', { query: 'defer add' }),
+      assistantToolUse('mcp__plugin_qwen-mem-lite_mem-lite__mem_search', { query: 'defer add' }),
     ]);
     expect(countDeliberatePersistence(p)).toBe(0);
     rmSync(dir, { recursive: true, force: true });
@@ -111,7 +111,7 @@ describe('detectUnpersistedDecision', () => {
   it('does NOT fire when the session persisted something', () => {
     const dir = mkdtempSync(join(tmpdir(), 'persist-rem-'));
     const p = writeTranscript(dir, [
-      assistantToolUse('mcp__plugin_claude-mem-lite_mem-lite__mem_defer', { title: 'the decision' }),
+      assistantToolUse('mcp__plugin_qwen-mem-lite_mem-lite__mem_defer', { title: 'the decision' }),
     ]);
     const r = detectUnpersistedDecision({ prompts: ['方案 B 拍板，开工'], transcriptPath: p });
     expect(r.fire).toBe(false);
@@ -178,7 +178,7 @@ describe('SessionStart surface (buildCiteRecallNudge third gate)', () => {
         savedAt: Date.now(),
       }),
     );
-    expect(buildCiteRecallNudge('projx', dir, { CLAUDE_MEM_NO_CITE_NUDGE: '1' })).toBe('');
+    expect(buildCiteRecallNudge('projx', dir, { QWEN_MEM_NO_CITE_NUDGE: '1' })).toBe('');
     rmSync(dir, { recursive: true, force: true });
   });
 });

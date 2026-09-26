@@ -8,7 +8,7 @@
 // not the registered-tool surface. This file guards that layer.
 //
 // Shape:
-//   1. Spawn server.mjs with an isolated CLAUDE_MEM_DIR (fresh DB).
+//   1. Spawn server.mjs with an isolated QWEN_MEM_DIR (fresh DB).
 //   2. Connect via StdioClientTransport (same as Claude Code).
 //   3. Assert tools/list surface + a handful of critical tools/call contracts.
 
@@ -21,7 +21,7 @@ import { resolve } from 'path';
 const SERVER_PATH = resolve(import.meta.dirname, '../server.mjs');
 
 // Per-suite isolated DB + runtime dir so the test never touches the user's
-// real ~/.claude-mem-lite. Cleanup in afterAll.
+// real ~/.qwen-mem-lite. Cleanup in afterAll.
 const DB_DIR = `/tmp/mem-mcp-test-${process.pid}`;
 
 let client;
@@ -38,10 +38,10 @@ beforeAll(async () => {
     args: [SERVER_PATH],
     env: {
       ...process.env,
-      CLAUDE_MEM_DIR: DB_DIR,
+      QWEN_MEM_DIR: DB_DIR,
       CLAUDE_PROJECT_DIR: '/test/project',
       PWD: '/test/project',
-      CLAUDE_MEM_AUTO_DEEP: '0',
+      QWEN_MEM_AUTO_DEEP: '0',
     },
   });
   client = new Client({ name: 'mem-test-client', version: '0.0.0' });

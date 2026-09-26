@@ -181,7 +181,7 @@ describe('CLI get S#N renders remaining_items (the audited dead-end field)', () 
     const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
     const dataDir = mkdtempSync(join(tmpdir(), 'twin-sget-'));
     try {
-      const db = new Database(join(dataDir, 'claude-mem-lite.db'));
+      const db = new Database(join(dataDir, 'qwen-mem-lite.db'));
       initSchema(db);
       db.prepare(
         `INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
@@ -201,7 +201,7 @@ describe('CLI get S#N renders remaining_items (the audited dead-end field)', () 
       const stdout = execFileSync(process.execPath, [join(REPO, 'cli.mjs'), 'get', `S#${sid}`], {
         encoding: 'utf8',
         timeout: 30000,
-        env: { ...process.env, CLAUDE_MEM_DIR: dataDir, MEM_QUIET_HOOKS: '1' },
+        env: { ...process.env, QWEN_MEM_DIR: dataDir, MEM_QUIET_HOOKS: '1' },
       });
       expect(stdout).toContain(`S#${sid}`);
       expect(stdout, 'remaining_items still unrendered on the CLI detail face').toContain(

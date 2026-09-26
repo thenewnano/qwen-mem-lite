@@ -74,7 +74,7 @@ export function realDeps({ repoRoot, shuffledPool = [], claudeBin = 'claude', mo
       execFileSync('git', ['clone', '--quiet', src, work]);
       execFileSync('git', ['-C', work, 'checkout', '--quiet', task.startCommit]);
       // For hooked arms the sandbox needs the mem hooks registered. We point the
-      // hooks at the seeded DB via env (CLAUDE_MEM_DB_PATH from buildEnv); the
+      // hooks at the seeded DB via env (QWEN_MEM_DB_PATH from buildEnv); the
       // settings.json registration is written by writeHookSettings when present.
       return {
         cwd: work,
@@ -106,10 +106,10 @@ export function realDeps({ repoRoot, shuffledPool = [], claudeBin = 'claude', mo
  * Register the mem hooks in the sandbox's .claude/settings.json so `claude -p`
  * invokes them for this run. This is the integration seam that requires a live
  * `claude` to validate; the exact hook command resolves from the installed
- * plugin. Kept minimal and overridable via CLAUDE_MEM_EXPERIMENT_SETTINGS.
+ * plugin. Kept minimal and overridable via QWEN_MEM_EXPERIMENT_SETTINGS.
  */
 function writeHookSettings(sandbox, dbPath) {
-  const override = process.env.CLAUDE_MEM_EXPERIMENT_SETTINGS;
+  const override = process.env.QWEN_MEM_EXPERIMENT_SETTINGS;
   const claudeDir = join(sandbox.cwd, '.claude');
   mkdirSync(claudeDir, { recursive: true });
   if (override) {
@@ -117,8 +117,8 @@ function writeHookSettings(sandbox, dbPath) {
     return;
   }
   // Minimal marker: the real registration is environment-specific (plugin path),
-  // so a live run sets CLAUDE_MEM_EXPERIMENT_SETTINGS to a settings.json whose
-  // hooks point at the installed mem hook scripts with CLAUDE_MEM_DB_PATH=dbPath.
+  // so a live run sets QWEN_MEM_EXPERIMENT_SETTINGS to a settings.json whose
+  // hooks point at the installed mem hook scripts with QWEN_MEM_DB_PATH=dbPath.
   writeFileSync(
     join(claudeDir, 'experiment-db-path'),
     dbPath + '\n'

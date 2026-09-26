@@ -1,6 +1,6 @@
-// E2E test suite for claude-mem-lite hook lifecycle
+// E2E test suite for qwen-mem-lite hook lifecycle
 // Tests the actual CLI entry point (node hook.mjs <event>) as a subprocess
-// Isolation via HOME env var → redirects ~/.claude-mem-lite/ to temp dir
+// Isolation via HOME env var → redirects ~/.qwen-mem-lite/ to temp dir
 
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { execFileSync } from 'child_process';
@@ -32,11 +32,11 @@ function makeTmpDir() {
 }
 
 function initTestDb(tmpHome) {
-  const dbDir = join(tmpHome, '.claude-mem-lite');
+  const dbDir = join(tmpHome, '.qwen-mem-lite');
   mkdirSync(dbDir, { recursive: true });
   mkdirSync(join(dbDir, 'runtime'), { recursive: true });
 
-  const dbPath = join(dbDir, 'claude-mem-lite.db');
+  const dbPath = join(dbDir, 'qwen-mem-lite.db');
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = OFF');
@@ -49,7 +49,7 @@ function initTestDb(tmpHome) {
 }
 
 function openTestDb(tmpHome) {
-  const dbPath = join(tmpHome, '.claude-mem-lite', 'claude-mem-lite.db');
+  const dbPath = join(tmpHome, '.qwen-mem-lite', 'qwen-mem-lite.db');
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('busy_timeout = 3000');
@@ -69,12 +69,12 @@ function runHook(event, { stdin, env = {}, args = [] } = {}) {
     // API path can still set them via the `env` arg, which is spread last.
     ANTHROPIC_API_KEY: undefined,
     OPENROUTER_API_KEY: undefined,
-    CLAUDE_MEM_HOOK_RUNNING: undefined, // Don't inherit — let hooks run
-    CLAUDE_MEM_DEBUG: '1',
-    CLAUDE_MEM_SKIP_UPDATE: '1', // Skip auto-update network calls in tests
-    CLAUDE_MEM_SKIP_COMPRESS: '1', // Skip auto-compress background spawn (tests call it explicitly)
-    CLAUDE_MEM_SKIP_OPTIMIZE: '1', // Skip llm-optimize background worker in tests
-    CLAUDE_MEM_SKIP_MAINTAIN: '1', // Skip auto-maintain background spawn (tests call it explicitly)
+    QWEN_MEM_HOOK_RUNNING: undefined, // Don't inherit — let hooks run
+    QWEN_MEM_DEBUG: '1',
+    QWEN_MEM_SKIP_UPDATE: '1', // Skip auto-update network calls in tests
+    QWEN_MEM_SKIP_COMPRESS: '1', // Skip auto-compress background spawn (tests call it explicitly)
+    QWEN_MEM_SKIP_OPTIMIZE: '1', // Skip llm-optimize background worker in tests
+    QWEN_MEM_SKIP_MAINTAIN: '1', // Skip auto-maintain background spawn (tests call it explicitly)
     ...env,
   };
 
@@ -106,9 +106,9 @@ function makeToolPayload(toolName, input, response) {
 }
 
 // G13: parse every metric row written under this test's isolated HOME.
-// recordMetric targets join(RUNTIME_DIR, '..') → tmpHome/.claude-mem-lite/metrics/.
+// recordMetric targets join(RUNTIME_DIR, '..') → tmpHome/.qwen-mem-lite/metrics/.
 function readMetricRows(tmpHome) {
-  const dir = join(tmpHome, '.claude-mem-lite', 'metrics');
+  const dir = join(tmpHome, '.qwen-mem-lite', 'metrics');
   if (!existsSync(dir)) return [];
   const rows = [];
   for (const f of readdirSync(dir)) {
@@ -126,7 +126,7 @@ function readMetricRows(tmpHome) {
 }
 
 function getSessionFile(tmpHome) {
-  const runtimeDir = join(tmpHome, '.claude-mem-lite', 'runtime');
+  const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
   const files = readdirSync(runtimeDir).filter((f) => f.startsWith('session-'));
   return files.length > 0 ? join(runtimeDir, files[0]) : null;
 }
@@ -142,7 +142,7 @@ function getSessionIdFromFile(tmpHome) {
 }
 
 function getEpisodeFile(tmpHome) {
-  const runtimeDir = join(tmpHome, '.claude-mem-lite', 'runtime');
+  const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
   const files = readdirSync(runtimeDir).filter(
     (f) => f.startsWith('ep-') && f.endsWith('.json') && !f.startsWith('ep-flush-'),
   );
@@ -150,7 +150,7 @@ function getEpisodeFile(tmpHome) {
 }
 
 function getFlushFiles(tmpHome) {
-  const runtimeDir = join(tmpHome, '.claude-mem-lite', 'runtime');
+  const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
   return readdirSync(runtimeDir).filter((f) => f.startsWith('ep-flush-'));
 }
 
@@ -180,7 +180,7 @@ describe('Suite 1: Full Session Lifecycle', () => {
       join(settingsDir, 'settings.json'),
       JSON.stringify(
         {
-          enabledPlugins: { 'claude-mem-lite@thenewnano': false },
+          enabledPlugins: { 'qwen-mem-lite@thenewnano': false },
           hooks: {
             SessionStart: [
               { matcher: '*', hooks: [{ type: 'command', command: `node "${HOOK_PATH}" session-start` }] },
@@ -208,9 +208,9 @@ describe('Suite 1: Full Session Lifecycle', () => {
     expect(exitCode).toBe(0);
     // This fixture's DB holds no observations/summaries, so there is no context body.
     // The hook now omits the wrapper rather than injecting an empty
-    // `<claude-mem-context></claude-mem-context>` pair — see
+    // `<qwen-mem-context></qwen-mem-context>` pair — see
     // tests/session-start-empty-context.test.mjs for the populated counterpart.
-    expect(stdout).not.toContain('<claude-mem-context>');
+    expect(stdout).not.toContain('<qwen-mem-context>');
 
     // Session file created
     const sf = getSessionFile(tmpHome);
@@ -416,12 +416,12 @@ describe('Suite 2: Episode Buffer Management', () => {
   });
 
   it('two concurrent sessions in one buffer flush as separate observations', () => {
-    // CLAUDE_MEM_SKIP_EPISODE_LLM disables the detached llm-episode enrichment
+    // QWEN_MEM_SKIP_EPISODE_LLM disables the detached llm-episode enrichment
     // spawn so the assertion sees only the synchronous immediate observations
-    // (sibling of CLAUDE_MEM_SKIP_COMPRESS / _OPTIMIZE). CLAUDE_MEM_KEEP_LOW_SIGNAL
+    // (sibling of QWEN_MEM_SKIP_COMPRESS / _OPTIMIZE). QWEN_MEM_KEEP_LOW_SIGNAL
     // stops the noise gate from dropping the trivial "Modified shared.js" change
     // obs — orthogonal to grouping (merged→1, split→2, so toBe(2) still tests it).
-    const env = { HOME: tmpHome, CLAUDE_MEM_SKIP_EPISODE_LLM: '1', CLAUDE_MEM_KEEP_LOW_SIGNAL: '1' };
+    const env = { HOME: tmpHome, QWEN_MEM_SKIP_EPISODE_LLM: '1', QWEN_MEM_KEEP_LOW_SIGNAL: '1' };
     runHook('session-start', { env });
     // Two sessions, DIFFERENT files: the buffer's 2-entry window (phase-transition
     // only fires at entries.length >= 2) keeps both in ONE buffer, and distinct
@@ -461,7 +461,7 @@ describe('Suite 2: Episode Buffer Management', () => {
     // (no edit/error/build/test → insignificant). Both share one buffer (2-entry
     // window), so the per-group significance gate in flushEpisodeGroup must drop
     // B's group while saving A's.
-    const env = { HOME: tmpHome, CLAUDE_MEM_SKIP_EPISODE_LLM: '1', CLAUDE_MEM_KEEP_LOW_SIGNAL: '1' };
+    const env = { HOME: tmpHome, QWEN_MEM_SKIP_EPISODE_LLM: '1', QWEN_MEM_KEEP_LOW_SIGNAL: '1' };
     runHook('session-start', { env });
     runHook('post-tool-use', {
       stdin: JSON.stringify({
@@ -496,7 +496,7 @@ describe('Suite 2: Episode Buffer Management', () => {
     // Tier-1 Jaccard dedup collapses them to one. The win over the base bug holds
     // — the survivor is ONE session's activity, not an A+B merged narrative — but
     // "each session its own obs" is NOT achieved for the file-related case.
-    const env = { HOME: tmpHome, CLAUDE_MEM_SKIP_EPISODE_LLM: '1', CLAUDE_MEM_KEEP_LOW_SIGNAL: '1' };
+    const env = { HOME: tmpHome, QWEN_MEM_SKIP_EPISODE_LLM: '1', QWEN_MEM_KEEP_LOW_SIGNAL: '1' };
     runHook('session-start', { env });
     for (const sid of ['cc-A', 'cc-B']) {
       runHook('post-tool-use', {
@@ -642,7 +642,7 @@ describe('Suite 2: Episode Buffer Management', () => {
     });
 
     // Manually create a pending file (simulates what writePendingEntry does on lock failure)
-    const runtimeDir = join(tmpHome, '.claude-mem-lite', 'runtime');
+    const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
     const pendingFile = join(runtimeDir, `pending-${Date.now()}-test.json`);
     writeFileSync(
       pendingFile,
@@ -736,7 +736,7 @@ describe('Suite 3: LLM Episode Processing', { retry: 2 }, () => {
     const sessionId = getSessionIdFromFile(tmpHome);
 
     // Create a flush file manually (simulating what flushEpisode does)
-    const runtimeDir = join(tmpHome, '.claude-mem-lite', 'runtime');
+    const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
     const flushFile = join(runtimeDir, `ep-flush-${Date.now()}-test.json`);
     writeFileSync(
       flushFile,
@@ -763,7 +763,7 @@ describe('Suite 3: LLM Episode Processing', { retry: 2 }, () => {
 
     // Run llm-episode — it reads the flush file, calls mock LLM, saves observation
     const { exitCode } = runHook('llm-episode', {
-      env: { HOME: tmpHome, CLAUDE_MEM_NO_DELAY: '1' },
+      env: { HOME: tmpHome, QWEN_MEM_NO_DELAY: '1' },
       args: [flushFile],
     });
     expect(exitCode).toBe(0);
@@ -786,7 +786,7 @@ describe('Suite 3: LLM Episode Processing', { retry: 2 }, () => {
     runHook('session-start', { env: { HOME: tmpHome } });
     const sessionId = getSessionIdFromFile(tmpHome);
 
-    const runtimeDir = join(tmpHome, '.claude-mem-lite', 'runtime');
+    const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
     const flushFile = join(runtimeDir, `ep-flush-${Date.now()}-bad.json`);
     writeFileSync(
       flushFile,
@@ -812,7 +812,7 @@ describe('Suite 3: LLM Episode Processing', { retry: 2 }, () => {
     );
 
     const { exitCode } = runHook('llm-episode', {
-      env: { HOME: tmpHome, CLAUDE_CODE_PATH: '/dev/null', CLAUDE_MEM_NO_DELAY: '1' },
+      env: { HOME: tmpHome, CLAUDE_CODE_PATH: '/dev/null', QWEN_MEM_NO_DELAY: '1' },
       args: [flushFile],
     });
     expect(exitCode).toBe(0);
@@ -824,11 +824,11 @@ describe('Suite 3: LLM Episode Processing', { retry: 2 }, () => {
     expect(obs.length).toBe(0);
   });
 
-  it('P0 opt-out: CLAUDE_MEM_KEEP_LOW_SIGNAL=1 preserves pre-v2.36 degraded save', () => {
+  it('P0 opt-out: QWEN_MEM_KEEP_LOW_SIGNAL=1 preserves pre-v2.36 degraded save', () => {
     runHook('session-start', { env: { HOME: tmpHome } });
     const sessionId = getSessionIdFromFile(tmpHome);
 
-    const runtimeDir = join(tmpHome, '.claude-mem-lite', 'runtime');
+    const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
     const flushFile = join(runtimeDir, `ep-flush-${Date.now()}-bad.json`);
     writeFileSync(
       flushFile,
@@ -857,8 +857,8 @@ describe('Suite 3: LLM Episode Processing', { retry: 2 }, () => {
       env: {
         HOME: tmpHome,
         CLAUDE_CODE_PATH: '/dev/null',
-        CLAUDE_MEM_NO_DELAY: '1',
-        CLAUDE_MEM_KEEP_LOW_SIGNAL: '1',
+        QWEN_MEM_NO_DELAY: '1',
+        QWEN_MEM_KEEP_LOW_SIGNAL: '1',
       },
       args: [flushFile],
     });
@@ -893,7 +893,7 @@ describe('Suite 3: LLM Episode Processing', { retry: 2 }, () => {
     db.close();
 
     // Second observation via llm-episode — overlapping file (shared.js)
-    const runtimeDir = join(tmpHome, '.claude-mem-lite', 'runtime');
+    const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
     const flush2 = join(runtimeDir, `ep-flush-${Date.now()}-r2.json`);
     writeFileSync(
       flush2,
@@ -917,7 +917,7 @@ describe('Suite 3: LLM Episode Processing', { retry: 2 }, () => {
         filesRead: [],
       }),
     );
-    runHook('llm-episode', { env: { HOME: tmpHome, CLAUDE_MEM_NO_DELAY: '1' }, args: [flush2] });
+    runHook('llm-episode', { env: { HOME: tmpHome, QWEN_MEM_NO_DELAY: '1' }, args: [flush2] });
 
     // Both observations should have related_ids referencing each other
     const db2 = openTestDb(tmpHome);
@@ -950,7 +950,7 @@ describe('Suite 4: Session Summary', { retry: 2 }, () => {
 
     // Run llm-summary (pass sessionId and project as args)
     const { exitCode } = runHook('llm-summary', {
-      env: { HOME: tmpHome, CLAUDE_MEM_FLUSH_TIMEOUT: '1' },
+      env: { HOME: tmpHome, QWEN_MEM_FLUSH_TIMEOUT: '1' },
       args: [sessionId, 'parent--testproj'],
     });
     expect(exitCode).toBe(0);
@@ -972,7 +972,7 @@ describe('Suite 4: Session Summary', { retry: 2 }, () => {
     const sessionId = getSessionIdFromFile(tmpHome);
 
     const { exitCode } = runHook('llm-summary', {
-      env: { HOME: tmpHome, CLAUDE_MEM_FLUSH_TIMEOUT: '1' },
+      env: { HOME: tmpHome, QWEN_MEM_FLUSH_TIMEOUT: '1' },
       args: [sessionId, 'parent--testproj'],
     });
     expect(exitCode).toBe(0);
@@ -1150,10 +1150,10 @@ describe('Suite 6: Error Recall', () => {
         },
         'Error: connect ECONNREFUSED 127.0.0.1:3000\n    at TCPConnectWrap.afterConnect [as oncomplete] (net.js:1141:16)',
       ),
-      env: { HOME: tmpHome, CLAUDE_MEM_METRICS: '1' },
+      env: { HOME: tmpHome, QWEN_MEM_METRICS: '1' },
     });
 
-    expect(stdout).toContain('[claude-mem-lite] Related memories found for this error');
+    expect(stdout).toContain('[qwen-mem-lite] Related memories found for this error');
 
     // G13: each fired error-recall injection must be metered — the G8 gate change
     // (isError→isHardError) had no post-fix volume signal in metrics before this.
@@ -1213,7 +1213,7 @@ describe('Suite 6: Error Recall', () => {
         },
         'Health report: 2 endpoints degraded, last error ECONNREFUSED on port 3000 (recovered), overall status OK',
       ),
-      env: { HOME: tmpHome, CLAUDE_MEM_METRICS: '1' },
+      env: { HOME: tmpHome, QWEN_MEM_METRICS: '1' },
     });
 
     expect(stdout).not.toContain('Related memories found for this error');
@@ -1265,10 +1265,10 @@ describe('Suite 6b: PostToolUseFailure — host-flagged failures reach error-rec
     seed();
     const { stdout } = runHook('post-tool-failure', {
       stdin: failurePayload(),
-      env: { HOME: tmpHome, CLAUDE_MEM_METRICS: '1' },
+      env: { HOME: tmpHome, QWEN_MEM_METRICS: '1' },
     });
 
-    expect(stdout).toContain('[claude-mem-lite] Related memories found for this error');
+    expect(stdout).toContain('[qwen-mem-lite] Related memories found for this error');
     expect(stdout).toContain('Run the build from the package root');
 
     // The envelope's event name is the field a copy-paste from the PostToolUse path
@@ -1302,7 +1302,7 @@ describe('Suite 6b: PostToolUseFailure — host-flagged failures reach error-rec
         tool_use_id: 'toolu_d170',
         tool_response: FAILURE_TEXT,
       }),
-      env: { HOME: tmpHome, CLAUDE_MEM_METRICS: '1' },
+      env: { HOME: tmpHome, QWEN_MEM_METRICS: '1' },
     });
     expect(stdout).not.toContain('Related memories found for this error');
   });
@@ -1328,7 +1328,7 @@ describe('Suite 6b: PostToolUseFailure — host-flagged failures reach error-rec
         error: REFUSAL_WITH_TERMS,
         tool_input: { command: 'node scripts/build.mjs' },
       }),
-      env: { HOME: tmpHome, CLAUDE_MEM_METRICS: '1' },
+      env: { HOME: tmpHome, QWEN_MEM_METRICS: '1' },
     });
     expect(stdout).not.toContain('Related memories found for this error');
     expect(readMetricRows(tmpHome).filter((r) => r.event === 'error_recall_failure').length).toBe(0);
@@ -1345,7 +1345,7 @@ describe('Suite 6b: PostToolUseFailure — host-flagged failures reach error-rec
         error: REFUSAL_WITH_TERMS.replace('[claudemd] §11 memory-hint: refused — the', 'The'),
         tool_input: { command: 'node scripts/build.mjs' },
       }),
-      env: { HOME: tmpHome, CLAUDE_MEM_METRICS: '1' },
+      env: { HOME: tmpHome, QWEN_MEM_METRICS: '1' },
     });
     expect(
       stdout,
@@ -1357,7 +1357,7 @@ describe('Suite 6b: PostToolUseFailure — host-flagged failures reach error-rec
     seed();
     const { stdout } = runHook('post-tool-failure', {
       stdin: failurePayload({ is_interrupt: true }),
-      env: { HOME: tmpHome, CLAUDE_MEM_METRICS: '1' },
+      env: { HOME: tmpHome, QWEN_MEM_METRICS: '1' },
     });
     expect(stdout).not.toContain('Related memories found for this error');
   });
@@ -1377,7 +1377,7 @@ describe('Suite 6b: PostToolUseFailure — host-flagged failures reach error-rec
         tool_name: 'Edit',
         tool_input: { command: 'node scripts/build.mjs', file_path: '/app/x.mjs' },
       }),
-      env: { HOME: tmpHome, CLAUDE_MEM_METRICS: '1' },
+      env: { HOME: tmpHome, QWEN_MEM_METRICS: '1' },
     });
     expect(stdout).not.toContain('Related memories found for this error');
   });
@@ -1394,7 +1394,7 @@ describe('Suite 6b: PostToolUseFailure — host-flagged failures reach error-rec
     for (const toolInput of [{}, { command: '' }, { command: 42 }, { file_path: '/app/x.mjs' }]) {
       const { stdout } = runHook('post-tool-failure', {
         stdin: failurePayload({ tool_input: toolInput }),
-        env: { HOME: tmpHome, CLAUDE_MEM_METRICS: '1' },
+        env: { HOME: tmpHome, QWEN_MEM_METRICS: '1' },
       });
       expect(stdout, `tool_input=${JSON.stringify(toolInput)}`).not.toContain(
         'Related memories found for this error',
@@ -1406,13 +1406,13 @@ describe('Suite 6b: PostToolUseFailure — host-flagged failures reach error-rec
     seed();
     const off = runHook('post-tool-failure', {
       stdin: failurePayload(),
-      env: { HOME: tmpHome, CLAUDE_MEM_METRICS: '1', CLAUDE_MEM_ERROR_RECALL_ON_FAILURE: 'off' },
+      env: { HOME: tmpHome, QWEN_MEM_METRICS: '1', QWEN_MEM_ERROR_RECALL_ON_FAILURE: 'off' },
     });
     expect(off.stdout).not.toContain('Related memories found for this error');
     // A typo must not silently revert the feature.
     const typo = runHook('post-tool-failure', {
       stdin: failurePayload(),
-      env: { HOME: tmpHome, CLAUDE_MEM_METRICS: '1', CLAUDE_MEM_ERROR_RECALL_ON_FAILURE: '0' },
+      env: { HOME: tmpHome, QWEN_MEM_METRICS: '1', QWEN_MEM_ERROR_RECALL_ON_FAILURE: '0' },
     });
     expect(typo.stdout).toContain('Related memories found for this error');
   });
@@ -1465,7 +1465,7 @@ describe('Suite 8a: Cross-Session MinHash Dedup', () => {
     db.close();
 
     // Try to save a near-duplicate observation via llm-episode
-    const runtimeDir = join(tmpHome, '.claude-mem-lite', 'runtime');
+    const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
     const flushFile = join(runtimeDir, `ep-flush-${Date.now()}-dedup.json`);
     writeFileSync(
       flushFile,
@@ -1492,7 +1492,7 @@ describe('Suite 8a: Cross-Session MinHash Dedup', () => {
 
     // Run llm-episode - the mock LLM will return a generic title, which won't match
     // by Jaccard but the MinHash check happens on the combined title+narrative
-    runHook('llm-episode', { env: { HOME: tmpHome, CLAUDE_MEM_NO_DELAY: '1' }, args: [flushFile] });
+    runHook('llm-episode', { env: { HOME: tmpHome, QWEN_MEM_NO_DELAY: '1' }, args: [flushFile] });
 
     // The mock returns "Mock single observation" which is dissimilar, so it should NOT be deduped
     // This test validates that the minhash_sig column is populated for new observations
@@ -1517,12 +1517,12 @@ describe('Suite 8a: Additional E2E', () => {
     });
     expect(exitCode).toBe(0);
     // A first-run install has nothing to inject, and the hook now writes no
-    // empty `<claude-mem-context>` wrapper. The DB-creation assertion below is what this
+    // empty `<qwen-mem-context>` wrapper. The DB-creation assertion below is what this
     // case is actually about.
-    expect(stdout).not.toContain('<claude-mem-context>');
+    expect(stdout).not.toContain('<qwen-mem-context>');
 
     // DB should have been created
-    const dbPath = join(freshHome, '.claude-mem-lite', 'claude-mem-lite.db');
+    const dbPath = join(freshHome, '.qwen-mem-lite', 'qwen-mem-lite.db');
     expect(existsSync(dbPath)).toBe(true);
 
     try {
@@ -1530,7 +1530,7 @@ describe('Suite 8a: Additional E2E', () => {
     } catch {}
   });
 
-  it('auto-migrates ~/claude-mem-lite/claude-mem.db → ~/.claude-mem-lite/claude-mem-lite.db on session-start', () => {
+  it('auto-migrates ~/claude-mem-lite/claude-mem.db → ~/.qwen-mem-lite/qwen-mem-lite.db on session-start', () => {
     // Create a fresh home with old unhidden dir + old DB filename
     const migrateHome = makeTmpDir();
     const oldUnhiddenDir = join(migrateHome, 'claude-mem-lite');
@@ -1556,12 +1556,12 @@ describe('Suite 8a: Additional E2E', () => {
 
     // Old file should exist, new hidden dir should not
     expect(existsSync(oldDbPath)).toBe(true);
-    const newHiddenDir = join(migrateHome, '.claude-mem-lite');
+    const newHiddenDir = join(migrateHome, '.qwen-mem-lite');
     expect(existsSync(newHiddenDir)).toBe(false);
 
     // Session-start triggers ensureDb() which:
-    //   1. Renames ~/claude-mem-lite/ → ~/.claude-mem-lite/
-    //   2. Renames claude-mem.db → claude-mem-lite.db
+    //   1. Renames ~/claude-mem-lite/ → ~/.qwen-mem-lite/
+    //   2. Renames claude-mem.db → qwen-mem-lite.db
     const migrateProjDir = join(migrateHome, 'parent', 'migrateproj');
     mkdirSync(migrateProjDir, { recursive: true });
     const { exitCode } = runHook('session-start', {
@@ -1572,7 +1572,7 @@ describe('Suite 8a: Additional E2E', () => {
     // Old unhidden dir should be gone
     expect(existsSync(oldUnhiddenDir)).toBe(false);
     // New hidden dir should exist with renamed DB
-    const newDbPath = join(newHiddenDir, 'claude-mem-lite.db');
+    const newDbPath = join(newHiddenDir, 'qwen-mem-lite.db');
     expect(existsSync(newDbPath)).toBe(true);
 
     // Verify data survived both migrations
@@ -1694,12 +1694,12 @@ describe('Suite 8a: Additional E2E', () => {
     // CLAUDE.md stays exactly as written (no context block ever appears)
     expect(claudeMd1).toBe(original);
     expect(claudeMd2).toBe(original);
-    expect(claudeMd2).not.toContain('<claude-mem-context>');
+    expect(claudeMd2).not.toContain('<qwen-mem-context>');
 
     // Context is delivered via stdout on both runs
-    expect(run1.stdout).toContain('<claude-mem-context>');
+    expect(run1.stdout).toContain('<qwen-mem-context>');
     expect(run1.stdout).toContain('Test request');
-    expect(run2.stdout).toContain('<claude-mem-context>');
+    expect(run2.stdout).toContain('<qwen-mem-context>');
   });
 
   it('auto-compress marks old low-importance observations during session-start', () => {
@@ -1784,7 +1784,7 @@ describe('Suite 8a: Additional E2E', () => {
 
     // MED-4: the maintenance pass (incl. handoff-GC) now runs in the detached
     // auto-maintain worker, not synchronously in SessionStart. In production
-    // SessionStart spawns it; here it is skipped (CLAUDE_MEM_SKIP_MAINTAIN) and
+    // SessionStart spawns it; here it is skipped (QWEN_MEM_SKIP_MAINTAIN) and
     // invoked directly, mirroring the auto-compress worker tests.
     runHook('session-start', { env: { HOME: tmpHome } });
     runHook('auto-maintain', { env: { HOME: tmpHome } });
@@ -1836,7 +1836,7 @@ describe('Suite 8a: Additional E2E', () => {
     }
 
     // Clear the last-auto-maintain file so maintenance runs
-    const maintainFile = join(tmpHome, '.claude-mem-lite', 'runtime', 'last-auto-maintain.json');
+    const maintainFile = join(tmpHome, '.qwen-mem-lite', 'runtime', 'last-auto-maintain.json');
     try {
       unlinkSync(maintainFile);
     } catch {}
@@ -1881,7 +1881,7 @@ describe('Suite 8a: Additional E2E', () => {
     db.close();
     // Make maintenance due for the worker's internal 24h gate.
     try {
-      unlinkSync(join(tmpHome, '.claude-mem-lite', 'runtime', 'last-auto-maintain.json'));
+      unlinkSync(join(tmpHome, '.qwen-mem-lite', 'runtime', 'last-auto-maintain.json'));
     } catch {
       /* absent */
     }
@@ -1889,7 +1889,7 @@ describe('Suite 8a: Additional E2E', () => {
     // The heavy pass now runs in the detached worker, not synchronously in SessionStart.
     runHook('auto-maintain', { env: { HOME: tmpHome } });
 
-    const memDir = join(tmpHome, '.claude-mem-lite');
+    const memDir = join(tmpHome, '.qwen-mem-lite');
     const snaps = readdirSync(memDir).filter((n) => n.includes('.pre-maintain-') && n.endsWith('.bak'));
     expect(snaps.length).toBeGreaterThan(0); // worker took the snapshot
   });
@@ -1929,7 +1929,7 @@ describe('Suite 8a: Additional E2E', () => {
     expect(existsSync(claudeMdPath)).toBe(false);
 
     // Context is delivered via stdout instead
-    expect(run.stdout).toContain('<claude-mem-context>');
+    expect(run.stdout).toContain('<qwen-mem-context>');
     expect(run.stdout).toContain('Build API');
   });
 });
@@ -1971,8 +1971,8 @@ describe('Suite 8: Session-start context delivery', () => {
     });
 
     // Context appears in hook stdout (the delivery channel Claude actually reads)
-    expect(run.stdout).toContain('<claude-mem-context>');
-    expect(run.stdout).toContain('</claude-mem-context>');
+    expect(run.stdout).toContain('<qwen-mem-context>');
+    expect(run.stdout).toContain('</qwen-mem-context>');
     expect(run.stdout).toContain('### Last Session');
     expect(run.stdout).toContain('Fix auth bug');
     expect(run.stdout).toContain('Fixed token refresh');
@@ -1980,7 +1980,7 @@ describe('Suite 8: Session-start context delivery', () => {
     // CLAUDE.md is untouched — no context block, original content preserved byte-for-byte
     const claudeMd = readFileSync(join(projDir, 'CLAUDE.md'), 'utf8');
     expect(claudeMd).toBe(original);
-    expect(claudeMd).not.toContain('<claude-mem-context>');
+    expect(claudeMd).not.toContain('<qwen-mem-context>');
   });
 
   it('session-start cleans up legacy <claude-mem-context> block from pre-v2.30 CLAUDE.md', () => {
@@ -2026,16 +2026,16 @@ describe('Suite 8: Session-start context delivery', () => {
 
 describe('Suite 9: Hidden Data Dir Migration', () => {
   it('migrates ~/claude-mem-lite/ with runtime dir pre-created by module init', () => {
-    // Simulates the race: hook-shared.mjs creates ~/.claude-mem-lite/runtime/
+    // Simulates the race: hook-shared.mjs creates ~/.qwen-mem-lite/runtime/
     // at module load time BEFORE ensureDb() runs. Migration must still work.
     const home = makeTmpDir();
     const oldDir = join(home, 'claude-mem-lite');
-    const newDir = join(home, '.claude-mem-lite');
+    const newDir = join(home, '.qwen-mem-lite');
 
     // Old dir with DB
     mkdirSync(oldDir, { recursive: true });
     mkdirSync(join(oldDir, 'runtime'), { recursive: true });
-    const oldDbPath = join(oldDir, 'claude-mem-lite.db');
+    const oldDbPath = join(oldDir, 'qwen-mem-lite.db');
     const db = new Database(oldDbPath);
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = OFF');
@@ -2052,7 +2052,7 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
     // Pre-create new hidden dir with runtime/ (simulates module-level mkdir)
     mkdirSync(join(newDir, 'runtime'), { recursive: true });
     // But NO DB file in new dir
-    expect(existsSync(join(newDir, 'claude-mem-lite.db'))).toBe(false);
+    expect(existsSync(join(newDir, 'qwen-mem-lite.db'))).toBe(false);
 
     const projDir = join(home, 'parent', 'raceproj');
     mkdirSync(projDir, { recursive: true });
@@ -2063,7 +2063,7 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
 
     // Old dir should be gone, data should be in new hidden dir
     expect(existsSync(oldDir)).toBe(false);
-    const newDbPath = join(newDir, 'claude-mem-lite.db');
+    const newDbPath = join(newDir, 'qwen-mem-lite.db');
     expect(existsSync(newDbPath)).toBe(true);
 
     const db2 = new Database(newDbPath, { readonly: true });
@@ -2080,12 +2080,12 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
     // Both dirs exist with DBs — new dir data must NOT be overwritten
     const home = makeTmpDir();
     const oldDir = join(home, 'claude-mem-lite');
-    const newDir = join(home, '.claude-mem-lite');
+    const newDir = join(home, '.qwen-mem-lite');
 
     // Old dir with old marker
     mkdirSync(oldDir, { recursive: true });
     mkdirSync(join(oldDir, 'runtime'), { recursive: true });
-    const oldDb = new Database(join(oldDir, 'claude-mem-lite.db'));
+    const oldDb = new Database(join(oldDir, 'qwen-mem-lite.db'));
     oldDb.pragma('journal_mode = WAL');
     oldDb.pragma('foreign_keys = OFF');
     initSchema(oldDb);
@@ -2105,7 +2105,7 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
     // New hidden dir with different marker
     mkdirSync(newDir, { recursive: true });
     mkdirSync(join(newDir, 'runtime'), { recursive: true });
-    const newDb = new Database(join(newDir, 'claude-mem-lite.db'));
+    const newDb = new Database(join(newDir, 'qwen-mem-lite.db'));
     newDb.pragma('journal_mode = WAL');
     newDb.pragma('foreign_keys = OFF');
     initSchema(newDb);
@@ -2132,7 +2132,7 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
     expect(existsSync(oldDir)).toBe(true);
 
     // New hidden dir should have its own data preserved (not overwritten)
-    const db2 = new Database(join(newDir, 'claude-mem-lite.db'), { readonly: true });
+    const db2 = new Database(join(newDir, 'qwen-mem-lite.db'), { readonly: true });
     const newMarker = db2.prepare("SELECT title FROM observations WHERE title = 'New marker'").get();
     const oldMarker = db2.prepare("SELECT title FROM observations WHERE title = 'Old marker'").get();
     db2.close();
@@ -2145,14 +2145,14 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
   });
 
   it('migrates dir with already-renamed DB (no file rename needed)', () => {
-    // ~/claude-mem-lite/claude-mem-lite.db → ~/.claude-mem-lite/claude-mem-lite.db
+    // ~/claude-mem-lite/qwen-mem-lite.db → ~/.qwen-mem-lite/qwen-mem-lite.db
     // Only dir migration, DB filename already correct
     const home = makeTmpDir();
     const oldDir = join(home, 'claude-mem-lite');
     mkdirSync(oldDir, { recursive: true });
     mkdirSync(join(oldDir, 'runtime'), { recursive: true });
 
-    const dbPath = join(oldDir, 'claude-mem-lite.db');
+    const dbPath = join(oldDir, 'qwen-mem-lite.db');
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = OFF');
@@ -2175,8 +2175,8 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
 
     // Old dir gone, new hidden dir has the DB
     expect(existsSync(oldDir)).toBe(false);
-    const newDir = join(home, '.claude-mem-lite');
-    const newDbPath = join(newDir, 'claude-mem-lite.db');
+    const newDir = join(home, '.qwen-mem-lite');
+    const newDbPath = join(newDir, 'qwen-mem-lite.db');
     expect(existsSync(newDbPath)).toBe(true);
 
     // No claude-mem.db should exist (wasn't there to begin with)
@@ -2193,7 +2193,7 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
   });
 
   it('full lifecycle uses hidden dir for all runtime files', () => {
-    // Verify session file, episode file, flush file all under ~/.claude-mem-lite/
+    // Verify session file, episode file, flush file all under ~/.qwen-mem-lite/
     const home = makeTmpDir();
     const projDir = join(home, 'parent', 'hiddenproj');
     mkdirSync(projDir, { recursive: true });
@@ -2204,11 +2204,11 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
     });
     expect(e1).toBe(0);
 
-    const hiddenDir = join(home, '.claude-mem-lite');
+    const hiddenDir = join(home, '.qwen-mem-lite');
     const runtimeDir = join(hiddenDir, 'runtime');
 
     // DB created under hidden dir
-    expect(existsSync(join(hiddenDir, 'claude-mem-lite.db'))).toBe(true);
+    expect(existsSync(join(hiddenDir, 'qwen-mem-lite.db'))).toBe(true);
 
     // Session file created under hidden dir
     const sessionFiles = readdirSync(runtimeDir).filter((f) => f.startsWith('session-'));
@@ -2292,11 +2292,11 @@ describe('Suite 10: Code Review Fix Validations', () => {
   it('migration preserves DB_DIR when it contains .db files', () => {
     const home = makeTmpDir();
     const oldDir = join(home, 'claude-mem-lite');
-    const newDir = join(home, '.claude-mem-lite');
+    const newDir = join(home, '.qwen-mem-lite');
 
     // Old dir with DB
     mkdirSync(oldDir, { recursive: true });
-    const oldDbPath = join(oldDir, 'claude-mem-lite.db');
+    const oldDbPath = join(oldDir, 'qwen-mem-lite.db');
     const db = new Database(oldDbPath);
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = OFF');
@@ -2337,12 +2337,12 @@ describe('Suite 11: first-run auto-adopt', () => {
   // Legacy memory-dir sentinel (pre-v3.13) — used only to assert migration removes it.
   function legacySentinelPresent(home, cwd) {
     const p = join(encodedMemdir(home, cwd), 'MEMORY.md');
-    return existsSync(p) && readFileSync(p, 'utf8').includes('claude-mem-lite:begin v1');
+    return existsSync(p) && readFileSync(p, 'utf8').includes('qwen-mem-lite:begin v1');
   }
   // v3.13 scheme: adopted = managed block in the project-tree CLAUDE.md.
   function adopted(cwd) {
     const p = join(cwd, 'CLAUDE.md');
-    return existsSync(p) && readFileSync(p, 'utf8').includes('claude-mem-lite:begin v1');
+    return existsSync(p) && readFileSync(p, 'utf8').includes('qwen-mem-lite:begin v1');
   }
 
   it('CLAUDE_PLUGIN_ROOT + first run → adopts + writes marker', () => {
@@ -2356,7 +2356,7 @@ describe('Suite 11: first-run auto-adopt', () => {
     });
     expect(adopted(projectDir)).toBe(true);
     // Marker key is inferProject() output — contains "testproj"
-    const runtimeDir = join(tmpHome, '.claude-mem-lite', 'runtime');
+    const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
     const markers = readdirSync(runtimeDir).filter((f) => f.startsWith('.auto-adopt-'));
     expect(markers.length).toBeGreaterThan(0);
   });
@@ -2372,7 +2372,7 @@ describe('Suite 11: first-run auto-adopt', () => {
       env: { HOME: tmpHome, MEM_QUIET_HOOKS: undefined, MEM_NO_AUTO_ADOPT: undefined },
     });
     expect(adopted(projectDir)).toBe(true);
-    const runtimeDir = join(tmpHome, '.claude-mem-lite', 'runtime');
+    const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
     const markers = readdirSync(runtimeDir).filter((f) => f.startsWith('.auto-adopt-'));
     expect(markers.length).toBeGreaterThan(0);
   });
@@ -2460,13 +2460,13 @@ describe('Suite 11: first-run auto-adopt', () => {
     // seed a legacy v1 block + a state sidecar (so the migration proves authorship)
     writeFileSync(
       join(memdir, 'MEMORY.md'),
-      '## 用户偏好\n- keep\n<!-- claude-mem-lite:begin v1 -->\n## 插件契约\n- legacy line\n<!-- claude-mem-lite:end -->\n',
+      '## 用户偏好\n- keep\n<!-- qwen-mem-lite:begin v1 -->\n## 插件契约\n- legacy line\n<!-- qwen-mem-lite:end -->\n',
     );
     writeFileSync(
-      join(memdir, '.plugin_claude_mem_lite_state.json'),
+      join(memdir, '.plugin_qwen_mem_lite_state.json'),
       JSON.stringify({ version: 'v1', bodyHash: 'x', writtenAt: '2026-01-01' }),
     );
-    writeFileSync(join(memdir, 'plugin_claude_mem_lite.md'), '# legacy');
+    writeFileSync(join(memdir, 'plugin_qwen_mem_lite.md'), '# legacy');
     expect(legacySentinelPresent(tmpHome, projectDir)).toBe(true);
 
     runHook('session-start', {
@@ -2479,7 +2479,7 @@ describe('Suite 11: first-run auto-adopt', () => {
     });
 
     expect(legacySentinelPresent(tmpHome, projectDir)).toBe(false); // legacy stripped
-    expect(existsSync(join(memdir, 'plugin_claude_mem_lite.md'))).toBe(false);
+    expect(existsSync(join(memdir, 'plugin_qwen_mem_lite.md'))).toBe(false);
     expect(readFileSync(join(memdir, 'MEMORY.md'), 'utf8')).toContain('- keep'); // user prose kept
     expect(adopted(projectDir)).toBe(true); // new block written
   });
@@ -2508,7 +2508,7 @@ describe('Suite: G3 unpersisted-decision reminder (Stop → payload → next Ses
       env: { HOME: tmpHome },
     });
 
-    const payloadFile = join(tmpHome, '.claude-mem-lite', 'runtime', 'cite-recall-parent--testproj.json');
+    const payloadFile = join(tmpHome, '.qwen-mem-lite', 'runtime', 'cite-recall-parent--testproj.json');
     const payload = JSON.parse(readFileSync(payloadFile, 'utf8'));
     expect(payload.decisionSignal).toBe('拍板');
 
@@ -2532,7 +2532,7 @@ describe('Suite: G3 unpersisted-decision reminder (Stop → payload → next Ses
           content: [
             {
               type: 'tool_use',
-              name: 'mcp__plugin_claude-mem-lite_mem-lite__mem_defer',
+              name: 'mcp__plugin_qwen-mem-lite_mem-lite__mem_defer',
               input: { title: 'the decision' },
             },
           ],
@@ -2544,7 +2544,7 @@ describe('Suite: G3 unpersisted-decision reminder (Stop → payload → next Ses
       env: { HOME: tmpHome },
     });
 
-    const payloadFile = join(tmpHome, '.claude-mem-lite', 'runtime', 'cite-recall-parent--testproj.json');
+    const payloadFile = join(tmpHome, '.qwen-mem-lite', 'runtime', 'cite-recall-parent--testproj.json');
     const payload = JSON.parse(readFileSync(payloadFile, 'utf8'));
     expect(payload.decisionSignal).toBeNull();
 
@@ -2580,7 +2580,7 @@ describe('Suite: G3 unpersisted-decision reminder (Stop → payload → next Ses
       env: { HOME: tmpHome },
     });
 
-    const payloadFile = join(tmpHome, '.claude-mem-lite', 'runtime', 'cite-recall-parent--testproj.json');
+    const payloadFile = join(tmpHome, '.qwen-mem-lite', 'runtime', 'cite-recall-parent--testproj.json');
     const payload = JSON.parse(readFileSync(payloadFile, 'utf8'));
     expect(payload.gateInjected, 'the gate denominator is the 3 hook-injected ids').toBe(3);
     expect(payload.gateRecalled, 'only #102 was both injected and cited').toBe(1);
@@ -2593,8 +2593,8 @@ describe('Suite: G3 unpersisted-decision reminder (Stop → payload → next Ses
 });
 
 describe('Suite: G1+G2 enrich-save worker (spawned-env recursion guard)', () => {
-  it('worker runs under CLAUDE_MEM_HOOK_RUNNING=1 (BG_EVENTS membership) and backfills', () => {
-    // queueSaveEnrich spawns the worker with CLAUDE_MEM_HOOK_RUNNING=1 (every
+  it('worker runs under QWEN_MEM_HOOK_RUNNING=1 (BG_EVENTS membership) and backfills', () => {
+    // queueSaveEnrich spawns the worker with QWEN_MEM_HOOK_RUNNING=1 (every
     // background spawn does). hook.mjs's recursion guard exits ANY event not in
     // BG_EVENTS under that env — the live probe caught enrich-save silently
     // no-oping on exactly this line. This test runs the worker in the spawned
@@ -2614,7 +2614,7 @@ describe('Suite: G1+G2 enrich-save worker (spawned-env recursion guard)', () => 
 
     runHook('enrich-save', {
       args: [String(id)],
-      env: { HOME: tmpHome, CLAUDE_MEM_HOOK_RUNNING: '1', CLAUDE_MEM_METRICS: '1' },
+      env: { HOME: tmpHome, QWEN_MEM_HOOK_RUNNING: '1', QWEN_MEM_METRICS: '1' },
     });
 
     const db2 = openTestDb(tmpHome);
@@ -2668,8 +2668,8 @@ describe('Suite: D#60 concurrent-session decay idempotency (G10)', () => {
             type: 'attachment',
             attachment: {
               type: 'hook_success',
-              command: 'bash "/home/x/.claude-mem-lite/scripts/post-tool-use.sh"',
-              stdout: `[claude-mem-lite] Related memories found for this error:\n  #${obsId} [bugfix] Decay probe observation\n`,
+              command: 'bash "/home/x/.qwen-mem-lite/scripts/post-tool-use.sh"',
+              stdout: `[qwen-mem-lite] Related memories found for this error:\n  #${obsId} [bugfix] Decay probe observation\n`,
             },
           },
           // Main-thread assistant text WITHOUT a #NN citation (text-floor gate).
@@ -2687,7 +2687,7 @@ describe('Suite: D#60 concurrent-session decay idempotency (G10)', () => {
       return p;
     };
 
-    const sessionFilePath = join(tmpHome, '.claude-mem-lite', 'runtime', 'session-parent--testproj');
+    const sessionFilePath = join(tmpHome, '.qwen-mem-lite', 'runtime', 'session-parent--testproj');
     const sessionFileRaw = readFileSync(sessionFilePath, 'utf8');
 
     runHook('stop', {
@@ -2733,9 +2733,9 @@ describe('Suite: R10-P1-1 — /clear handoff over the real host event sequence',
   const PROMPT = 'fix the retry backoff in worker.mjs';
 
   function turnThenClear(clearCcId) {
-    // CLAUDE_MEM_SKIP_SUMMARY: the detached llm-summary worker outlives this test and
+    // QWEN_MEM_SKIP_SUMMARY: the detached llm-summary worker outlives this test and
     // recreates the sandbox behind its cleanup (see handleStop's docblock).
-    const env = { HOME: tmpHome, CLAUDE_MEM_SKIP_SUMMARY: '1' };
+    const env = { HOME: tmpHome, QWEN_MEM_SKIP_SUMMARY: '1' };
     runHook('session-start', { stdin: JSON.stringify({ source: 'startup', session_id: CC_A }), env });
     runHook('user-prompt', { stdin: JSON.stringify({ prompt: PROMPT, session_id: CC_A }), env });
     runHook('stop', { stdin: JSON.stringify({ session_id: CC_A }), env });
@@ -2776,7 +2776,7 @@ describe('Suite: R10-P1-1 — /clear handoff over the real host event sequence',
     // The counter-case that keeps the fix honest: making the branch reachable must not make
     // it fire on every session start. `source:'startup'` means the previous session ended
     // normally — its per-turn `exit` handoff already carries continuity.
-    const env = { HOME: tmpHome, CLAUDE_MEM_SKIP_SUMMARY: '1' };
+    const env = { HOME: tmpHome, QWEN_MEM_SKIP_SUMMARY: '1' };
     runHook('session-start', { stdin: JSON.stringify({ source: 'startup', session_id: CC_A }), env });
     runHook('user-prompt', { stdin: JSON.stringify({ prompt: PROMPT, session_id: CC_A }), env });
     runHook('stop', { stdin: JSON.stringify({ session_id: CC_A }), env });
@@ -2793,7 +2793,7 @@ describe('Suite: R10-P1-1 — /clear handoff over the real host event sequence',
     // minted a fresh mem session on the next event. Measured on the maintainer's live DB
     // 2026-09-07: 58 prompts over 16 host sessions produced 56 distinct mem sessions and 56
     // session_summaries rows, 0 of which carried the LLM-only fields.
-    const env = { HOME: tmpHome, CLAUDE_MEM_SKIP_SUMMARY: '1' };
+    const env = { HOME: tmpHome, QWEN_MEM_SKIP_SUMMARY: '1' };
     runHook('session-start', { stdin: JSON.stringify({ source: 'startup', session_id: CC_A }), env });
     for (const text of ['first turn', 'second turn', 'third turn']) {
       runHook('user-prompt', { stdin: JSON.stringify({ prompt: text, session_id: CC_A }), env });
@@ -2807,11 +2807,11 @@ describe('Suite: R10-P1-1 — /clear handoff over the real host event sequence',
     expect(n).toBe(1);
   });
 
-  it('CLAUDE_MEM_LEGACY_STOP_UNLINK=1 restores the pre-v5.4.0 per-turn unlink', () => {
+  it('QWEN_MEM_LEGACY_STOP_UNLINK=1 restores the pre-v5.4.0 per-turn unlink', () => {
     // The documented revert path for this release. It must actually revert — an escape
     // hatch nobody can observe is not an escape hatch, so this asserts the OLD symptom
     // comes back: a fresh mem session per turn, and no clear handoff.
-    const env = { HOME: tmpHome, CLAUDE_MEM_SKIP_SUMMARY: '1', CLAUDE_MEM_LEGACY_STOP_UNLINK: '1' };
+    const env = { HOME: tmpHome, QWEN_MEM_SKIP_SUMMARY: '1', QWEN_MEM_LEGACY_STOP_UNLINK: '1' };
     runHook('session-start', { stdin: JSON.stringify({ source: 'startup', session_id: CC_A }), env });
     for (const text of ['first turn', 'second turn']) {
       runHook('user-prompt', { stdin: JSON.stringify({ prompt: text, session_id: CC_A }), env });

@@ -9,7 +9,7 @@
 // the marker that invalidates it arrives last, if at all (both faces truncate long rows).
 //
 // Observed on v3.68.1 with a retracted row #1 superseded by #2:
-//   $ claude-mem-lite get 1
+//   $ qwen-mem-lite get 1
 //   #1 [bugfix] 2026-08-17
 //   title: OAuth callback loops forever …
 //   lesson_learned: WRONG ADVICE: disable state validation entirely     ← read first
@@ -35,7 +35,7 @@ const BAD = 'WRONG ADVICE: disable state validation entirely';
 let dir, env;
 
 function seed() {
-  const db = new Database(join(dir, 'claude-mem-lite.db'));
+  const db = new Database(join(dir, 'qwen-mem-lite.db'));
   initSchema(db);
   const now = Date.now();
   db.prepare(
@@ -108,8 +108,8 @@ describe('get / mem_get — retracted rows announce the retraction first', () =>
     dir = mkdtempSync(join(tmpdir(), 'retracted-'));
     env = {
       ...process.env,
-      CLAUDE_MEM_DIR: dir,
-      CLAUDE_MEM_SKIP_UPDATE: '1',
+      QWEN_MEM_DIR: dir,
+      QWEN_MEM_SKIP_UPDATE: '1',
       MEM_QUIET_HOOKS: '1',
       MEM_NO_AUTO_ADOPT: '1',
     };

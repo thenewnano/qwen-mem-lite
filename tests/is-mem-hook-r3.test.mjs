@@ -9,10 +9,10 @@ const mk = (command) => ({ hooks: [{ type: 'command', command }] });
 describe('isMemHook classifies real mem hooks (R3 I-H1)', () => {
   it('matches launcher-routed, install-path, and prefilter commands', () => {
     expect(
-      isMemHook(mk('node "/home/me/.claude-mem-lite/scripts/hook-launcher.mjs" hook.mjs session-start')),
+      isMemHook(mk('node "/home/me/.qwen-mem-lite/scripts/hook-launcher.mjs" hook.mjs session-start')),
     ).toBe(true);
-    expect(isMemHook(mk('node "/home/me/.claude-mem-lite/hook.mjs" session-start'))).toBe(true); // legacy direct (install path)
-    expect(isMemHook(mk('bash "/home/me/.claude-mem-lite/scripts/post-tool-use.sh"'))).toBe(true);
+    expect(isMemHook(mk('node "/home/me/.qwen-mem-lite/hook.mjs" session-start'))).toBe(true); // legacy direct (install path)
+    expect(isMemHook(mk('bash "/home/me/.qwen-mem-lite/scripts/post-tool-use.sh"'))).toBe(true);
     expect(isMemHook(mk('node "${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.mjs" hook.mjs stop'))).toBe(true);
   });
 });

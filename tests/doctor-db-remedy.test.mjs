@@ -27,7 +27,7 @@ function dataDir() {
 
 function withDb(snapshotNames = []) {
   const dir = dataDir();
-  const db = join(dir, 'claude-mem-lite.db');
+  const db = join(dir, 'qwen-mem-lite.db');
   writeFileSync(db, 'not actually sqlite');
   let t = 1_700_000_000;
   for (const n of snapshotNames) {
@@ -53,7 +53,7 @@ describe('readSnapshots separates empty from unreadable', () => {
     writeFileSync(notADir, 'x');
     // ENOTDIR rather than a chmod: deterministic, and it still reproduces when the suite
     // runs as root.
-    const r = readSnapshots(join(notADir, 'claude-mem-lite.db'));
+    const r = readSnapshots(join(notADir, 'qwen-mem-lite.db'));
     expect(r.ok).toBe(false);
     expect(r.reason).toBe('ENOTDIR');
   });
@@ -62,8 +62,8 @@ describe('readSnapshots separates empty from unreadable', () => {
 describe('dbCheckRemedy', () => {
   it('names the newest snapshot when one exists', async () => {
     const { db } = withDb([
-      'claude-mem-lite.db.pre-maintain-2026-09-01T00-00-00-000Z-1-1.bak',
-      'claude-mem-lite.db.pre-maintain-2026-09-06T00-00-00-000Z-1-1.bak',
+      'qwen-mem-lite.db.pre-maintain-2026-09-01T00-00-00-000Z-1-1.bak',
+      'qwen-mem-lite.db.pre-maintain-2026-09-06T00-00-00-000Z-1-1.bak',
     ]);
     const out = await dbCheckRemedy(db, corrupt());
     expect(out).toContain('2026-09-06T00-00-00-000Z');
@@ -86,7 +86,7 @@ describe('dbCheckRemedy', () => {
     const dir = dataDir();
     const notADir = join(dir, 'wall');
     writeFileSync(notADir, 'x');
-    const out = await dbCheckRemedy(join(notADir, 'claude-mem-lite.db'), corrupt());
+    const out = await dbCheckRemedy(join(notADir, 'qwen-mem-lite.db'), corrupt());
     expect(out).toMatch(/could not read/i);
     expect(out).toContain('ENOTDIR');
     // The whole point of the third outcome: it must NOT assert the absence it never checked.
@@ -134,9 +134,9 @@ describe('doctor prints the remedy it computes', () => {
       env: {
         ...process.env,
         HOME: home,
-        CLAUDE_MEM_DIR: dataDir,
-        CLAUDE_MEM_SKIP_UPDATE: '1',
-        CLAUDE_MEM_SKIP_MAINTAIN: '1',
+        QWEN_MEM_DIR: dataDir,
+        QWEN_MEM_SKIP_UPDATE: '1',
+        QWEN_MEM_SKIP_MAINTAIN: '1',
         MEM_NO_AUTO_ADOPT: '1',
       },
     });
@@ -153,8 +153,8 @@ describe('doctor prints the remedy it computes', () => {
 
   it('emits the restore remedy naming the newest snapshot', () => {
     const { dir } = withDb([
-      'claude-mem-lite.db.pre-maintain-2026-09-01T00-00-00-000Z-1-1.bak',
-      'claude-mem-lite.db.pre-maintain-2026-09-06T00-00-00-000Z-1-1.bak',
+      'qwen-mem-lite.db.pre-maintain-2026-09-01T00-00-00-000Z-1-1.bak',
+      'qwen-mem-lite.db.pre-maintain-2026-09-06T00-00-00-000Z-1-1.bak',
     ]);
     const out = runDoctor(dir).stdout;
     expect(out).toMatch(/Restore the newest of 2 backup snapshot\(s\)/);

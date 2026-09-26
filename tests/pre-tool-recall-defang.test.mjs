@@ -21,7 +21,7 @@ const SCRIPT_PATH = resolve(import.meta.dirname, '../scripts/pre-tool-recall.js'
 function runScript(input, env = {}) {
   return new Promise((res, rej) => {
     const child = spawn('node', [SCRIPT_PATH], {
-      env: { ...process.env, CLAUDE_MEM_HOOK_RUNNING: '', ...env },
+      env: { ...process.env, QWEN_MEM_HOOK_RUNNING: '', ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -88,7 +88,7 @@ describe('pre-tool-recall defang (MED-1)', () => {
         tool_name: 'Edit',
         tool_input: { file_path: join(projectDir, file) },
       },
-      { CLAUDE_MEM_DB_PATH: dbPath, CLAUDE_MEM_RUNTIME_DIR: runtimeDir, CLAUDE_PROJECT_DIR: projectDir },
+      { QWEN_MEM_DB_PATH: dbPath, QWEN_MEM_RUNTIME_DIR: runtimeDir, CLAUDE_PROJECT_DIR: projectDir },
     );
     return JSON.parse(stdout).hookSpecificOutput.additionalContext;
   }

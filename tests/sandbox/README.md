@@ -32,7 +32,7 @@ leaves ~50 MB (a real `npm i -g` tree).
 in a Claude Code session `$TMPDIR` is `~/.claude/tmp/claude-<uid>` — under `$HOME`,
 which is exactly what the "Do not put the sandbox under `$HOME`" convention below
 forbids, for the reason given there. That is not a hypothetical: on a machine where
-`~/node_modules` holds `better-sqlite3` and `claude-mem-lite`, the run measures the home
+`~/node_modules` holds `better-sqlite3` and `qwen-mem-lite`, the run measures the home
 tree and passes. `tests/sandbox/sbx-base.mjs` now refuses such a base outright rather
 than leaving the rule to a reader — `tests/sandbox-base-guard.test.mjs` drives the
 refusal, and it is in `vitest run` even though the harness itself is not.
@@ -48,12 +48,12 @@ every one of them lived in the difference between install *shapes* rather than i
 function:
 
 - a healthy plugin-only install reporting `3 issue(s) found` and exiting 1
-- a stale `~/.claude-mem-lite` binding reported as `✓ verified` while the registered
+- a stale `~/.qwen-mem-lite` binding reported as `✓ verified` while the registered
   MCP server FATAL'd and every hook silently no-op'd
 - `SessionStart` emitting three separate writes on one stdout, so Claude Code parsed
   none of them as an envelope
 - `PostToolUse` dropping both of its receipts when two co-fired
-- `doctor` prescribing `claude-mem-lite update`, which is the observation editor
+- `doctor` prescribing `qwen-mem-lite update`, which is the observation editor
 
 The unit suite was green through all of it. What these scripts add is the *shape*: a
 fake `$HOME`, a fake `claude` binary recording `claude mcp add/remove/list`, a plugin
@@ -65,7 +65,7 @@ cache populated the way Claude Code populates one (a git checkout, **no**
 | Phase | Covers |
 |---|---|
 | A | marketplace add → cold `setup.sh` (real `npm install`) → all six hook events → MCP `initialize`/`tools/list`/`tools/call` → bundled CLI → auto-update in plugin mode → stale-ABI self-heal → uninstall residue |
-| B | `npm pack` → `npm i -g` → `claude-mem-lite install` → settings.json hooks actually firing → MCP from the managed install → `self-update` → self-heal with the CLI's own tree healthy and the managed one broken → **plugin-cache launch.mjs sync (R10-P2-11)** → **an in-place install under live hook traffic (R10-P2-12)** → `uninstall` and `--purge` |
+| B | `npm pack` → `npm i -g` → `qwen-mem-lite install` → settings.json hooks actually firing → MCP from the managed install → `self-update` → self-heal with the CLI's own tree healthy and the managed one broken → **plugin-cache launch.mjs sync (R10-P2-11)** → **an in-place install under live hook traffic (R10-P2-12)** → `uninstall` and `--purge` |
 | C | a new cache version dir arriving without `node_modules`, a hook firing from it before its deps exist, `setup.sh` provisioning it, memory surviving the version swap, cache pruning to the latest 3 |
 
 ## Conventions worth keeping

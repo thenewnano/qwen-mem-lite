@@ -259,12 +259,12 @@ describe('bumpCitationAccess', () => {
     expect(db.prepare('SELECT access_count FROM observations WHERE id = ?').get(id).access_count).toBe(0);
   });
 
-  it('CLAUDE_MEM_CITATION_RELEVANCE_GATE=off restores the pre-v3.84.0 behaviour', () => {
+  it('QWEN_MEM_CITATION_RELEVANCE_GATE=off restores the pre-v3.84.0 behaviour', () => {
     // The documented revert path. It restores ALL of the old behaviour including the
     // missing-argument hole — a half-reverted gate would be a third behaviour nobody has
     // measured.
     const discussed = newObs({ title: 'X', type: 'bugfix', project: 'projects--test' });
-    const env = { CLAUDE_MEM_CITATION_RELEVANCE_GATE: 'off' };
+    const env = { QWEN_MEM_CITATION_RELEVANCE_GATE: 'off' };
     expect(bumpCitationAccess(db, [discussed], 'projects--test', new Set(), { env })).toBe(1);
     expect(bumpCitationAccess(db, [discussed], 'projects--test', undefined, { env })).toBe(1);
     expect(db.prepare('SELECT access_count FROM observations WHERE id = ?').get(discussed).access_count).toBe(
@@ -278,9 +278,9 @@ describe('bumpCitationAccess', () => {
     const discussed = newObs({ title: 'X', type: 'bugfix', project: 'projects--test' });
     for (const env of [
       {},
-      { CLAUDE_MEM_CITATION_RELEVANCE_GATE: '' },
-      { CLAUDE_MEM_CITATION_RELEVANCE_GATE: '0' },
-      { CLAUDE_MEM_CITATION_RELEVANCE_GATE: 'false' },
+      { QWEN_MEM_CITATION_RELEVANCE_GATE: '' },
+      { QWEN_MEM_CITATION_RELEVANCE_GATE: '0' },
+      { QWEN_MEM_CITATION_RELEVANCE_GATE: 'false' },
     ]) {
       expect(bumpCitationAccess(db, [discussed], 'projects--test', new Set(), { env })).toBe(0);
     }
@@ -300,7 +300,7 @@ describe('bumpCitationAccess', () => {
       dead,
     );
     bumpCitationAccess(db, [dead], 'projects--test', undefined, {
-      env: { CLAUDE_MEM_CITATION_RELEVANCE_GATE: 'off' },
+      env: { QWEN_MEM_CITATION_RELEVANCE_GATE: 'off' },
     });
     const acc = (id) => db.prepare('SELECT access_count FROM observations WHERE id = ?').get(id).access_count;
     expect(acc(keeper)).toBe(1);

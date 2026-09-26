@@ -2,7 +2,7 @@
 //
 // detectInstallShape answered with CLAUDE_PLUGIN_ROOT, else the newest cache directory.
 // That is right inside a hook (Claude Code sets the env var) and wrong everywhere else:
-// `claude-mem-lite self-update`, `doctor`, `status` and `rebuild-binding` all run from a
+// `qwen-mem-lite self-update`, `doctor`, `status` and `rebuild-binding` all run from a
 // terminal, where the env var is unset. Claude Code records the truth in
 // ~/.claude/plugins/installed_plugins.json, and nothing read it.
 //
@@ -19,7 +19,7 @@ import { tmpdir } from 'os';
 import { detectInstallShape } from '../lib/install-shape.mjs';
 
 let home;
-const CACHE = ['.claude', 'plugins', 'cache', 'thenewnano', 'claude-mem-lite'];
+const CACHE = ['.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite'];
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'mem-activever-'));
@@ -48,7 +48,7 @@ function seedInstalledPlugins(version) {
     JSON.stringify({
       version: 2,
       plugins: {
-        'claude-mem-lite@thenewnano': [
+        'qwen-mem-lite@thenewnano': [
           {
             scope: 'user',
             installPath: join(home, ...CACHE, version),

@@ -120,7 +120,7 @@ describe('D#74 — auto-escalation keeps the cross-source legs (events)', () => 
       {
         db,
         currentProject: 'test',
-        env: { CLAUDE_MEM_AUTO_DEEP: '1' },
+        env: { QWEN_MEM_AUTO_DEEP: '1' },
         searchObservationsHybrid,
         deepSearch: async () => ({ variants: ['zanzibar'], reranked: false, results: deepObs }),
         shouldEscalateToDeep: () => true, // force the weak-results verdict

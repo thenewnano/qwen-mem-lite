@@ -8,11 +8,11 @@
   },
   "plugins": [
     {
-      "name": "claude-mem-lite",
-      "version": "6.12.1",
+      "name": "qwen-mem-lite",
+      "version": "7.0.0",
       "source": "./",
       "homepage": "https://github.com/thenewnano/qwen-mem-lite",
-      "description": "Persistent long-term memory for Claude Code via MCP — captures coding decisions, bugfixes, and context across sessions. Hybrid FTS5 + TF-IDF search with episode batching. Single SQLite DB, no external services. A lighter, lower-cost alternative to claude-mem (episode batching + a smaller model; cost savings are an internal estimate, not a measured benchmark)."
+      "description": "Persistent long-term memory for Qwen Code and Claude Code via MCP — captures coding decisions, bugfixes, and context across sessions. Hybrid FTS5 + TF-IDF search with episode batching. Single SQLite DB, no external services. A lighter, lower-cost alternative to claude-mem (episode batching + a smaller model; cost savings are an internal estimate, not a measured benchmark)."
     }
   ]
 }

@@ -707,7 +707,7 @@ describe('cleanupClaudeMdLegacyBlock', () => {
 
     // Even with no CLAUDE.md, we drop the marker — future SessionStarts skip
     // the fs call entirely. If the user later writes CLAUDE.md + re-adds the
-    // legacy block manually, `claude-mem-lite doctor --reset` (or manual
+    // legacy block manually, `qwen-mem-lite doctor --reset` (or manual
     // marker delete) is the recovery path.
     expect(existsSync(markerPath)).toBe(true);
 

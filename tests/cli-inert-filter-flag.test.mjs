@@ -10,7 +10,7 @@
 // it clears the global known-flag set, and `browse` never reads it. Measured on a seeded
 // corpus before the fix (three rows, one per type):
 //
-//     $ claude-mem-lite browse --type bugfix
+//     $ qwen-mem-lite browse --type bugfix
 //     📊 Memory Dashboard (work--proj)
 //       #3 🟢 [feature] FEATURE ROW
 //       #2 🟡 [decision] DECISION ROW
@@ -54,21 +54,21 @@ beforeAll(() => {
   WORK = join(ROOT, 'work', 'proj');
   for (const d of [join(ROOT, 'home'), join(ROOT, 'data'), WORK]) mkdirSync(d, { recursive: true });
   const env = { ...process.env };
-  for (const k of Object.keys(env)) if (/^(CLAUDE_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete env[k];
+  for (const k of Object.keys(env)) if (/^(QWEN_MEM_|MEM_|CLAUDE_PLUGIN_)/.test(k)) delete env[k];
   delete env.CLAUDE_PROJECT_DIR;
   delete env.PWD;
   ENV = {
     ...env,
     HOME: join(ROOT, 'home'),
-    CLAUDE_MEM_DIR: join(ROOT, 'data'),
+    QWEN_MEM_DIR: join(ROOT, 'data'),
     // Without this the seeding `save` rewrites THIS repo's own CLAUDE.md and sidecar.
     MEM_NO_AUTO_ADOPT: '1',
-    CLAUDE_MEM_SKIP_UPDATE: '1',
-    CLAUDE_MEM_SKIP_SAVE_ENRICH: '1',
-    CLAUDE_MEM_SKIP_MAINTAIN: '1',
-    CLAUDE_MEM_SKIP_COMPRESS: '1',
-    CLAUDE_MEM_SKIP_OPTIMIZE: '1',
-    CLAUDE_MEM_NO_DELAY: '1',
+    QWEN_MEM_SKIP_UPDATE: '1',
+    QWEN_MEM_SKIP_SAVE_ENRICH: '1',
+    QWEN_MEM_SKIP_MAINTAIN: '1',
+    QWEN_MEM_SKIP_COMPRESS: '1',
+    QWEN_MEM_SKIP_OPTIMIZE: '1',
+    QWEN_MEM_NO_DELAY: '1',
     CLAUDE_CODE_PATH: join(ROOT, 'no-such-claude'),
     ANTHROPIC_API_KEY: '',
     OPENROUTER_API_KEY: '',

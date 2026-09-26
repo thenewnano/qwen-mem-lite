@@ -71,7 +71,7 @@ describe('plugin manifests', () => {
     // manifest validates by having lost information. `homepage` is documented on a plugin
     // entry, so this is where it belongs.
     const marketplace = readJson('.claude-plugin/marketplace.json');
-    const entry = marketplace.plugins?.find((p) => p.name === 'claude-mem-lite');
+    const entry = marketplace.plugins?.find((p) => p.name === 'qwen-mem-lite');
     expect(entry).toBeTruthy();
     expect(entry.homepage).toMatch(/^https:\/\//);
     expect(marketplace.metadata?.homepage).toBeUndefined();
