@@ -34,8 +34,20 @@ function guardSection() {
   return section;
 }
 
+// Strip inherited GIT_* env, same reason and same four variables as lib/git-state.mjs's
+// buildCleanEnv(): a git hook passes GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE/GIT_PREFIX to its
+// children, and a `git commit <pathspec>` hook gets a TEMPORARY index holding only the named
+// paths. Inherited, every command below would read the PARENT's repository and that index
+// instead of the fixture's — which is how these cases failed while the shipped rule was fine.
+const hookCleanEnv = (extra = {}) => {
+  const env = { ...process.env, ...extra };
+  for (const k of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_PREFIX']) delete env[k];
+  return env;
+};
+
 let repo;
-const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: 'pipe' });
+const git = (...args) =>
+  execFileSync('git', args, { cwd: repo, env: hookCleanEnv(), encoding: 'utf8', stdio: 'pipe' });
 
 beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), 'mem-corpusguard-'));
@@ -61,7 +73,7 @@ function runGuard(env = {}) {
       cwd: repo,
       encoding: 'utf8',
       stdio: 'pipe',
-      env: { ...process.env, ...env },
+      env: hookCleanEnv(env),
     });
     return { code: 0, out };
   } catch (e) {
