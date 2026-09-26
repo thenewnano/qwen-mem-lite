@@ -24,7 +24,7 @@ before retrieval, measurement, release, migration or schema work.**
 | Dead code | `npm run dead-code` (knip — measure from the **primary working tree**; the NAME SET is the evidence, not the count) |
 | **Plugin manifests** | `npm run validate:manifests` — **`claude plugin validate . --strict` is NOT equivalent**: `.` resolves to the marketplace manifest alone, and `.claude-plugin/plugin.json` is the one that exits 1 |
 | Bench · multipliers | `npm run benchmark:gate` · `benchmark:multipliers:gate` — **run the second after touching any constant in `scoring-sql.mjs` or `MULT_EXPR`; the first is structurally blind to those** |
-| **Recapture the gate baseline** | `node benchmark/benchmark.mjs --production-hybrid > benchmark/baseline.json` — **expires 30 days after its own `timestamp`**, and CI + publish pass `--strict`. Sampled **2026-09-14T16:06:53Z** → red from **2026-10-14 16:06 UTC**. The stamp lives in THREE places (`baseline.json`, `ci.yml`, this row); `tests/baseline-stamp-sync.test.mjs` fails if they disagree. **Recapture BEFORE tagging, in its own commit** — otherwise it goes red after the tag is pushed |
+| **Recapture the gate baseline** | `node benchmark/benchmark.mjs --production-hybrid > benchmark/baseline.json` — **expires 30 days after its own `timestamp`**, and CI + publish pass `--strict`. Sampled **2026-09-26T07:40:01Z** → red from **2026-10-26 07:40 UTC**. The stamp lives in THREE places (`baseline.json`, `ci.yml`, this row); `tests/baseline-stamp-sync.test.mjs` fails if they disagree. **Recapture BEFORE tagging, in its own commit** — otherwise it goes red after the tag is pushed |
 | Audit metrics | `npm run audit:metrics` · `audit:baseline` · `audit:selfcheck` |
 
 Two CLI families, both canonical in `cli.mjs` (`claude-mem-lite help` for flags):
@@ -105,9 +105,9 @@ scratch file there — moves the headline.
 
 | Baseline | Value | Tree / date |
 |----------|-------|-------------|
-| Tests | **422 files / 6528**, 0 skipped (1 skips without git hooks) | `main` @ `9c41144`, 2026-09-22, v6.11.0 tree |
+| Tests | **425 files / 6585**, 0 skipped (1 skips without git hooks) | `main` @ `5b67178`, 2026-09-26, v6.12.1 tree |
 | Knip | **32** unused exports, **0** unused files, **3** unlisted binaries | same tree, primary working tree, knip 6.35.1 |
-| Coverage | **85.82** stmts · **80.07** branches · **91.05** funcs · **87.01** lines | same tree, vitest 5.0.0 |
+| Coverage | **85.94** stmts · **80.27** branches · **91.18** funcs · **87.12** lines | same tree, vitest 5.0.0 |
 
 Coverage `include` is a **denylist** — staying out costs a named `exclude`. Outside by
 design: `install.mjs`, `server.mjs`, `hook.mjs`, `cli.mjs`, `benchmark/**`, `scripts/**`
