@@ -164,7 +164,8 @@ extension, runs the same code and the same store as the Claude Code install
 no Claude Code present.
 
 ```bash
-qwen extensions install /path/to/claude-mem-lite
+qwen extensions sources add https://github.com/thenewnano/qwen-mem-lite
+qwen extensions install thenewnano:claude-mem-lite --consent
 qwen extensions list                             # ✓ claude-mem-lite
 qwen extensions link /path/to/claude-mem-lite    # instead, to track a working copy in place
 ```
@@ -842,7 +843,7 @@ path and fails on regression.
 | Precision@10 | 0.85 |
 | nDCG@10 | 0.97 |
 | MRR@10 | 0.96 |
-| P95 search latency | ~1.8ms |
+| P95 search latency | ~1.0ms (host-dependent; not a gated metric) |
 
 > **Where these numbers come from.** Reproduce with
 > `node benchmark/benchmark.mjs --production-hybrid` (deterministic — same fixture corpus,

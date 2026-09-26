@@ -1,40 +1,46 @@
 # claude-mem-lite
 
-> Persistent long-term memory for Claude Code (Anthropic's CLI coding agent) via the Model Context Protocol (MCP). Captures coding decisions, bugfixes, and context across sessions; recalls them via hybrid FTS5 + TF-IDF search. Single local SQLite database, no external services. A lighter, lower-cost alternative to claude-mem — episode batching plus a smaller model reduce LLM cost substantially (an internal architecture estimate, not a measured benchmark).
+> Persistent long-term memory for coding agents - the Qwen Code fork (Claude Code also supported) - via the Model Context Protocol (MCP). Captures coding decisions, bugfixes, and context across sessions; recalls them via hybrid FTS5 + TF-IDF search. Single local SQLite database, no external services. A lighter, lower-cost alternative to claude-mem - episode batching plus a smaller model reduce LLM cost substantially (an internal architecture estimate, not a measured benchmark).
 
-claude-mem-lite is a Claude Code plugin (also installable via npm/npx) that runs as an MCP server plus a set of Claude Code lifecycle hooks (`SessionStart`, `PreCompact`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `UserPromptSubmit`). It automatically captures coding observations during sessions — file edits, bug fixes, decisions, refactors — then surfaces relevant past observations when you edit a related file or hit a familiar error. Search is hybrid: FTS5 BM25 + TF-IDF cosine similarity merged via Reciprocal Rank Fusion (RRF), with 100+ synonym pairs including CJK↔EN cross-language mappings. Benchmarked at 0.90 Recall@10 / 0.85 Precision@10 / 0.97 nDCG@10 / 0.96 MRR@10 across 200 observations / 30 queries, on the production-hybrid path (`benchmark/baseline.json`, sampled 2026-09-06). The previously published 0.96 Precision@10 came from the RETIRED FTS-only lexical path — a different caliber, not a better score: the hybrid arm trades raw precision@10 for recall, nDCG and MRR by surfacing semantically related candidates beyond exact lexical matches.
+claude-mem-lite is a plugin for **Qwen Code** and **Claude Code** (this fork's both hosts; also installable via npm/npx) that runs as an MCP server plus a set of lifecycle hooks (`SessionStart`, `PreCompact`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `UserPromptSubmit`). It automatically captures coding observations during sessions - file edits, bug fixes, decisions, refactors - then surfaces relevant past observations when you edit a related file or hit a familiar error. Search is hybrid: FTS5 BM25 + TF-IDF cosine similarity merged via Reciprocal Rank Fusion (RRF), with 100+ synonym pairs including CJK↔EN cross-language mappings. Benchmarked at 0.90 Recall@10 / 0.85 Precision@10 / 0.97 nDCG@10 / 0.96 MRR@10 across 200 observations / 30 queries, on the production-hybrid path (`benchmark/baseline.json`, sampled 2026-09-26). The previously published 0.96 Precision@10 came from the RETIRED FTS-only lexical path - a different caliber, not a better score: the hybrid arm trades raw precision@10 for recall, nDCG and MRR by surfacing semantically related candidates beyond exact lexical matches.
+
+The two hosts differ in their tool vocabulary, their context file, and their transcript format; this fork translates each difference once, at the point a payload arrives, so the capture, recall and pruning logic is identical on both. Qwen Code sessions are first-class: its runtime tool ids (`write_file`, `read_file`, `edit`, `run_shell_command`), its `QWEN.md` context file, and its `message.parts` transcripts are all handled.
 
 ## Core docs
 
-- [README](https://github.com/sdsrss/claude-mem-lite/blob/main/README.md): full usage, architecture, comparison vs claude-mem / mem0 / MCP reference memory, FAQ
-- [中文 README](https://github.com/sdsrss/claude-mem-lite/blob/main/README.zh-CN.md): Chinese documentation
-- [CHANGELOG](https://github.com/sdsrss/claude-mem-lite/blob/main/CHANGELOG.md): version history
-- [CLAUDE.md](https://github.com/sdsrss/claude-mem-lite/blob/main/CLAUDE.md): architecture map and module roles
-- [Architecture comparison](https://github.com/sdsrss/claude-mem-lite#architecture-comparison): vs claude-mem original (the project this was redesigned from)
-- [Comparison vs mem0 / MCP memory](https://github.com/sdsrss/claude-mem-lite#comparison-memory-systems-for-ai-coding-agents): differentiation from general LLM memory frameworks
-- [FAQ](https://github.com/sdsrss/claude-mem-lite#faq): "what is memory for Claude Code", "vs mem0", privacy, cross-machine
+- [README](https://github.com/thenewnano/qwen-mem-lite/blob/main/README.md): full usage, architecture, comparison vs claude-mem / mem0 / MCP reference memory, FAQ
+- [中文 README](https://github.com/thenewnano/qwen-mem-lite/blob/main/README.zh-CN.md): Chinese documentation
+- [CHANGELOG](https://github.com/thenewnano/qwen-mem-lite/blob/main/CHANGELOG.md): version history
+- [CLAUDE.md](https://github.com/thenewnano/qwen-mem-lite/blob/main/CLAUDE.md): architecture map and module roles
+- [Architecture comparison](https://github.com/thenewnano/qwen-mem-lite#architecture-comparison): vs claude-mem original (the project this was redesigned from)
+- [Comparison vs mem0 / MCP memory](https://github.com/thenewnano/qwen-mem-lite#comparison-memory-systems-for-ai-coding-agents): differentiation from general LLM memory frameworks
+- [FAQ](https://github.com/thenewnano/qwen-mem-lite#faq): "what is memory for coding agents", "vs mem0", privacy, cross-machine
 
 ## Key concepts
 
-- **MCP server**: registers 18 tools total; 9 core exposed to Claude Code (`mem_search`, `mem_recent`, `mem_recall`, `mem_timeline`, `mem_get`, `mem_save`, `mem_defer`, `mem_defer_list`, `mem_defer_drop`); 9 admin/maintenance tools hidden from `tools/list` but reachable via the `claude-mem-lite` CLI
+- **MCP server**: registers 18 tools total; 9 core exposed to the host (`mem_search`, `mem_recent`, `mem_recall`, `mem_timeline`, `mem_get`, `mem_save`, `mem_defer`, `mem_defer_list`, `mem_defer_drop`); 9 admin/maintenance tools hidden from `tools/list` but reachable via the `claude-mem-lite` CLI
 - **Hooks** (seven events, as registered in `hooks/hooks.json`): `SessionStart` (context injection + handoff resume), `PreCompact` (pre-compaction snapshot), `PreToolUse` (file lesson recall before Edit/Write/Read; context for spawned agents), `PostToolUse` (episode capture), `PostToolUseFailure` (error-triggered recall on a host-flagged failure), `Stop` (episode flush + handoff snapshot), `UserPromptSubmit` (semantic memory injection)
-- **Episode batching**: groups related tool calls (5–10 ops) before sending to LLM (Haiku) for structured observation extraction, instead of one LLM call per tool use (claude-mem original's model). Combined with the smaller model this is the source of the cost reduction — the headline multiplier is an architecture estimate (call-count × token × model-price reduction), not a measured end-to-end benchmark.
+- **Episode batching**: groups related tool calls (5-10 ops) before sending to LLM (a small/fast model) for structured observation extraction, instead of one LLM call per tool use (claude-mem original's model). Combined with the smaller model this is the source of the cost reduction - the headline multiplier is an architecture estimate (call-count × token × model-price reduction), not a measured end-to-end benchmark.
 - **Hybrid retrieval**: FTS5 BM25 keyword search + TF-IDF cosine (512-dim vectors) semantic search, fused via Reciprocal Rank Fusion. Synonym expansion handles abbreviations (`K8s`, `DB`, `auth`) and CJK↔EN cross-language (数据库↔database)
+- **Pluggable LLM backend** for the background calls: `ANTHROPIC_API_KEY` → `OPENROUTER_API_KEY` → `OPENAI_API_KEY` / `OPENAI_BASE_URL` (any OpenAI-compatible endpoint - local servers included, keyless) → `claude` CLI. `CLAUDE_MEM_LLM_PROVIDER` pins the leg when several are configured.
 - **Cross-session handoff**: captures session state on `/clear` or `/exit`, re-injects on next session via FTS5 term overlap or `git SHA` continuation anchor
-- **Invited memory pattern (v3.13+)**: installs a plugin-owned managed block into the project's `CLAUDE.md`, plus an on-demand detail doc at `.claude/plugin_claude_mem_lite.md`, so Claude Code loads the tool-use contract as project-instruction authority. NOT `MEMORY.md`: Claude Code loads both at equal weight, and seeding MEMORY.md would pollute an index meant for the user's own memories (`claudemd.mjs`). Auto-fires on first SessionStart per project; per-project (`adopt --disable`) and global (`MEM_NO_AUTO_ADOPT=1`) opt-outs available.
+- **Invited memory pattern (v3.13+)**: installs a plugin-owned managed block into the project's context file - `CLAUDE.md` for Claude Code and `QWEN.md` for Qwen Code, both written since each host ignores the other's - plus an on-demand detail doc at `.claude/plugin_claude_mem_lite.md` / `.qwen/plugin_claude_mem_lite.md`, so the host loads the tool-use contract as project-instruction authority. NOT `MEMORY.md`: the host loads both at equal weight, and seeding MEMORY.md would pollute an index meant for the user's own memories (`claudemd.mjs`). Auto-fires on first SessionStart per project; per-project (`adopt --disable`) and global (`MEM_NO_AUTO_ADOPT=1`) opt-outs available.
 
 ## Installation
 
-- `/plugin marketplace add sdsrss/claude-mem-lite && /plugin install claude-mem-lite` (Claude Code plugin marketplace, recommended)
-- `npx github:sdsrss/claude-mem-lite` (one-liner; installs to `~/.claude-mem-lite/`)
-- `git clone https://github.com/sdsrss/claude-mem-lite.git && node install.mjs install` (for development)
+- **Qwen Code**: `qwen extensions sources add https://github.com/thenewnano/qwen-mem-lite`, then `qwen extensions install thenewnano:claude-mem-lite --consent` (extension marketplace)
+- **Claude Code**: `/plugin marketplace add thenewnano/qwen-mem-lite && /plugin install claude-mem-lite` (plugin marketplace, recommended)
+- `npx github:thenewnano/qwen-mem-lite` (one-liner; installs to `~/.claude-mem-lite/`)
+- `git clone https://github.com/thenewnano/qwen-mem-lite.git && node install.mjs install` (for development)
 
-Requires Node.js ≥ 22 (`package.json` `engines`; better-sqlite3 13 requires it and Node 20 reached EOL in 2026-04), Claude Code CLI. Linux and macOS are supported and CI-covered; Windows installs and runs the MCP server, the CLI and the `node` hooks, but is not CI-covered and needs Git for Windows or WSL for the three `bash` hook commands.
+Both hosts share the same store (`~/.claude-mem-lite/`) and the same database, and this build updates from its own repository's signed releases - never from upstream's, whose release is the Claude-Code-only build.
+
+Requires Node.js ≥ 22 (`package.json` `engines`; better-sqlite3 13 requires it and Node 20 reached EOL in 2026-04), and either Qwen Code or the Claude Code CLI. Linux and macOS are supported and CI-covered; Windows installs and runs the MCP server, the CLI and the `node` hooks, but is not CI-covered and needs Git for Windows or WSL for the three `bash` hook commands.
 
 ## Related projects
 
-- [claude-mem](https://github.com/thedotmack/claude-mem) — the original; claude-mem-lite is its ground-up redesign
-- [mem0](https://github.com/mem0ai/mem0) — general-purpose LLM memory framework (any LLM app, manual SDK)
-- [modelcontextprotocol/servers](https://github.com/modelcontextprotocol/servers/tree/main/src/memory) — MCP reference `memory` server (knowledge-graph data model, manual tool calls)
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — the parent product (Anthropic's CLI coding agent)
-- [Model Context Protocol](https://modelcontextprotocol.io/) — the protocol claude-mem-lite implements
+- [claude-mem](https://github.com/thedotmack/claude-mem) - the original; claude-mem-lite is its ground-up redesign
+- [mem0](https://github.com/mem0ai/mem0) - general-purpose LLM memory framework (any LLM app, manual SDK)
+- [modelcontextprotocol/servers](https://github.com/modelcontextprotocol/servers/tree/main/src/memory) - MCP reference `memory` server (knowledge-graph data model, manual tool calls)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) - one of the two supported hosts (Anthropic's CLI coding agent)
+- [Model Context Protocol](https://modelcontextprotocol.io/) - the protocol claude-mem-lite implements

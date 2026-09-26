@@ -126,7 +126,8 @@ v5.1.0 到 v6.1.0 之间，`package.json` 声明的是 `os: ["darwin", "linux"]`
 共用同一份代码与同一个存储（`~/.claude-mem-lite/`，两个宿主的项目历史互通），不依赖 Claude Code。
 
 ```bash
-qwen extensions install /path/to/claude-mem-lite
+qwen extensions sources add https://github.com/thenewnano/qwen-mem-lite
+qwen extensions install thenewnano:claude-mem-lite --consent
 qwen extensions list                             # ✓ claude-mem-lite
 qwen extensions link /path/to/claude-mem-lite    # 直接跟踪工作副本
 ```
