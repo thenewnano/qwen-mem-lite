@@ -16,6 +16,10 @@
 !/docs/audit/
 !/docs/audits/
 !/docs/ARCHITECTURE.md
+# `docs/upstream-ports/` is the upstream-port ledger: one committed record per pull from
+# sdsrss/claude-mem-lite, read by the next port (see PORTING.md). Same record rule as the
+# audits above - it must survive, so it is negated here.
+!/docs/upstream-ports/
 # CLAUDE.md is tracked on purpose - it is the operating manual for this tree, and /init
 # cannot reconstruct the measurement doctrine or the record of which drafts were refuted.
 # It was listed here once; the entry did nothing (gitignore does not apply to tracked
