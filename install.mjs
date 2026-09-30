@@ -913,6 +913,9 @@ function configureHooks() {
   // Second bash prefilter, same idea one event over: skip the Node start for a
   // default-off feature (audit 2026-08-22 P2-5, see the script's header).
   const AGENT_PREFILTER_PATH = join(SCRIPTS_PATH, 'pre-agent-inject.sh');
+  // Third: the Bash leg of file recall, which starts Node only for commands that look like
+  // they view or write a file (see the script's header).
+  const BASH_RECALL_PREFILTER_PATH = join(SCRIPTS_PATH, 'pre-tool-recall-bash.sh');
   // v2.84: every Node hook invocation routes through hook-launcher.mjs so an
   // ERR_MODULE_NOT_FOUND from a partial-install drift auto-heals via
   // install.mjs repair instead of permanently bricking the hook chain.
@@ -1059,6 +1062,17 @@ function configureHooks() {
     ],
   };
 
+  const memPreToolRecallBash = {
+    matcher: 'Bash',
+    hooks: [
+      {
+        type: 'command',
+        command: `bash "${BASH_RECALL_PREFILTER_PATH}"`,
+        timeout: 3,
+      },
+    ],
+  };
+
   // Filter out existing mem hooks, then append fresh ones
   // PreToolUse has two separate matchers, so we register both
   // Event set MUST stay equal to hooks/hooks.json's (minus scripts/setup.sh, which
@@ -1066,7 +1080,7 @@ function configureHooks() {
   // tests/audit-silent-20260814.test.mjs diffs a real `install --dev` run's
   // settings.json against the shipped manifest and reds on any new divergence.
   const hookConfigs = {
-    PreToolUse: [memPreToolRecall, memPreAgentInject],
+    PreToolUse: [memPreToolRecall, memPreToolRecallBash, memPreAgentInject],
     PostToolUse: [memPostToolUse, memPostToolRecall],
     PostToolUseFailure: [memPostToolFailure],
     PreCompact: [memPreCompact],
@@ -1168,8 +1182,9 @@ async function dogfoodAutoAdopt() {
       // remote, so keying on the fork alone switched this branch off in exactly the trees
       // that run it: this repository's own suite detects the repo by this remote, and a
       // fresh clone-and-fork (the normal way to work on a fork) would never auto-adopt.
-      const isDogfood =
-        /github\.com[:/](?:thenewnano\/qwen-mem-lite|sdsrss\/claude-mem-lite)(?:\.git)?$/i.test(remote);
+      const isDogfood = /github\.com[:/](?:thenewnano\/qwen-mem-lite|sdsrss\/qwen-mem-lite)(?:\.git)?$/i.test(
+        remote,
+      );
       if (isDogfood) {
         const { cmdAdopt } = await importFromInstall('adopt-cli.mjs');
         cmdAdopt([]);
@@ -1614,7 +1629,8 @@ async function status() {
       const Database = (await import('better-sqlite3')).default;
       const db = new Database(DB_PATH, { readonly: true });
       const obs = db.prepare('SELECT COUNT(*) as c FROM observations').get();
-      const sess = db.prepare('SELECT COUNT(*) as c FROM session_summaries').get();
+      // DISTINCT, like stats: a session can own several summary rows (legacy duplicates).
+      const sess = db.prepare('SELECT COUNT(DISTINCT memory_session_id) as c FROM session_summaries').get();
       db.close();
       push('ok', 'database', `Database: ${obs.c} observations, ${sess.c} sessions`, {
         exists: true,
@@ -2359,7 +2375,18 @@ async function doctor() {
       if (state.lastCheck) parts.push(`last check: ${state.lastCheck}`);
       if (state.latestVersion) parts.push(`latest: v${state.latestVersion}`);
       if (state.lastUpdate) parts.push(`last update: ${state.lastUpdate}`);
-      if (state.updateAvailable) parts.push('update pending');
+      // Judged against the version running now, like the banner (#35): in plugin mode
+      // nothing clears the cached flag once the host has applied the update.
+      if (state.updateAvailable) {
+        let pending = true;
+        try {
+          const { pendingCachedUpdate } = await import('./hook-update.mjs');
+          pending = pendingCachedUpdate(state) !== null;
+        } catch {
+          /* cannot judge — report the cached flag as it stands */
+        }
+        if (pending) parts.push('update pending');
+      }
       if (state.rateLimited) parts.push('rate-limited');
       if (state.lastError) parts.push(`last error: ${state.lastError}`);
       ok(`Update state: ${parts.join(', ') || 'empty'}`);
@@ -2611,7 +2638,9 @@ async function doctor() {
       const db = new Database(DB_PATH, { readonly: true });
       const obsCount = db.prepare('SELECT COUNT(*) as cnt FROM observations').get()?.cnt || 0;
       // Align with stats / MCP mem_stats: session_summaries, not sdk_sessions
-      const sessCount = db.prepare('SELECT COUNT(*) as cnt FROM session_summaries').get()?.cnt || 0;
+      // Align with stats / MCP mem_stats: session_summaries, not sdk_sessions, counted DISTINCT
+      const sessCount =
+        db.prepare('SELECT COUNT(DISTINCT memory_session_id) as cnt FROM session_summaries').get()?.cnt || 0;
       db.close();
       const stats = `DB stats: ${sizeMB}MB, ${obsCount} observations, ${sessCount} sessions`;
       // The read succeeds on a too-new file — the tables are still there — so this

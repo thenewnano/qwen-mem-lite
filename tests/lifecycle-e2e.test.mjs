@@ -163,26 +163,23 @@ describe('plugin lifecycle: install → adopt → update → uninstall → unado
     expect(s.enabledPlugins['other@vendor']).toBe(true);
   });
 
-  it('SessionStart auto-adopts: v1 English block, preserves user content, writes detail doc + marker', () => {
+  it('SessionStart injects under upstream steering: no project CLAUDE.md block, marker written', () => {
     run('hook.mjs', ['session-start'], { allowFail: true });
+    // Upstream v6.13+: the first SessionStart injects (or writes CLAUDE.local.md in a git
+    // work tree); it no longer writes the project's CLAUDE.md block or its detail doc.
     const a = adoptedBlock(PROJ);
-    expect(a.present).toBe(true);
-    expect(a.count).toBe(1);
-    expect(a.version).toBe('v1');
-    expect(a.raw).toContain('persistent memory');
-    expect(a.raw).not.toMatch(/持久记忆/);
-    expect(a.raw).toContain('use tabs'); // pre-existing user content survives
-    expect(a.raw).toContain('My own project notes');
-    expect(existsSync(join(PROJ, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(true);
+    expect(a.present).toBe(false);
+    expect(a.count).toBe(0);
+    expect(existsSync(join(PROJ, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(false);
     const markers = readdirSync(join(dataDir, 'runtime')).filter((f) => f.startsWith('.auto-adopt-'));
     expect(markers.length).toBeGreaterThan(0);
     // DB is lazy-created on first hook use (install does not create it).
     expect(existsSync(join(dataDir, 'qwen-mem-lite.db'))).toBe(true);
   });
 
-  it('second SessionStart is idempotent (no duplicate block)', () => {
+  it('second SessionStart is idempotent (still no block)', () => {
     run('hook.mjs', ['session-start'], { allowFail: true });
-    expect(adoptedBlock(PROJ).count).toBe(1);
+    expect(adoptedBlock(PROJ).count).toBe(0);
   });
 
   it('status --json emits structured checks', () => {
@@ -212,9 +209,10 @@ describe('plugin lifecycle: install → adopt → update → uninstall → unado
     ).toBeUndefined();
     expect(existsSync(join(pluginsDir(), 'marketplaces', 'thenewnano'))).toBe(false);
     expect(existsSync(join(pluginsDir(), 'cache', 'thenewnano'))).toBe(false);
-    // The documented gap: uninstall does NOT unadopt — the project block survives.
-    expect(adoptedBlock(PROJ).present).toBe(true);
-    expect(existsSync(join(PROJ, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(true);
+    // uninstall removes only global artifacts; under upstream steering the project carries
+    // no auto-written block, so there is nothing to survive.
+    expect(adoptedBlock(PROJ).present).toBe(false);
+    expect(existsSync(join(PROJ, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(false);
   });
 
   it('unadopt (per-project) removes the block + detail doc, keeps user content', () => {

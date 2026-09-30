@@ -14,6 +14,7 @@ const CLI_COMMANDS = new Set([
   'update',
   'export',
   'restore',
+  'verify-apply',
   'compress',
   'maintain',
   'optimize',
@@ -238,7 +239,7 @@ if (cmd === '--version' || cmd === '-v' || cmd === '-V' || cmd === 'version') {
   process.stderr.write(
     `[mem] "${cmd}" was removed along with the skill/agent resource registry.\n` +
       "[mem] Claude Code's own plugins/marketplace replace it. See CHANGELOG.md for the\n" +
-      '[mem] migration note; to revert, pin claude-mem-lite@4.0.4.\n',
+      '[mem] migration note; to revert, pin qwen-mem-lite@4.0.4.\n',
   );
   process.exit(1);
 } else {

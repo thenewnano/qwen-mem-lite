@@ -51,7 +51,7 @@ import { detectInstallShape } from './lib/install-shape.mjs';
 import { MARKETPLACE_KEY, PLUGIN_NAME } from './lib/plugin-key.mjs';
 
 // ── Configuration ──────────────────────────────────────────
-// Update source: this fork's own repository, NOT upstream (sdsrss/claude-mem-lite).
+// Update source: this fork's own repository, NOT upstream (sdsrss/qwen-mem-lite).
 // Upstream's release tarball is the Claude-only build, so installing it over this tree
 // reverts the Qwen Code support (hooks/hooks.json + lib/tool-names.mjs + the QWEN.md half of
 // adopt) — silently, because the only symptom is that the behavior stops appearing on one
@@ -198,6 +198,20 @@ export function getCachedUpdateBanner() {
 
 // True when a network refresh is due (24h throttle) and updates aren't disabled.
 // Caller spawns the refresh in the background so this session doesn't wait.
+/**
+ * The pending update, judged against the version RUNNING now (issue #35 / D#115). In
+ * plugin mode nothing clears the cached flag once the host has applied the update, so the
+ * raw `updateAvailable` bit can name a version already installed. Returns the running
+ * version when the cached latest is genuinely ahead, else null.
+ * @param {{updateAvailable?: boolean, latestVersion?: string}} state
+ * @returns {string|null}
+ */
+export function pendingCachedUpdate(state) {
+  if (!state.updateAvailable || !state.latestVersion) return null;
+  const running = getCurrentVersion();
+  return compareVersions(state.latestVersion, running) > 0 ? running : null;
+}
+
 export function isUpdateCheckDue() {
   try {
     if (isDevMode() || process.env.QWEN_MEM_SKIP_UPDATE) return false;

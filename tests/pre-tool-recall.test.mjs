@@ -383,7 +383,7 @@ describe('pre-tool-recall', () => {
         tool_input: { file_path: join(projectDir, 'frame.mjs') },
       });
       const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
-      expect(ctx).toMatch(/system-injected/);
+      expect(ctx).toMatch(/PreToolUse recall/);
       expect(ctx).toMatch(/continue/i);
     });
 
@@ -393,7 +393,7 @@ describe('pre-tool-recall', () => {
         tool_input: { file_path: join(projectDir, 'pristine.py') },
       });
       const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
-      expect(ctx).toMatch(/system-injected/);
+      expect(ctx).toMatch(/PreToolUse recall/);
       expect(ctx).toMatch(/continue/i);
       expect(ctx).toContain('[mem] No prior lessons');
     });
@@ -1430,8 +1430,7 @@ describe('pre-tool-recall', () => {
       );
       const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
       expect(ctx).toContain('[mem] Lessons for maintain.mjs:');
-      expect(ctx).toContain("'#NN applied'");
-      expect(ctx).toContain("'#NN n/a — <reason>'");
+      expect(ctx).toContain('add its bare tag (#NN) once');
     });
 
     it('Edit: QWEN_MEM_SALIENCE=legacy restores the passive block (no directive)', async () => {
@@ -1445,7 +1444,7 @@ describe('pre-tool-recall', () => {
       );
       const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
       expect(ctx).toContain('[mem] Lessons for maintain.mjs:');
-      expect(ctx).not.toContain("'#NN applied'");
+      expect(ctx).not.toContain('add its bare tag (#NN) once');
     });
 
     it('Read: stays passive — no ack directive on the quiet 1-lesson injection', async () => {
@@ -1459,7 +1458,7 @@ describe('pre-tool-recall', () => {
       );
       const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
       expect(ctx).toContain('[mem] Lessons for maintain.mjs:');
-      expect(ctx).not.toContain("'#NN applied'");
+      expect(ctx).not.toContain('add its bare tag (#NN) once');
     });
 
     it('Read→Edit same session: Edit emits a compact ack nudge naming the Read-time IDs', async () => {
@@ -1484,11 +1483,11 @@ describe('pre-tool-recall', () => {
       const parsed = JSON.parse(stdout);
       const ctx = parsed.hookSpecificOutput.additionalContext;
       expect(ctx).toContain(`#${lessonObsId}`);
-      expect(ctx).toContain("'#NN applied'");
+      expect(ctx).toContain('add its bare tag (#NN) once');
       // Compact nudge — must NOT re-emit the lesson body (token cost stays one line).
       expect(ctx).not.toContain('recover orphaned children');
       // #7758 framing guard: still announces itself as system-injected continuation.
-      expect(ctx).toMatch(/system-injected/);
+      expect(ctx).toMatch(/PreToolUse recall/);
     });
 
     it('Read→Edit→Edit: the ack nudge fires once — second Edit is silent', async () => {
@@ -2605,7 +2604,10 @@ describe('pre-tool-recall', () => {
     // Control for the case above: an unhandled tool keeps its own distinct key,
     // so the two populations stay separable in the log.
     it('keeps the unknown-tool key distinct from the missing-path-field key', async () => {
-      const { stdout } = await runWithEnv({ tool_name: 'Bash', tool_input: { command: 'ls' } });
+      const { stdout } = await runWithEnv({
+        tool_name: 'WebFetch',
+        tool_input: { url: 'https://example.com' },
+      });
 
       expect(stdout).toBe('');
       const keys = hookErrorRecords().map((r) => r.scope);

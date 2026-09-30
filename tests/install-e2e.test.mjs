@@ -167,12 +167,13 @@ describe('E2E: Plugin install mode', () => {
       'node "${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.mjs" hook.mjs session-start',
     );
 
-    // PreToolUse — two matchers (the `Skill` bridge went with the skill-registry
-    // subsystem in 2026-09; see docs/audits/20260906-145304.md)
+    // PreToolUse — three matchers (the `Skill` bridge went with the skill-registry
+    // subsystem in 2026-09; the Bash leg of file recall joined upstream in v6.16).
     const preToolUse = hooks.hooks.PreToolUse;
-    expect(preToolUse).toHaveLength(2);
+    expect(preToolUse).toHaveLength(3);
     const preMatchers = preToolUse.map((h) => h.matcher);
     expect(preMatchers).toContain('Edit|Write|NotebookEdit|Read');
+    expect(preMatchers).toContain('Bash');
     expect(preMatchers).not.toContain('Skill');
     // Three names: Claude Code's Agent/Task and Qwen Code's runtime id `agent`
     // (lib/tool-names.mjs; scripts/pre-agent-inject.js accepts all three).

@@ -78,7 +78,7 @@ describe('cmdAdopt / cmdUnadopt (current project, CLAUDE.md scheme)', () => {
     expect(memdirIsAdopted(memdirPath(fakeCwd), PLUGIN_SLUG)).toBe(true);
     cmdAdopt([]);
     expect(memdirIsAdopted(memdirPath(fakeCwd), PLUGIN_SLUG)).toBe(false);
-    expect(existsSync(join(memdirPath(fakeCwd), 'plugin_qwen_mem_lite.md'))).toBe(false);
+    expect(existsSync(join(memdirPath(fakeCwd), 'plugin_claude_mem_lite.md'))).toBe(false);
     expect(existsSync(claudeMd(fakeCwd))).toBe(true);
   });
 
@@ -199,7 +199,7 @@ describe('cmdAdopt --all (legacy-cleanup sweep)', () => {
     cmdAdopt(['--all']);
     expect(readFileSync(join(a, 'MEMORY.md'), 'utf8')).not.toContain(`${PLUGIN_SLUG}:begin`);
     expect(readFileSync(join(b, 'MEMORY.md'), 'utf8')).not.toContain(`${PLUGIN_SLUG}:begin`);
-    expect(existsSync(join(a, 'plugin_qwen_mem_lite.md'))).toBe(false);
+    expect(existsSync(join(a, 'plugin_claude_mem_lite.md'))).toBe(false);
     expect(logs.some((l) => l.includes('legacy memory-dir cleanup'))).toBe(true);
     expect(logs.some((l) => l.includes('per-project'))).toBe(true);
   });
@@ -248,46 +248,23 @@ describe('silentAutoAdopt (SessionStart sync)', () => {
     rmSync(tmpHome, { recursive: true, force: true });
   });
 
-  it('first call: migrates + writes block + doc + marker, returns adopted', () => {
+  // Report §9-A (docs/audits/20260929-sandbox-usage-eval.md): the first SessionStart used to
+  // write CLAUDE.md + .claude/plugin_claude_mem_lite.md into every project, unasked — 4 of 4
+  // sandbox repos, swept into the next `git add -A`. The steering now rides SessionStart
+  // context (action 'inject'); only an explicit `adopt` writes files.
+  it('first call on an unadopted project: migrates, writes NOTHING under cwd, returns inject', () => {
     seedLegacy(fakeCwd);
     const r = silentAutoAdopt({ cwd: fakeCwd, markerDir, markerKey: 'proj-x' });
     expect(r.ok).toBe(true);
-    expect(r.action).toBe('adopted');
+    expect(r.action).toBe('inject');
     expect(hasAutoAdoptMarker(markerDir, 'proj-x')).toBe(true);
-    expect(existsSync(claudeMd(fakeCwd))).toBe(true);
-    expect(existsSync(detailDoc(fakeCwd))).toBe(true);
+    expect(existsSync(claudeMd(fakeCwd))).toBe(false);
+    expect(existsSync(join(fakeCwd, '.claude'))).toBe(false);
     expect(memdirIsAdopted(memdirPath(fakeCwd), PLUGIN_SLUG)).toBe(false); // legacy migrated
   });
 
-  it('migrates a pre-rename claude-mem-lite block in place, leaving no duplicate', () => {
-    // v7.0.0 rename: an upgraded project carries the old slug's block, its detail
-    // doc and its state sidecar. adopt-cli must sweep them before writing the new
-    // block, or the context file ends up with two steering blocks.
-    const OLD = 'claude-mem-lite';
-    writeFileSync(
-      claudeMd(fakeCwd),
-      `# My Project\n\n<!-- ${OLD}:begin v1 -->\n## ${OLD} - persistent memory\n\nold body\n<!-- ${OLD}:end -->\n\n## Notes\n- user text\n`,
-    );
-    const oldDoc = join(fakeCwd, '.claude', 'plugin_claude_mem_lite.md');
-    mkdirSync(join(fakeCwd, '.claude'), { recursive: true });
-    writeFileSync(oldDoc, '<!-- managed-by: claude-mem-lite -->\n# old contract\n');
-    writeFileSync(join(fakeCwd, '.claude', '.plugin_claude_mem_lite_state.json'), '{}');
-
-    const r = silentAutoAdopt({ cwd: fakeCwd, markerDir, markerKey: 'proj-x' });
-    expect(r.ok).toBe(true);
-    const after = readFileSync(claudeMd(fakeCwd), 'utf8');
-    expect(after).not.toContain(`${OLD}:begin`);
-    expect(after).toContain(BEGIN);
-    expect(after.split(`${PLUGIN_SLUG}:begin`).length - 1).toBe(1);
-    // user content outside the block survives
-    expect(after).toContain('# My Project');
-    expect(after).toContain('## Notes');
-    expect(after).toContain('- user text');
-    // legacy artifacts are gone; the new detail doc is in their place
-    expect(existsSync(oldDoc)).toBe(false);
-    expect(existsSync(detailDoc(fakeCwd))).toBe(true);
-  });
-  it('second call is idempotent: already-adopted, CLAUDE.md unchanged', () => {
+  it('a project adopted explicitly is kept in sync: already-adopted, CLAUDE.md unchanged', () => {
+    cmdAdopt([]);
     silentAutoAdopt({ cwd: fakeCwd, markerDir, markerKey: 'proj-x' });
     const before = readFileSync(claudeMd(fakeCwd), 'utf8');
     const r = silentAutoAdopt({ cwd: fakeCwd, markerDir, markerKey: 'proj-x' });
@@ -296,7 +273,7 @@ describe('silentAutoAdopt (SessionStart sync)', () => {
   });
 
   it('refreshes when the installed block version drifts', () => {
-    silentAutoAdopt({ cwd: fakeCwd, markerDir, markerKey: 'proj-x' });
+    cmdAdopt([]);
     // Simulate an older version installed.
     const stale = readFileSync(claudeMd(fakeCwd), 'utf8').replace(
       `${PLUGIN_SLUG}:begin v1`,
@@ -309,7 +286,7 @@ describe('silentAutoAdopt (SessionStart sync)', () => {
   });
 
   it('QWEN_MEM_NO_TEMPLATE_REFRESH=1 freezes the block against drift', () => {
-    silentAutoAdopt({ cwd: fakeCwd, markerDir, markerKey: 'proj-x' });
+    cmdAdopt([]);
     const stale = readFileSync(claudeMd(fakeCwd), 'utf8').replace(
       `${PLUGIN_SLUG}:begin v1`,
       `${PLUGIN_SLUG}:begin v0`,
@@ -394,19 +371,15 @@ describe('cmdAdopt --disable / --enable', () => {
 
     cmdAdopt(['--enable']);
     const r2 = silentAutoAdopt({ cwd: fakeCwd, markerDir, markerKey: 'proj-x' });
-    expect(r2.action).toBe('adopted');
-    expect(existsSync(claudeMd(fakeCwd))).toBe(true);
+    expect(r2.action).toBe('inject'); // re-armed: steering is injected again, still no files
+    expect(existsSync(claudeMd(fakeCwd))).toBe(false);
   });
 
   it('--status reports current-project adoption state', () => {
     cmdAdopt([]);
     logs.length = 0;
     cmdAdopt(['--status']);
-    // Two context files since the Qwen Code fork (claudemd.mjs LAYOUTS): each is reported
-    // separately, and 'adopted' summarizes the pair.
-    expect(logs.some((l) => l.includes('CLAUDE.md:') && l.includes('✓ adopted'))).toBe(true);
-    expect(logs.some((l) => l.includes('QWEN.md:') && l.includes('✓ adopted'))).toBe(true);
-    expect(logs.some((l) => l.includes('adopted:') && l.includes('✓ both'))).toBe(true);
+    expect(logs.some((l) => l.includes('CLAUDE.md:') && l.includes('adopted'))).toBe(true);
     expect(logs.some((l) => l.includes('Auto-adopt gates'))).toBe(true);
   });
 });

@@ -19,14 +19,23 @@
 // you're changing it.
 
 import { randomUUID } from 'crypto';
-import { join } from 'path';
-import { readFileSync, writeFileSync, unlinkSync, readdirSync, renameSync, statSync, existsSync } from 'fs';
+import { join, resolve as resolvePath } from 'path';
+import {
+  readFileSync,
+  writeFileSync,
+  unlinkSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  existsSync,
+  realpathSync,
+} from 'fs';
 import { homedir } from 'os';
 import {
   inferProject,
   detectBashSignificance,
-  extractFilePaths,
   isRelatedToEpisode,
+  entryEditedFiles,
   makeEntryDesc,
   scrubSecrets,
   stripPrivate,
@@ -40,6 +49,7 @@ import {
 // backward-compat surface that knip already lists as unused; new shared symbols go to
 // their canonical module.
 import { inferProjectDir } from './project-utils.mjs';
+import { extractFileTargets } from './bash-utils.mjs';
 import { isPluginExplicitlyDisabled } from './lib/plugin-key.mjs';
 import { readHookStdin } from './lib/hook-stdin.mjs';
 import { normalizeToolName } from './lib/tool-names.mjs';
@@ -89,11 +99,29 @@ import {
   lastDbUnusable,
 } from './hook-shared.mjs';
 import { handleLLMEpisode, handleLLMSummary, saveEpisodeImmediate } from './hook-llm.mjs';
-import { readFastSummarySource, insertFastSummary, FAST_SUMMARY_LIMITS } from './lib/fast-summary.mjs';
+import {
+  readFastSummarySource,
+  insertFastSummary,
+  writeStopSummary,
+  writeClearSummary,
+  FAST_SUMMARY_LIMITS,
+} from './lib/fast-summary.mjs';
 import { formatHookError } from './lib/native-binding-hint.mjs';
 import { recordHookError } from './lib/hook-telemetry.mjs';
-import { queueHookContext, queueHookSystemMessage, flushHookStdout } from './lib/hook-stdout.mjs';
+import {
+  queueHookContext,
+  queueHookSystemMessage,
+  flushHookStdout,
+  previewHookContext,
+} from './lib/hook-stdout.mjs';
+import { writePlainHookText, resetPlainHookText, idsShownWhole } from './lib/hook-text-cap.mjs';
 import { shouldRecallOnFailure } from './lib/tool-refusal.mjs';
+import {
+  entryInputTags,
+  extractDiagnosis,
+  filterSummaryInput,
+  episodeInputFilterEnabled,
+} from './lib/episode-input-filter.mjs';
 import { selectCompressionCandidates, groupByProjectWeek, compressGroup } from './lib/compress-core.mjs';
 import {
   cleanupBroken,
@@ -107,6 +135,7 @@ import {
   hardDeleteCandidateCount,
   purgeStale,
   recoverOrphanedChildren,
+  runWideEdgeCleanupOnce,
   recoverBuriedLessons,
   sweepDeferredWorkOrphans,
 } from './lib/maintain-core.mjs';
@@ -137,6 +166,7 @@ import { injectedIdsFileName, keyContextIdsFileName, readInjectedMarker } from '
 import { recordKeyContextInjection, touchKeyContextMarker } from './lib/keyctx-marker.mjs';
 import { liveObsFilterSql } from './lib/inject-search-core.mjs';
 import { selectErrorRecall } from './lib/error-recall-core.mjs';
+import { errorRecallSuppression } from './lib/error-recall-gate.mjs';
 import {
   buildAndSaveHandoff,
   consumeHandoff,
@@ -149,6 +179,8 @@ import {
   loadCiteBackForEpisode,
   extractCiteBackSignals,
   buildUnsavedBugfixHint,
+  claimBugfixNudge,
+  BUGFIX_NUDGE_MARKER_PREFIX,
   countUnsavedBugfixShape,
   buildCiteRecallNudge as libBuildCiteRecallNudge,
   nextCiteStreakState,
@@ -335,7 +367,7 @@ if (!event) process.exit(0);
 // Regression chain: v2.33.1 introduced the receipt; v2.33.3 misdiagnosed the
 // Stop rejection as event-name mismatch; v2.33.4 is the root-cause fix.
 const RECEIPT_EVENTS = new Set(['PostToolUse', 'SessionStart', 'UserPromptSubmit']);
-function flushEpisode(episode, hookEventName = 'PostToolUse') {
+function flushEpisode(episode, hookEventName = 'PostToolUse', receiverSession = null) {
   if (!episode || episode.entries.length === 0) return;
 
   // Acquire the DB ONCE, up front, and bail before touching anything destructive when it
@@ -350,7 +382,7 @@ function flushEpisode(episode, hookEventName = 'PostToolUse') {
   const db = openDb();
   if (!db) return;
   try {
-    flushEpisodeWithDb(db, episode, hookEventName);
+    flushEpisodeWithDb(db, episode, hookEventName, receiverSession);
   } finally {
     try {
       db.close();
@@ -409,12 +441,38 @@ function trimReadsFile(readsFile) {
   }
 }
 
-function flushEpisodeWithDb(db, episode, hookEventName) {
+/**
+ * planEpisodeFlush's subs with lib/episode-input-filter.mjs applied (D#69). Identity when
+ * the filter is off or drops nothing, so the common case still hands flushEpisodeGroup
+ * the buffer object itself. Records one `episode_input_filter` metric row per flush that
+ * dropped anything — the forward meter for the filter's reach.
+ */
+function summaryInputSubs(subs) {
+  if (!episodeInputFilterEnabled()) return subs;
+  const out = [];
+  const dropped = { probe: 0, slip: 0, emptied: 0 };
+  for (const sub of subs) {
+    const r = filterSummaryInput(sub, { projectDir: inferProjectDir() });
+    dropped.probe += r.dropped.probe;
+    dropped.slip += r.dropped.slip;
+    if (r.episode.entries.length > 0) out.push(r.episode);
+    else dropped.emptied++;
+  }
+  if (dropped.probe || dropped.slip) recordMetric(DB_DIR, { event: 'episode_input_filter', ...dropped });
+  return out;
+}
+
+function flushEpisodeWithDb(db, episode, hookEventName, receiverSession = null) {
   // Split by CC session so concurrent same-project sessions flush as separate
   // observations. planEpisodeFlush returns [episode] BY REFERENCE for the common
   // single-session (or all-legacy) case → flushEpisodeGroup(episode) is identical
   // to pre-grouping. Two+ interleaved sessions each get their own sub-episode.
-  const subs = planEpisodeFlush(episode);
+  //
+  // D#69: mutation-probe and tool-slip entries leave each sub BEFORE anything reads it —
+  // significance, the immediate save, and the llm-episode summarizer all see the filtered
+  // episode, so a probe's intentional RED run can neither make a window "significant"
+  // nor become a lesson. A sub left with no entries is not flushed at all.
+  const subs = summaryInputSubs(planEpisodeFlush(episode));
 
   // D#178. The reads file used to be consumed right here, unconditionally, BEFORE
   // anything knew whether this flush would persist an observation — and an
@@ -525,23 +583,25 @@ function flushEpisodeWithDb(db, episode, hookEventName) {
   });
   if (writefail) return;
 
-  // Aggregate receipt over the whole episode, gated exactly as before
-  // (isSignificant → anySignificant). v2.33.4: Stop rejects hookSpecificOutput.
+  // Flush-time hints, gated exactly as before (isSignificant → anySignificant). v2.33.4:
+  // Stop rejects hookSpecificOutput.
+  //
+  // The `[mem] episode flushed: N entries (Bash×9, …)` line that used to lead this block is
+  // gone. It was bookkeeping — the model can do nothing with it — injected on every
+  // significant flush (7 times after the R1 fix deployed, and in the analysing session
+  // itself; docs/audits/20260926-154904-session-history-analysis-r2.md §3). Only the two
+  // hints below are actionable, so the block is emitted only when one of them fires.
   if (anySignificant && RECEIPT_EVENTS.has(hookEventName)) {
     try {
-      const entries = episode.entries || [];
-      const toolCounts = {};
-      for (const e of entries) toolCounts[e.tool] = (toolCounts[e.tool] || 0) + 1;
-      const toolSummary = Object.entries(toolCounts)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 3)
-        .map(([t, n]) => `${t}×${n}`)
-        .join(', ');
-      const lines = [`[mem] episode flushed: ${entries.length} entries (${toolSummary})`];
+      const lines = [];
       // v2.83: error→fix nudge lifted to lib/cite-back-hint.mjs::buildUnsavedBugfixHint
       // so the wording (count + "Save now" verb) stays in sync with cite-back.
+      // §9-B: TDD reds stay silent (inside the builder), and a session is nudged once — the
+      // claim is taken only when the hint would actually be shown.
+      // Keyed by the session that RECEIVES this receipt — the hook invocation's own — not by
+      // whose entries the buffer holds: one project buffer can mix concurrent sessions.
       const bugfixHint = buildUnsavedBugfixHint(episode);
-      if (bugfixHint) lines.push(bugfixHint);
+      if (bugfixHint && claimBugfixNudge(RUNTIME_DIR, receiverSession)) lines.push(bugfixHint);
       // v2.81: cite-back hint — fires when this episode edits a file that
       // PreToolUse:Read/Edit nudged earlier in the same session. Precision
       // signal (we know the file was warned about); orthogonal to the
@@ -554,7 +614,7 @@ function flushEpisodeWithDb(db, episode, hookEventName) {
       // Code's parser takes the whole thing as plain text (lib/hook-stdout.mjs).
       // The older comment here claimed a line-based parser made two objects safe
       // as long as each got its own line; the 2.1.233 bundle has no such parser.
-      queueHookContext(hookEventName, lines.join('\n'));
+      if (lines.length > 0) queueHookContext(hookEventName, lines.join('\n'));
     } catch {
       /* never block on receipt */
     }
@@ -675,25 +735,53 @@ async function handlePostToolUse() {
   if (SKIP_PREFIXES.some((p) => toolName.startsWith(p))) return;
 
   const resp = normalizeToolResponse(tool_response);
-  if (!resp || resp.length < 10) return;
 
   const toolInput = typeof tool_input === 'string' ? tryParseJson(tool_input) : tool_input || {};
-  const files = extractFilePaths(toolInput);
+  // The hook's cwd resolves relative Bash paths (`sed -i … lib/x.mjs`); `bashWrites` is
+  // what a Bash command wrote, the Bash counterpart of an Edit's file_path (N1, R2 audit).
+  const { files, writes: bashWrites } = extractFileTargets(toolInput, {
+    cwd: typeof hookData.cwd === 'string' ? hookData.cwd : null,
+    projectDir: inferProjectDir(),
+  });
+  // A silent write (`sed -i`, `cat > f <<EOF`, a heredoc script) prints nothing and is still
+  // an edit. It used to clear this floor only by accident: an empty Bash response became the
+  // JSON of the whole response object, which is what the handoff then replayed.
+  if ((!resp || resp.length < 10) && !(tool_name === 'Bash' && bashWrites.length > 0)) return;
 
   // Tier 1 B: Detect significant Bash commands
   const bashSig = toolName === 'Bash' ? detectBashSignificance(toolInput, resp) : null;
+
+  // D#69: tags and diagnosis lines need the FULL command and output, which the entry
+  // does not keep, so they are computed here once. The output is windowed head + tail:
+  // a runner prints its failures at the END, and a multi-megabyte stdout should not be
+  // regex-scanned on every PostToolUse.
+  const respWindow = resp.length > 65536 ? resp.slice(0, 32768) + '\n' + resp.slice(-32768) : resp;
+
+  // `diagOut` = the diagnosis lines read from tool OUTPUT: a lesson quoting one stays
+  // under every injection floor (D#100(3)). Always present on a Bash entry, [] included, so
+  // the worker can tell a new entry with no output lines from one buffered before the field.
+  const diagnosis = extractDiagnosis(tool_name, toolInput, respWindow, {
+    isError: bashSig?.isError || false,
+    writesFiles: tool_name === 'Bash' && bashWrites.length > 0,
+    scrub: scrubSecrets,
+  });
 
   // Build episode entry
   const entry = {
     tool: toolName,
     desc: scrubSecrets(makeEntryDesc(toolName, toolInput, resp, bashSig)),
+    inputTags: entryInputTags(toolName, toolInput, respWindow),
+    diag: diagnosis.lines,
+    ...(toolName === 'Bash' ? { diagOut: diagnosis.output } : {}),
     files,
+    ...(tool_name === 'Bash' && bashWrites.length ? { bashWrites } : {}),
     ts: Date.now(),
     isError: bashSig?.isError || false,
     // isHardError gates the bugfix-shape save-nudge (lib/cite-back-hint.mjs): a real
     // failure fingerprint, not just "error" appearing in search/log output.
     isHardError: bashSig?.isHardError || false,
-    isSignificant: EDIT_TOOLS.has(tool_name) || bashSig?.isSignificant || false,
+    isSignificant:
+      EDIT_TOOLS.has(tool_name) || bashSig?.isSignificant || (tool_name === 'Bash' && bashWrites.length > 0),
     bashSig: bashSig || null,
     // CC UUID from hook stdin — lets flushEpisode split a buffer shared by
     // concurrent same-project sessions into per-session observations. Null for
@@ -718,9 +806,50 @@ async function handlePostToolUse() {
   // (G8, roadmap 2026-07-18), and was self-recursive: the hint string itself
   // contains 'error', so a later command echoing it re-triggered recall.
   // entry.isError above keeps the loose semantics on purpose (episode narrative).
-  if (bashSig?.isHardError) {
+  // N2: a hard error is not always one the corpus can explain — see errorRecallSuppressed.
+  // PostToolUse never sees a non-zero exit (the host routes those to PostToolUseFailure),
+  // so this path is exit 0 by construction.
+  // `bashWrites` is passed because this call joins the buffer only after recall has run.
+  if (
+    bashSig?.isHardError &&
+    !errorRecallSuppressed(toolInput, resp, hookData.session_id, true, bashWrites)
+  ) {
     const d = getDb();
     if (d) triggerErrorRecall(d, toolInput, resp);
+  }
+
+  // D#69: a subagent's calls (the host sets `agent_id` only inside a subagent) stay out of
+  // the episode buffer. benchmark/key-events-input-replay.mjs over this repo's transcripts
+  // (2026-09-26): 212 of 1471 significant windows were made ENTIRELY of subagent calls —
+  // reviewer probes in an extracted tree, fixture paths such as /repo/alpha.mjs — and 4 of
+  // the audit's 16 WRONG events came from such windows (counted under that drop-all rule).
+  // Sharing the main thread's buffer
+  // also split its episodes. Error recall above still answers the subagent; only the
+  // summarizer input is withheld. Opt out: QWEN_MEM_EPISODE_INPUT_FILTER=off.
+  //
+  // Narrowed from "every subagent call": 24 of 112 subagents in this repo's transcripts
+  // (2026-09-26) wrote files inside the project — implementer agents, whose edits ARE the
+  // session's work. A subagent call is kept when it edits a file under the project dir.
+  // This is a trade, not a free narrowing: 3 of the audit's 4 subagent-born WRONG events
+  // (1106, 1217, 1827) involved such project edits, so their windows are kept again — the
+  // replay then drops each of their lessons at the grounding check (no quotable
+  // diagnosis), so none of the 16 WRONG lessons is injected under either rule. Kept
+  // entries still pass the probe filter.
+  const projectRoot = inferProjectDir().replace(/\/+$/, '');
+  const subagentEditsProject = entryEditedFiles({ tool: tool_name, files, bashWrites }).some((p) =>
+    p.startsWith(projectRoot + '/'),
+  );
+  if (
+    typeof hookData.agent_id === 'string' &&
+    hookData.agent_id &&
+    !subagentEditsProject &&
+    episodeInputFilterEnabled()
+  ) {
+    if (db)
+      try {
+        db.close();
+      } catch {}
+    return;
   }
 
   if (!acquireLock()) {
@@ -745,7 +874,11 @@ async function handlePostToolUse() {
 
       // Phase transition → flush current episode, start new
       if (bufferFull || timeGap || (!fileRelated && episode.entries.length >= 2)) {
-        flushEpisode(episode);
+        flushEpisode(
+          episode,
+          'PostToolUse',
+          typeof hookData.session_id === 'string' ? hookData.session_id : null,
+        );
         episode = null;
       }
     }
@@ -772,6 +905,36 @@ async function handlePostToolUse() {
 }
 
 // ─── Error-Triggered Recall (Tier 2 G) ─────────────────────────────────────
+
+/**
+ * N2 (session-history analysis r2): stay silent on a deliberate TDD RED and on an exit-0
+ * command that merely PRINTS error text. The decision is lib/error-recall-gate.mjs; this
+ * hands it the episode buffer the hook already keeps (read without the lock: a snapshot is
+ * enough, and writeEpisode replaces the file by rename) and meters what it silenced, so the
+ * suppressed volume is readable next to `error_recall` rather than inferred from its drop.
+ * Fails OPEN: anything thrown here means the firing proceeds exactly as before.
+ *
+ * @returns {boolean} true ⇒ do not inject.
+ */
+function errorRecallSuppressed(toolInput, response, ccSession, exitZero, currentWrites) {
+  try {
+    const verdict = errorRecallSuppression({
+      cmd: toolInput?.command,
+      response,
+      entries: readEpisodeRaw()?.entries,
+      ccSession: ccSession || null,
+      currentWrites,
+      exitZero,
+      projectDir: inferProjectDir(),
+    });
+    if (!verdict) return false;
+    recordMetric(DB_DIR, { event: 'error_recall_suppressed', reason: verdict.reason, exitZero });
+    return true;
+  } catch (e) {
+    debugCatch(e, 'errorRecallSuppressed');
+    return false;
+  }
+}
 
 /**
  * @param {object} db Open handle.
@@ -917,6 +1080,13 @@ async function handlePostToolFailure() {
 
   const toolInput = typeof tool_input === 'string' ? tryParseJson(tool_input) : tool_input || {};
   if (typeof toolInput?.command !== 'string' || !toolInput.command) return;
+  // Only the TDD-RED half can apply here (exitZero false): an unpiped RED exits 1. The
+  // call's own writes resolve against the same cwd/project the PostToolUse capture uses.
+  const currentWrites = extractFileTargets(toolInput, {
+    cwd: typeof hookData.cwd === 'string' ? hookData.cwd : null,
+    projectDir: inferProjectDir(),
+  }).writes;
+  if (errorRecallSuppressed(toolInput, error, hookData.session_id, false, currentWrites)) return;
 
   let db = null;
   try {
@@ -1078,13 +1248,20 @@ function flushEpisodeAtStop(sessionId, project) {
  * parallel-safe row identity). Without the split, CC UUID-based queries miss
  * user_prompts and the handoff row is silently skipped (see hook-handoff.mjs).
  */
-function markSessionCompletedAndSaveHandoff(db, { sessionId, project, ccSessionId, episodeSnapshot }) {
+function markSessionCompletedAndSaveHandoff(
+  db,
+  { sessionId, project, ccSessionId, episodeSnapshot, stopEpoch },
+) {
+  // Every Stop, not only the first: Stop fires per assistant turn, and `status = 'active'` alone
+  // matched the first turn only, so completed_at kept the first turn's end for the whole
+  // session. completed_at_epoch is now the session's LATEST Stop, which the llm-summary worker
+  // compares against its own Stop's epoch to learn that a later worker owns the row (P3-6).
   db.prepare(
     `
     UPDATE sdk_sessions SET status = 'completed', completed_at = ?, completed_at_epoch = ?
-    WHERE content_session_id = ? AND status = 'active'
+    WHERE content_session_id = ? AND status IN ('active', 'completed')
   `,
-  ).run(new Date().toISOString(), Date.now(), sessionId);
+  ).run(new Date(stopEpoch).toISOString(), stopEpoch, sessionId);
   // Save handoff snapshot for cross-session continuity.
   // sessionId = mem-internal (query key); ccSessionId = CC UUID (scope key for
   // parallel-safe row identity). Without the split, CC UUID-based queries miss
@@ -1098,59 +1275,52 @@ function markSessionCompletedAndSaveHandoff(db, { sessionId, project, ccSessionI
 
 /** Fast summary baseline — ensures a summary exists even if the background LLM fails. */
 function writeFastSummaryBaseline(db, { sessionId, project, transcriptPath }) {
-  // Fast summary baseline — ensures summary exists even if background LLM fails.
-  // T4-P2-B: guard against Stop firing twice for the same session (rare but possible;
-  // mirrors handleSessionStart line 795 hasSummary guard). Uses mem-internal sessionId
-  // as the WHERE key per the top-of-file dual-id invariant (#7789).
+  // Stop fires once per assistant TURN and the mem session survives it (R10-P1-1), so this
+  // runs on every turn of a session. The first turn with anything to say INSERTs the row
+  // (T4-P2-B's guard: never a second row); every later turn REFRESHES that row from its tail's
+  // report, or, without one, from the head of the final reply (D#121) or the current
+  // observation titles where the row's Done is still that grade (lib/fast-summary.mjs
+  // writeStopSummary). The guard alone used to stop there, so the
+  // row kept the FIRST turn's report: over 7 days of this machine's transcripts (09:40Z), 20
+  // of the 31 sessions that wrote §10 markers had a first-turn extract different from their
+  // last report. Uses the mem-internal sessionId as the WHERE key per the top-of-file
+  // dual-id invariant (#7789).
   try {
-    const existingSummary = db
-      .prepare('SELECT 1 FROM session_summaries WHERE memory_session_id = ? LIMIT 1')
-      .get(sessionId);
-    if (!existingSummary) {
-      const { request: fastRequestRaw, completed: obsCompleted } = readFastSummarySource(db, sessionId);
-
-      // Structural extraction from the assistant's tail message.
-      // CLAUDE.md §10 mandates Done/Not done/Failed/Uncertain markers, so the
-      // tail is deterministically parseable without Haiku. Prior baseline left
-      // remaining_items=='' for every session whose Haiku pass failed (≈66%
-      // in prod data), losing the user-visible "Not done" list.
-      let structuredCompleted = '';
-      let structuredNotDone = '';
-      let structuredNotes = '';
-      try {
-        const tail = transcriptPath ? extractTailAssistantText(transcriptPath) : null;
-        if (tail) {
-          const s = extractStructuredSummary(tail);
-          structuredCompleted = s.done;
-          structuredNotDone = s.notDone;
-          const notesParts = [];
-          if (s.failed) notesParts.push(`Failed: ${s.failed}`);
-          if (s.uncertain) notesParts.push(`Uncertain: ${s.uncertain}`);
-          structuredNotes = notesParts.join('\n');
-        }
-      } catch (e) {
-        debugCatch(e, 'handleStop-structured-extract');
+    // Structural extraction from the assistant's tail message.
+    // CLAUDE.md §10 mandates Done/Not done/Failed/Uncertain markers, so the
+    // tail is deterministically parseable without Haiku. Prior baseline left
+    // remaining_items=='' for every session whose Haiku pass failed (≈66%
+    // in prod data), losing the user-visible "Not done" list. handleStop calls this
+    // AFTER trackCitationsAtStop so the parse is the one it left memoized.
+    let structuredCompleted = '';
+    let structuredNotDone = '';
+    let structuredNotes = '';
+    // The raw final reply rides along: with no Done in it, its head is the row's Done floor
+    // (D#121, lib/fast-summary.mjs writeStopSummary).
+    let tail = null;
+    try {
+      tail = transcriptPath ? extractTailAssistantText(transcriptPath) : null;
+      if (tail) {
+        const s = extractStructuredSummary(tail);
+        structuredCompleted = s.done;
+        structuredNotDone = s.notDone;
+        const notesParts = [];
+        if (s.failed) notesParts.push(`Failed: ${s.failed}`);
+        if (s.uncertain) notesParts.push(`Uncertain: ${s.uncertain}`);
+        structuredNotes = notesParts.join('\n');
       }
-
-      const finalCompleted = structuredCompleted || obsCompleted;
-      const finalRemaining = structuredNotDone;
-      const finalNotes = structuredNotes || 'fast';
-
-      if (fastRequestRaw || finalCompleted || finalRemaining) {
-        insertFastSummary(db, {
-          sessionId,
-          project,
-          now: new Date(),
-          values: {
-            request: fastRequestRaw,
-            completed: finalCompleted,
-            remaining: finalRemaining,
-            notes: finalNotes,
-          },
-          limits: FAST_SUMMARY_LIMITS.stop,
-        });
-      }
+    } catch (e) {
+      debugCatch(e, 'handleStop-structured-extract');
     }
+
+    writeStopSummary(db, {
+      sessionId,
+      project,
+      report: { done: structuredCompleted, notDone: structuredNotDone, lines: structuredNotes, tail },
+      source: readFastSummarySource(db, sessionId),
+      now: new Date(),
+      limits: FAST_SUMMARY_LIMITS.stop,
+    });
   } catch (e) {
     debugCatch(e, 'handleStop-fast-summary');
   }
@@ -1436,7 +1606,16 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
         let gate = { gateInjected: null, gateRecalled: null, gateRatio: null };
         try {
           const gateInjectedIds = unionSurfaces(extractInjectedBySurface(transcriptPath, { mainOnly: true }));
-          const gateCited = extractCitationsFromTranscript(transcriptPath, { mainOnly: true });
+          // The nudge asks whether the agent ANSWERED what the hooks showed it, so a
+          // `#NN n/a — <reason>` still counts. Since D#98 the default directive asks for no
+          // reply on a lesson that did not apply, so that silence now reads as a miss here and
+          // the gate fires more (projected 78/95 → up to 87/95 qualifying sessions,
+          // docs/audits/20260927-d98-dismissal-baseline.md). Left as is: the gate already fired
+          // on most sessions and self-silences after 3; D#111's readout re-measures it.
+          const gateCited = extractCitationsFromTranscript(transcriptPath, {
+            mainOnly: true,
+            includeDismissed: true,
+          });
           let hit = 0;
           for (const id of gateInjectedIds) if (gateCited.has(id)) hit++;
           gate = {
@@ -1585,13 +1764,18 @@ async function handleStop() {
 
   flushEpisodeAtStop(sessionId, project);
 
-  // Mark session completed + save handoff (sync, instant)
+  // Mark session completed + save handoff (sync, instant). The same epoch goes to the summary
+  // worker below, so it can tell whether a later Stop has superseded it.
+  const stopEpoch = Date.now();
   const db = openDb();
   if (db) {
     try {
-      markSessionCompletedAndSaveHandoff(db, { sessionId, project, ccSessionId, episodeSnapshot });
-      writeFastSummaryBaseline(db, { sessionId, project, transcriptPath });
+      markSessionCompletedAndSaveHandoff(db, { sessionId, project, ccSessionId, episodeSnapshot, stopEpoch });
+      // Citations first: they read the subagent transcripts before the parent, so the parent is
+      // parsed once and stays memoized (D#152). The summary reads the parent's tail on every
+      // turn; run before them, it parsed the parent a second time in any session with subagents.
       trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptPath });
+      writeFastSummaryBaseline(db, { sessionId, project, transcriptPath });
     } finally {
       db.close();
     }
@@ -1605,7 +1789,15 @@ async function handleStop() {
   // waits on, then recreates the sandbox tree behind the test's cleanup. Any
   // grace period for that is a race, not a barrier — the post-tag review timed a
   // recreate at 432ms and watched a 300ms grace lose.
-  if (!process.env.QWEN_MEM_SKIP_SUMMARY) spawnBackground('llm-summary', sessionId, project);
+  //
+  // D#95 made this opt-in in 34a65cd and was reverted before release: its premise ("Last
+  // Session already comes from the Stop report") holds only when the assistant's final reply
+  // carries Done / Not done sections (lib/summary-extractor.mjs). Without them the Stop row is
+  // the first prompt + the head of the final reply (D#121, since v6.18.0; observation titles
+  // before), and this worker's model summary is the only multi-field summary (Next / Lessons /
+  // Decisions) such a user gets — when observations exist for it to read.
+  if (!process.env.QWEN_MEM_SKIP_SUMMARY)
+    spawnBackground('llm-summary', sessionId, project, String(stopEpoch));
 
   // The session file deliberately SURVIVES Stop (R10-P1-1). It used to be unlinked here,
   // on the model "Stop = /exit = the session is over". The host does not work that way:
@@ -1665,7 +1857,8 @@ function gcStalePreRecallCooldowns() {
         name.startsWith('.qwen-mem-injected-') ||
         name.startsWith('.qwen-mem-keyctx-') ||
         name.startsWith('.claude-mem-injected-') ||
-        name.startsWith('.claude-mem-keyctx-'); // D#123 Key Context marker — same per-session growth, same 24h GC
+        name.startsWith('.claude-mem-keyctx-') || // D#123 Key Context marker
+        name.startsWith(BUGFIX_NUDGE_MARKER_PREFIX); // §9-B once-per-session nudge claim
       if (!isCooldown && !isInjectedMarker) continue;
       try {
         const p = join(RUNTIME_DIR, name);
@@ -1819,6 +2012,17 @@ function runSessionStartAutoMaintain(db, project) {
       if (orphansRecovered > 0)
         debugLog('DEBUG', 'auto-maintain', `recovered ${orphansRecovered} orphaned compression children`);
 
+      // Report §9-D one-shot: narrow the event edges written before episodes were keyed to
+      // their edited files. Own snapshot (only when something changes) and own marker, so it
+      // runs once per database and never on a foreground hook.
+      const edgePrune = runWideEdgeCleanupOnce(db);
+      if (edgePrune.ran && edgePrune.changed > 0)
+        debugLog(
+          'DEBUG',
+          'auto-maintain',
+          `narrowed ${edgePrune.changed} events (${edgePrune.removed} edges)`,
+        );
+
       // Heal lesson rows citation-decay buried at importance 0 under the old floor=0.
       // Non-destructive (0→1 on lesson-bearing rows only); idempotent no-op once none remain.
       const lessonsHealed = recoverBuriedLessons(db, mctx);
@@ -1898,7 +2102,7 @@ function runSessionStartAutoMaintain(db, project) {
           WHERE ${liveObsFilterSql('')}
             AND created_at_epoch > ?
             AND title IS NOT NULL AND title != ''
-          ORDER BY created_at_epoch DESC LIMIT ${SCAN_LIMIT}
+          ORDER BY created_at_epoch DESC, id DESC LIMIT ${SCAN_LIMIT}
         `,
           )
           .all(STALE_AGE);
@@ -2150,8 +2354,8 @@ function saveHandoffAndFastSummary(
     }
 
     // Build fast synchronous summary for immediate context availability.
-    // Background llm-summary will produce a richer Haiku version later;
-    // context injection query (ORDER BY created_at_epoch DESC) auto-prefers latest.
+    // The background llm-summary spawned above upgrades this same row in place later,
+    // without moving its timestamp.
     try {
       const { request: fastRequestRaw, completed: fastCompletedRaw } = readFastSummarySource(
         db,
@@ -2172,13 +2376,17 @@ function saveHandoffAndFastSummary(
         if (errors.length > 0) fastRemainingRaw = errors.join('; ');
       }
 
+      // One row per session: when Stop already wrote the previous session's row, this updates
+      // it rather than INSERTing a second one beside it (80 live sessions had two, 2026-09-26).
+      // The gate is unchanged, so the row moves to `now` exactly when the second row used to
+      // be written with it.
       if (fastRequestRaw || fastCompletedRaw) {
-        insertFastSummary(db, {
+        writeClearSummary(db, {
           sessionId: prevSessionId,
           project: prevProject || project,
-          now,
           values: { request: fastRequestRaw, completed: fastCompletedRaw, remaining: fastRemainingRaw },
           limits: FAST_SUMMARY_LIMITS.sessionStart,
+          now,
         });
       }
     } catch (e) {
@@ -2250,38 +2458,32 @@ function buildFallbackFastSummary(db, { project, now, prevSessionId }) {
       const recentSession = db
         .prepare(
           `
-        SELECT content_session_id, project FROM sdk_sessions
+        SELECT content_session_id, project FROM sdk_sessions s
         WHERE project = ? AND status = 'completed' AND completed_at_epoch > ?
+          AND NOT EXISTS (SELECT 1 FROM session_summaries WHERE memory_session_id = s.content_session_id)
         ORDER BY completed_at_epoch DESC LIMIT 1
       `,
         )
         .get(project, Date.now() - 120000); // within last 2 minutes
 
+      // "Has no summary" is in the WHERE, not checked after LIMIT 1: every Stop now records
+      // itself (P3-6), so a parallel session still live ranks by its latest turn and, holding a
+      // summary, would take the one slot from the session that actually exited.
       if (recentSession) {
-        const hasSummary = db
-          .prepare(
-            `
-          SELECT 1 FROM session_summaries WHERE memory_session_id = ? LIMIT 1
-        `,
-          )
-          .get(recentSession.content_session_id);
-
-        if (!hasSummary) {
-          const { request: frRaw, completed: fcRaw } = readFastSummarySource(
-            db,
-            recentSession.content_session_id,
-          );
-          if (frRaw || fcRaw) {
-            // No remaining_items on this path: an /exit restart has no handoff and no
-            // episode snapshot to infer one from. It was a bare '' in the SQL before.
-            insertFastSummary(db, {
-              sessionId: recentSession.content_session_id,
-              project,
-              now,
-              values: { request: frRaw, completed: fcRaw },
-              limits: FAST_SUMMARY_LIMITS.exitRestart,
-            });
-          }
+        const { request: frRaw, completed: fcRaw } = readFastSummarySource(
+          db,
+          recentSession.content_session_id,
+        );
+        if (frRaw || fcRaw) {
+          // No remaining_items on this path: an /exit restart has no handoff and no
+          // episode snapshot to infer one from. It was a bare '' in the SQL before.
+          insertFastSummary(db, {
+            sessionId: recentSession.content_session_id,
+            project,
+            now,
+            values: { request: frRaw, completed: fcRaw },
+            limits: FAST_SUMMARY_LIMITS.exitRestart,
+          });
         }
       }
     } catch (e) {
@@ -2437,6 +2639,79 @@ async function emitDbUnusableNotice() {
   }
 }
 
+/**
+ * Report §9-A: the managed-block steering for a project that carries no block, delivered as
+ * SessionStart context instead of a file in the user's repository. The detail doc it points at
+ * is written into the plugin's own data dir (refreshed only when its text changed), because a
+ * reference to `.claude/plugin_claude_mem_lite.md` would name a file that no longer exists.
+ * Never throws: a failure here costs the steering, not the session start.
+ * @returns {Promise<string>}
+ */
+async function buildInjectedSteering() {
+  try {
+    const { buildClaudeMdBlock } = await import('./adopt-content.mjs');
+    const { ensureSteeringDetailDoc } = await import('./lib/local-steering.mjs');
+    return buildClaudeMdBlock({ detailDocRef: ensureSteeringDetailDoc() });
+  } catch (e) {
+    debugCatch(e, 'session-start-steering');
+    return '';
+  }
+}
+
+// §9-A follow-up (user decision 2026-09-29): injected steering did not drive bugfix saves the
+// way the written CLAUDE.md block did (sandbox S3: 0/8 injected vs 7/12 written, p≈0.015). The
+// user, not the model, decides whether the plugin may write into the repository: offer the
+// block ONCE per project on the human systemMessage channel. A preserved runtime marker keeps
+// it to once; MEM_NO_ADOPT_HINT=1 (the existing adopt-hint switch) silences it.
+const ADOPT_OFFER_MARKER_PREFIX = '.adopt-offered-';
+function realOrResolved(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolvePath(p);
+  }
+}
+function offerAdoptOnce(project) {
+  if (process.env.MEM_NO_ADOPT_HINT === '1') return;
+  // /adopt at $HOME would write ~/CLAUDE.md, an ancestor of every project below it — the case
+  // lib/local-steering.mjs refuses (pre-tag claims review, P3). Do not suggest it there.
+  const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  // Real paths: the host passes the real one, and $HOME may be a symlink to it (delta review P3-14).
+  if (realOrResolved(cwd) === realOrResolved(homedir())) return;
+  try {
+    const marker = join(RUNTIME_DIR, `${ADOPT_OFFER_MARKER_PREFIX}${project}`);
+    if (existsSync(marker)) return;
+    writeFileSync(marker, new Date().toISOString(), { mode: 0o600 });
+    queueHookSystemMessage(
+      'qwen-mem-lite: memory guidance for this project is injected at session start, and nothing is written to your repository. ' +
+        'Run /adopt (or `qwen-mem-lite adopt`) to put it in CLAUDE.md instead — the agent then saves lessons after fixes more reliably. ' +
+        'Shown once per project; `qwen-mem-lite adopt --disable` turns the guidance off for this project.',
+    );
+  } catch (e) {
+    debugCatch(e, 'session-start-adopt-offer');
+  }
+}
+
+// r3 (tasks/specs/sandbox-eval-l3.md): inside a git work tree auto-adopt writes the block into
+// CLAUDE.local.md. A file appearing in the user's tree unannounced is the surprise 9-A set
+// out to remove, so the human is told once per project what it is, that git will not see it,
+// and how to undo it. Same channel, marker family and switch as the /adopt offer above.
+const LOCAL_NOTE_MARKER_PREFIX = '.local-steering-noted-';
+function noteLocalSteeringOnce(project) {
+  if (process.env.MEM_NO_ADOPT_HINT === '1') return;
+  try {
+    const marker = join(RUNTIME_DIR, `${LOCAL_NOTE_MARKER_PREFIX}${project}`);
+    if (existsSync(marker)) return;
+    writeFileSync(marker, new Date().toISOString(), { mode: 0o600 });
+    queueHookSystemMessage(
+      'qwen-mem-lite: memory guidance for this project is in CLAUDE.local.md at the repository root. Git ignores it (it is added to .git/info/exclude unless your ignore rules already cover it), so it is not committed, but npm pack and other packagers do not read .git/info/exclude. ' +
+        'Delete it or run `qwen-mem-lite unadopt` and it is not written again; `qwen-mem-lite adopt --disable` turns the guidance off for this project. Shown once per project.',
+    );
+  } catch (e) {
+    debugCatch(e, 'session-start-local-note');
+  }
+}
+
 async function handleSessionStart() {
   // GC stale per-session cooldown files. Cheap (<5ms typical) and idempotent;
   // moved here from pre-tool-recall.js's hot path.
@@ -2507,12 +2782,18 @@ async function handleSessionStart() {
   // noise; it must NOT also disable side-effect work (PostToolUse writes the
   // DB unconditionally — auto-adopt follows the same rule). Failures are
   // swallowed; the marker is still written for telemetry/back-compat.
+  // Report §9-A: 'inject' means the project carries no managed block and nothing was written;
+  // the steering text then joins this SessionStart's context (injectSteeringPart below).
+  let adoptAction = null;
+  let adoptWritten = null;
   try {
     if (process.env.MEM_NO_AUTO_ADOPT !== '1') {
       const project = inferProject();
       const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
       const { silentAutoAdopt } = await import('./adopt-cli.mjs');
       const r = silentAutoAdopt({ cwd, markerDir: RUNTIME_DIR, markerKey: project });
+      adoptAction = r.action;
+      adoptWritten = r.written ?? null;
       if (r.ok) {
         debugLog('DEBUG', 'session-start-auto-adopt', `action=${r.action} project=${project}`);
       } else {
@@ -2578,7 +2859,7 @@ async function handleSessionStart() {
       } else {
         const prevEpisode = readEpisode();
         if (prevEpisode && prevEpisode.entries && prevEpisode.entries.length > 0) {
-          flushEpisode(prevEpisode, 'SessionStart');
+          flushEpisode(prevEpisode, 'SessionStart', ccSessionId);
         }
       }
     } finally {
@@ -2677,6 +2958,21 @@ async function handleSessionStart() {
     if (fullContext.trim()) {
       stdoutParts.push(`<qwen-mem-context>\n${fullContext}\n</qwen-mem-context>`);
     }
+    if (adoptAction === 'inject') {
+      const steering = await buildInjectedSteering();
+      if (steering) stdoutParts.push(steering);
+      offerAdoptOnce(project);
+    } else if (adoptAction === 'local') {
+      // Claude Code read CLAUDE.local.md before this hook ran, so the session that CREATES it
+      // does not load it (release-tree sandbox: first sessions had no steering, 0/4). Inject
+      // the same block once; from the next session the file carries it. An update needs no
+      // copy: the session already loaded the previous text.
+      if (adoptWritten === 'created') {
+        const steering = await buildInjectedSteering();
+        if (steering) stdoutParts.push(steering);
+      }
+      noteLocalSteeringOnce(project);
+    }
 
     // Auto-update banner (audit P3d): NON-BLOCKING — read from cached state
     // (zero network) and, if the 24h check is due, refresh in a detached
@@ -2725,7 +3021,9 @@ async function handleSessionStart() {
       runtimeDir: RUNTIME_DIR,
       project,
       sessionId: ccSessionId,
-      ids: contextCollector.keyContextIds || [],
+      // Only the rows the cap keeps: flushHookStdout caps additionalContext at the
+      // dispatcher's exit, and nothing is queued for the model after this point (D#108).
+      ids: idsShownWhole(previewHookContext(), contextCollector.keyContextLines),
     });
 
     // One-time migration: remove any stale <claude-mem-context> block left in
@@ -2905,7 +3203,7 @@ function injectHandoffIfEarly(db, { project, promptText, promptNumber, ccSession
         const picked = pickHandoffToInject(db, project, ccSessionId);
         if (picked) {
           const injection = renderHandoffInjection(db, project, ccSessionId);
-          if (injection) process.stdout.write(injection + '\n');
+          if (injection) writePlainHookText(injection);
           // Consume ONLY the row we just injected — leave other projects' exit
           // handoffs intact so future sessions can still resume from them.
           // Pre-v2.46 wiped every exit handoff for the project on any continuation
@@ -3116,7 +3414,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
         const lines = ['<memory-context relevance="high">'];
         for (const m of memories) lines.push(formatMemoryLine(m));
         lines.push('</memory-context>');
-        process.stdout.write(lines.join('\n') + '\n');
+        writePlainHookText(lines.join('\n'));
       }
       // HIGH-1 (full audit 2026-07-16): surface FTS-matched events — the canonical
       // store for promoted bugfix/decision/lesson memories that persistHaikuSummary
@@ -3137,7 +3435,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
           const elines = ['<memory-context relevance="events">'];
           for (const e of events) elines.push(`- ${renderInjectableEvent(e)}`);
           elines.push('</memory-context>');
-          process.stdout.write(elines.join('\n') + '\n');
+          writePlainHookText(elines.join('\n'));
         }
       } catch (e) {
         debugCatch(e, 'handleUserPrompt-events');
@@ -3146,7 +3444,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
         // Guard the write on a non-empty return — formatTaskImperative yields '' for a
         // lesson that strips to empty (e.g. "."), which would otherwise emit a bare line.
         const imperativeLine = formatTaskImperative(imperativePick.lesson_learned, imperativePick.id);
-        if (imperativeLine) process.stdout.write(imperativeLine + '\n');
+        if (imperativeLine) writePlainHookText(imperativeLine);
       }
 
       // D#214's ruler, second half: arm B was computed above, before anything was
@@ -3177,6 +3475,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
 }
 
 async function handleUserPrompt() {
+  resetPlainHookText();
   const input = await readUserPromptInput();
   if (!input) return;
   const { promptText, hookData } = input;
@@ -3323,20 +3622,22 @@ function extractStdio(obj) {
   return null;
 }
 function normalizeToolResponse(toolResponse) {
+  // `!== null`, not truthiness: a command that printed nothing extracts to '', and that is
+  // its output. Treating '' as "not a stdio object" fell through to JSON.stringify.
   if (typeof toolResponse === 'string') {
     // Try to parse JSON strings like '{"stdout":"...","stderr":"..."}'
     if (toolResponse.startsWith('{"stdout"') || toolResponse.startsWith('{"stderr"')) {
       try {
         const parsed = JSON.parse(toolResponse);
         const extracted = extractStdio(parsed);
-        if (extracted) return extracted.replace(ANSI_RE, '');
+        if (extracted !== null) return extracted.replace(ANSI_RE, '');
       } catch {}
     }
     return toolResponse.replace(ANSI_RE, '');
   }
   if (toolResponse && typeof toolResponse === 'object') {
     const extracted = extractStdio(toolResponse);
-    if (extracted) return extracted.replace(ANSI_RE, '');
+    if (extracted !== null) return extracted.replace(ANSI_RE, '');
     return JSON.stringify(toolResponse).replace(ANSI_RE, '');
   }
   return '';

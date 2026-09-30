@@ -20,7 +20,7 @@
 
 import { readFileSync, existsSync, unlinkSync, mkdirSync, rmdirSync, readdirSync, lstatSync } from 'fs';
 import { atomicWriteFileSync as atomicWrite } from './lib/atomic-write.mjs';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { createHash } from 'crypto';
 import { memdirPath, removePluginSection, removePluginDoc, isAdopted as memdirIsAdopted } from './memdir.mjs';
 
@@ -498,4 +498,142 @@ export function migrateLegacyMemoryDir(cwd, slug, { force = false } = {}) {
 /** True if the legacy memory-dir sentinel still exists for this project. */
 export function hasLegacyMemdirSentinel(cwd, slug) {
   return memdirIsAdopted(memdirPath(cwd), slug);
+}
+
+// ─── Upstream generic API, re-applied on the fork's layout layer ─────────────
+// sdsrss/qwen-mem-lite v6.20 refactored the block codec to be path-based so a
+// second instructions file could reuse it (CLAUDE.local.md steering). The fork
+// keeps its dual-layout writer (CLAUDE.md + QWEN.md); these are the path-based
+// entry points the upstream modules (lib/local-steering.mjs, lib/quiet-scope.mjs)
+// import. One codec, two callers.
+
+/**
+ * Path-based read of the slug block in one instructions file.
+ * @param {string} p absolute path of the file
+ * @param {string} slug
+ * @returns {{ exists: boolean, version: string|null, body: string|null, raw: string }}
+ */
+export function readBlockAt(p, slug) {
+  if (!existsSync(p)) return { exists: false, version: null, body: null, raw: '' };
+  const raw = readFileSync(p, 'utf8');
+  const m = raw.match(blockRegex(slug));
+  if (!m) return { exists: true, version: null, body: null, raw };
+  return { exists: true, version: m[1], body: m[2].replace(/\r\n/g, '\n'), raw };
+}
+
+/**
+ * Is `relPath` nothing but this plugin's own adoption output? Used by the startup
+ * dashboard / handoff so a clean repo does not read as "N uncommitted files".
+ * @param {string} cwd
+ * @param {string} relPath
+ * @param {string} slug
+ * @returns {boolean}
+ */
+export function isOwnAdoptionArtifact(cwd, relPath, slug) {
+  try {
+    const rel = String(relPath).replace(/\/+$/, '');
+    if (rel === 'CLAUDE.md' || rel === 'CLAUDE.local.md' || rel === 'QWEN.md') {
+      const blk = readBlockAt(join(cwd, rel), slug);
+      return blk.body !== null && blk.raw.replace(blockRegexG(slug), '').trim() === '';
+    }
+    const claudeDir = dotDir(cwd, PRIMARY_LAYOUT);
+    const docName = basename(detailDocPath(cwd, slug));
+    const stateName = basename(stateFilePath(cwd, slug));
+    const ownFile = (name) =>
+      name === stateName ||
+      (name === docName && readFileSync(join(claudeDir, name), 'utf8').startsWith(managedByMarker(slug)));
+    if (rel === '.claude') {
+      const names = readdirSync(claudeDir);
+      return names.length > 0 && names.every(ownFile);
+    }
+    if (rel.startsWith('.claude/') && !rel.slice(8).includes('/')) return ownFile(rel.slice(8));
+  } catch {
+    /* unreadable → not provably ours */
+  }
+  return false;
+}
+
+/**
+ * Insert-or-replace our block in one instructions file (created if absent).
+ * @param {string} p absolute path of the file
+ * @returns {{action: 'created'|'updated'|'unchanged'}}
+ */
+export function writeBlockAt(p, { slug, version, block }) {
+  const raw = existsSync(p) ? readFileSync(p, 'utf8') : '';
+  const section = renderBlock(slug, version, block);
+  const m = raw.match(blockRegex(slug));
+
+  let next, action;
+  if (!m) {
+    if (raw.length === 0) next = section + '\n';
+    else if (raw.endsWith('\n\n')) next = raw + section + '\n';
+    else if (raw.endsWith('\n')) next = raw + '\n' + section + '\n';
+    else next = raw + '\n\n' + section + '\n';
+    action = 'created';
+  } else {
+    next = raw.replace(m[0], () => section);
+    action = next !== raw ? 'updated' : 'unchanged';
+  }
+  let seen = 0;
+  const deduped = next.replace(blockRegexG(slug), (whole) => (seen++ === 0 ? whole : ''));
+  if (deduped !== next) {
+    next = deduped.replace(/\n{3,}/g, '\n\n');
+    if (action === 'unchanged') action = 'updated';
+  }
+  if (next !== raw) atomicWrite(p, next);
+  return { action };
+}
+
+/**
+ * The residue line for unpaired sentinels left in `p` after a removal.
+ * @returns {string}
+ */
+export function orphanResidueNote(orphans, slug, p) {
+  return `${orphans} unpaired \`${slug}\` sentinel line(s) remain in ${p} — the block they opened has no matching end marker, so its extent cannot be determined safely. Remove those lines and the text they wrap by hand.`;
+}
+
+/**
+ * Remove every well-formed block of `slug` from one instructions file, keeping
+ * all other text; a file left holding only whitespace is deleted (a symlink is
+ * emptied through the link instead).
+ * @param {string} p absolute path of the file
+ * @returns {{action: 'removed'|'absent', orphans: number}}
+ */
+export function removeBlockAt(p, slug) {
+  let action = 'absent';
+  let orphans = 0;
+  if (existsSync(p)) {
+    let raw = readFileSync(p, 'utf8');
+    let m;
+    while ((m = raw.match(blockRegex(slug)))) {
+      const blockAtStart = m.index === 0;
+      let start = m.index;
+      let end = m.index + m[0].length;
+      if (raw[end] === '\n') end++;
+      if (start > 0 && raw.slice(0, start).endsWith('\n\n')) start--;
+      raw = raw.slice(0, start) + raw.slice(end);
+      raw = raw.replace(/\n{3,}/g, '\n\n');
+      if (blockAtStart) raw = raw.replace(/^\s+/, '');
+      action = 'removed';
+    }
+    if (action === 'removed') {
+      let isLink = false;
+      try {
+        isLink = lstatSync(p).isSymbolicLink();
+      } catch {
+        /* raced away */
+      }
+      if (raw.trim() === '' && !isLink) {
+        try {
+          unlinkSync(p);
+        } catch {
+          atomicWrite(p, raw);
+        }
+      } else {
+        atomicWrite(p, raw);
+      }
+    }
+    orphans = orphanSentinelCount(raw, slug);
+  }
+  return { action, orphans };
 }
