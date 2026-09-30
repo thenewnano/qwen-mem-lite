@@ -50,6 +50,13 @@ export default defineConfig({
       // `.claude/worktrees/<name>/`, and every test file in that copy was collected and run
       // against the copy's half-finished edits (2026-09-27: 887 files instead of 444).
       '.claude/**',
+      // `.worktrees/**` for the same class of reason: PORTING.md puts every upstream port
+      // in a git worktree under `.worktrees/`, and a worktree carries a full copy of
+      // tests/**. Without this, `npx vitest run` from the MAIN checkout collects and RUNS
+      // the worktree's suite too (measured 2026-09-30: 890 files, 24 failures - the
+      // worktree's tests run against the main tree's paths and node_modules), which also
+      // bricks the pre-commit gate for any commit made from the main checkout.
+      '**/.worktrees/**',
     ],
     // D#40: the CLI auto-escalation path is default-ON in production but must
     // never spawn a real `claude` subprocess during the suite. This forces

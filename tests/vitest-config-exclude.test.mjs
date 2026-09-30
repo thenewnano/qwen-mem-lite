@@ -28,6 +28,10 @@ describe('vitest test.exclude (D#168)', () => {
     expect(exclude).toContain('tasks/**');
     // A worktree agent's full checkout lives under `.claude/worktrees/` (2026-09-27).
     expect(exclude).toContain('.claude/**');
+    // `**/.worktrees/**` joined in the 2026-09-30 port round: PORTING.md makes a worktree
+    // the unit of every upstream port, and a worktree copies tests/** wholesale, so
+    // without this the main checkout's run collects the worktree's suite too.
+    expect(exclude).toContain('**/.worktrees/**');
   });
 
   it('re-states every default it replaces — `exclude` overrides, it does not extend', () => {

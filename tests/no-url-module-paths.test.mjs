@@ -53,7 +53,17 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 // Mirrors the tree knip analyses. `tmp/` and `coverage/` are not in it; `node_modules`
 // and `.git` are far too large to walk and cannot contain our own sources.
-const SKIP_DIRS = new Set(['node_modules', '.git', 'coverage', 'tmp', '.claude', 'dist', 'build', '.tmp']);
+const SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'coverage',
+  'tmp',
+  '.claude',
+  'dist',
+  'build',
+  '.tmp',
+  '.worktrees',
+]);
 
 /**
  * `new URL(<relative module specifier>, …)`.
