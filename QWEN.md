@@ -15,3 +15,22 @@ Path cost is round-trips, not milliseconds: the PreToolUse hook above already re
 
 Full tool + CLI tables, citation/decay rules, and save discipline → `.claude/plugin_qwen_mem_lite.md` (Claude Code) · `.qwen/plugin_qwen_mem_lite.md` (Qwen Code)
 <!-- qwen-mem-lite:end -->
+
+## Working in this repo (Qwen Code)
+
+The tracked root `.mcp.json` is the Claude Code plugin chain — leave it alone. Qwen overlays MCP servers in the order `user < project .mcp.json < workspace .qwen/settings.json < CLI`, and `${CLAUDE_PLUGIN_ROOT}` is hydrated only for extension-provided configs, so inside this checkout the project-scope `mem-lite` shadows the extension's entry and reports as disconnected.
+
+Fix the session with a gitignored local override — `.qwen/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "mem-lite": {
+      "command": "node",
+      "args": ["./scripts/launch.mjs"]
+    }
+  }
+}
+```
+
+then run `qwen mcp approve mem-lite` (approval is hash-bound to the config — re-run after every edit). Workspace scope outranks `.mcp.json` and the extension, so the session runs the live checkout; `qwen mcp list` verifies.
