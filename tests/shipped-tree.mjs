@@ -27,6 +27,7 @@ const SKIP_DIRS = new Set([
   'coverage',
   'tmp',
   '.tmp',
+  '.worktrees',
   'tasks',
   'docs',
   'tests',

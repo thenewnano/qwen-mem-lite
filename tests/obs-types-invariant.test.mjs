@@ -76,6 +76,7 @@ describe('obs-types single source of truth', () => {
       'tasks',
       'tmp',
       '.tmp',
+      '.worktrees',
       '.git',
       '.claude',
       '.claude-plugin',
