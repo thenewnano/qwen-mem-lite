@@ -29,6 +29,7 @@ const SKIP_DIRS = new Set([
   '.git',
   'tmp',
   '.tmp',
+  '.worktrees',
   'coverage',
   'docs',
   'tasks',
