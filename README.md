@@ -2,6 +2,13 @@
 
 `qwen-mem-lite` is a **persistent memory** (also called _long-term memory_ or _cross-session context_) system for **[Qwen Code](https://github.com/QwenLM/qwen-code)** and **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)**, the two CLI coding agents it runs on. It runs as an **[MCP](https://modelcontextprotocol.io/) server** plus a set of lifecycle hooks, automatically capturing coding observations, decisions, and bug fixes during sessions, then providing full-text search with query expansion to recall them later.
 
+> **Fork notice.** `qwen-mem-lite` is a fork of **[`claude-mem-lite`](https://github.com/sdsrss/claude-mem-lite)**
+> by [@sdsrss](https://github.com/sdsrss), itself a ground-up redesign of
+> [claude-mem](https://github.com/thedotmack/claude-mem). This fork renames the project to
+> `qwen-mem-lite`, adds Qwen Code as a first-class host alongside Claude Code, and tracks
+> upstream's later releases through a documented port. Upstream attribution and history are
+> kept throughout; thanks to both projects.
+
 Compared to general-purpose LLM memory frameworks like [`mem0`](https://github.com/mem0ai/mem0) or the MCP reference [`memory`](https://github.com/modelcontextprotocol/servers/tree/main/src/memory) server, qwen-mem-lite is purpose-built for those hosts' hook lifecycles: episode batching cuts LLM calls 7-10x vs the original [claude-mem](https://github.com/thedotmack/claude-mem) (an estimated ~600x lower total cost - see the cost model below; this is an architecture estimate, not a measured benchmark), while the FTS5 retriever benchmarks at 0.90 Recall@10 / 0.85 Precision@10
 (see [Search Quality](#search-quality) for the reproduction command).
 
@@ -268,6 +275,22 @@ rm -rf ~/claude-mem-lite/   # pre-v0.5 unhidden (if not auto-moved)
   managed/
     repos/               # Shallow-cloned source repos
 ```
+
+## Upgrading to 7.1.0 (upstream sync)
+
+**This release folds in everything upstream shipped between v6.12.0 and v6.21.0** (311
+commits). There is no schema change, no data move and no configuration change - the store
+(`~/.qwen-mem-lite/`), the database (`qwen-mem-lite.db`) and the `QWEN_MEM_*` prefix are
+unchanged. Two behaviour changes are worth knowing:
+
+_Auto-adopt is quieter._ SessionStart no longer writes a managed block into the
+project's `CLAUDE.md`; it injects the steering text instead (or writes `CLAUDE.local.md`
+inside a git work tree). Run `qwen-mem-lite adopt` if you want the block written.
+
+_The SessionStart `### Key Events` section is opt-in._ Set `QWEN_MEM_SESSION_EVENTS=1` to
+restore it (upstream measured it accurate in 2 of 30 samples).
+
+See `CHANGELOG.md`'s v7.1.0 entry for the full list of what came in.
 
 ## Upgrading to 7.0.0 (the rename)
 

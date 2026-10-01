@@ -2,6 +2,46 @@
 
 All notable changes to qwen-mem-lite are documented in this file.
 
+## v7.1.0 - synced with upstream through v6.21.0
+
+The fork now carries everything upstream shipped between v6.12.0 and v6.21.0, ported in two
+passes (v6.12.0-v6.20.0, then v6.21.0) - 311 upstream commits since the v6.11.0 base this fork
+started from. It is rebranded throughout (`qwen-mem-lite`, `QWEN_MEM_*`, the `~/.qwen-mem-lite/`
+store) and still runs on both hosts from one tree.
+
+What came in, by upstream's own labels:
+
+- **Scrubbing and safety** - the secret scrubbers were rewritten (private keys, JWTs, the
+  tool-output cap); `<private>` parsing fails closed on an unclosed, nested or attributed tag
+  (D13, plus its quadratic-scan fix).
+- **Project identity** - a project named in a non-Latin script gets its own id (D9), two
+  checkouts of one repo no longer share memory, and the one-time re-key moves the old rows.
+- **Sessions** - two sessions in one project keep separate memory sessions, keyed by the host
+  process (D14); adopting a gone session's work takes its reads and spill.
+- **Recall** - a subagent and its parent each get a file's lesson once (D15); recall can scope
+  to the current project and an exact path (D11).
+- **Importance and maintenance** - an importance a person set is not undone by access
+  promotions (D10); idle rows hide first and delete only after a 7-day grace (D12); dedup never
+  crosses projects and never hides the keeper of a compression group.
+- **Installer** - refuses an unparseable `settings.json` before any side effect, keeps hooks
+  the user wrote, removes a user-scope `mem` MCP server only when it runs ours, and names an
+  unadopt command that still runs after uninstall.
+- **Doctor** - the CLI LLM-provider line checks that the `claude` CLI actually resolves.
+- **Steering** - adopts upstream's steering model (inject, or `CLAUDE.local.md`); the explicit
+  `adopt` command still writes both hosts' files (`CLAUDE.md` + `QWEN.md`).
+
+**Upgrade notes for 7.0.0 installs:**
+
+- **No schema change and no data move.** The store stays `~/.qwen-mem-lite/`, the database
+  `qwen-mem-lite.db`, and the environment prefix `QWEN_MEM_*`.
+- **Auto-adopt no longer writes a project `CLAUDE.md` block on first SessionStart.** Upstream
+  v6.13+ injects instead (or writes `CLAUDE.local.md` inside a git work tree). Run
+  `qwen-mem-lite adopt` explicitly if you want the managed block written.
+- **The SessionStart `### Key Events` section is opt-in** (`QWEN_MEM_SESSION_EVENTS=1`),
+  matching upstream's measurement that it was accurate in 2 of 30 samples.
+- Nothing else requires action; the auto-updater keeps reading this repository's signed
+  releases, and the install path stays fail-closed on a valid `release-manifest.json` + `.sig`.
+
 ## v7.0.0 - renamed to qwen-mem-lite, Qwen Code first, Claude Code still supported
 
 The project is now **qwen-mem-lite**. The rename covers the package/plugin name, the CLI,
