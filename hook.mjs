@@ -23,6 +23,7 @@ import { join, resolve as resolvePath } from 'path';
 import {
   readFileSync,
   writeFileSync,
+  appendFileSync,
   unlinkSync,
   readdirSync,
   renameSync,
@@ -70,6 +71,9 @@ import {
   mergePendingEntries,
   episodeHasSignificantContent,
   explainSignificance,
+  orphanEpisodeFiles,
+  orphanReadsFile,
+  readsFile,
 } from './hook-episode.mjs';
 // CODE_DIR, not DB_DIR: the schema-skew notice asks which CODE homes exist, and those are
 // always homedir-rooted even when QWEN_MEM_DIR relocates the data.
@@ -89,6 +93,7 @@ import {
   HANDOFF_EXPIRY_CLEAR,
   HANDOFF_EXPIRY_EXIT,
   sessionFile,
+  deadHostFiles,
   getSessionId,
   createSessionId,
   openDb,
@@ -99,6 +104,13 @@ import {
   lastDbUnusable,
 } from './hook-shared.mjs';
 import { handleLLMEpisode, handleLLMSummary, saveEpisodeImmediate } from './hook-llm.mjs';
+import {
+  legacyProjectNameFromDir,
+  rekeyLegacyProject,
+  legacyIdIsExclusive,
+  moveProjectRows,
+  PROJECT_REKEY_MARKER_PREFIX,
+} from './lib/project-rekey.mjs';
 import {
   readFastSummarySource,
   insertFastSummary,
@@ -159,6 +171,7 @@ import { extractTailAssistantText, extractStructuredSummary } from './lib/summar
 import { searchRelevantMemories, formatMemoryLine, selectImperativeLesson } from './hook-memory.mjs';
 import { searchInjectableEvents, renderInjectableEvent } from './lib/events-injection.mjs';
 import { upsFtsQuery } from './lib/ups-query.mjs';
+import { isNoTopicShape, meetsRecallLengthFloor } from './lib/prompt-admission.mjs';
 import { formatTaskImperative } from './lib/task-imperative.mjs';
 import { gcOldMetricShards, recordMetric } from './lib/metrics.mjs';
 import { detectMemOverride } from './lib/mem-override.mjs';
@@ -367,8 +380,10 @@ if (!event) process.exit(0);
 // Regression chain: v2.33.1 introduced the receipt; v2.33.3 misdiagnosed the
 // Stop rejection as event-name mismatch; v2.33.4 is the root-cause fix.
 const RECEIPT_EVENTS = new Set(['PostToolUse', 'SessionStart', 'UserPromptSubmit']);
+// Returns false when the buffer was left for a retry (no openable DB, or the flush file could
+// not be written) — adoptOrphanEpisodes puts a claimed buffer back on false.
 function flushEpisode(episode, hookEventName = 'PostToolUse', receiverSession = null) {
-  if (!episode || episode.entries.length === 0) return;
+  if (!episode || episode.entries.length === 0) return true;
 
   // Acquire the DB ONCE, up front, and bail before touching anything destructive when it
   // will not open. Every persistence step below is a no-op without it (saveObservation
@@ -380,9 +395,9 @@ function flushEpisode(episode, hookEventName = 'PostToolUse', receiverSession = 
   // under `hook-shared:db-open`. Reusing the handle for the immediate saves also drops
   // this path from one open per sub-episode to one per flush.
   const db = openDb();
-  if (!db) return;
+  if (!db) return false;
   try {
-    flushEpisodeWithDb(db, episode, hookEventName, receiverSession);
+    return flushEpisodeWithDb(db, episode, hookEventName, receiverSession);
   } finally {
     try {
       db.close();
@@ -500,12 +515,12 @@ function flushEpisodeWithDb(db, episode, hookEventName, receiverSession = null) 
 
   // Collect Read file paths tracked by post-tool-use.sh
   // Use rename to atomically collect — prevents losing concurrent appends
-  const readsFile = join(RUNTIME_DIR, `reads-${episode.project || inferProject()}.txt`);
-  const readsCollect = readsFile + `.collect-${Date.now()}`;
+  const readsPath = readsFile(episode.project || inferProject());
+  const readsCollect = readsPath + `.collect-${Date.now()}`;
   let readsHeld = 0;
   if (willPersist) {
     try {
-      renameSync(readsFile, readsCollect);
+      renameSync(readsPath, readsCollect);
       const raw = readFileSync(readsCollect, 'utf8');
       const paths = [...new Set(raw.split('\n').filter(Boolean))];
       episode.filesRead = paths;
@@ -527,7 +542,7 @@ function flushEpisodeWithDb(db, episode, hookEventName, receiverSession = null) 
     // to the final rename. Accepted rather than fixed: the trim only runs above
     // READS_CARRY_MAX_LINES, which no observed session approaches, so the exposure is a
     // path or two in a session that has already read 20000 times.
-    readsHeld = trimReadsFile(readsFile);
+    readsHeld = trimReadsFile(readsPath);
   }
   // planEpisodeFlush now runs BEFORE the collection, so the multi-session branch — the
   // one that builds fresh objects rather than returning [episode] by reference — copied
@@ -581,7 +596,7 @@ function flushEpisodeWithDb(db, episode, hookEventName, receiverSession = null) 
     subs: subs.length,
     writefail,
   });
-  if (writefail) return;
+  if (writefail) return false;
 
   // Flush-time hints, gated exactly as before (isSignificant → anySignificant). v2.33.4:
   // Stop rejects hookSpecificOutput.
@@ -624,6 +639,7 @@ function flushEpisodeWithDb(db, episode, hookEventName, receiverSession = null) 
   try {
     unlinkSync(episodeFile());
   } catch {}
+  return true;
 }
 
 // Save one episode-shaped object: immediate rule-based observation (if
@@ -729,6 +745,22 @@ async function handlePostToolUse() {
   // below branches on the Claude spelling, so translate once, here — lib/tool-names.mjs
   // carries the mapping and the reasoning. Unknown names pass through untouched.
   const toolName = normalizeToolName(tool_name);
+
+  // D9: scripts/post-tool-use.sh records a Read itself and never gets here — except when it
+  // cannot spell the reads file: no host pid and a project directory with non-ASCII
+  // characters, whose name needs Unicode classes bash does not have. Then it hands the Read
+  // on, and it is recorded here under the same name. Owner-only, like the bash writer.
+  if (toolName === 'Read') {
+    const fp = hookData.tool_input?.file_path;
+    if (typeof fp === 'string' && fp && !/[\r\n]/.test(fp)) {
+      try {
+        appendFileSync(readsFile(), `${fp}\n`, { mode: 0o600 });
+      } catch {
+        /* best-effort, like the bash writer */
+      }
+    }
+    return;
+  }
 
   // Skip noise (source of truth: skip-tools.mjs)
   if (SKIP_TOOLS.has(toolName)) return;
@@ -2039,9 +2071,11 @@ function runSessionStartAutoMaintain(db, project) {
           `healed ${deferredHealed} deferred-work rows with dangling references`,
         );
 
-      const { decayed, idleMarked } = decayAndMarkIdle(db, mctx);
+      const { decayed, idleMarked, idleHidden } = decayAndMarkIdle(db, mctx);
       if (decayed > 0) debugLog('DEBUG', 'auto-maintain', `decayed ${decayed} stale observations`);
-      if (idleMarked > 0) debugLog('DEBUG', 'auto-maintain', `marked ${idleMarked} idle as pending-purge`);
+      if (idleHidden > 0) debugLog('DEBUG', 'auto-maintain', `hid ${idleHidden} idle observations`);
+      if (idleMarked > 0)
+        debugLog('DEBUG', 'auto-maintain', `queued ${idleMarked} hidden past the grace for purge`);
 
       const boosted = boostAccessed(db, mctx);
       if (boosted > 0)
@@ -2097,7 +2131,7 @@ function runSessionStartAutoMaintain(db, project) {
         const recent = db
           .prepare(
             `
-          SELECT id, title, importance, created_at_epoch, narrative, text
+          SELECT id, project, title, importance, created_at_epoch, narrative, text
           FROM observations
           WHERE ${liveObsFilterSql('')}
             AND created_at_epoch > ?
@@ -2112,6 +2146,7 @@ function runSessionStartAutoMaintain(db, project) {
           // selection is the shared pure core in lib/maintain-core (unit-tested there).
           const rows = recent.map((r) => ({
             id: r.id,
+            project: r.project,
             title: r.title,
             importance: r.importance,
             body: (r.narrative && r.narrative.trim()) || (r.text && r.text.trim()) || '',
@@ -2712,6 +2747,133 @@ function noteLocalSteeringOnce(project) {
   }
 }
 
+/**
+ * D9: a project whose id (`parent--directory`) is not all ASCII got a new one (project-utils.mjs
+ * projectNameFromDir). Once per project, move what its old id holds for it — everything, when no
+ * stored path shows another directory using the old id; otherwise the rows that provably came
+ * from this directory — and tell the user where the rest are. No-op when the id did not change.
+ */
+function rekeyProjectOnce(db, project) {
+  try {
+    const dir = inferProjectDir();
+    const legacy = legacyProjectNameFromDir(dir);
+    if (legacy === project) return;
+    const marker = join(RUNTIME_DIR, `${PROJECT_REKEY_MARKER_PREFIX}${project}`);
+    if (existsSync(marker)) return;
+    // When no stored path shows another directory using the old id, take all of it — sessions,
+    // summaries, handoffs, deferred items — not only the memories a path proves. A sibling
+    // whose rows carry no path is invisible to that test (see legacyIdIsExclusive).
+    const whole = legacyIdIsExclusive(db, { dir, legacy, project });
+    const r = whole
+      ? moveProjectRows(db, { from: legacy, to: project })
+      : rekeyLegacyProject(db, { dir, project, legacy });
+    const moved = r.moved;
+    const left = r.left ?? 0;
+    writeFileSync(marker, new Date().toISOString(), { mode: 0o600 });
+    // Nothing moved and nothing left behind: the old id was empty (or a sibling took it).
+    if (moved === 0 && left === 0 && !(r.other > 0)) return;
+    const movedLine = whole
+      ? `Moved everything stored under the old id (${moved} ${moved === 1 ? 'memory' : 'memories'}, with its sessions and deferred items): no stored file path showed another directory using it.`
+      : `Moved ${moved} ${moved === 1 ? 'memory' : 'memories'} whose files are in this directory.`;
+    // `left` counts every row still under the old id: another directory's, and rows nothing
+    // attributes to anyone.
+    const rest =
+      left === 0
+        ? ''
+        : left === 1
+          ? " 1 other stays under the old id (another directory's, or nothing shows whose); " +
+            `list it with \`qwen-mem-lite recent 50 --project ${legacy}\`.`
+          : ` ${left} others stay under the old id (another directory's, or nothing shows whose); ` +
+            `list them with \`qwen-mem-lite recent 50 --project ${legacy}\`.`;
+    queueHookSystemMessage(
+      `qwen-mem-lite: this project's memory now has its own id, ${project}. Its old id, ${legacy}, ` +
+        'could be shared with other directories whose names are not plain ASCII. ' +
+        `${movedLine}${rest} Shown once.`,
+    );
+  } catch (e) {
+    debugCatch(e, 'session-start-rekey');
+  }
+}
+
+/**
+ * Flush (or, past STALE_EPISODE_BUFFER_AGE_MS, discard) a buffer a previous session left at
+ * `file`. `episode` is its parsed content, or null when there is none.
+ */
+function flushLeftoverEpisode(file, episode, ccSessionId) {
+  // false only when a flush was attempted and left the buffer for a retry.
+  let stale = false;
+  try {
+    stale = Date.now() - statSync(file).mtimeMs > STALE_EPISODE_BUFFER_AGE_MS;
+  } catch {
+    /* no buffer file — nothing below runs on a null episode */
+  }
+  if (stale) {
+    debugLog(
+      'INFO',
+      'session-start',
+      `discarding stale episode buffer (>${STALE_EPISODE_BUFFER_AGE_MS}ms): ${file}`,
+    );
+    try {
+      unlinkSync(file);
+    } catch {
+      /* best-effort */
+    }
+  } else if (episode && episode.entries && episode.entries.length > 0) {
+    return flushEpisode(episode, 'SessionStart', ccSessionId);
+  }
+  return true;
+}
+
+/**
+ * D14: buffers are per Claude Code process, so the buffer of a process that exited mid-turn
+ * (no Stop) — or the per-project one an older version wrote — is read by nobody. Before D14
+ * the next session in the project flushed it here, and it still does: each is claimed by an
+ * atomic rename (two SessionStarts cannot both take one), flushed under the session id it
+ * carries, and removed. Skipped when this process's own buffer survived its flush above (no
+ * openable DB): an orphan flushed now would fail the same way. Called under the episode lock.
+ */
+function adoptOrphanEpisodes(ccSessionId) {
+  if (existsSync(episodeFile())) return;
+  for (const orphan of orphanEpisodeFiles()) {
+    const claim = `${orphan}.claim-${process.pid}`;
+    try {
+      renameSync(orphan, claim);
+    } catch {
+      continue; // another session claimed it first
+    }
+    let episode = null;
+    try {
+      episode = JSON.parse(readFileSync(claim, 'utf8'));
+    } catch {
+      /* unreadable — dropped with the claim below, as the sweep would */
+    }
+    // Its Read paths travel with it: the flush collects this process's reads file, and the gone
+    // process's would otherwise wait for the 24h sweep.
+    const theirs = orphanReadsFile(orphan);
+    if (theirs !== readsFile()) {
+      try {
+        appendFileSync(readsFile(), readFileSync(theirs, 'utf8'), { mode: 0o600 });
+        unlinkSync(theirs);
+      } catch {
+        /* none recorded */
+      }
+    }
+    if (!flushLeftoverEpisode(claim, episode, ccSessionId)) {
+      try {
+        renameSync(claim, orphan); // not flushed: back where the next SessionStart looks
+      } catch {
+        /* left as crash residue for the 1h sweep */
+      }
+      return;
+    }
+    try {
+      unlinkSync(claim);
+    } catch {
+      /* the stale branch already removed it */
+    }
+  }
+}
+
 async function handleSessionStart() {
   // GC stale per-session cooldown files. Cheap (<5ms typical) and idempotent;
   // moved here from pre-tool-recall.js's hot path.
@@ -2723,6 +2885,16 @@ async function handleSessionStart() {
     sweepStaleProjectMarkers(RUNTIME_DIR);
   } catch {
     /* best-effort */
+  }
+  // D14: one session file per Claude Code process. Only that process's /clear or /compact ever
+  // reads it, so once the process is gone the file is dead weight — reap this project's now
+  // instead of letting one per launch pile up for the 30-day marker GC.
+  for (const f of deadHostFiles(`session-${inferProject()}`)) {
+    try {
+      unlinkSync(f);
+    } catch {
+      /* best-effort */
+    }
   }
   // Bound the opt-in metrics sink, which lives under DB_DIR. Runs even when
   // metrics are disabled, so shards left by a since-toggled-off run still get pruned.
@@ -2839,29 +3011,8 @@ async function handleSessionStart() {
   // an order of magnitude?"), asked at the other end.
   if (acquireLock()) {
     try {
-      let stale = false;
-      try {
-        stale = Date.now() - statSync(episodeFile()).mtimeMs > STALE_EPISODE_BUFFER_AGE_MS;
-      } catch {
-        /* no buffer file — readEpisode() returns null below */
-      }
-      if (stale) {
-        debugLog(
-          'INFO',
-          'session-start',
-          `discarding stale episode buffer (>${STALE_EPISODE_BUFFER_AGE_MS}ms): ${episodeFile()}`,
-        );
-        try {
-          unlinkSync(episodeFile());
-        } catch {
-          /* best-effort */
-        }
-      } else {
-        const prevEpisode = readEpisode();
-        if (prevEpisode && prevEpisode.entries && prevEpisode.entries.length > 0) {
-          flushEpisode(prevEpisode, 'SessionStart', ccSessionId);
-        }
-      }
+      flushLeftoverEpisode(episodeFile(), readEpisode(), ccSessionId);
+      adoptOrphanEpisodes(ccSessionId);
     } finally {
       releaseLock();
     }
@@ -2918,6 +3069,8 @@ async function handleSessionStart() {
 
   try {
     const now = new Date();
+
+    rekeyProjectOnce(db, project);
 
     runSessionStartDbMutations(db, { sessionId, project, prevSessionId, now });
 
@@ -3337,6 +3490,17 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
         /* file may not exist — that's fine */
       }
 
+      // Issue #39: a prompt with no topic by construction (continue / 继续 / ok / a slash
+      // command / git push / "why did you stop") searches nothing on this face — the shape
+      // rules path A's shouldSkip has applied since v2.43, from the one shared definition.
+      // HERE and not earlier: both marker reads above must still run, because
+      // touchKeyContextMarker's stamp is what keeps the Key Context exclude-set alive
+      // ("24h with no prompt in this session"), and a shape prompt is still a prompt. Every
+      // leg below is query-conditioned (imperative pick, meter arm B, both arms, the meter
+      // row), so one return covers all of them. The handoff injection, which ANSWERS
+      // continuation prompts, ran before this function and is untouched.
+      if (isNoTopicShape(promptText)) return;
+
       // Phase-2 task-imperative (EXPERIMENTAL, default OFF — QWEN_MEM_TASK_IMPERATIVE):
       // the single highest-value lesson relevant to THIS prompt, delivered at the prompt
       // position under an imperative template. Excluded from the <memory-context> list so it
@@ -3430,7 +3594,11 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
         // let it call the uncapped sanitizeFtsQuery. Measured here: a 250KB CJK prompt
         // (path B's stdin cap is 256KB) costs 356ms uncapped against 5.5ms capped, all of
         // it synchronous, before the model sees the turn.
-        const events = searchInjectableEvents(db, { ftsQuery: upsFtsQuery(promptText), project });
+        // The observation arm's own length floor, shared rather than copied: this leg had
+        // none, so a prompt of `1` reached the events search (issue #39).
+        const events = meetsRecallLengthFloor(promptText)
+          ? searchInjectableEvents(db, { ftsQuery: upsFtsQuery(promptText), project })
+          : [];
         if (events.length > 0) {
           const elines = ['<memory-context relevance="events">'];
           for (const e of events) elines.push(`- ${renderInjectableEvent(e)}`);

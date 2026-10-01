@@ -69,6 +69,15 @@ import { resolveDataDir } from './lib/resolve-data-dir.mjs';
 export const COMPRESSED_AUTO = -1;
 /** compressed_into sentinel: pending user-confirmed purge (marked by idle cleanup) */
 export const COMPRESSED_PENDING_PURGE = -2;
+/**
+ * SQL clause: this row is not the KEEPER of a compression group. Every writer of the two
+ * sentinels above carries it. Auto-compress backdates a weekly summary to its members' median
+ * time, so the age-based hide passes reached it within two runs — and hiding a keeper hides
+ * every member compressed into it, so the week went unsearchable (E2E round 2026-09-29).
+ * Non-correlated on purpose: SQLite materializes the list once instead of scanning per row.
+ */
+export const NOT_COMPRESSION_KEEPER_SQL =
+  'id NOT IN (SELECT compressed_into FROM observations WHERE compressed_into > 0)';
 
 // ─── Path Safety ──────────────────────────────────────────────────────────
 
@@ -361,7 +370,10 @@ function scrubTruncate(str, max, window = DESC_SCRUB_WINDOW) {
 // window, which cannot see a span that crosses its edge, and pairing the markers per window
 // stored span text two ways in the v6.19.0 pre-tag review (a cut inside a closed `<private>`, a
 // key with no END more than 4096 characters back).
-const PRIVATE_TAG_HINT_RE = /<\/?private>/i;
+// Any `<private` or `</private` followed by whitespace or `>`: the tag grammar
+// lib/private-strip.mjs accepts, attributes included (D13), and a little more. Broader only costs
+// a shorter description; narrower showed an unclosed `<private reason="…">`'s content in the tail.
+const PRIVATE_TAG_HINT_RE = /<\/?private[\s>]/i;
 const HEAD_ONLY_MAX = 60;
 // The tail window is scrubbed with TAIL_CONTEXT characters before it, which are then dropped: a
 // label cut by the window's edge (`pass|word: <value>`) is seen whole, so its value is not left

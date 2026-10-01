@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // qwen-mem-lite Installer — Smart install/uninstall/status/doctor
 
+import { OUR_MCP_SERVER_RE, isOurMcpRegistration } from './lib/mcp-ownership.mjs';
 import { execSync, execFileSync } from 'child_process';
 import {
   readFileSync,
@@ -16,6 +17,8 @@ import {
   readdirSync,
   statSync,
   lstatSync,
+  accessSync,
+  constants as fsConstants,
 } from 'fs';
 import { join, resolve, dirname, basename, sep } from 'path';
 import { homedir, tmpdir } from 'os';
@@ -94,10 +97,11 @@ import {
 import { detectInstallShape, probeRuntimeRoots, hasAnyManagedCode } from './lib/install-shape.mjs';
 import { probeSchemaCompat, schemaSkewRemedy } from './lib/schema-skew.mjs';
 import { clearNativeBindingBreakage, readNativeBindingBreakage } from './lib/native-binding-hint.mjs';
-import { sweepStaleTestFixtures } from './lib/tmp-fixture-sweep.mjs';
 import { acquireLock } from './lib/proc-lock.mjs';
 import { atomicWriteFileSync } from './lib/atomic-write.mjs';
-import { isMemHook, launcherEntryPath } from './lib/hook-prune.mjs';
+import { shellWord } from './cli-path.mjs';
+import { claudeStatePath } from './lib/data-paths.mjs';
+import { isMemHook, isMemHookCommand, stripMemHooks, launcherEntryPath } from './lib/hook-prune.mjs';
 
 // Re-export for backward compatibility — tests/install-hook-scripts.test.mjs
 // and any external consumers still import HOOK_SCRIPT_FILES from install.mjs.
@@ -621,6 +625,31 @@ function createCliSymlink() {
   }
 }
 
+// Ownership of a user-scope `mem` registration lives in lib/mcp-ownership.mjs (shared with
+// hook-update.mjs); re-exported here for the callers and tests that import it from install.mjs.
+export { OUR_MCP_SERVER_RE, isOurMcpRegistration };
+
+/**
+ * User-scope names install/uninstall may remove: `mem-lite`, plus `mem` when its entry in
+ * Claude Code's state file runs our server. An unreadable file keeps `mem` off the list —
+ * a leftover legacy registration costs a duplicate tool prefix, a wrong removal costs the
+ * user's server. `foreignMem` reports a `mem` that was left alone, so the caller can say so.
+ */
+function ownedUserMcpNames() {
+  let entry;
+  try {
+    entry = JSON.parse(readFileSync(claudeStatePath(), 'utf8'))?.mcpServers?.mem;
+  } catch {
+    entry = undefined;
+  }
+  const memIsOurs = isOurMcpRegistration('mem', entry);
+  return { names: memIsOurs ? ['mem', 'mem-lite'] : ['mem-lite'], foreignMem: !!entry && !memIsOurs };
+}
+
+function noteForeignMem(foreignMem) {
+  if (foreignMem) log('User-scope MCP "mem" left in place — it does not run qwen-mem-lite.');
+}
+
 /**
  * Which of our MCP names a PROJECT-scoped `.mcp.json` in `cwd` registers.
  *
@@ -698,8 +727,10 @@ function registerMcpServer() {
 
   if (pluginHandlesMcp) {
     log('MCP server: plugin system handles registration (skipping global)');
-    // Clean up stale global registrations (both legacy "mem" and current "mem-lite")
-    for (const name of ['mem', 'mem-lite']) {
+    // Clean up stale global registrations (current "mem-lite", legacy "mem" when ours)
+    const owned = ownedUserMcpNames();
+    noteForeignMem(owned.foreignMem);
+    for (const name of owned.names) {
       try {
         execFileSync('claude', ['mcp', 'remove', '-s', 'user', name], { stdio: 'pipe' });
         ok(`Removed stale global MCP "${name}"`);
@@ -711,7 +742,9 @@ function registerMcpServer() {
       // Purge legacy "mem" and any pre-existing "mem-lite" from OUR scope before
       // re-registering. User scope only — see projectScopedMemRegistrations for why the
       // project-scope removal that used to sit here was a bug, not a cleanup.
-      for (const name of ['mem', 'mem-lite']) {
+      const owned = ownedUserMcpNames();
+      noteForeignMem(owned.foreignMem);
+      for (const name of owned.names) {
         try {
           execFileSync('claude', ['mcp', 'remove', '-s', 'user', name], { stdio: 'pipe' });
         } catch {}
@@ -1090,9 +1123,8 @@ function configureHooks() {
   };
 
   for (const [event, configs] of Object.entries(hookConfigs)) {
-    const existing = Array.isArray(settings.hooks[event])
-      ? settings.hooks[event].filter((cfg) => !isMemHook(cfg))
-      : [];
+    // Per entry (stripMemHooks), so a hook the user added under one of our matchers stays.
+    const existing = Array.isArray(settings.hooks[event]) ? stripMemHooks(settings.hooks[event]).kept : [];
     settings.hooks[event] = [...existing, ...configs];
   }
 
@@ -1219,6 +1251,11 @@ function offerCleanOldVectorDb() {
 
 async function install() {
   console.log('\nqwen-mem-lite installer\n');
+  // Refuse an unparseable settings.json BEFORE the first side effect (throws
+  // SettingsUnparseableError, reported by main). configureHooks read it only after files
+  // were copied, npm had run and the MCP server was registered — then printed "nothing was
+  // written" over a half-done install. uninstall below does the same for the same reason.
+  readSettings();
 
   // 1. Install source files to ~/.qwen-mem-lite/
   const IS_DEV = flags.has('--dev');
@@ -1248,12 +1285,15 @@ async function install() {
 
 async function uninstall() {
   console.log('\nqwen-mem-lite uninstaller\n');
+  readSettings(); // before any side effect — see install()
 
   // 1. Remove MCP (legacy hook-based install).
   // Try both the legacy "mem" (pre-v2.78) and current "mem-lite" names so a user
   // who installed in either era ends up clean.
   let removedAny = false;
-  for (const name of ['mem', 'mem-lite']) {
+  const owned = ownedUserMcpNames();
+  noteForeignMem(owned.foreignMem);
+  for (const name of owned.names) {
     try {
       execFileSync('claude', ['mcp', 'remove', '-s', 'user', name], { stdio: 'pipe' });
       ok(`MCP server removed: ${name}`);
@@ -1277,13 +1317,20 @@ async function uninstall() {
   // 2b. Uninstall does NOT auto-unadopt — an adopted project may be in active use
   // in other Claude Code sessions, and adoption lives in EACH project's own
   // CLAUDE.md. `unadopt --all` now strips every block across the projects Claude
-  // Code knows about (~/.claude.json), so point at it — but note the timing: a
-  // --purge run removes the CLI symlink, so this is best done BEFORE uninstall.
+  // Code knows about (~/.claude.json), so point at it — with a command that still RUNS: this
+  // line prints after step 1b removed the CLI link, and it used to say "best done BEFORE
+  // uninstall, while the CLI is still on PATH". A non-purge uninstall keeps the code, so
+  // name its cli.mjs; with --purge (or no copy install) only npx is left.
+  const keptCli = join(INSTALL_DIR, 'cli.mjs');
+  const unadoptCmd =
+    !flags.has('--purge') && existsSync(keptCli)
+      ? `node ${shellWord(keptCli)} unadopt --all`
+      : 'npx qwen-mem-lite unadopt --all';
   log('Invited-memory: project adoption left in place (each adopted project keeps its');
   log('  CLAUDE.md managed block + .claude/plugin_qwen_mem_lite.md). To remove it from');
-  log('  every known project, run `qwen-mem-lite unadopt --all` — best done BEFORE');
-  log('  uninstall, while the CLI is still on PATH. A project Claude Code never opened');
-  log('  is not in the known list — run `qwen-mem-lite unadopt` from inside it.');
+  log(`  every known project: ${unadoptCmd}`);
+  log('  A project Claude Code never opened is not in the known list — run unadopt from');
+  log('  inside it.');
 
   // 3. Clean plugin registry entries conservatively (avoid deleting other plugins
   // from the same marketplace publisher)
@@ -1482,6 +1529,25 @@ async function cleanupHooks() {
     ok(`Removed ${removed} qwen-mem-lite hook configuration${removed === 1 ? '' : 's'} from settings.json`);
   } else {
     ok('No qwen-mem-lite hooks found in settings.json');
+  }
+
+  // With the plugin enabled, a direct `install` empties the plugin's hooks.json (the dedup in
+  // dedupePluginCacheAndHooks), so the settings.json entries just removed were the only
+  // registration: capture stopped with "Removed N" as the last word. Same check and repair
+  // status/doctor print; this is the moment it happens.
+  if (removed > 0 && settings.enabledPlugins?.[PLUGIN_KEY] === true) {
+    const shape = detectInstallShape({ home: homedir(), projectDir: PROJECT_DIR, installDir: INSTALL_DIR });
+    const root = shape.activePluginVersion?.root;
+    if (root && !pluginCacheHookEvents(root).ok) {
+      warn(
+        `The enabled plugin's hooks/hooks.json registers none — every hook is now unregistered (an earlier ` +
+          `direct install emptied it to avoid duplicates). Repair: ` +
+          hookManifestRepairHint(
+            root,
+            join(homedir(), '.claude', 'plugins', 'marketplaces', MARKETPLACE_KEY),
+          ),
+      );
+    }
   }
 
   console.log('');
@@ -1837,6 +1903,15 @@ async function doctor() {
     ok(`Node.js: ${nodeVer} (>=${nodeFloor} required)`);
   } else {
     fail(`Node.js ${nodeVer} too old (need >=${nodeFloor})`);
+    issues++;
+  }
+
+  const dataDirDenied = dataDirAccessError();
+  if (dataDirDenied) {
+    fail(
+      `Data directory: ${MEM_DATA_DIR} is not accessible (${dataDirDenied}) — the checks below ` +
+        `read it as missing. Fix: ${dataDirAccessRemedy()}`,
+    );
     issues++;
   }
 
@@ -2785,6 +2860,8 @@ export function collectOrphanHookPaths(settings, installDir = INSTALL_DIR) {
     for (const cfg of configs) {
       if (!isMemHook(cfg)) continue;
       for (const h of cfg.hooks || []) {
+        // A user's own entry inside one of our groups is not ours to call an orphan.
+        if (!isMemHookCommand(h?.command)) continue;
         const cmd = h.command || '';
         if (cmd.includes('${CLAUDE_PLUGIN_ROOT}')) continue;
         // The launcher's entry argument, which is unquoted and so invisible to the
@@ -2906,8 +2983,8 @@ function cleanupMemHooksFromSettings(settings) {
   let removed = 0;
   for (const [event, configs] of Object.entries(settings.hooks)) {
     if (!Array.isArray(configs)) continue;
-    const kept = configs.filter((cfg) => !isMemHook(cfg));
-    removed += configs.length - kept.length;
+    const { kept, removed: n } = stripMemHooks(configs);
+    removed += n;
     if (kept.length > 0) settings.hooks[event] = kept;
     else delete settings.hooks[event];
   }
@@ -3090,16 +3167,11 @@ function cleanup() {
     }
   }
 
-  // Reap leaked test-fixture sandboxes from temp (mem-e2e-* / mem-audit-* / cite-*
-  // etc.) left by interrupted vitest runs — the §8.V4 disposal gap the audit found
-  // (~795MB). 24h age here (vs 1h in the test reaper) is conservative for a manual
-  // cleanup. Scans os.tmpdir(), the Claude Code temp root and ~/.cache/tmp (where
-  // `npm test` points TMPDIR, off the RAM-backed /tmp), depth-1, mem-prefixes
-  // only — never touches other tools' temp dirs.
-  const fixtureRoots = [tmpdir(), join(homedir(), '.claude', 'tmp'), join(homedir(), '.cache', 'tmp')];
-  const swept = sweepStaleTestFixtures({ dirs: fixtureRoots, ageMs: 24 * 60 * 60 * 1000, dryRun });
-  for (const p of swept.names) ok(`${dryRun ? 'Would remove' : 'Removed'}: ${p}`);
-  removed += swept.removed;
+  // No test-fixture sweep here. This used to reap `mem-*` / `cite-*` / `adopt-*` dirs from
+  // os.tmpdir(), ~/.claude/tmp and ~/.cache/tmp — this repo's fixture prefixes, and generic
+  // enough that it deleted other programs' temp dirs (`mem-profiler-snapshots/`) for users
+  // doctor had sent here. Leaked fixtures are the test suite's to reap, and it does, at the
+  // start of every run (tests/global-setup.mjs → lib/tmp-fixture-sweep.mjs).
 
   const verb = dryRun ? 'would be removed' : 'removed';
   console.log(`\n  ${removed === 0 ? 'No stale files found.' : `${removed} stale file(s) ${verb}.`}\n`);
@@ -3228,7 +3300,10 @@ async function repair() {
     console.log('');
     console.log(`  ${MANUAL_TARBALL_FALLBACK}`);
     console.log('');
-    process.exit(1);
+    // exitCode, not process.exit(1): exiting here skipped the finally below, so every failed
+    // repair — hook-launcher runs one unattended after ERR_MODULE_NOT_FOUND — left its
+    // staging dir (and any downloaded tarball) in the temp dir.
+    process.exitCode = 1;
   } finally {
     try {
       rmSync(stagingDir, { recursive: true, force: true });
@@ -3434,7 +3509,34 @@ async function rebuildBinding() {
 // lock — locking the parent too would deadlock. A live peer (another session's
 // install/self-heal) holds it → skip rather than race into a torn install. Lock
 // path is shared with hook-update.installExtractedRelease (both env-aware).
+/**
+ * The data dir exists but this user cannot enter it (chmod 000, root-owned after a `sudo`
+ * run). Every existsSync under it then answers false, so doctor reported an intact database
+ * as "not found" and the code as "missing", and install read acquireLock's null — which it
+ * returns for a permission error and a live peer alike — as "Another install/repair is in
+ * progress" and exited 0. Returns the error code, or null when accessible or absent.
+ */
+function dataDirAccessError(dir = MEM_DATA_DIR) {
+  try {
+    accessSync(dir, fsConstants.R_OK | fsConstants.W_OK | fsConstants.X_OK);
+    return null;
+  } catch (e) {
+    return e.code === 'ENOENT' ? null : e.code || 'EACCES';
+  }
+}
+
+const dataDirAccessRemedy = () =>
+  `chmod u+rwx ${shellWord(MEM_DATA_DIR)} (or chown it back to your user if a sudo run created it)`;
+
 async function runLockedInstall() {
+  const denied = dataDirAccessError();
+  if (denied) {
+    console.error(
+      `[install] ${MEM_DATA_DIR} is not accessible (${denied}) — nothing was done. Fix: ${dataDirAccessRemedy()}`,
+    );
+    process.exitCode = 1;
+    return;
+  }
   const release = acquireLock(join(MEM_DATA_DIR, 'runtime', 'install.lock')); // runtime-dir:stays-put — install lock serialises real installers
   if (!release) {
     console.log('[install] Another install/repair is in progress — skipping to avoid a torn write.');
@@ -3447,9 +3549,61 @@ async function runLockedInstall() {
   }
 }
 
+/**
+ * The flags each install-family command reads — the whole of what `flags.has()` asks for.
+ *
+ * Every other flag used to be dropped in silence, so `uninstall --dry-run` and
+ * `uninstall --help` UNINSTALLED (MCP registration, CLI symlink, every hook) and
+ * `install --help` installed; `cleanup` honours `--dry-run`, which is why a user expects its
+ * siblings to. main() now prints usage for `--help` / `-h` and refuses an unknown flag on a
+ * command that writes. The two read-only commands only report it, the query CLI's
+ * "Unknown flag … ignored" rule. `--skip-repos` is inert and accepted: the test suite and
+ * older notes pass it to `install`.
+ */
+export const INSTALL_COMMAND_FLAGS = {
+  install: ['--dev', '--no-adopt', '--skip-repos'],
+  uninstall: ['--purge'],
+  status: ['--json'],
+  doctor: ['--json'],
+  cleanup: ['--dry-run'],
+  'cleanup-hooks': [],
+  'self-update': [],
+  update: [],
+  repair: [],
+  'rebuild-binding': [],
+  release: ['--no-lock'],
+};
+const READ_ONLY_INSTALL_COMMANDS = new Set(['status', 'doctor']);
+
+/** @returns {boolean} true when the command must not run */
+function rejectFlags(cmd, args) {
+  const known = INSTALL_COMMAND_FLAGS[cmd];
+  if (!known) return false;
+  // `--` is POSIX end-of-options, which `doctor --` has always accepted.
+  const given = args.filter((a) => a !== '--');
+  if (given.includes('--help') || given.includes('-h')) {
+    printUsage();
+    return true;
+  }
+  const unknown = given.filter((a) => !known.includes(a));
+  if (unknown.length === 0) return false;
+  const accepted = known.length ? `accepted: ${known.join(' ')}` : 'it takes no flags';
+  if (READ_ONLY_INSTALL_COMMANDS.has(cmd)) {
+    console.error(`[install] Unknown flag ${unknown.join(', ')} — ignored, it had no effect (${accepted}).`);
+    return false;
+  }
+  console.error(
+    `[install] Unknown flag ${unknown.join(', ')} for "${cmd}" — nothing was done (${accepted}; ` +
+      `--help prints usage).`,
+  );
+  process.exitCode = 1;
+  return true;
+}
+
 export async function main(argv = process.argv.slice(2)) {
   cmd = argv[0];
   flags = new Set(argv.slice(1));
+  if (rejectFlags(cmd, argv.slice(1))) return;
 
   try {
     return await dispatch(cmd);
@@ -3513,8 +3667,14 @@ async function dispatch(cmd) {
           console.error(`[install] Unknown command: "${cmd}"`);
           process.exitCode = 1;
         }
-        console.log(`
-qwen-mem-lite - Lightweight memory system for Qwen Code and Claude Code
+        printUsage();
+      }
+  }
+}
+
+function printUsage() {
+  console.log(`
+qwen-mem-lite — Lightweight memory system for Qwen Code and Claude Code
 
 Usage:
   node install.mjs install            Install (copy files to ~/.qwen-mem-lite/)
@@ -3532,8 +3692,6 @@ Usage:
 
   npx github:thenewnano/qwen-mem-lite                 Install via npx (one-liner)
 `);
-      }
-  }
 }
 
 const IS_MAIN = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
