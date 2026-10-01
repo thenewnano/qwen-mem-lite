@@ -2,6 +2,17 @@
 
 All notable changes to qwen-mem-lite are documented in this file.
 
+## v7.1.1 - production-dependency audit fix
+
+Patches two moderate advisories in transitive production dependencies (`fast-uri`, `ip-address`)
+that were failing the `npm audit --omit=dev` gate both `ci.yml` and `publish.yml` run. No code
+change and no behaviour change; `npm audit --omit=dev` is back to 0 vulnerabilities.
+
+**v7.1.0 was tagged but its release workflow stopped at the security-audit step**, so no
+release object, no assets and no npm artifact exist for it. The tag stays where it is rather
+than being moved - the red run is part of the history. v7.1.1 is v7.1.0's content plus this
+fix; the v7.1.0 entry below is unchanged.
+
 ## v7.1.0 - synced with upstream through v6.21.0
 
 The fork now carries everything upstream shipped between v6.12.0 and v6.21.0, ported in two
