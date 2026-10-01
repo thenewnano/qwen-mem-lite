@@ -12,4 +12,4 @@ sha` the next port starts from.
 
 | date | upstream range | tier(s) | status | record |
 |---|---|---|---|---|
-| - | base `6e5439c` (v6.11.0); nothing ported yet | - | open | - |
+| 2026-09-30 | `6e5439c`..`6ff7bb9` (249 commits, v6.12.0-v6.20.0) | 1+2+3 | merged to branch, in review | [2026-09-30-v6.20.0-sync.md](2026-09-30-v6.20.0-sync.md) |

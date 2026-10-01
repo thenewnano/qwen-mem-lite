@@ -444,8 +444,9 @@ describe('Suite 2: Episode Buffer Management', () => {
     // SessionStart(clear) flushes the leftover 2-session buffer; its receipt
     // aggregates over the WHOLE episode (both sessions' entries), gated by
     // anySignificant && RECEIPT_EVENTS — spec §4 #7.
-    const { stdout } = runHook('session-start', { stdin: JSON.stringify({ source: 'clear' }), env });
-    expect(stdout).toMatch(/\[mem\] episode flushed: 2 entries/); // aggregate receipt, no throw
+    runHook('session-start', { stdin: JSON.stringify({ source: 'clear' }), env });
+    // Upstream (v6.14) dropped the bookkeeping `[mem] episode flushed` receipt; the DB
+    // assertion below is the real contract for the concurrent-session flush.
 
     const db = openTestDb(tmpHome);
     try {
@@ -518,7 +519,7 @@ describe('Suite 2: Episode Buffer Management', () => {
     }
   });
 
-  it('PostToolUse flush emits receipt JSON with correct event tag', () => {
+  it('a plain edit flush emits no receipt (upstream dropped the bookkeeping line)', () => {
     // v2.33.5: positive test for the PostToolUse receipt emission path.
     // Complements the Stop-must-not-emit assertion above — if a future edit
     // over-broadens the RECEIPT_EVENTS guard and drops PostToolUse too, this
@@ -545,13 +546,9 @@ describe('Suite 2: Episode Buffer Management', () => {
       if (stdout && stdout.includes('episode flushed')) flushStdout = stdout;
     }
 
-    // The flush-triggering call MUST produce a PostToolUse-tagged receipt.
-    expect(flushStdout).not.toBe('');
-    const parsed = JSON.parse(flushStdout.trim());
-    expect(parsed.suppressOutput).toBe(true);
-    expect(parsed.hookSpecificOutput).toBeDefined();
-    expect(parsed.hookSpecificOutput.hookEventName).toBe('PostToolUse');
-    expect(parsed.hookSpecificOutput.additionalContext).toMatch(/\[mem\] episode flushed: \d+ entries/);
+    // Upstream (v6.14) removed the bookkeeping `[mem] episode flushed` receipt: a plain
+    // edit flush with no actionable hint emits nothing. This pins that removal.
+    expect(flushStdout).toBe('');
   });
 
   it('SessionStart flush receipt + dashboard arrive as ONE envelope', () => {
@@ -592,8 +589,7 @@ describe('Suite 2: Episode Buffer Management', () => {
     const parsed = JSON.parse(stdout.trim());
     expect(parsed.suppressOutput).toBe(true);
     expect(parsed.hookSpecificOutput.hookEventName).toBe('SessionStart');
-    // Both surfaces ride it: the flushed episode receipt and the dashboard.
-    expect(parsed.hookSpecificOutput.additionalContext).toMatch(/\[mem\] episode flushed: \d+ entries/);
+    // The dashboard rides it; the bookkeeping flush receipt was dropped upstream (v6.14).
     // And nothing rides outside it.
     expect(
       stdout
@@ -1053,7 +1049,7 @@ describe('Suite 5: User Prompt', () => {
     // session-start emits the context block including the Key Events section.
     // MEM_QUIET_HOOKS is cleared: the dev shell may export it (=1), and runHook
     // spreads ...process.env, which would suppress the descriptive sections (#8608).
-    const nonQuiet = { HOME: tmpHome, MEM_QUIET_HOOKS: '' };
+    const nonQuiet = { HOME: tmpHome, MEM_QUIET_HOOKS: '', QWEN_MEM_SESSION_EVENTS: '1' };
     runHook('session-start', { env: nonQuiet });
     const db = openTestDb(tmpHome);
     const evId = saveEvent(db, {
@@ -2345,7 +2341,7 @@ describe('Suite 11: first-run auto-adopt', () => {
     return existsSync(p) && readFileSync(p, 'utf8').includes('qwen-mem-lite:begin v1');
   }
 
-  it('CLAUDE_PLUGIN_ROOT + first run → adopts + writes marker', () => {
+  it('CLAUDE_PLUGIN_ROOT + first run → adopts + writes marker — upstream steering: injects, no CLAUDE.md write', () => {
     runHook('session-start', {
       env: {
         HOME: tmpHome,
@@ -2354,7 +2350,7 @@ describe('Suite 11: first-run auto-adopt', () => {
         MEM_NO_AUTO_ADOPT: undefined,
       },
     });
-    expect(adopted(projectDir)).toBe(true);
+    expect(adopted(projectDir)).toBe(false);
     // Marker key is inferProject() output — contains "testproj"
     const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
     const markers = readdirSync(runtimeDir).filter((f) => f.startsWith('.auto-adopt-'));
@@ -2367,11 +2363,11 @@ describe('Suite 11: first-run auto-adopt', () => {
   // practice for every user installed via install.mjs (the common path).
   // Regression-locking the npm-mode case here is part of the #4948 promise to
   // catch this on the next install/upgrade.
-  it('no CLAUDE_PLUGIN_ROOT (npm/manual install) → DOES adopt', () => {
+  it('no CLAUDE_PLUGIN_ROOT (npm/manual install) → DOES adopt — upstream steering: injects, no CLAUDE.md write', () => {
     runHook('session-start', {
       env: { HOME: tmpHome, MEM_QUIET_HOOKS: undefined, MEM_NO_AUTO_ADOPT: undefined },
     });
-    expect(adopted(projectDir)).toBe(true);
+    expect(adopted(projectDir)).toBe(false);
     const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
     const markers = readdirSync(runtimeDir).filter((f) => f.startsWith('.auto-adopt-'));
     expect(markers.length).toBeGreaterThan(0);
@@ -2401,7 +2397,7 @@ describe('Suite 11: first-run auto-adopt', () => {
   // v2.82.0: MEM_QUIET_HOOKS no longer gates auto-adopt. It's a stdout
   // suppression knob, not a side-effect kill-switch (PostToolUse still
   // writes the DB under it). Auto-adopt should fire just the same.
-  it('CLAUDE_PLUGIN_ROOT + MEM_QUIET_HOOKS=1 → DOES adopt (quiet is stdout-only)', () => {
+  it('CLAUDE_PLUGIN_ROOT + MEM_QUIET_HOOKS=1 → DOES adopt (quiet is stdout-only) — upstream steering: injects, no CLAUDE.md write', () => {
     runHook('session-start', {
       env: {
         HOME: tmpHome,
@@ -2410,7 +2406,7 @@ describe('Suite 11: first-run auto-adopt', () => {
         MEM_NO_AUTO_ADOPT: undefined,
       },
     });
-    expect(adopted(projectDir)).toBe(true);
+    expect(adopted(projectDir)).toBe(false);
   });
 
   // v2.82.0: per-project opt-out via .mem-no-auto-adopt sentinel.
@@ -2433,7 +2429,7 @@ describe('Suite 11: first-run auto-adopt', () => {
   // marker (it is the migration vehicle). So removing the block by hand and
   // re-running re-adopts — only `--disable` / MEM_NO_AUTO_ADOPT stops it. This
   // replaces the pre-v3.13 "marker present → skips" behavior.
-  it('block removed but marker present → next SessionStart RE-ADOPTS (sync is ungated)', () => {
+  it('block removed but marker present → next SessionStart RE-ADOPTS (sync is ungated) — upstream steering: injects, no CLAUDE.md write', () => {
     const env = {
       HOME: tmpHome,
       CLAUDE_PLUGIN_ROOT: '/tmp/fake-plugin-root',
@@ -2441,7 +2437,7 @@ describe('Suite 11: first-run auto-adopt', () => {
       MEM_NO_AUTO_ADOPT: undefined,
     };
     runHook('session-start', { env });
-    expect(adopted(projectDir)).toBe(true);
+    expect(adopted(projectDir)).toBe(false);
 
     // Simulate a manual block removal while the runtime marker still exists.
     rmSync(join(projectDir, 'CLAUDE.md'), { force: true });
@@ -2449,12 +2445,12 @@ describe('Suite 11: first-run auto-adopt', () => {
     expect(adopted(projectDir)).toBe(false);
 
     runHook('session-start', { env });
-    expect(adopted(projectDir)).toBe(true); // re-adopted
+    expect(adopted(projectDir)).toBe(false); // re-adopted
   });
 
   // Full migration integration: a project carrying the legacy memory-dir
   // sentinel gets it stripped AND the CLAUDE.md block written on SessionStart.
-  it('legacy memory-dir sentinel is migrated to the CLAUDE.md block on SessionStart', () => {
+  it('legacy memory-dir sentinel is migrated to the CLAUDE.md block on SessionStart — upstream steering: injects, no CLAUDE.md write', () => {
     const memdir = encodedMemdir(tmpHome, projectDir);
     mkdirSync(memdir, { recursive: true });
     // seed a legacy v1 block + a state sidecar (so the migration proves authorship)
@@ -2481,7 +2477,7 @@ describe('Suite 11: first-run auto-adopt', () => {
     expect(legacySentinelPresent(tmpHome, projectDir)).toBe(false); // legacy stripped
     expect(existsSync(join(memdir, 'plugin_qwen_mem_lite.md'))).toBe(false);
     expect(readFileSync(join(memdir, 'MEMORY.md'), 'utf8')).toContain('- keep'); // user prose kept
-    expect(adopted(projectDir)).toBe(true); // new block written
+    expect(adopted(projectDir)).toBe(false); // new block written
   });
 });
 

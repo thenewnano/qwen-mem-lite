@@ -30,6 +30,7 @@ import {
 } from './lib/schema-skew.mjs';
 import { isDbUnusableError, DB_UNUSABLE_MARKER_PREFIX } from './lib/db-unusable.mjs';
 import { shouldRecordOnce } from './lib/record-once.mjs';
+import { hookSessionId } from './lib/provenance.mjs';
 // Audit 2026-09-05 P1-2 (carried from 2026-09-02 P2-9): `callLLM`, the quiet/adoption
 // predicates and the handoff constants moved into `lib/` because two lib modules
 // imported them from here and dragged this file's whole import graph — haiku-client,
@@ -260,6 +261,10 @@ export const GC_PROJECT_MARKER_PREFIXES = Object.freeze([
 // observations is far past the point where flushing them would mis-date them.
 export const GC_PRESERVED_MARKER_PREFIXES = Object.freeze([
   '.auto-adopt-',
+  // §9-A follow-up: the one-time "run /adopt" offer to the user. Deleting it would re-offer.
+  '.adopt-offered-',
+  // r3: the one-time note that CLAUDE.local.md was written. Deleting it would repeat the note.
+  '.local-steering-noted-',
   '.deferred-block-migrated-',
   '.legacy-claude-md-cleaned-',
   // v3.66.1: these two shipped in the GC list for one release and had to come
@@ -385,7 +390,7 @@ export function getSessionId() {
 
 export function createSessionId() {
   const project = inferProject();
-  const id = `hook-${project}-${randomUUID().slice(0, 8)}`;
+  const id = hookSessionId(project, randomUUID().slice(0, 8));
   const file = sessionFile();
   const tmp = file + `.tmp-${process.pid}`;
   writeFileSync(tmp, JSON.stringify({ id, startedAt: Date.now(), project }), { mode: 0o600 });

@@ -1008,6 +1008,12 @@ benchmark and A/B harness are calibrated against — changing them invalidates t
 | `QWEN_MEM_AUTO_DEEP_CLI` | `0` disables the same auto-escalation on the CLI path only. | _(auto)_ |
 | `QWEN_MEM_SCOPE_FILTER` | `1` stops environment-scoped observations from firing on file-triggered recall. They stay reachable via search. **Leave it off**: on the face it gates, `environment` is not the low-relevance class its premise assumes — it cites at least as well as `project` (47.5% vs 44.3%, intervals overlapping), and an earlier measurement left 173 recall groups empty with it on. | _(off)_ |
 | `QWEN_MEM_READS_CARRY` | An episode flush collects `reads-<project>.txt` only when it will actually save an observation, so a flush that records nothing no longer discards the Read paths it swept up (42.2% of the paths a flush consumed, measured over 1122 transcripts). `0` restores the pre-v3.83.0 behaviour. | _(on)_ |
+| `QWEN_MEM_EPISODE_INPUT_FILTER` | `off` restores the unfiltered summarizer input, including subagent calls (the D#69 capture filter drops a subagent's own reads/edits). | _(on)_ |
+| `QWEN_MEM_LESSON_GROUNDING` | `0` stops requiring a summarizer lesson to quote the episode window; ungrounded lessons are dropped instead. | _(on)_ |
+| `QWEN_MEM_LESSON_OUTPUT_CAP` | Character cap on a lesson the summarizer may keep. | _(default)_ |
+| `QWEN_MEM_RECALL_FRAMING` | `0` pins the quiet recall framing line; by default the framing line A/Bs once per session. | _(A/B)_ |
+| `QWEN_MEM_SESSION_EVENTS` | `1` (or `on`) restores the SessionStart `### Key Events` section — opt-in since upstream v6.13, which measured it accurate at 2/30. | _(off)_ |
+| `QWEN_MEM_SUMMARY_TAIL` | How many trailing lines of the final reply the fast (non-LLM) summary keeps. | _(default)_ |
 
 ### Citation tracking and feedback
 

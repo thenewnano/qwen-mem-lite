@@ -18,6 +18,7 @@ import {
   loadCiteBackForEpisode,
   extractCiteBackSignals,
   buildUnsavedBugfixHint,
+  claimBugfixNudge,
   countUnsavedBugfixShape,
   buildCiteRecallNudge,
   nextCiteLowStreak,
@@ -46,6 +47,15 @@ describe('buildCiteBackHint', () => {
     expect(hint).toContain('foo.mjs');
     expect(hint).toContain('#8447');
     expect(hint).toContain('/lesson --file');
+  });
+
+  // lessonIds mixes obs and event ids; the hint printed every one as a bare `#N`, which
+  // names an OBSERVATION. obsIds (D#78) says which is which.
+  it('keeps the E# namespace for event ids and the bare # for observation ids', () => {
+    const cooldown = { '/p/foo.mjs': { ts: Date.now(), lessonIds: [8447, 3520], obsIds: [8447] } };
+    const hint = buildCiteBackHint({ entries: [editEntry('/p/foo.mjs')] }, cooldown);
+    expect(hint).toContain('#8447, E#3520');
+    expect(hint).not.toMatch(/(?<![A-Za-z])#3520/);
   });
 
   // B1 (v2.83): leader line carries explicit counts ("N file(s), M lesson(s)")
@@ -187,6 +197,67 @@ describe('buildUnsavedBugfixHint', () => {
     expect(hint).toMatch(/2 file\(s\)/);
     expect(hint).toContain('a.mjs');
     expect(hint).toContain('b.mjs');
+  });
+
+  // Sandbox usage evaluation 2026-09-29 (docs/audits/20260929-sandbox-usage-eval.md): the
+  // nudge fired 10 times in 32 sessions, every time on a TDD red in a FEATURE session, and
+  // never in the one bugfix session; real use averaged 3.2 nudges per nudged session.
+  describe('TDD red and once per session (report §9-B)', () => {
+    it('does NOT fire on a TDD red: a test edited, then the hard failure, then the source', () => {
+      const episode = {
+        entries: [
+          editEntry('/p/test/invoice.test.mjs'),
+          bashHardErr(),
+          editEntry('/p/src/invoice.mjs'),
+          bashOk(),
+        ],
+      };
+      expect(buildUnsavedBugfixHint(episode)).toBeNull();
+    });
+
+    it('recognises the usual test-file spellings', () => {
+      for (const t of [
+        '/p/tests/a.mjs',
+        '/p/src/a.spec.ts',
+        '/p/pkg/a_test.go',
+        '/p/test_a.py',
+        '/p/__tests__/a.js',
+      ]) {
+        const episode = { entries: [editEntry(t), bashHardErr(), editEntry('/p/src/a.mjs'), bashOk()] };
+        expect(buildUnsavedBugfixHint(episode), t).toBeNull();
+      }
+    });
+
+    it('still fires on a regression fix: the failure came before any edit', () => {
+      const episode = { entries: [bashHardErr(), editEntry('/p/src/money.mjs'), bashOk()] };
+      expect(buildUnsavedBugfixHint(episode)).toMatch(/Unsaved bugfix-shape/);
+    });
+
+    it('still fires when a source file was edited before the failure', () => {
+      const episode = {
+        entries: [editEntry('/p/src/money.mjs'), bashHardErr(), editEntry('/p/src/money.mjs'), bashOk()],
+      };
+      expect(buildUnsavedBugfixHint(episode)).toMatch(/Unsaved bugfix-shape/);
+    });
+
+    it('stays silent once this session has been nudged', () => {
+      const episode = { entries: [bashHardErr(), editEntry('/p/src/money.mjs'), bashOk()] };
+      expect(buildUnsavedBugfixHint(episode, { alreadyNudged: true })).toBeNull();
+    });
+
+    it('claimBugfixNudge grants the first claim per session only', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'cml-nudge-claim-'));
+      try {
+        expect(claimBugfixNudge(dir, 'sess-a')).toBe(true);
+        expect(claimBugfixNudge(dir, 'sess-a')).toBe(false);
+        expect(claimBugfixNudge(dir, 'sess-b')).toBe(true);
+        // No session id → cannot dedupe, so never suppress.
+        expect(claimBugfixNudge(dir, null)).toBe(true);
+        expect(claimBugfixNudge(dir, null)).toBe(true);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   it('returns null on no-error episodes', () => {
@@ -894,6 +965,18 @@ describe('extractCiteBackSignals (P5 ① — Stop-time positive signal)', () => 
     expect(ids.has(8447)).toBe(true);
     expect(ids.has(9012)).toBe(true);
     expect(ids.size).toBe(2);
+  });
+
+  // The Stop handler unions these ids into BOTH the decay injected set and the cited set,
+  // resolved against `observations`. Rendered bare, an event id promoted whichever
+  // observation shared its number — the D#202 collision, through the behavioural channel.
+  it('an event id in the hint is not read back as an observation citation', () => {
+    const hint = buildCiteBackHint(
+      { entries: [{ tool: 'Edit', files: ['/p/src/foo.mjs'], isError: false }] },
+      { '/p/src/foo.mjs': { ts: Date.now(), lessonIds: [8447, 3520], obsIds: [8447] } },
+    );
+    const ids = extractCiteBackSignals(writeTranscript([citeBackAttachment(hint)]));
+    expect([...ids]).toEqual([8447]);
   });
 
   it('ignores attachments without the cite-back leader (e.g. plain mem context)', () => {

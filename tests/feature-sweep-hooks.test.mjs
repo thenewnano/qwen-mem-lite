@@ -133,13 +133,13 @@ function registeredEntries() {
 // dependency installer: it runs `npm install` and rewrites the runtime dir, so driving it
 // here would install packages mid-suite. Its behavior is covered by tests/install-e2e,
 // tests/install-lifecycle and tests/native-binding-selfheal.
-const UNSWEPT_BY_DESIGN = new Set(['scripts/setup.sh']);
+const UNSWEPT_BY_DESIGN = new Set(['scripts/setup.sh', 'scripts/pre-tool-recall-bash.sh']);
 // …and this set is the one hole the other guards cannot see. "every registered entry has a
 // case" skips whatever is listed here, so moving a REAL entry into this set and deleting its
 // case leaves all three coverage guards green (verified: 21 → 20 cases, no failure) — the
 // sweep would just cover less. The size is therefore pinned below: growing the list must be a
 // deliberate edit to a number, visible in the diff, with the justification written above.
-const UNSWEPT_COUNT = 1;
+const UNSWEPT_COUNT = 2;
 
 // ─── Surface registry ──────────────────────────────────────────────────────────────
 // Every case registers through itHook, so the coverage guards below compare the REGISTERED
@@ -402,6 +402,7 @@ beforeAll(() => {
     QWEN_MEM_SKIP_SAVE_ENRICH: '1', // no detached enrich-save from a CLI seed
     QWEN_MEM_SKIP_REPOS: '1',
     QWEN_MEM_NO_DELAY: '1', // background workers skip their 0.5-5s jitter
+    QWEN_MEM_SESSION_EVENTS: '1', // upstream v6.13 made SessionStart Key Events opt-in
   });
   // See isolation contract #2: cwd must be the ONLY project source.
   delete BASE_ENV.CLAUDE_PROJECT_DIR;
@@ -453,7 +454,7 @@ describe('hook feature sweep: registered surface', () => {
       UNSWEPT_BY_DESIGN.size,
       `the sweep's exclusion list grew to [${[...UNSWEPT_BY_DESIGN].join(', ')}] — each name in it is a registered hook entry point NOBODY fires here`,
     ).toBe(UNSWEPT_COUNT);
-    expect([...UNSWEPT_BY_DESIGN]).toEqual(['scripts/setup.sh']);
+    expect([...UNSWEPT_BY_DESIGN]).toEqual(['scripts/setup.sh', 'scripts/pre-tool-recall-bash.sh']);
   });
 
   it('every sweep case names a real entry point (no phantom coverage)', () => {
@@ -531,9 +532,8 @@ describe('hook feature sweep: hook.mjs foreground events', () => {
       withDb((db) => db.prepare('SELECT status FROM sdk_sessions WHERE project = ?').get(project)),
     ).toMatchObject({ status: 'active' });
     expect(existsSync(join(RUNTIME_DIR, `session-${project}`))).toBe(true);
-    // SessionStart auto-adopts, which writes <cwd>/CLAUDE.md — here, and never the repo's
-    // (afterAll asserts the negative half).
-    expect(readFileSync(join(cwd, 'CLAUDE.md'), 'utf8')).toContain('<!-- qwen-mem-lite:begin');
+    // Upstream steering (v6.13+): SessionStart injects and does NOT write <cwd>/CLAUDE.md.
+    expect(existsSync(join(cwd, 'CLAUDE.md'))).toBe(false);
 
     await expectMalformedResilience(
       'hook.mjs session-start',

@@ -46,6 +46,10 @@ export default defineConfig({
       'tmp/**',
       '.tmp/**',
       'tasks/**',
+      // `.claude/**`: an `isolation: "worktree"` agent checks the whole repo out under
+      // `.claude/worktrees/<name>/`, and every test file in that copy was collected and run
+      // against the copy's half-finished edits (2026-09-27: 887 files instead of 444).
+      '.claude/**',
       // `.worktrees/**` for the same class of reason: PORTING.md puts every upstream port
       // in a git worktree under `.worktrees/`, and a worktree carries a full copy of
       // tests/**. Without this, `npx vitest run` from the MAIN checkout collects and RUNS
@@ -106,7 +110,16 @@ export default defineConfig({
     // Reap test-fixture dirs leaked by prior interrupted/SIGKILL'd runs (afterEach
     // never reached). Runs once before the suite; 1h age guard never touches the
     // current run. See lib/tmp-fixture-sweep.mjs.
-    globalSetup: ['./tests/global-setup.mjs'],
+    // The second clears the green stamp for a run that does not load its reporter (below).
+    globalSetup: ['./tests/global-setup.mjs', './scripts/green-stamp.mjs'],
+    // Workers only: strip GIT_* inherited from a git hook, or a fixture `git init` rewrites
+    // the repository the hook's GIT_DIR names (see the file's header).
+    setupFiles: ['./tests/setup-strip-git-env.mjs'],
+    // `default` restated because `reporters` REPLACES the default list. The second one
+    // records a green stamp after a full, passing, unfiltered run over an unchanged tree,
+    // which scripts/pre-commit.sh reuses to skip re-running the suite on that exact tree.
+    // Contract and conditions: scripts/green-stamp.mjs.
+    reporters: ['default', './scripts/green-stamp-reporter.mjs'],
     coverage: {
       provider: 'v8',
       // Audit 2026-08-22 P2-2: this list used to be 22 hand-picked root modules, so

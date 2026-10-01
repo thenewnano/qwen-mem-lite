@@ -10,7 +10,8 @@ import {
   isSpecificTerm,
   scrubSecrets,
   LOW_SIGNAL_TITLE,
-  EDIT_TOOLS,
+  isEditEntry,
+  splitEpisodeFiles,
   isMetaTriggerPrompt,
   notLowSignalTitleClause,
   safeText,
@@ -33,6 +34,50 @@ import * as taskReaderModule from './lib/task-reader.mjs';
 // so a named import could not be spied on in tests.
 import * as pausedReaderModule from './lib/paused-reader.mjs';
 import { liveObsFilterSql } from './lib/inject-search-core.mjs';
+import { summarySourceLabel } from './lib/fast-summary.mjs';
+
+/** How much of the first subject prompt `working_on` keeps (see buildAndSaveHandoff). */
+export const WORKING_ON_FIRST_MAX = 600;
+
+/**
+ * Which episode entries the handoff replays as "Recent activity": failures and edits.
+ *
+ * A failure is `isHardError` when the entry carries it, `isError` only for entries buffered
+ * before that field existed. `isError` fires on any "error"/"fail" word in exit-0 output —
+ * in the sandbox usage evaluation (docs/audits/20260929-sandbox-usage-eval.md) it put
+ * passing test runs and printed diffs under Recent activity as "→ ERROR".
+ *
+ * An edit must have touched a file the capture kept: an Edit/Write whose `files` came back
+ * EMPTY wrote only to a path the capture drops (the host's auto-memory, the scratchpad), so
+ * "Created MEMORY.md" is not the user's work. An entry with no `files` field at all predates
+ * the field and is kept as before.
+ * @param {object} e episode entry
+ * @returns {boolean}
+ */
+function isPendingActivity(e) {
+  if (!e) return false;
+  const failed = e.isHardError !== undefined ? e.isHardError : e.isError;
+  if (failed) return true;
+  if (!isEditEntry(e)) return false;
+  return !(Array.isArray(e.files) && e.files.length === 0);
+}
+
+/**
+ * The line an entry contributes. A Bash edit is named by the files it wrote: its command is
+ * usually a heredoc script (`python3 - <<'EOF' p='…`), and the first 50 characters of that
+ * say nothing about what changed.
+ * @param {object} e episode entry
+ * @returns {string}
+ */
+function pendingActivityLine(e) {
+  const failed = e.isHardError !== undefined ? e.isHardError : e.isError;
+  if (e.tool === 'Bash' && !failed && Array.isArray(e.bashWrites) && e.bashWrites.length > 0) {
+    const names = [...new Set(e.bashWrites.map((f) => basename(f)))];
+    const shown = names.slice(0, 4).join(', ') + (names.length > 4 ? ` +${names.length - 4} more` : '');
+    return `Edited ${shown} (Bash)`;
+  }
+  return e.desc;
+}
 
 /**
  * Build and save a handoff snapshot to session_handoffs table.
@@ -147,15 +192,26 @@ export function buildAndSaveHandoff(db, sessionId, project, type, episodeSnapsho
   // pre-reorder code: two prompts differing only in their credential both render as
   // `deploy with key ***`, and keying on the raw text would replay that identical sentence
   // twice. The key is what the resuming session is actually shown. Pinned by a case.
+  //
+  // The FIRST subject prompt keeps WORKING_ON_FIRST_MAX characters, the rest 200. The first
+  // prompt is usually the task statement, and its tail is where a multi-step request puts
+  // the later steps: in the sandbox usage evaluation (docs/audits/20260929-sandbox-usage-eval.md)
+  // "…3. CLI 的 create 命令加 --coup…" was cut at 200, and on the live DB 63 of 115 stored
+  // handoffs sit at the cap. `match_keywords` is still derived from the 200-character form
+  // (`matchPromptLines`), so which later prompt counts as a continuation does not move.
   const seen = new Set();
   const safePromptLines = [];
+  const matchPromptLines = [];
   for (const p of sourcePrompts) {
-    const line = truncate(scrubSecrets(normalizeInline(p.prompt_text)), 200);
+    const scrubbed = scrubSecrets(normalizeInline(p.prompt_text));
+    const line = truncate(scrubbed, 200);
     if (seen.has(line)) continue;
     seen.add(line);
-    safePromptLines.push(line);
+    safePromptLines.push(safePromptLines.length === 0 ? truncate(scrubbed, WORKING_ON_FIRST_MAX) : line);
+    matchPromptLines.push(line);
   }
   let workingOn = safePromptLines.join(' → ');
+  let workingOnForMatch = matchPromptLines.join(' → ');
 
   if (subjectPrompts.length === 0) {
     const fallback = db
@@ -165,7 +221,7 @@ export function buildAndSaveHandoff(db, sessionId, project, type, episodeSnapsho
       WHERE project = ? AND ${liveObsFilterSql('')}
         AND COALESCE(importance, 1) >= 3
         AND ${notLowSignalTitleClause('')}
-      ORDER BY created_at_epoch DESC LIMIT 1
+      ORDER BY created_at_epoch DESC, id DESC LIMIT 1
     `,
       )
       .get(project);
@@ -174,6 +230,7 @@ export function buildAndSaveHandoff(db, sessionId, project, type, episodeSnapsho
       // defense-in-depth for rows that predate that — which is not hypothetical: D#49 still
       // has three bare credential-shaped values backfilled in a sibling column.
       workingOn = `(carry-forward subject) ${truncate(scrubSecrets(normalizeInline(fallback.title)), 180)}`;
+      workingOnForMatch = workingOn;
     }
   }
 
@@ -248,7 +305,7 @@ export function buildAndSaveHandoff(db, sessionId, project, type, episodeSnapsho
       `
     SELECT title, type, narrative FROM observations
     WHERE (memory_session_id = ? OR project = ?) AND COALESCE(compressed_into, 0) = 0 ${obsWindowClause}
-    ORDER BY created_at_epoch DESC LIMIT 15
+    ORDER BY created_at_epoch DESC, id DESC LIMIT 15
   `,
     )
     .all(sessionId, project, ...obsWindowParams);
@@ -262,8 +319,8 @@ export function buildAndSaveHandoff(db, sessionId, project, type, episodeSnapsho
   if (episodeSnapshot?.entries) {
     const seenDescs = new Set();
     const pendingDescs = episodeSnapshot.entries
-      .filter((e) => e.isError || EDIT_TOOLS.has(e.tool))
-      .map((e) => e.desc)
+      .filter(isPendingActivity)
+      .map(pendingActivityLine)
       .filter((d) => {
         if (seenDescs.has(d)) return false;
         seenDescs.add(d);
@@ -345,24 +402,47 @@ export function buildAndSaveHandoff(db, sessionId, project, type, episodeSnapsho
     !f.startsWith('/dev/') &&
     !f.startsWith('/proc/') &&
     !f.startsWith('/tmp/');
-  if (episodeSnapshot?.files) episodeSnapshot.files.filter(isValidFile).forEach((f) => fileSet.add(f));
+  // The files the episode EDITED when it edited any (splitEpisodeFiles), everything it
+  // touched only when it edited nothing — the rule the episode's lesson edges follow. A
+  // `cat package.json` is not a key file of the session (docs/audits/20260929-sandbox-usage-eval.md).
+  if (episodeSnapshot?.files) {
+    const { modified } = splitEpisodeFiles(episodeSnapshot);
+    (modified.length > 0 ? modified : episodeSnapshot.files)
+      .filter(isValidFile)
+      .forEach((f) => fileSet.add(f));
+  }
   // Same namespace widening as `completed` above — see the reasoning there. Measured
   // 2026-09-21: 8 of the 17 live handoff rows stored key_files as the empty array.
-  const obsFiles = db
+  //
+  // The cap counts rows that CONTRIBUTE a new file (D#67, the D#40 shape). This read was
+  // `LIMIT 10` → isValidFile, so rows the filter empties ('[]', directories, /tmp paths)
+  // could use up the window. A latent defect: the v6.13.2 pre-ship claims review replayed
+  // the live DB 2026-09-26 with this read's own WHERE and window, and 0 of 45 stored
+  // handoffs and 0 of 310 sessions lost a file (the largest window held 11 rows).
+  // Streaming keeps the filter exactly as it was.
+  let contributing = 0;
+  for (const row of db
     .prepare(
       `
     SELECT files_modified FROM observations
     WHERE (memory_session_id = ? OR project = ?) AND files_modified IS NOT NULL ${obsWindowClause}
-    ORDER BY created_at_epoch DESC LIMIT 10
+    ORDER BY created_at_epoch DESC, id DESC
   `,
     )
-    .all(sessionId, project, ...obsWindowParams);
-  for (const row of obsFiles) {
+    .iterate(sessionId, project, ...obsWindowParams)) {
+    let files;
     try {
-      JSON.parse(row.files_modified)
-        .filter(isValidFile)
-        .forEach((f) => fileSet.add(f));
-    } catch {}
+      files = JSON.parse(row.files_modified);
+    } catch {
+      continue;
+    }
+    const valid = Array.isArray(files) ? files.filter(isValidFile) : [];
+    const before = fileSet.size;
+    valid.forEach((f) => fileSet.add(f));
+    // A row that only repeats a listed file (the common case: one file edited again and
+    // again) contributes nothing either (v6.13.2 pre-ship defect review P3-7).
+    if (fileSet.size === before) continue;
+    if (++contributing === 10) break;
   }
 
   // 5. Key decisions — high importance observations (skip low-signal degraded titles).
@@ -386,18 +466,28 @@ export function buildAndSaveHandoff(db, sessionId, project, type, episodeSnapsho
   // (session_summaries.key_decisions is a different column, a JSON array from Haiku), and
   // every existing assertion on it is a substring/regex match on the title, so the added
   // prefix is not a contract change for them.
-  const decisions = db
+  //
+  // The cap applies AFTER the low-signal filter (D#40). This read was `LIMIT 10` → filter →
+  // slice(0, 5), which made the SQL limit a reachability bound: six low-signal rows among the
+  // newest ten evicted older real decisions the section had room for, and two writers raise
+  // importance without reading the title, so such rows do reach this pool. Streaming and
+  // stopping at five keeps the JS filter exactly as it was (the SQL NOT LIKE twin is
+  // case-insensitive, so swapping it in would also change WHICH titles count as noise).
+  const decisions = [];
+  for (const d of db
     .prepare(
       `
     SELECT title, type FROM observations
     WHERE (memory_session_id = ? OR project = ?) AND COALESCE(importance, 1) >= 2
       AND ${liveObsFilterSql('')} ${obsWindowClause}
-    ORDER BY created_at_epoch DESC LIMIT 10
+    ORDER BY created_at_epoch DESC, id DESC
   `,
     )
-    .all(sessionId, project, ...obsWindowParams)
-    .filter((d) => d.title && !LOW_SIGNAL_TITLE.test(d.title))
-    .slice(0, 5);
+    .iterate(sessionId, project, ...obsWindowParams)) {
+    if (!d.title || LOW_SIGNAL_TITLE.test(d.title)) continue;
+    decisions.push(d);
+    if (decisions.length === 5) break;
+  }
 
   // 5b. Next steps — the remaining work a paused note spells out, which is the only
   // next-step source in this system that a human wrote down on purpose. Deliberately not
@@ -487,7 +577,7 @@ export function buildAndSaveHandoff(db, sessionId, project, type, episodeSnapsho
   // The nullish guard mirrors what join() already did with a nullish element. Without it
   // String(undefined) would put the literal token "undefined" into the term set — a behaviour
   // change smuggled in by the per-element rewrite rather than chosen.
-  const allText = [workingOn, ...completed.map((c) => c.title).filter(Boolean), unfinished]
+  const allText = [workingOnForMatch, ...completed.map((c) => c.title).filter(Boolean), unfinished]
     .map((t) => (t === null || t === undefined ? '' : scrubSecrets(String(t))))
     .join(' ');
   const keywords = extractMatchKeywords(allText, safeFiles);
@@ -774,6 +864,11 @@ export function pickHandoffToInject(db, project, currentCcSessionId = null) {
   const now = Date.now();
   // Fetch recent handoffs and find the most recent non-expired one.
   // A newer but expired 'clear' handoff must not shadow a still-valid 'exit' handoff.
+  // No id tiebreaker on this or the Stage -1/0/2 reads above, on purpose: session_handoffs has
+  // no id column, and its rowid is not recency because the writer is an UPSERT that keeps the
+  // row's original rowid. On a tie `rowid DESC` would therefore pick the older write exactly
+  // when the lower-rowid row was written last, a shape only a rewrite produces. A correct
+  // tiebreak needs a column; see findings.md, the created_at_epoch tie bullet.
   const handoffs = currentCcSessionId
     ? db
         .prepare(
@@ -963,7 +1058,8 @@ function renderHandoffFromRow(handoff, db, project) {
       // (Linux allows almost any char but '/'), and this is the one field in this block
       // that was rendered raw while working_on/unfinished/key_decisions all neutralize.
       if (files.length > 0)
-        lines.push('## Key Files', safeText(files.map((f) => basename(f)).join(', ')), '');
+        // One name once: an absolute and a relative spelling of the same file both render as it.
+        lines.push('## Key Files', safeText([...new Set(files.map((f) => basename(f)))].join(', ')), '');
     } catch {}
   }
   // Next steps, from the project's newest paused note. Placed after Key Files and before
@@ -1005,9 +1101,9 @@ function renderHandoffFromRow(handoff, db, project) {
     let summary = db
       .prepare(
         `
-      SELECT completed, next_steps, remaining_items FROM session_summaries
+      SELECT completed, next_steps, remaining_items, notes FROM session_summaries
       WHERE memory_session_id = ? AND project = ?
-      ORDER BY created_at_epoch DESC LIMIT 1
+      ORDER BY created_at_epoch DESC, id DESC LIMIT 1
     `,
       )
       .get(handoff.session_id, project);
@@ -1019,16 +1115,18 @@ function renderHandoffFromRow(handoff, db, project) {
       summary = db
         .prepare(
           `
-        SELECT completed, next_steps, remaining_items FROM session_summaries
+        SELECT completed, next_steps, remaining_items, notes FROM session_summaries
         WHERE project = ?
-        ORDER BY ABS(created_at_epoch - ?) ASC LIMIT 1
+        ORDER BY ABS(created_at_epoch - ?) ASC, id DESC LIMIT 1
       `,
         )
         .get(project, handoff.created_at_epoch ?? 0);
     }
     if (summary && (summary.completed || summary.next_steps || summary.remaining_items)) {
       lines.push('');
-      lines.push('<session-summary source="haiku">');
+      // Provenance of the Done text from the row's own tag, not a constant: it read "haiku" on
+      // every row, including rows whose Done came from the Stop report or observation titles.
+      lines.push(`<session-summary source="${summarySourceLabel(summary.notes)}">`);
       // Defang: these come from session_summaries, populated by Haiku OR by
       // extractStructuredSummary over the assistant transcript tail — replayed text that can
       // carry tool-XML / forged authority tags, same class as working_on above (audit MED-4).
