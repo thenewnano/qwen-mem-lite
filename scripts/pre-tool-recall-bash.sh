@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# claude-mem-lite: PreToolUse:Bash prefilter for file recall.
+# qwen-mem-lite: PreToolUse:Bash prefilter for file recall.
 #
 # Why this hook exists (docs/audits/20260926-154904-session-history-analysis-r2.md, N1):
 # pre-tool-recall.js fires on Edit|Write|NotebookEdit|Read, and on Opus 5.5 only 18.0% of
