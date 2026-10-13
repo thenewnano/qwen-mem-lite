@@ -132,7 +132,7 @@ describe('cleanup-hooks keeps user hooks in and around our groups', () => {
 // E2E round 2026-09-29 (install P1-8): with the plugin installed AND a direct install, the
 // direct `install` empties the plugin's hooks.json so hooks do not fire twice. A later
 // `cleanup-hooks` then removed the settings.json copy too, printed "Removed N …", and left
-// the enabled plugin with no hooks at all — capture silently stopped. It now says so.
+// the enabled plugin with no hooks at all - capture silently stopped. It now says so.
 describe('cleanup-hooks warns when it leaves an enabled plugin with no hooks', () => {
   function pluginHome({ manifestHooks }) {
     const root = mkdtempSync(join(tmpdir(), 'cml-hookprune-plugin-'));
@@ -170,7 +170,7 @@ describe('cleanup-hooks warns when it leaves an enabled plugin with no hooks', (
     const r = pluginHome({ manifestHooks: {} });
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/Removed 1 qwen-mem-lite hook configuration/);
-    expect(r.stdout).toMatch(/plugin's hooks\/hooks\.json registers none — every hook is now unregistered/);
+    expect(r.stdout).toMatch(/plugin's hooks\/hooks\.json registers none - every hook is now unregistered/);
     expect(r.stdout).toMatch(/reinstall the plugin|cp /);
   });
 

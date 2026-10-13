@@ -1,6 +1,5 @@
-// v2.34.0 tool-visibility split (expanded v2.70.0): only 9 core tools appear
-// in tools/list (the original 6 + mem_defer/mem_defer_list/mem_defer_drop); the
-// 11 hidden maintenance/admin tools stay callable by exact name. This test
+// v2.34.0 tool-visibility split: only core tools appear in tools/list; the
+// 9 hidden maintenance/admin tools stay callable by exact name. This test
 // spawns the real server over stdio and drives the MCP handshake so it
 // catches regressions in both the filter and the registration wiring.
 
@@ -9,7 +8,10 @@ import { spawn } from 'child_process';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
+import Database from 'better-sqlite3';
 import { SUBPROCESS_TIMEOUT_MS } from './test-helpers.mjs';
+import { initSchema } from '../schema.mjs';
+import { recordSearch } from '../lib/search-telemetry.mjs';
 
 const SERVER_PATH = resolve(new URL('..', import.meta.url).pathname, 'server.mjs');
 
@@ -27,7 +29,13 @@ const EXPECTED_CORE = [
 
 function startServer(memDir, extraEnv = {}) {
   const proc = spawn(process.execPath, [SERVER_PATH], {
-    env: { ...process.env, QWEN_MEM_DIR: memDir, MEM_QUIET_HOOKS: '1', ...extraEnv },
+    env: {
+      ...process.env,
+      QWEN_MEM_DIR: memDir,
+      QWEN_MEM_SEARCH_TELEMETRY: '0',
+      MEM_QUIET_HOOKS: '1',
+      ...extraEnv,
+    },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   proc.stderr.on('data', () => {}); // swallow startup chatter
@@ -93,7 +101,7 @@ describe('MCP tools/list filter (v2.34.0 hidden-but-callable)', () => {
     }
   });
 
-  it('tools/list returns exactly the 9 core names', async () => {
+  it('tools/list omits feedback when search telemetry is disabled', async () => {
     await rpc(proc, 1, 'initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
@@ -103,10 +111,49 @@ describe('MCP tools/list filter (v2.34.0 hidden-but-callable)', () => {
     expect(resp.error, 'tools/list error').toBeUndefined();
     const names = resp.result.tools.map((t) => t.name).sort();
     expect(names).toEqual(EXPECTED_CORE);
+
+    const call = await rpc(proc, 3, 'tools/call', {
+      name: 'mem_search_feedback',
+      arguments: { search_id: 1, relevant: ['#1'] },
+    });
+    expect(call.result?.isError).toBe(true);
+    expect(call.result?.content?.[0]?.text).toContain('not found');
   });
 
-  it('QWEN_MEM_ALL_TOOLS=1 restores all 18 tools in tools/list (opt-out)', async () => {
-    // Spin up a dedicated server with the env var set — the default fixture
+  it('tools/list includes feedback when search telemetry is enabled', async () => {
+    proc.stdin.end();
+    proc.kill('SIGTERM');
+    // Let the old server release the DB before writing to it (recordSearch never waits on a lock).
+    if (proc.exitCode === null && proc.signalCode === null) await new Promise((r) => proc.once('exit', r));
+    // A search an EARLIER server process recorded: real row, real result, foreign id.
+    const seed = initSchema(new Database(join(tmp, 'qwen-mem-lite.db')));
+    const foreignId = recordSearch(seed, {
+      query: 'earlier process',
+      surface: 'mcp_search',
+      client: 'earlier',
+      results: [{ source: 'obs', id: 1, title: 'Earlier result' }],
+    });
+    seed.close();
+    proc = startServer(tmp, { QWEN_MEM_SEARCH_TELEMETRY: '1' });
+    await rpc(proc, 1, 'initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'tool-visibility-test', version: '0' },
+    });
+    const resp = await rpc(proc, 2, 'tools/list', {});
+    const names = resp.result.tools.map((t) => t.name).sort();
+    expect(names).toEqual([...EXPECTED_CORE, 'mem_search_feedback'].sort());
+
+    const foreign = await rpc(proc, 3, 'tools/call', {
+      name: 'mem_search_feedback',
+      arguments: { search_id: foreignId, relevant: ['#1'] },
+    });
+    expect(foreign.result?.isError).toBe(true);
+    expect(foreign.result?.content?.[0]?.text).toContain('was not issued by this server process');
+  });
+
+  it('QWEN_MEM_ALL_TOOLS=1 exposes all 18 registered default tools', async () => {
+    // Spin up a dedicated server with the env var set - the default fixture
     // runs without it, so we need a separate process for this case.
     try {
       proc.stdin.end();
@@ -124,6 +171,7 @@ describe('MCP tools/list filter (v2.34.0 hidden-but-callable)', () => {
     expect(resp.error, 'tools/list error').toBeUndefined();
     const names = resp.result.tools.map((t) => t.name);
     expect(names).toHaveLength(18);
+    expect(names).not.toContain('mem_search_feedback');
     // Spot-check hidden names are present
     expect(names).toContain('mem_stats');
     expect(names).toContain('mem_browse');
@@ -140,7 +188,7 @@ describe('MCP tools/list filter (v2.34.0 hidden-but-callable)', () => {
       name: 'mem_stats',
       arguments: { days: 30 },
     });
-    // Empty tmp DB should not throw "tool disabled" — should return a stats payload.
+    // Empty tmp DB should not throw "tool disabled" - should return a stats payload.
     expect(resp.error, 'tools/call error').toBeUndefined();
     expect(resp.result?.isError, 'result.isError').not.toBe(true);
     expect(resp.result?.content?.[0]?.type).toBe('text');

@@ -158,6 +158,672 @@ still describes the v6.11.0 tree at `9c41144`, which is what it claims to descri
 absence is a claim about the code — the full suite is green — but neither ritual was performed,
 and pretending otherwise in a changelog would be worse than saying so.
 
+## v6.25.3 — the self-heal recognises better-sqlite3 13's missing binding; a lock nobody can take is named
+
+Fixes only; no schema change, no migration, no new setting.
+
+- **Fix: where better-sqlite3 ships no prebuilt binding, the hooks and the CLI now build it.**
+  better-sqlite3 13 bundles prebuilt bindings for Linux (glibc and musl), macOS and Windows on x64
+  and arm64. Anywhere else (32-bit ARM, Android/Termux, FreeBSD, ppc64le, riscv64, …) the binding
+  has to be compiled, and until it is, loading it fails with
+  `Cannot find module '…/build/Release/better_sqlite3.node'`. Only the MCP server's launcher
+  repaired that. The hooks and the `claude-mem-lite` CLI did not recognise the error: they printed
+  it on every use and never started a repair. Now the CLI compiles the binding the way
+  `rebuild-binding` does (a C++ toolchain is needed) and then runs the command again, and the
+  hooks have it compiled at the next session start. Measured here on a tree with the prebuilt
+  bindings removed: the CLI compiled the binding in 35 s, ran the command again, and exited 0.
+  Without a toolchain each CLI command still tries the build before it fails.
+- **Fix: `doctor` and `status` no longer crash on a damaged prebuilt binding.** A truncated
+  binding file (an interrupted download, a full disk) killed `doctor` and `status` with a bus
+  error (exit 135) before they printed anything. They had already found the binding broken in a
+  separate process, then opened the database in their own process anyway. They now report the
+  database as not checked, and the better-sqlite3 line reports the fault and its fix once;
+  `status --json` keeps the loader's own error. The hooks' warnings no longer guess "Node version
+  change", because better-sqlite3 13's bindings keep working after a Node upgrade.
+- **Fix: when `install.lock` cannot be created, that is named, not mistaken for an install in
+  progress.** This happens when `~/.claude-mem-lite/runtime` cannot be written: a `sudo` run left
+  it owned by root, the data directory is on a read-only mount, the runtime directory is a link to
+  a directory that no longer exists or is a file, or the disk is full. Before this release:
+  - every update skipped silently;
+  - `install` and `repair` printed "Another install/repair is in progress" and exited 0 having
+    done nothing (`repair` after downloading a whole release);
+  - `cleanup` said `install.lock` was held when no lock existed, while `cleanup --dry-run`
+    promised to remove the same leftovers, and both crashed when the directory could not even be
+    listed;
+  - the MCP server waited 10 seconds at every start for a lock nobody held.
+
+  Now `install`, `repair`, `self-update`, `rebuild-binding` and `cleanup` name the directory
+  and the error and exit 1, with the fix: `chmod`/`chown` the directory, remount it read-write,
+  recreate the link's target, move a file aside, free space, or, when the data directory does not
+  exist yet and cannot be created, create it as your user or set `CLAUDE_MEM_DIR`. `repair` and
+  `self-update` stop before going to the network (in plugin mode `self-update` only checks, and
+  still does), and the MCP server starts without waiting. `doctor` and `cleanup --dry-run` must
+  not write, so they predict this from the directory itself: `doctor` reports
+  `Install lock: … cannot be written` for permissions, a read-only mount, a link to nowhere or a
+  file in the way, and the dry run says what the real run will. A full disk shows up
+  only when a command tries to take the lock.
+- **Fix: `cleanup --dry-run` predicts what `cleanup` will finish.** Interrupted updates are
+  finished newest first, and one whose journal cannot be read stops every older one behind it.
+  The dry run judged each update on its own, so it promised to finish older ones that the real
+  run leaves in place.
+
+## v6.25.2 — a rollback that cannot put a file back keeps it; a running update keeps its lock
+
+Fixes only; no schema change, no migration, no new setting.
+
+- **Fix: a rolled-back update no longer loses a file it could not put back.** v6.25.1 listed this
+  as known: when an update's start-up check fails, the old files are renamed back, and if one of
+  those renames failed (on Windows a file another process or a scanner holds open; on Linux a
+  directory that cannot be emptied), the update then deleted its backup directory, the only copy
+  of that file, and `cleanup` could report "✓ Finished an interrupted update" over the loss. Now
+  the backup directory stays, journal and all, and the next update, `install`, `repair` or
+  `cleanup` finishes putting the files back; `doctor` lists it under "Unfinished update", and
+  `cleanup` and `install` say when they still could not finish it. Nothing waits on it: an update
+  that completes, or an install, retires it, so a file that stays stuck never blocks later
+  updates. Several such directories are finished newest first, in an order kept in their names,
+  so neither a clock set back nor a journal that cannot be read at that moment can reorder them.
+  The rollback also no longer takes a symlink that points nowhere for a file already put back.
+  The Windows trigger is reasoned; it was reproduced here by injected EPERM, EBUSY and ENOTEMPTY.
+- **Fix: a running update keeps `install.lock`.** An update holds the lock through `npm install`
+  and its start-up check, which can rebuild the native binding twice and from source: about 12
+  minutes on a platform with no prebuilt binding (a direct `install` runs `npm` with no time
+  limit). After 5 minutes the next `cleanup`, `install` or update took the lock, and the session
+  start-up sweep deleted it after 10, and that entry then rolled back the swap the update was in
+  the middle of. A lock whose process is alive is now kept for up to an hour (the bound for a
+  process id reused by another program); a lock whose process has exited is still taken at once.
+- **Fix: a database in a data directory that cannot be written is named on every command.**
+  `doctor --metrics`, `--session-audit`, `--benchmark` and every command that opens the database
+  (`search`, `recent`, `stats`, …) passed on SQLite's "attempt to write a readonly database" for a
+  closed store there; they now say SQLite cannot open it without creating its -wal/-shm files and
+  print the fix, as `status` and `doctor` already did. On a read-only mount SQLite answers
+  "unable to open database file" instead, which every face passed on and `doctor` counted as a
+  second issue; it is now named the same way, with the remount fix, and counted once. Measured
+  here on a read-only mount.
+- **Fix: `doctor` and `cleanup` agree about a running install.** While any install, update,
+  repair or binding rebuild holds `install.lock`, `cleanup` skips the update leftovers; `doctor`
+  counted them as stale temp files, and now says it did not check them. `cleanup --dry-run` no
+  longer creates `~/.claude-mem-lite`, its `runtime` directory and a lock file on a machine with
+  nothing installed.
+- **Fix: `doctor` counts one fault once.** With the code directory unreadable, the hooks that
+  point into it were "✗ Orphan hooks: … reference missing files" beside the ✗ that already names
+  the directory; they are now "not checked". A database `doctor` has no working better-sqlite3 to
+  open (a checkout before `npm install`, or a binding built for another Node version) was a second
+  ✗ on the Database line and an error on DB stats and `status`; they now say they did not check.
+
+## v6.25.1 — a rolled-back update no longer deletes what it restored; an interrupted one is finished where its journal can be read
+
+Fixes only; no schema change, no migration, no new setting.
+
+- **Fix: a rolled-back update could delete the files it had just put back.** When a release fails
+  its start-up check after `self-update`, or after the session-start copy that brings
+  `~/.claude-mem-lite` up to a newer plugin version, the old files are put back. If removing the
+  update's temporary directories then failed (EBUSY, which Windows raises for a file another
+  process holds open), the rollback ran a second time and deleted the files it had just restored,
+  `hook.mjs`, `server.mjs` and `package.json` among them. After `self-update` that left no working
+  direct install. With the plugin, its MCP server kept working, but the `~/.claude-mem-lite` copy
+  behind the standalone CLI and the `settings.json` hooks was broken, and the session-start copy
+  does not repair a tree without its `package.json`. A rollback is now safe to run twice and the cleanup
+  after it never throws. Present since 3.21.0. The Windows trigger is reasoned from Node's
+  documented behaviour; it was reproduced here with an injected EBUSY. If an update left
+  `~/.claude-mem-lite` without `cli.mjs` or `server.mjs`, `npx claude-mem-lite@latest` reinstalls it.
+- **Fix: an update that passed its check is no longer undone by its own leftover journal.** An
+  update records each file it is about to move in a journal, so that an interrupted swap can be
+  undone. A finished swap whose journal could not be removed (EBUSY or EPERM on Windows), or whose
+  updater was killed while it cleaned up, kept the journal, and the next update replayed it: a
+  release that had passed its check went back to the previous one, and the journal of a rolled-back
+  swap could delete a file a later update had installed. A finished swap now marks its backup
+  directory resolved before it removes the journal, and nothing replays a resolved one.
+- **Fix: an update killed while it wrote its journal no longer loses the files it had moved
+  aside.** The journal was rewritten in place, so a kill or a full disk between truncating it and
+  writing it left it empty, and the next update read that as "nothing moved" and deleted the
+  moved-aside originals. It is now written to a temporary file and renamed into place, retried
+  for under a second when the rename is refused (as Windows does while a scanner holds the file),
+  and an update that cannot write it stops and puts back what it had moved. In the test suite's
+  swap of five paths (four files and `node_modules`), 8 of its 9 journal writes, cut short by a
+  kill, left a mix of two releases (8 of 47 kill points with a passing check, 8 of 63 with a
+  failing one); no kill point does now. A
+  journal 6.25.0 or older already left torn is no longer read as "nothing moved": its directory
+  stays where it is and `doctor` names it.
+- **Fix: `install`, `repair` and `cleanup` finish an interrupted update; `doctor` names it.** A
+  swap whose updater was killed leaves the moved-aside originals and the journal in a
+  `.update-backup-*` directory beside the code, and the next update replays it. `install` (and
+  `repair`, which runs the latest release's installer) wrote a newer tree without replaying it
+  first, so the next update replayed the old journal over that tree: it deleted files the install
+  had written and put older ones back. `cleanup` deleted the directory as stale temp, though it
+  held the only copy of those originals, and `doctor` counted it as stale temp and recommended that
+  cleanup. With `CLAUDE_MEM_DIR` set, both looked only in the data directory, which updaters
+  stopped writing to in 2.90.0, and saw nothing. Now `install` and `repair` replay such a swap
+  before they write and retire any journal they could not replay once the tree is written;
+  `cleanup` replays it instead of deleting it (`--dry-run` lists it as "Would finish an interrupted
+  update"); `doctor` reports "Unfinished update" and counts only the leftovers of finished updates
+  as stale. A directory whose journal cannot be read right now is left in place by all three until
+  the next update that completes, or an install, retires it; `doctor` says `repair` reinstalls over
+  it. Leftovers an updater older than 2.90.0 left in a relocated data directory are still counted
+  and removed, never replayed.
+- **Fix: `status` and `doctor` over a data directory that can be read but not written** (the 755 a
+  `sudo` run leaves owned by root). `status` called it not accessible; it now says it can be read
+  but not written, with the fix, and prints the counts whenever SQLite can open the store there,
+  which for a closed WAL store means only while another process holds it open. A closed store
+  cannot be opened in place, because SQLite has to create its -wal/-shm files beside it even to
+  read. `status` and the default `doctor` checks now say that in the same words instead of passing
+  on "attempt to write a readonly database" (`doctor --metrics` and `--session-audit` still pass it
+  on), and `doctor` no longer counts it as a second issue beside its ✗ Data directory line. In
+  `status --json`, such a directory's `database` row now has `exists: true` or `false` instead of
+  `null`, and `error` is `"EACCES"` for the closed-WAL shape and a corrupt store's own error
+  otherwise.
+- **Fix: `doctor` no longer marks as checked what it did not check.** The binding lines said
+  "✓ Native DB binding: loadable" over a breakage marker they could not read in a locked data
+  directory, and, with no install to probe at all (a checkout before `npm install`), beside
+  "✗ better-sqlite3: no install on this machine owns a native binding"; with the managed install
+  locked, "no install owns a native binding" claimed what the lock had kept it from checking. They
+  now say "not checked" and why, and keep the age and reason of a breakage marker they could read.
+  "Database: not found (will be created)" no longer sits beside "nothing here can open the DB", and
+  the stale-temp line no longer reads a directory it cannot list as empty.
+- **Fix: remedies.** On a read-only mount (EROFS), `status`, `doctor` and `install` offered
+  `chmod u+rwx` for the data directory, which cannot help; they now name the read-only mount (not
+  run on a real read-only mount here). `doctor`'s cleanup remedy names the installer by its absolute
+  path instead of `node install.mjs`, and so does its new repair remedy.
+
+Known and not fixed here: a rollback whose own restore fails (for example, a file Windows holds
+open at that moment) can still lose that file and leave the install incomplete;
+`npx claude-mem-lite@latest` reinstalls it.
+
+## v6.25.0 — every session gets the same recall line again; a locked data directory reads as locked
+
+Fixes plus one default change; no schema change, no migration, and 6.24.0 still opens the
+database after this release has. A minor version because the first line of a file-recall block
+changes for half of sessions: the comparison 6.16.0 started is closed, and with
+`CLAUDE_MEM_RECALL_FRAMING` unset every session gets the older line again.
+`CLAUDE_MEM_RECALL_FRAMING=factual` keeps the newer line; `=ab` restores the split. To go back
+entirely, install 6.24.0 (`npm install -g claude-mem-lite@6.24.0`; for a plugin install, the
+rollback recipe under "Trust model per install path" in the README).
+
+- **Change: the first line of a file-recall block is the same in every session again.** Since
+  6.16.0 half of sessions got "notes recorded by claude-mem-lite about <file>; the tool call
+  proceeds as planned" instead of "system-injected context, continue your planned action", so the
+  two could be compared by how often the agent cited a lesson. Read on 42 of the maintainer's own
+  sessions (three projects) that received one of the two softer citation asks (6.17.0 and later;
+  2026-10-07): the older line 6 citations in 162 lesson-session pairs, the newer line 2 in 158, a
+  difference a session-level permutation test cannot tell from chance (p = 0.21). A pattern scan of
+  the agent's replies found neither line surfaced to the user (0 of 20 and 0 of 22 sessions),
+  though that scan's positive control is weak. With no measured harm in the older line and no
+  measured benefit in the newer one, the older line stays. An earlier reading of the same
+  comparison (p = 0.032) had counted ten sessions that still carried the older per-lesson citation
+  ask, all on the older line; `docs/audits/20261007-d104-d111-readout.md` has both readings. The
+  same document closes the 6.17.0 follow-up: the softer "cite a lesson only where it changed the
+  edit" ask stays.
+- **Fix: `doctor` says "not checked" for what it cannot read in a locked data directory, and
+  `status` names the directory.** A directory the process cannot enter or list (mode 000, say)
+  reads as an empty one, so under doctor's "✗ Data directory: … not accessible" line the checks
+  below still reported "✓ DB schema: no database yet", "✓ Disk footprint: DB 0.0MB", "Database: not
+  found", "Update state: no state file (first run?)" and a green "Hook self-heal", and where the
+  code shares that directory (the default layout) also "✗ server.mjs: missing", "✗ hook.mjs:
+  missing" and two warnings about undeployed code: doctor counted five issues for one fault, over
+  an intact store. Each of those checks now prints "not checked — <dir> is not accessible". A
+  directory that can be read but not written (the usual 755 a `sudo` run leaves owned by root) is
+  still a ✗, now saying so, and its checks run as before. With `CLAUDE_MEM_DIR` set, a locked code
+  directory is one ✗ with its `chmod` fix, and one directory spelled two ways (a trailing slash, a
+  symlinked home) counts once. `status` had no access check and said "⚠ Database: not found"; it
+  now says "✗ Database: <dir> is not accessible (EACCES)" with the fix, and its `--json` row
+  carries `exists: null` and the error code.
+- **Fix: `maintain execute --ops dedup` names every merge pair it skips.** Two kinds of pair were
+  dropped without a word after "Merged N": a second keeper for a row another pair already merges
+  (`--merge-ids 1:3,2:3` now reports "2:3 (#3 already merges into #1)"), and the surviving member
+  of a cycle (`1:2,2:1` now reports "2:1 (cycle: #1 survives)"). Which rows merge is unchanged.
+- **Fix: a passing test run whose output mentions "3 failed" is no longer stored as an error.** The
+  check that keeps a green summary ("0 fail", "ℹ fail 0") from counting as a failure gave way to a
+  nonzero "<N> failed" anywhere in the output, including a passing test's name or a log line such
+  as "2 failed attempts", and read a count and a word on two different lines as one. A red count
+  now has to sit where test runners print summaries, on one line, and never on the line a runner
+  prints for a passed test (`✔ name (1ms)`, `ok 1 - name`). "N error(s)" counts as red too (pytest
+  "1 passed, 1 error", tsc "Found 1 error in …"), and a line-start `FAIL` / `FAILED` banner (go,
+  jest, vitest, shell suites) marks a failure on its own. Replayed over this machine's recorded
+  Bash results the way the hook sees them (77,819 results; host-flagged failures, which never reach
+  this check, left out), 141 change: 79 are now read as failures, almost all real ones (at least
+  four are analysis output that quotes failure lines); 62 are no longer read as failures, all but
+  one passing runs, file reads or mutation-script reports.
+- **Fix: a rolled-back update no longer lets a hook load a half-restored install.** While an update
+  renames a release into place, a marker makes the hooks skip their run so none imports a mix of
+  two versions. Putting the old files back — after a release that fails its start-up check, after a
+  rename fails partway through the swap, or at the next start after an updater was killed mid-swap
+  — happened without that marker, or with a gap in it. It now holds the marker throughout.
+- **Fix: `doctor` no longer keeps a stale "update lookup failed" warning.** After a `repair`
+  that fetched a release, the warning stayed until the next background check (24 hours, 6 when
+  rate-limited), because repair's lookup recorded nothing on success; it now clears the warning.
+  With `CLAUDE_MEM_SKIP_UPDATE` set, the background check and `self-update` never look up and a
+  `repair`'s lookup recorded nothing, so the warning stayed until the variable was unset, and with
+  no state file doctor asked "first run?"; it now says the checks are off.
+- **Fix: in the narrow re-enrich pass, a reply that scores a protected row 0 no longer writes
+  into it.** A row that pass may not hide (a compression keeper, or one whose importance a person
+  set) already kept its title and narrative when the model scored it 0; the same write still
+  stored that reply's type, lesson, concepts, facts, aliases and scope, permanently. It now
+  records only that the row was looked at, plus the usual importance floor. The passes that fill
+  concepts, aliases and scope on their own can still fill those later. Wide-scope passes are
+  unchanged: their rows are substantive, so a 0 there is treated as a misjudged importance.
+- **Fix: with several `CLAUDE_CONFIG_DIR` profiles, each gets the plugin's one-time checks.**
+  The cleanup of stale global MCP entries and the warning about leftover direct-install hooks
+  each run once, and the record that they had run was shared by every profile, so only the
+  first profile to start was checked. Each record is now kept per file it checks; the default
+  `~/.claude.json` and `~/.claude/settings.json` keep the records existing installs already have.
+  With `CLAUDE_CONFIG_DIR` set to another directory, both checks run once more after this update;
+  for most such profiles that is the first check of their own files (a profile first set up with
+  6.24.0 gets a second one). `CLAUDE_CONFIG_DIR=~/.claude` keeps `.claude.json` inside `~/.claude`,
+  so the MCP cleanup runs once more there too. The cleanup removes only this plugin's own global
+  entries (`mem-lite`, and a legacy `mem` that runs this plugin's server).
+- **Fix: the hook scripts agree with the rest of the plugin on which `CLAUDE_CONFIG_DIR` values
+  count as absolute.** On Linux and macOS they took a Windows drive path such as `C:/cfg` as
+  absolute, and on Windows they took a UNC path (`\\server\share`) as relative; both now follow
+  the same rule as the Node side on each platform. `doctor` now also warns when
+  `CLAUDE_CONFIG_DIR` is a relative path: Claude Code resolves it against the directory it starts
+  in (checked on 2.1.293), while the plugin ignores it and uses `~/.claude`. Set it to an absolute
+  path.
+
+## v6.24.0 — `CLAUDE_CONFIG_DIR` is followed everywhere; npm installs drop the dev toolchain
+
+Fixes only; no schema change, no migration, no new setting. A minor version because two
+behaviours a user can notice change: with `CLAUDE_CONFIG_DIR` set, the installer, updates and
+hooks now use that directory, and a confirmed `maintain execute --ops purge_stale` deletes every
+row its preview counted in one run.
+
+**If you set `CLAUDE_CONFIG_DIR` and installed with npm or npx**, run `claude-mem-lite install`
+once more with the variable set. Plugin installs need nothing. To go back, install 6.23.3
+(`npm install -g claude-mem-lite@6.23.3`; for a plugin install, the rollback recipe under
+"Trust model per install path" in the README).
+
+- **Fix: an npm install no longer brings the development toolchain.** The published lockfile
+  (`npm-shrinkwrap.json`) was a full copy of the development lockfile, and npm installs a
+  package's shrinkwrap whole. So installing from npm also installed vitest, eslint, knip and
+  prettier. It is now generated without the development-only entries, and the release gate
+  refuses one that has them. Measured through a local registry, installing it as a dependency:
+  npm 11.19.0 went from 298 packages / 541 MB to 96 / 57 MB, and npm 10.9.2 now installs the
+  same 96 / 57 MB (the 6.19.4 review measured 237 / 172 MB there with the old file). Every
+  runtime dependency stayed at its locked version. `npm install -g` and `npx` read the same
+  file; measured after the release from the public registry (2026-10-07, npm 11.19.0), each
+  installs the same 96 packages as a dependency install in that run, the same size to within
+  0.1%. `claude-mem-lite install` from an npm or npx install now also locks
+  `~/.claude-mem-lite` with that file, which it previously installed without a lockfile. Plugin
+  installs were not affected.
+- **Fix: with `CLAUDE_CONFIG_DIR` set, the installer, updates and hooks use that directory.**
+  Claude Code keeps `settings.json`, `plugins/` and `.claude.json` in `CLAUDE_CONFIG_DIR` when it
+  is set (checked on 2.1.292). The plugin still used `~/.claude` and `~/.claude.json` in about 25
+  places. So `install` wrote its hooks where Claude Code never reads them; the disabled-plugin
+  check read the wrong `settings.json`; and with two profiles, the plugin's session-start setup
+  and `self-update` pruned the other profile's plugin cache and edited its `.claude.json`. They
+  now all follow the variable when it is set to an absolute path; with it unset nothing changes.
+  **If you set `CLAUDE_CONFIG_DIR` and installed with npm or npx**, run `claude-mem-lite install`
+  once more with the variable set, so the hooks land in your config directory. Plugin installs
+  need nothing. Entries an older version wrote into `~/.claude/settings.json` stay there; if no
+  other profile uses `~/.claude`, `env -u CLAUDE_CONFIG_DIR claude-mem-lite cleanup-hooks` removes them.
+- **Fix: `doctor` warns when the update check is failing.** A failed release lookup advanced
+  `last check` like a successful one and recorded nothing else, so `doctor` printed a fresh date
+  in green while every lookup behind a proxy failed from 2026-08-19 to 2026-10-07 (fixed in
+  6.23.3); the background check is silent by design. The update state now records why the last
+  lookup failed (`HTTP 400`, `ENOTFOUND`, `proxy CONNECT 403`, with the proxy named, credentials
+  removed) and since when, and `doctor` shows that as a warning until a lookup succeeds. The
+  exit code is unchanged. Two concurrent release lookups in one process no longer share one
+  rate-limit verdict (no shipped caller ran two).
+- **Fix: an `ANTHROPIC_BASE_URL` with a trailing control character works on the direct API leg.**
+  The resolver checked the parsed URL but handed back the text as typed. The URL parser drops a
+  trailing control character only at the end of its input, so `http://127.0.0.1:4000` followed
+  by one passed the check and `doctor`, and then every direct call failed building
+  `<value>/v1/messages` and fell back to the `claude` CLI. The resolver now returns the URL it
+  checked, so every consumer reads the same scheme, host and port. Valid values send the same
+  requests as before. `doctor` also prints a gateway's port when it is not the scheme's default
+  (`gw.example.com:8443 reachable`).
+- **Fix: `doctor` warns when `ANTHROPIC_BASE_URL` ends in `/v1`.** The variable is an origin:
+  the direct API leg, Claude Code and the Anthropic SDK append `/v1/messages` themselves, so a
+  value copied with its `/v1` posts to `/v1/v1/messages` and fails, while `doctor` printed the
+  host reachable in green. With `ANTHROPIC_API_KEY` set and the host reachable, it now warns and
+  names the URL the requests go to. What is sent is unchanged.
+- **Fix: a background worker no longer re-creates a data directory removed while it ran.**
+  Detached workers (episode and session summaries, enrichment, maintenance, the update check)
+  can run for a minute or more (a wait for an LLM slot, then the call), and the writes they make
+  created their directories with a recursive `mkdir`. A data directory removed in that window
+  came back holding a fresh `runtime/` and an empty database, `update-state.json` or the
+  `claude` CLI's working directory. A worker now exits at start when its data directory is gone,
+  and its later writes (database, update state, the CLI's working directory, the maintenance
+  lock, logs and the native-binding markers) are skipped instead of re-creating it. A foreground hook still creates
+  the directory on first run.
+- **Fix: a confirmed `maintain execute --ops purge_stale` deletes every row its preview
+  counted.** The preview reported all candidates, but one confirmed run deleted at most 1000 and
+  said "re-run for more", and every run first wrote a full database snapshot: clearing 15,000
+  idle rows took 15 runs and 15 snapshots (#41). One run now deletes them all in 1000-row
+  batches behind a single snapshot. On a 44,000-row test database with 15,000 rows to purge, one
+  confirmed run took 118–126 ms including the snapshot, 86–91 ms for the purge alone (three runs
+  each). The daily background pass still purges at most 500 rows a day. Same on the MCP `mem_maintain` tool with `confirm=true`.
+- **Fix: background optimize passes keep what a person set.** Cluster-merge gave its merged
+  row the model's importance even when a person had set the keeper's (a keeper lowered to 1 came
+  back at 3). Re-enrich read the person's mark after the model call but wrote back the importance
+  it had read before the call, undoing a change made during the call. Both now decide the
+  importance in the write itself. A re-enrich reply that rated a row 0 no longer replaces the
+  title and narrative of a row it may not hide (a compression keeper, or a row whose importance
+  a person set): `Weekly summary: auth refactor` had become `Weekly summary`, narrative `x`.
+- **Fix: a stray `</private >` closer written with a space or attributes hides the text before
+  it in tool descriptions**, as the bare `</private>` already did. The description window's own
+  marker test matched only the bare tag, while `<private>` stripping accepts whitespace and
+  attributes, so text cut from inside a private span could show in an episode's description.
+- **Fix (opt-in search telemetry): a rating waits for a busy writer, and deletes drop titles.**
+  `mem_search_feedback` gave up at once with "database is locked" whenever a hook held the
+  database; it now waits up to 250 ms. Recording a search still never waits. The rater's client
+  name is scrubbed and capped like the client name it comes from. `activity delete --confirm`
+  now clears the deleted events' titles from the telemetry table, as `delete` already did for
+  observations.
+
+## v6.23.3 — the update path works behind a proxy again; a gateway key no longer reaches it
+
+Fixes only; no schema change, no migration, no new setting.
+
+**Behind an HTTP(S) proxy, 6.23.2 and earlier cannot see this release**: their update check
+fails, silently, so no notice appears. Run `npx claude-mem-lite@latest self-update` (it runs
+this release's updater), or update the way you installed. Plugin installs update through
+`/plugin marketplace update sdsrss` as before.
+
+- **Fix: behind an HTTP(S) proxy, the update check and the release download work again.**
+  Requests through the proxy tunnel carried `Host: api.github.com:80` for a URL without a port:
+  Node's `https.request` takes its default port as 80 when it is handed a connection and no
+  agent. GitHub answers that with 400 from the API and a 301 back to the same URL for release
+  downloads, so the daily check, `self-update` and `repair` all failed through any proxy, and
+  the check is silent on failure. `doctor` did not notice, because it checks only that the
+  proxy opens a tunnel. Measured on Node 22.23.3 and 26.8.1. The Anthropic API and OpenRouter
+  accepted the port (a keyless request reached their authentication check), so LLM calls to
+  them were not affected. An `https://` `ANTHROPIC_BASE_URL` gateway without an explicit port
+  got `:80` too; how each gateway treated it was not measured. The tunnel now sends the host
+  without the default port.
+- **Fix: a plain-`http://` gateway no longer sends the API key to `HTTP_PROXY`.** Plain http is
+  accepted only for a loopback `ANTHROPIC_BASE_URL`, on the premise that the request stays on
+  this machine. With Node's opt-in `NODE_USE_ENV_PROXY=1` and `HTTP_PROXY` set, native `fetch`
+  handed that request to the proxy unless Node's own `NO_PROXY` matching exempted the host, and
+  the proxy could read the `x-api-key` header: Node 26 sent it as a plain request, Node 22
+  inside a CONNECT tunnel that carries no encryption for an http target. A remote proxy then
+  delivered the request to its own loopback, not this machine's. The direct API leg now sends
+  plain-http requests itself, straight to the loopback host, however the scheme is spelled
+  (`HTTP://` included). `doctor` already probed that host directly, so its "reachable (direct)"
+  line now describes the hop the product uses. Without
+  `NODE_USE_ENV_PROXY` a plain-http request already went direct and still does; an `https://`
+  base URL takes the same path as before.
+- **Fix: `self-update` no longer says "Already up to date" when it did not check.** With
+  `CLAUDE_MEM_SKIP_UPDATE` set, on a development install (a git checkout or symlinks), or when
+  GitHub could not be reached or was rate-limiting, `self-update` (`node install.mjs update`)
+  printed "✓ Already up to date", even with nothing installed. Someone who set the variable to
+  silence the session-start notice was told they were current and stayed on an old release. It
+  now says the check did not run or failed, and why. The exit code is still 0. Its banner also
+  names `self-update`; through `claude-mem-lite`, `update` is the memory editor.
+
+- **Docs: git-clone installs update with `node install.mjs update`.** The README told git-clone
+  users to update with `git pull && node install.mjs install`, which installs the checked-out
+  branch without a signature check, while the trust-model table listed git clone under signed
+  updates. It now gives the signed command first and says what the `git pull` route does.
+
+## v6.23.2 — two proxy fixes; the README stops saying direct installs auto-update
+
+Two fixes on the proxy path that 6.23.1's gateway support sends more traffic through, and a
+README correction. No schema change and no migration.
+
+- **Fix: a response cut off mid-body through an HTTP(S) proxy no longer hangs the call.** When
+  the gateway or the proxy closed the connection partway through the body, the call failed only
+  when its whole timeout ran out. A background process with nothing else to do could exit first,
+  and then the `claude -p` fallback never ran. The call now fails at once and falls back.
+  Without a proxy, or when the connection was reset rather than closed, this already worked.
+- **Fix: `NO_PROXY` accepts the name and port forms curl, Python and Go accept.** `NO_PROXY` has
+  no standard, and these clients differ. The plugin accepts the union of their name and port
+  forms, so it can skip the proxy for a host one of them would still send through it.
+  `NO_PROXY` decides which hosts skip the proxy for the direct API leg, OpenRouter, the update
+  check, the `self-update` and `repair` downloads (the release tarball itself goes through
+  `curl`, which applies curl's own rules), and `doctor`'s probe.
+  - `internal.corp` now also covers its subdomains (`build.internal.corp`); before, only
+    `.internal.corp` did, and `*.internal.corp` is accepted too.
+  - A `*` entry exempts every host, `::1` matches `https://[::1]`, and entries are
+    case-insensitive.
+  - `host:port` exempts only that port.
+  - `.internal.corp` no longer matches `evilinternal.corp`.
+  - Still not accepted: CIDR ranges; an IP address spelled other than in its canonical form
+    (`127.0.0.1`, `::1` or `[::1]`; not `127.1`); an IP entry as a suffix; and an
+    internationalized name not written in its `xn--` form.
+- **Docs: direct and npx installs announce updates; the check does not install them.** The README
+  said these installs auto-update. Since v3.62.0 the check runs once a day (every 6 hours while
+  GitHub is rate-limiting), from a session start, and the notice appears at the next session
+  start. `npx claude-mem-lite self-update` installs the update (`node install.mjs update` from a
+  git clone); `claude-mem-lite update` is the memory editor. `CLAUDE_MEM_SKIP_UPDATE` turns off
+  the check, the notice and `self-update` too, so unset it before updating. Two things still
+  install without a command, and `CLAUDE_MEM_SKIP_UPDATE` stops neither: when a hook finds a
+  module or dependency missing, a session start runs `repair` (at most once per 6 hours), which
+  installs the latest release if its signature verifies; and with the plugin also installed, a
+  session start copies a newer plugin version into the direct install without a signature check.
+
+## v6.23.1 — gateway support on the direct API leg; large stores stop timing out
+
+v6.23.0 was tagged but never published: its release check failed on Node 22 in a test added for
+this release. Node 22 cannot verify an IPv6 address in a TLS certificate, so the test now skips
+there. 6.23.1 ships the same product code, and the notes below are the 6.23.0 notes.
+
+One change for users who already set `ANTHROPIC_BASE_URL` (below), one opt-in feature, and a
+fix. No schema-version change and no migration: 6.22.1 still opens a database this release has
+opened. To keep the old gateway behaviour, stay on 6.22.1 (a plugin install that already updated
+can follow the README's rollback recipe); staying there also gives up the large-store fix below.
+
+- **Fix: on a large store every prompt's memory search could take seconds and time out** (#41,
+  reported by @flamarion). Nothing ever ran `ANALYZE`, so no database had SQLite's planner
+  statistics, and without them SQLite ran the full-text match once per row of the project.
+  Against the UserPromptSubmit hook's 2 s budget, the reporter's store of 44k observations took
+  3.3 s for a short prompt and over 60 s for a 4k-character one, and Claude Code printed "timed
+  out after 2s — output discarded".
+  The database now gets statistics the way SQLite recommends (`PRAGMA optimize`): when the MCP
+  server opens it, in the daily background maintenance, and after `import-jsonl` loads rows. On
+  three synthetic 44k-observation projects (2026-10-07), one search took 7–20 s without
+  statistics and 14–28 ms after one maintenance pass. When there is nothing to analyze the call
+  costs about 0.1 ms; the first pass on a large store is a full `ANALYZE` (17 ms at 44k
+  observations, 103 ms at 400k). The database gains SQLite's own `sqlite_stat1` and
+  `sqlite_stat4` tables.
+- **Change: `ANTHROPIC_BASE_URL` and the tier model variables now apply to the direct API leg**
+  (#33, by @thenewnano). With `ANTHROPIC_API_KEY` set, background LLM calls go straight to the
+  Messages API. That leg was fixed to `api.anthropic.com` and the built-in model IDs, so an
+  Anthropic-compatible gateway (Azure AI Foundry, LiteLLM, a Bedrock or Vertex proxy) was
+  reachable only through the slower `claude -p` fallback.
+  - `ANTHROPIC_BASE_URL` (no `/v1` suffix) now points the direct leg at the gateway, and
+    `ANTHROPIC_DEFAULT_HAIKU_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` set the model per tier.
+    The two model variables apply only when a usable base URL is set.
+  - **If you already set `ANTHROPIC_BASE_URL` for Claude Code and have `ANTHROPIC_API_KEY`,
+    these calls now go to that gateway**, with the tier models if you set them.
+  - A value the plugin cannot use (not a parseable URL, not http or https, plain http to a host
+    that is not loopback, credentials in the URL, a query or a fragment) skips the direct leg,
+    so that leg sends the key neither to that URL nor to `api.anthropic.com`. Calls fall back
+    to `claude -p`, which reads `ANTHROPIC_BASE_URL` itself: with plain http to a host that is
+    not loopback, the claude CLI still sends its key there unencrypted. `doctor` says so and
+    says to fix or unset the value.
+  - `doctor` probes the configured host and port, directly and through a proxy, including a
+    gateway addressed by an IPv4 or IPv6 literal, and such a gateway works through
+    `HTTPS_PROXY`. On Node 22 an https gateway addressed by an IPv6 literal fails certificate
+    verification on every path, a Node 22 limitation (seen with `[::1]`; Node 24 and 26 accept
+    the same certificate).
+  - A 400 whose message names the `` `temperature` `` field in backticks (as Azure AI Foundry's
+    does) and says it is deprecated or not supported is retried once without it, while at least
+    500 ms of the call's budget remain.
+- **New, opt-in: search relevance telemetry** (#40, by @mekineer-com; #31).
+  `CLAUDE_MEM_SEARCH_TELEMETRY=1` records MCP `mem_search` runs stamped with the running
+  version, adds a `mem_search_feedback` tool to rate results of searches the current server
+  issued, and `claude-mem-lite stats --search-telemetry` reports coverage and rank quality. With
+  the variable unset, the tools list, the server instructions and the search and save output
+  are unchanged, and no telemetry table is created. Rows are kept until you delete them; the
+  README gives the SQL.
+
+## v6.22.1 — install no longer tears the code hooks are loading
+
+Fixes, one new warning and docs; no schema change, no migration, no new setting.
+
+- **Fix: a hook firing while `claude-mem-lite install` ran could load a half-written file.**
+  The installer copied each file over the one in `~/.claude-mem-lite` in place (emptied, then
+  written), and Claude Code keeps starting hooks from that directory during an install, also
+  while a `repair` that SessionStart started in the background runs one. A hook that started
+  in that moment failed with an error such as `SyntaxError: The requested module
+  './lib/low-signal-patterns.mjs' does not provide an export named 'buildNotLowSignalSql'`,
+  even when the version did not change. Each file is now written beside the old one and
+  renamed over it, and hooks that start while the files and their npm dependencies are being
+  replaced skip that one run, as they already did while an automatic update swaps files in. The
+  skip lapses two minutes after the install starts, so a dependency compile that runs longer is
+  not covered after that. Measured by
+  re-copying the files under 8 processes loading them: 12 of 2386 loads failed before, 0 of
+  2388 after. The weekly install check had been failing on it three weeks in four since
+  2026-09-14.
+- **`claude-mem-lite adopt` in your home directory (or `/`) now warns** that the `CLAUDE.md` it
+  writes there makes Claude Code stop reading the `AGENTS.md` of every project below it that has
+  one, and says how to steer one project instead or take it back. It still writes the file. There
+  is no warning where a `CLAUDE.md` or `CLAUDE.local.md` of your own there has that effect
+  already, or where Project instructions is set to read `AGENTS.md` regardless.
+- **Docs: headless runs (`claude -p`) need the server's tools allowed once.** On Claude Code
+  2.1.292 every `mem_*` call there was refused until they were (13 of 13 calls in an 88-session
+  run, nothing saved; on 2.1.284 the same flags let these calls through). The README now gives the
+  `permissions.allow` rule for a plugin install (`mcp__plugin_claude-mem-lite_mem-lite`) and for
+  an npx or git-clone install (`mcp__mem-lite`).
+- `npm run validate:manifests` passes on current Claude Code again: its validator now
+  reserves plugin names starting with `claude-`, while Claude Code still installs and loads
+  such a plugin, so this one name error is reported and allowed; any other error still fails.
+
+## v6.22.0 — auto-adopt stops switching off AGENTS.md
+
+- **Fix: auto-adopt no longer switches off a project's `AGENTS.md`; there the guidance is
+  injected.** Claude Code 2.1.277 and later reads `AGENTS.md` as a
+  project's instructions only while no `CLAUDE.md`, `.claude/CLAUDE.md` or `CLAUDE.local.md`
+  exists in the session's directory or above it. The `CLAUDE.local.md` that auto-adopt has written
+  into git repositories since 6.20.0 therefore made Claude Code stop reading the repository's
+  `AGENTS.md` from the second session on, with nothing to show for it (the file is hidden from
+  `git status`). Reproduced on Claude Code 2.1.291: a canary word in `AGENTS.md` was answered
+  before auto-adopt ran and not after.
+  - Where: an `AGENTS.md` or `.claude/AGENTS.md` in the session's directory or above it, or an
+    `AGENTS.md` git tracks anywhere in the repository. Three exceptions, where `CLAUDE.local.md` is
+    written as before: the root has your own `CLAUDE.md` or `.claude/CLAUDE.md`, or a
+    `CLAUDE.local.md` with lines of your own (Claude Code is not reading `AGENTS.md` there already,
+    and the block goes into that file and keeps it out of git, as in 6.21.0), or your user settings set **Project instructions** to
+    a value that reads `AGENTS.md` regardless of `CLAUDE.local.md` (`claude-md-and-agents-md`),
+    or never (`claude-md`, `managed-only`; with `managed-only` Claude Code loads neither file, so
+    the guidance does not reach the session).
+  - There auto-adopt writes no file: the guidance is added to each session's context at session
+    start, as outside git, with a one-time notice. A block an earlier version wrote into
+    `CLAUDE.local.md` there comes out at the next session start; that session loaded the file, so
+    it gets no injected copy, and the injected copy starts with the session after it. Injected
+    guidance does not reach subagents.
+  - **Opt-in: `CLAUDE_MEM_RULES_STEERING=1`** writes the block to
+    `.claude/rules/claude-mem-lite.md` at the repository root instead, which leaves `AGENTS.md`
+    loading and does reach subagents. It is not the default because, in a pre-registered A/B on
+    Claude Code 2.1.292 (`docs/audits/20261006-d212-ab.md`), it did not beat injection by the bar
+    set in advance: sessions with a proactive memory record when work is delegated to
+    subagents, 1/12 against 0/12 (Fisher p=1.00); 4 records against 0 over 44 sessions per arm;
+    subagents saw the guidance 9/9 from the second session on, against 0/14. The file is kept out
+    of git by an entry of its own in `.git/info/exclude`, written even
+    where your `.gitignore` already covers it (so narrowing that rule later does not expose it).
+    If a `.gitignore` rule later makes git see it anyway, it is taken out and the guidance is
+    injected. A rules
+    file does not switch `AGENTS.md` off, and Claude Code loads it as project instructions, also
+    in subagents that load project instructions (not the built-in Explore and Plan agents) and in
+    sessions started in a subdirectory (checked on 2.1.291; rules files load since Claude Code
+    2.0.64). As with `CLAUDE.local.md`, Claude Code reads it before the
+    plugin's startup hook runs, so the session that creates it gets the guidance added to its
+    context once (not the session that moves the block from `CLAUDE.local.md`, which loaded that
+    file). A block an earlier version wrote into `CLAUDE.local.md` moves there at the next
+    session start (with `CLAUDE_MEM_NO_TEMPLATE_REFRESH=1`, its text moves unchanged). A
+    `CLAUDE.local.md` with lines of your own keeps it (one of the exceptions above). Once written, the rules file stays where the guidance goes, also after the variable is
+    unset; delete it, or run `claude-mem-lite unadopt`, to go back. A one-time notice says where
+    it is.
+  - With the variable set, the rules file is not written, and the guidance is injected instead
+    with a one-time notice saying why, where the file, `.claude/rules` or `.claude` is a symbolic link, git tracks the
+    file, a file of that name without the block is there already, or the root is an npm package
+    that `npm publish` could ship it with, judged conservatively: not `"private": true`, and
+    either a `files` entry whose first part is `.claude` or a wildcard, or no `files` list and no
+    line naming `.claude`, `.claude/rules` or the file in `.npmignore` (in `.gitignore` when there
+    is no `.npmignore`), or a `!` line there that could re-include it: any pattern (extglob
+    included), or a name that is part of its path, in any case; an `.npmignore` or `.gitignore`
+    inside `.claude/` or `.claude/rules/` counts as shipping it too (no setup where npm ships it
+    is let through, checked against `npm pack --dry-run` on npm 11.19.0; some where it does not
+    are refused). A tracked or linked rules file that already carries the block is left as it is,
+    and loads; the session-start sync never deletes a tracked file. A rules file you delete, or `claude-mem-lite unadopt` removes, is not written again
+    until `claude-mem-lite adopt --enable`. The notice offers only the ways to a file that work
+    there: the setting that reads `AGENTS.md` beside `CLAUDE.local.md` (not where
+    `CLAUDE.local.md` is refused too), and `/adopt` (not where an `AGENTS.md` above the directory
+    or in a subdirectory would stop loading).
+  - The session that takes a block out — the rules file once git sees it or a package would ship
+    it, or a `CLAUDE.local.md` beside a new `AGENTS.md` or at a new package root — loaded that
+    file at startup, so it gets no injected copy on top; the injected copy starts with the next
+    session. (For `CLAUDE.local.md` at a package root this changes 6.20.0, which injected in that
+    session too.)
+  - `.git/info/exclude` is read by git only: docker build contexts, archives and other packagers
+    can pick the rules file up, as they can `CLAUDE.local.md`. Claude Code labels it "project
+    instructions, checked into the codebase", which is not so.
+  - Not covered: an untracked `AGENTS.md` in a subdirectory is seen only from a session started
+    at or below it. Such a session takes the block out of `CLAUDE.local.md`, the next session
+    started above that directory writes it back, and a session in the subdirectory after that one
+    does not load that `AGENTS.md` (it gets the guidance from `CLAUDE.local.md`). Committing the
+    `AGENTS.md`, or `CLAUDE_MEM_RULES_STEERING=1` (the rules file stays once written), ends the
+    back and forth.
+- **Fix: an explicit `adopt` no longer switches off the `AGENTS.md` beside the `CLAUDE.md` it
+  creates.** The same Claude Code rule made `claude-mem-lite adopt` (and `/adopt`) hide a
+  project's `AGENTS.md` whenever it created `CLAUDE.md`, without a word.
+  - A `CLAUDE.md` that adopt creates next to an `AGENTS.md` or `.claude/AGENTS.md` now starts by
+    importing it (`@AGENTS.md`), the remedy Claude Code's documentation gives. A marker comment
+    above the import says whose it is; Claude Code strips block-level HTML comments, so it costs
+    no context. Checked on Claude Code 2.1.291: a canary word in `AGENTS.md` was answered
+    through a `CLAUDE.md` of that shape. Re-running adopt on a `CLAUDE.md` that holds nothing
+    but the block adds the import too.
+  - An `AGENTS.md` above the directory, or tracked below it, or beside a `CLAUDE.md` adopt writes at
+    `$HOME` (an import there would reach every project below), is named in adopt's output with the
+    setting that keeps it (Project instructions = `claude-md-and-agents-md`): importing the one
+    would make Claude Code ask to approve an external import, the other would load in every
+    session.
+  - Nothing is imported where your own `CLAUDE.md`, `.claude/CLAUDE.md` or `CLAUDE.local.md` is
+    in the directory or above it, or where your settings read `AGENTS.md` anyway or never:
+    `AGENTS.md` was not being read through a missing file there.
+  - `unadopt` deletes a `CLAUDE.md` that holds nothing but the import lines and the block; once
+    you have written into the file, the import stays. An `adopt` run in a subdirectory leaves the
+    repository root's local file (`CLAUDE.local.md` or the rules file) in place, so sessions in
+    that subdirectory load the guidance from both.
+  - A `CLAUDE.md` that holds nothing but the block gets the same import at the next session
+    started in its directory (not at `$HOME`, where the import would reach every project below
+    it), with a one-time notice. That is the file auto-adopt wrote, before
+    6.20.0, into each project you opened that had no `CLAUDE.md` of its own, and it switched
+    `AGENTS.md` off the same way. Checked on Claude Code 2.1.291: next to such a `CLAUDE.md`, a
+    canary word in `AGENTS.md` was not answered; after the session-start sync it was. If you
+    committed that `CLAUDE.md`, the import shows in `git status`: commit it, and teammates on
+    Claude Code 2.1.277 or later get `AGENTS.md` back too. An import whose `AGENTS.md` is gone
+    later is skipped without an error (checked on 2.1.291). A `CLAUDE.md` with your own lines is
+    left alone, `CLAUDE_MEM_NO_TEMPLATE_REFRESH=1` leaves the file as it is, and an import you
+    delete together with its marker comes back at the next session start, as a hand-edited
+    block is refreshed. An `AGENTS.md` above the directory, or tracked below it, is named in the
+    notice with the setting that keeps it.
+  - Not covered: seen from a session started in a subdirectory, `@AGENTS.md` in the
+    `CLAUDE.md` above resolves outside the working directory, so Claude Code asks once to
+    approve it as an external import, and a `claude -p` session there does not load it until it
+    is approved (checked on 2.1.291: the canary was answered only after approval). A session
+    started in a subdirectory does not add the import either; the next one started in the
+    directory of `CLAUDE.md` does.
+- **`adopt --status` names the local file and, in more cases, says why there is none.** It
+  printed `✗ none` also where the plugin will not write the file. `✓` names `CLAUDE.local.md` or
+  the rules file, and says when git tracks it, it sits behind a symbolic link, or the next session
+  moves it to the rules file; `⚠` marks one the next session takes out (a package root, a
+  `.gitignore` rule that lets git see it) or that git sees while auto-adopt is off; `— none` says
+  when `CLAUDE.md` carries the block (and that a local copy beside it goes at the next session
+  start, or, with `⚠`, that it loads too where nothing takes it out: a subdirectory's
+  `CLAUDE.md`, a tracked or linked copy, auto-adopt off, a copy that cannot be edited) or
+  auto-adopt is off; `— none yet` names the file the next session writes; `✗ not
+  written` names the refusal (a tracked, linked or unreadable `CLAUDE.local.md`, a package root,
+  a `.gitignore` rule git would let the file through, or, beside an `AGENTS.md`, that the rules
+  file needs `CLAUDE_MEM_RULES_STEERING=1` or why it cannot be written, and which ways to a file
+  work there); and `✗ removed` says the block was
+  deleted (by you or `unadopt`) and that after `claude-mem-lite adopt --enable` the next session
+  may write it again (beside an `AGENTS.md` with the rules file switched off, that it also takes
+  `CLAUDE_MEM_RULES_STEERING=1`; where the rules file cannot be written anyway, why, instead of
+  either). A block that is still there but cannot be refreshed (a read-only directory) is
+  reported as present, so the session that loaded it gets no injected copy on top.
+- **Smaller fixes around the local file.** A `CLAUDE.local.md` or `CLAUDE.md` that is a directory
+  or cannot be read no longer leaves the session with no guidance (it is injected, or the other
+  file is written), and no longer stops `adopt --status`, `unadopt --dry-run` or the
+  `unadopt --all` sweep; once the rules file carries the block, a `CLAUDE.local.md` the team
+  commits later does not add an injected copy on top. A `CLAUDE.local.md` the plugin wrote that a
+  `.gitignore` rule added later lets git see is taken out, as the rules file is, instead of
+  staying in `git status` and loading beside an injected copy. A repository without
+  `.git/info/` (made with `git init --template=`) gets its exclude entry; `.git/info/exclude` is
+  rewritten byte for byte (a pattern in another encoding than UTF-8, such as a Latin-1 file name,
+  stopped matching), and put back when the local file cannot be written. `adopt`, `unadopt`,
+  `unadopt --all` and `adopt --disable` say so, and exit 1, when they cannot read or edit a local
+  file, instead of reporting nothing to remove or counting it as removed.
+
 ## v6.21.0 — non-ASCII project names and concurrent sessions stop sharing memory
 
 **Upgrade note: projects whose names are not plain ASCII get a new id, and what they stored moves once.** No schema-version

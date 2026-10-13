@@ -162,6 +162,9 @@ export const SOURCE_FILES = [
   // + auto-update lock). Must ship or a partial install/update skips them.
   'lib/proc-lock.mjs',
   'lib/atomic-write.mjs',
+  // A closed WAL store in an unwritable data dir: one classification for doctor, status and
+  // mem-cli's DB open (D#296), so the CLI does not load install.mjs to word one error.
+  'lib/wal-open-blocked.mjs',
   // Dynamically imported by scripts/launch.mjs BEFORE `npm install` runs, to answer
   // EBADPLATFORM with both sides of the mismatch instead of a guessed cause (issue #28).
   // The import is guarded, so omitting this file would not crash the launcher — it would
@@ -174,6 +177,7 @@ export const SOURCE_FILES = [
   'lib/hook-prune.mjs',
   'lib/proxy-fetch.mjs',
   'lib/llm-provider-probe.mjs',
+  'lib/anthropic-base-url.mjs',
   // P1 supply-chain: shared release-signing core (sha256 manifest + Ed25519
   // verify). Imported by hook-update.mjs (verify) + scripts/sign-release.mjs (CI
   // sign). Must ship or auto-update can't verify release signatures.
@@ -259,6 +263,7 @@ export const SOURCE_FILES = [
   // `timeline`/`search` and mem_timeline/mem_search on auto-update.
   'lib/timeline-core.mjs',
   'lib/search-core.mjs',
+  'lib/search-telemetry.mjs',
   // Shared `recent` core (live-row filter + ORDER BY created_at DESC LIMIT).
   // Statically imported by mem-cli.mjs AND server.mjs — same single-source pattern;
   // missing it from the manifest would break `recent` and mem_recent on auto-update.
@@ -334,6 +339,10 @@ export const SOURCE_FILES = [
   // /verify's write half (validate -> backup -> one transaction -> read-back -> undo).
   // Statically imported by cli/verify-apply.mjs.
   'lib/verify-apply-core.mjs',
+  // Background workers never re-create a removed data dir (D#265). Statically imported by
+  // schema, hook, hook-shared, hook-update, haiku-client, save-enrich, proc-lock,
+  // native-binding-hint, record-once and the metrics / error / hook-error sinks.
+  'lib/worker-data-dir.mjs',
   // Per-table scrub helper for defense-in-depth at text-write INSERT paths.
   // Statically imported by hook-llm, hook-handoff, hook-optimize, hook,
   // mem-cli; reached transitively from server.mjs and cli.mjs.

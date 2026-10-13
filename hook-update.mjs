@@ -1,6 +1,7 @@
-// qwen-mem-lite: Auto-update via GitHub Releases
-// Checks for new versions on SessionStart, downloads and installs automatically.
-// Skips in dev mode (symlinked installs). Silent on network failure.
+// qwen-mem-lite: update check and installer via GitHub Releases
+// The SessionStart check (hook.mjs, allowInstall:false) only records and announces a newer
+// release; `self-update` and `repair` install one, signature-verified. Skips a dev install
+// (a git checkout or symlinks) and under QWEN_MEM_SKIP_UPDATE. Silent on network failure.
 
 import { isOurMcpRegistration } from './lib/mcp-ownership.mjs';
 import { execSync, execFileSync } from 'node:child_process';
@@ -20,33 +21,38 @@ import {
 } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { tmpdir, homedir } from 'node:os';
+import { tmpdir } from 'node:os';
 // lib/data-paths.mjs, NOT schema.mjs: this module is what install.mjs::repair() imports to
 // reach the signature-verified release path, and schema.mjs statically imports
-// better-sqlite3 — so importing two path constants from there made the verified repair
+// better-sqlite3 - so importing two path constants from there made the verified repair
 // unreachable on exactly the broken-install state it exists to repair (2026-09-08).
 // tests/repair-path-no-native-dep.test.mjs fails on any package edge reachable from here.
-import { DB_DIR, CODE_DIR } from './lib/data-paths.mjs';
+import { DB_DIR, CODE_DIR, claudeConfigDir, claudeStatePath } from './lib/data-paths.mjs';
+import { workerDirGone } from './lib/worker-data-dir.mjs';
 import { debugCatch, debugLog } from './utils.mjs';
 import { NATIVE_BINDING_SOURCE_BUILD_CMD } from './lib/binding-probe.mjs';
-// Local manifest is fallback only — the active manifest is loaded from the
+// Local manifest is fallback only - the active manifest is loaded from the
 // extracted tarball's own source-files.mjs inside installExtractedRelease.
 // See loadReleaseManifest below.
 import {
   SOURCE_FILES as LOCAL_SOURCE_FILES,
   HOOK_SCRIPT_FILES as LOCAL_HOOK_SCRIPT_FILES,
 } from './source-files.mjs';
-// Native fetch ignores HTTP(S)_PROXY. Without this the whole update path — the
-// version check AND the release download — dies instantly behind a proxy, and
+// Native fetch ignores HTTP(S)_PROXY. Without this the whole update path - the
+// version check AND the release download - dies instantly behind a proxy, and
 // because checkForUpdate is silent on network failure the plugin then reports
 // itself permanently up to date. Same tunnel the OpenRouter call site uses.
-import { httpConnectProxyFor, getViaConnectProxy } from './lib/proxy-fetch.mjs';
-import { acquireLock } from './lib/proc-lock.mjs';
+import { httpConnectProxyFor, getViaConnectProxy, redactProxyUrl } from './lib/proxy-fetch.mjs';
+// A namespace, not a named import: a swap renames files one at a time, so for a moment this file can
+// sit over the previous release's lib/proc-lock.mjs, and a named import of an export that release
+// lacks is a SyntaxError that stops this module loading - and with it recoverInterruptedSwaps, which
+// finishes that very swap (pre-ship delta review P2-1). takeLock is newer than v6.25.2: detected.
+import * as procLock from './lib/proc-lock.mjs';
 import { atomicWriteFileSync } from './lib/atomic-write.mjs';
 import { verifyReleaseFiles, verifyManifestSignature } from './lib/release-digest.mjs';
 import { detectInstallShape } from './lib/install-shape.mjs';
 // The plugin cache is keyed by the marketplace the plugin was installed FROM, so these three
-// paths must follow MARKETPLACE_KEY rather than spell it out — the same reason
+// paths must follow MARKETPLACE_KEY rather than spell it out - the same reason
 // scripts/setup.sh's copy is pinned. lib/plugin-key.mjs is a zero-import leaf, so this costs
 // hook-update nothing in import weight (the constraint its header documents).
 import { MARKETPLACE_KEY, PLUGIN_NAME } from './lib/plugin-key.mjs';
@@ -55,7 +61,7 @@ import { MARKETPLACE_KEY, PLUGIN_NAME } from './lib/plugin-key.mjs';
 // Update source: this fork's own repository, NOT upstream (sdsrss/qwen-mem-lite).
 // Upstream's release tarball is the Claude-only build, so installing it over this tree
 // reverts the Qwen Code support (hooks/hooks.json + lib/tool-names.mjs + the QWEN.md half of
-// adopt) — silently, because the only symptom is that the behavior stops appearing on one
+// adopt) - silently, because the only symptom is that the behavior stops appearing on one
 // host. Pointed at the fork, any update that arrives is by definition a Qwen-compatible one.
 //
 // QWEN_MEM_SKIP_UPDATE=1 disables the check on demand (dev machines, CI, air-gapped
@@ -64,21 +70,21 @@ import { MARKETPLACE_KEY, PLUGIN_NAME } from './lib/plugin-key.mjs';
 // For whoever publishes this fork's first release: the install path is FAIL-CLOSED on
 // release signatures (RELEASE_PUBLIC_KEY below). A release carrying no
 // release-manifest.json / release-manifest.json.sig assets is refused, and upstream's private
-// signing key is not ours to use — so this fork's releases need their own keypair
+// signing key is not ours to use - so this fork's releases need their own keypair
 // (scripts/sign-release.mjs signs; embed the new public key below) or the operator sets
 // QWEN_MEM_SKIP_SIG_VERIFY=1 knowingly. Until a signed release exists, the check runs,
 // finds nothing installable, and installs nothing.
 const GITHUB_REPO = process.env.QWEN_MEM_UPDATE_REPO || 'thenewnano/qwen-mem-lite';
 
-// Plugin CODE location (server.mjs / package.json / install target) — always
+// Plugin CODE location (server.mjs / package.json / install target) - always
 // homedir-rooted, NEVER follows QWEN_MEM_DIR (see schema.mjs CODE_DIR). Used
 // for dev-mode detection, current-version read, and the install target dir.
 const INSTALL_DIR = CODE_DIR; // ~/.qwen-mem-lite/ (code)
-// DATA/state location — runtime/update-state.json lives with the data (env-aware
+// DATA/state location - runtime/update-state.json lives with the data (env-aware
 // DB_DIR), matching hook-shared RUNTIME_DIR and install.mjs doctor's read path.
 // Equal to INSTALL_DIR unless QWEN_MEM_DIR relocates the data dir.
 const STATE_DIR = DB_DIR;
-const STATE_FILE = join(STATE_DIR, 'runtime', 'update-state.json'); // runtime-dir:stays-put — installation identity
+const STATE_FILE = join(STATE_DIR, 'runtime', 'update-state.json'); // runtime-dir:stays-put - installation identity
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const FETCH_TIMEOUT_MS = 3000; // 3s network timeout
 // When rate-limited we got NO release data, so re-check sooner than the normal 24h
@@ -89,12 +95,17 @@ const NPM_INSTALL_CMD = 'npm install --omit=dev --no-audit --no-fund';
 
 // ── Main Entry ─────────────────────────────────────────────
 export async function checkForUpdate(options = {}) {
+  // A failed lookup returns null by default, which a background caller wants (silent on
+  // network failure). `self-update` printed that null as "Already up to date", so a caller
+  // that reports to a person asks for the failure instead. (D#251)
+  const failed = (rateLimited) =>
+    options.reportFailure ? { updateAvailable: false, updated: false, checkFailed: true, rateLimited } : null;
   try {
     const pluginMode = isPluginMode();
     const force = Boolean(options.force);
     const allowInstall = options.allowInstall ?? !pluginMode;
 
-    if (isDevMode() || process.env.QWEN_MEM_SKIP_UPDATE) return null;
+    if (updateCheckDisabledReason()) return null;
 
     const state = readState();
     if (!force && !shouldCheck(state)) {
@@ -112,15 +123,25 @@ export async function checkForUpdate(options = {}) {
       return null;
     }
 
-    const latest = await fetchLatestRelease();
+    const lookup = await lookupLatestRelease();
+    const latest = lookup.release;
     if (!latest) {
-      // Re-read from disk: a 403 inside fetchWithTimeout just persisted rateLimited:true.
+      // Re-read from disk: a 403 inside fetchJson just persisted rateLimited:true.
       // Spreading the stale in-memory `state` (captured above with rateLimited:false) would
       // clobber that flag back to false, so shouldCheck never honors the backoff and the
       // rate-limit mechanism is dead. Re-reading preserves the freshly-written flag.
+      // lookupError / lookupFailingSince are doctor's evidence: lastCheck alone advanced on a
+      // failed lookup too, so doctor printed a fresh "last check" in green while every lookup
+      // behind a proxy failed from 2026-08-19 to 2026-10-07 (D#255). A success clears both.
       const fresh = readState();
-      saveState({ ...fresh, lastCheck: new Date().toISOString() });
-      return null;
+      const now = new Date().toISOString();
+      saveState({
+        ...fresh,
+        lastCheck: now,
+        lookupError: lookup.error,
+        lookupFailingSince: fresh.lookupFailingSince || now,
+      });
+      return failed(lookup.rateLimited);
     }
 
     const currentVersion = getCurrentVersion();
@@ -160,6 +181,8 @@ export async function checkForUpdate(options = {}) {
       updateAvailable: false,
       rateLimited: false,
       lastError: null,
+      lookupError: null,
+      lookupFailingSince: null,
     });
     return null;
   } catch (err) {
@@ -168,7 +191,7 @@ export async function checkForUpdate(options = {}) {
       const s = readState();
       saveState({ ...s, lastCheck: new Date().toISOString(), lastError: err.message });
     } catch {}
-    return null;
+    return failed(false);
   }
 }
 
@@ -181,13 +204,13 @@ export async function checkForUpdate(options = {}) {
 // Banner string from cached update-state (≤24h stale), or null. No network I/O.
 export function getCachedUpdateBanner() {
   try {
-    if (isDevMode() || process.env.QWEN_MEM_SKIP_UPDATE) return null;
+    if (updateCheckDisabledReason()) return null;
     const state = readState();
     if (state.updateAvailable && state.latestVersion) {
       // Cached "available" state only persists for deferred installs (plugin mode
       // / allowInstall=false); a successful auto-install clears updateAvailable.
       const hint = isPluginMode()
-        ? ' — plugin mode only checks for updates; reinstall/update the plugin to apply it'
+        ? ' - plugin mode only checks for updates; reinstall/update the plugin to apply it'
         : '';
       return `\n📦 qwen-mem-lite: v${state.latestVersion} available (current: v${state.installedVersion})${hint}\n`;
     }
@@ -215,7 +238,7 @@ export function pendingCachedUpdate(state) {
 
 export function isUpdateCheckDue() {
   try {
-    if (isDevMode() || process.env.QWEN_MEM_SKIP_UPDATE) return false;
+    if (updateCheckDisabledReason()) return false;
     return shouldCheck(readState());
   } catch {
     return false;
@@ -223,13 +246,13 @@ export function isUpdateCheckDue() {
 }
 
 // D#187. `CLAUDE_PLUGIN_ROOT` is set in every hook and MCP process Claude Code
-// spawns, so inside those the env var answers "am I a plugin install?" perfectly —
+// spawns, so inside those the env var answers "am I a plugin install?" perfectly -
 // which is why v3.84.1's fix, which reads it, was enough THERE. It is not set in a
-// plain terminal, and a plugin-only user typing `qwen-mem-lite update` therefore
+// plain terminal, and a plugin-only user typing `qwen-mem-lite self-update` therefore
 // fell off both plugin paths at once: getCurrentVersion() returned '0.0.0' (so every
 // release compares as newer, forever), and isPluginMode() was false, so allowInstall
 // defaulted to true and downloadAndInstall laid a full managed tree into
-// ~/.qwen-mem-lite — silently converting a plugin-only install into the hybrid
+// ~/.qwen-mem-lite - silently converting a plugin-only install into the hybrid
 // whose two trees D#184 documents drifting apart.
 //
 // Same root cause as PR #17: process ENVIRONMENT was the only install-shape
@@ -239,7 +262,7 @@ export function isUpdateCheckDue() {
 // Memoised per process. The reason first written here was wrong and the pre-tag review
 // traced it out: it claimed the memo keeps installExtractedRelease()'s post-install
 // isPluginMode() call stable across the managed-tree write. That call cannot depend on
-// this fallback at all — every path reaching installExtractedRelease is a plugin process
+// this fallback at all - every path reaching installExtractedRelease is a plugin process
 // (checkForUpdate cannot reach downloadAndInstall while pluginMode is true, and
 // syncDataDirFromCache is only called from scripts/launch.mjs and
 // scripts/hook-launcher.mjs), so CLAUDE_PLUGIN_ROOT is set and isPluginMode()
@@ -265,7 +288,7 @@ function pluginOnlyInstall() {
   return Boolean(shape && !shape.managed && shape.activePluginVersion);
 }
 
-function isPluginMode() {
+export function isPluginMode() {
   return Boolean(process.env.CLAUDE_PLUGIN_ROOT) || pluginOnlyInstall();
 }
 
@@ -273,7 +296,20 @@ function isPluginMode() {
 // Exported since the schema-skew notice needs it: a dev checkout must be told `git pull`,
 // never a command that would overwrite its working tree. Re-implementing the check at the
 // call site would make it the second copy of a predicate this file has already had to get
-// right twice (whole-dir symlink, then per-file drift) — the twin-drift class.
+// right twice (whole-dir symlink, then per-file drift) - the twin-drift class.
+/**
+ * Why the update check will not look at all, or null when it will. checkForUpdate returns
+ * null both for "nothing newer" and for "never looked", so a caller that reports to a
+ * person asks this first: `self-update` used to print "Already up to date" under
+ * QWEN_MEM_SKIP_UPDATE without a single request (D#251).
+ * @returns {'dev-install'|'QWEN_MEM_SKIP_UPDATE'|null}
+ */
+export function updateCheckDisabledReason() {
+  if (isDevMode()) return 'dev-install';
+  if (process.env.QWEN_MEM_SKIP_UPDATE) return 'QWEN_MEM_SKIP_UPDATE';
+  return null;
+}
+
 export function isDevMode() {
   try {
     // A dev checkout always carries a .git dir. This catches a whole-directory
@@ -283,7 +319,7 @@ export function isDevMode() {
     if (existsSync(join(INSTALL_DIR, '.git'))) return true;
     // Standard `install --dev` symlinks individual source files; checking several
     // core files (not just server.mjs) survives the drift case where one file was
-    // replaced by a plain copy while the install is still symlink-provisioned —
+    // replaced by a plain copy while the install is still symlink-provisioned -
     // mirrors lib/doctor-drift.mjs's "any symlink ⇒ dev" detection. A copy-based
     // real install (install.mjs non-dev) has no symlinks and no .git, so this
     // cannot false-positive into never auto-updating.
@@ -308,73 +344,127 @@ function shouldCheck(state) {
 // ── GitHub API ─────────────────────────────────────────────
 // Try releases/latest first, fallback to tags (some repos only use tags)
 export async function fetchLatestRelease() {
+  const { release } = await lookupLatestRelease();
+  if (release) clearRecordedLookupFailure();
+  return release;
+}
+
+// repair looks up through fetchLatestRelease, so a lookup that succeeds there is evidence against
+// the failure doctor reports; without this the warning outlived the repair by a full check interval
+// (D#266). Only the two fields that decide whether doctor warns. lastCheck, latestVersion and
+// rateLimited belong to checkForUpdate (the background check and self-update): rateLimited picks
+// its interval (6 h, else 24 h), so clearing it here pushed the next check back by up to 18 h
+// (post-release review). No write when there is nothing to clear.
+function clearRecordedLookupFailure() {
+  const state = readState();
+  if (!state.lookupError && !state.lookupFailingSince) return;
+  saveState({ ...state, lookupError: null, lookupFailingSince: null });
+}
+
+// One lookup's outcome, returned rather than kept in module state: a module flag let a second
+// lookup running at the same time read the first one's 403 (D#260). `rateLimited` is THIS
+// lookup's refusal; the persisted flag is not that, since only a successful checkForUpdate (the
+// background check or self-update) clears it (pre-tag review of cd9f1ab7). `error` says why there
+// is no release, for doctor (D#255).
+async function lookupLatestRelease() {
   const headers = {
     Accept: 'application/vnd.github+json',
     'User-Agent': 'qwen-mem-lite-updater/1.0',
   };
+  const fail = (rateLimited, error) => ({ release: null, rateLimited, error });
 
   // Attempt 1: GitHub Releases API
-  const result = await fetchWithTimeout(
-    `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
-    headers,
-  );
-  if (result === 'rate-limited') return null;
+  const result = await fetchJson(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, headers);
+  if (result.rateLimited) return fail(true, result.error);
   // Guard tag_name: a 200-OK with a malformed body ({} / {tag_name:null}) would throw
   // `Cannot read properties of undefined (reading 'replace')`. Caught upstream, but it
-  // poisons lastError and blocks the tags fallback below — fall through instead.
-  if (result && typeof result.tag_name === 'string') {
+  // poisons lastError and blocks the tags fallback below - fall through instead.
+  const rel = result.body;
+  if (rel && typeof rel.tag_name === 'string') {
     return {
-      version: result.tag_name.replace(/^v/, ''),
-      tarballUrl: result.tarball_url,
-      releaseUrl: result.html_url,
-      assets: Array.isArray(result.assets) ? result.assets : [],
+      release: {
+        version: rel.tag_name.replace(/^v/, ''),
+        tarballUrl: rel.tarball_url,
+        releaseUrl: rel.html_url,
+        assets: Array.isArray(rel.assets) ? rel.assets : [],
+      },
+      rateLimited: false,
+      error: null,
     };
   }
 
   // Attempt 2: Tags API fallback (for repos without formal releases)
-  const tags = await fetchWithTimeout(`https://api.github.com/repos/${GITHUB_REPO}/tags?per_page=1`, headers);
-  if (tags === 'rate-limited') return null;
-  if (Array.isArray(tags) && tags.length > 0 && typeof tags[0]?.name === 'string') {
-    const tag = tags[0];
+  const tags = await fetchJson(`https://api.github.com/repos/${GITHUB_REPO}/tags?per_page=1`, headers);
+  if (tags.rateLimited) return fail(true, tags.error);
+  const tagList = tags.body;
+  if (Array.isArray(tagList) && tagList.length > 0 && typeof tagList[0]?.name === 'string') {
+    const tag = tagList[0];
     return {
-      version: tag.name.replace(/^v/, ''),
-      tarballUrl: `https://api.github.com/repos/${GITHUB_REPO}/tarball/${tag.name}`,
-      releaseUrl: `https://github.com/${GITHUB_REPO}/releases/tag/${tag.name}`,
-      assets: [],
+      release: {
+        version: tag.name.replace(/^v/, ''),
+        tarballUrl: `https://api.github.com/repos/${GITHUB_REPO}/tarball/${tag.name}`,
+        releaseUrl: `https://github.com/${GITHUB_REPO}/releases/tag/${tag.name}`,
+        assets: [],
+      },
+      rateLimited: false,
+      error: null,
     };
   }
 
-  return null;
+  const relErr = result.error || 'no release in the response';
+  const tagErr = tags.error || 'no tag in the response';
+  return fail(false, relErr === tagErr ? relErr : `${relErr}; tags: ${tagErr}`);
 }
 
-async function fetchWithTimeout(url, headers) {
+// Why a request produced no usable body, in words doctor can print: the status, or the
+// transport error's code (native fetch wraps it as `fetch failed` with the code on `cause`).
+// The proxy is named redacted - HTTP(S)_PROXY may carry user:pass@.
+// Total: it runs inside fetchJson's catch, and a throw there would reject the lookup the
+// background check relies on never rejecting.
+function describeLookupError(e, proxy) {
+  try {
+    const what =
+      e?.name === 'AbortError'
+        ? `timed out after ${FETCH_TIMEOUT_MS / 1000} s`
+        : String(e?.cause?.code || e?.code || e?.message || e || 'unknown error');
+    return `${what.slice(0, 160)}${proxy ? ` via proxy ${redactProxyUrl(proxy)}` : ''}`;
+  } catch {
+    return 'unknown error';
+  }
+}
+
+async function fetchJson(url, headers) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  let proxy = null;
   try {
     // Proxy configured → CONNECT tunnel; otherwise native fetch, byte-for-byte
     // the previous behaviour. Both shapes expose { status, ok, json() }, and the
     // tunnel REJECTS on transport failure exactly as a failed fetch does, so the
-    // catch below still returns null and the caller still stays silent.
+    // catch below still yields no body and the caller still stays silent.
     // The AbortController above governs only the fetch branch; the tunnel takes
     // the same budget as an explicit argument and bounds the whole call with it
     // (redirect chain included). (pre-tag review NOTE 7)
-    const proxy = httpConnectProxyFor(url);
+    proxy = httpConnectProxyFor(url);
     const res = proxy
       ? await getViaConnectProxy(proxy, url, { headers, timeout: FETCH_TIMEOUT_MS })
       : await fetch(url, { signal: controller.signal, headers });
     if (res.status === 403 || res.status === 429) {
       // 429 = GitHub secondary rate limit (403 = primary). Both must route to the 6h
-      // rate-limit backoff, not the 24h transient-failure path — else a 429 defers the
+      // rate-limit backoff, not the 24h transient-failure path - else a 429 defers the
       // next check a full day instead of retrying on the shorter rate-limit cadence.
       const state = readState();
       saveState({ ...state, rateLimited: true });
       debugLog('DEBUG', 'hook-update', 'GitHub API rate limited; will retry on the 6h rate-limit cadence');
-      return 'rate-limited';
+      return {
+        rateLimited: true,
+        error: describeLookupError({ message: `HTTP ${res.status} (rate limited)` }, proxy),
+      };
     }
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
+    if (!res.ok) return { error: describeLookupError({ message: `HTTP ${res.status}` }, proxy) };
+    return { body: await res.json() };
+  } catch (e) {
+    return { error: describeLookupError(e, proxy) };
   } finally {
     clearTimeout(timeout);
   }
@@ -392,13 +482,13 @@ export function compareVersions(a, b) {
 }
 
 // The version of the code this install runs. INSTALL_DIR is asked FIRST and the
-// plugin cache is a FALLBACK, not a precedence — the order is load-bearing in
+// plugin cache is a FALLBACK, not a precedence - the order is load-bearing in
 // both directions:
 //
 //   • Plugin cache reachable at all (PR #17): a pure-plugin ~/.qwen-mem-lite/
-//     holds only the DB + runtime state and never any source — the same invariant
+//     holds only the DB + runtime state and never any source - the same invariant
 //     syncDataDirFromCache states from the other side in its
-//     `no-existing-code-install` guard — so the INSTALL_DIR read cannot succeed
+//     `no-existing-code-install` guard - so the INSTALL_DIR read cannot succeed
 //     there and the '0.0.0' last resort made checkForUpdate compute
 //     hasUpdate=true forever, nagging `(current: v0.0.0)` at every SessionStart
 //     on a fully current cache.
@@ -407,12 +497,12 @@ export function compareVersions(a, b) {
 //     (install.mjs → isRepairDowngrade), and repair is spawned by
 //     scripts/hook-launcher.mjs's attemptHeal WITHOUT an env override, so
 //     CLAUDE_PLUGIN_ROOT is set in that child too. On a hybrid install the two
-//     trees legitimately differ — that drift is the entire reason
-//     syncDataDirFromCache exists — and answering with the cache's version would
+//     trees legitimately differ - that drift is the entire reason
+//     syncDataDirFromCache exists - and answering with the cache's version would
 //     judge one tree by the other's.
 //
 // A package.json with no `version` field falls through rather than returning
-// undefined. compareVersions does NOT blow up on it — `String(undefined)` parses
+// undefined. compareVersions does NOT blow up on it - `String(undefined)` parses
 // to [NaN] and every read is `pa[i] || 0`, so undefined degrades to exactly
 // 0.0.0: the same permanent hasUpdate=true this function exists to prevent, plus
 // a banner rendered as `(current: vundefined)` from the persisted state.
@@ -434,14 +524,14 @@ export function getCurrentVersion() {
   }
   // D#187: no env var in a plain terminal, so ask the filesystem which plugin
   // version this machine actually runs. Without this a plugin-only user's
-  // `qwen-mem-lite update` reads 0.0.0 and every release compares as newer.
+  // `qwen-mem-lite self-update` reads 0.0.0 and every release compares as newer.
   const active = installShape()?.activePluginVersion;
   if (active) {
     try {
       const pkg = JSON.parse(readFileSync(join(active.root, 'package.json'), 'utf8'));
       if (pkg.version) return pkg.version;
     } catch {
-      /* the cache dir name IS the version — use it rather than 0.0.0 */
+      /* the cache dir name IS the version - use it rather than 0.0.0 */
     }
     if (active.version) return active.version;
   }
@@ -450,7 +540,7 @@ export function getCurrentVersion() {
 
 // SWITCHABLE_PATHS = everything in SOURCE_FILES plus the recursive dirs that
 // install.mjs copies as whole subtrees (scripts, node_modules). It's
-// built per-call from the *tarball's* manifest, not the locally-imported one —
+// built per-call from the *tarball's* manifest, not the locally-imported one -
 // see loadReleaseManifest comment for why.
 function buildSwitchablePaths(sourceFiles) {
   return [...sourceFiles, 'scripts', 'node_modules'];
@@ -461,7 +551,7 @@ function buildSwitchablePaths(sourceFiles) {
 // LOCAL_SOURCE_FILES is frozen at install time, so any entry added in the
 // release we're installing is invisible to the running update. Pre-fix
 // (≤ v2.83.2) used LOCAL_SOURCE_FILES for both copyReleaseIntoStaging and
-// SWITCHABLE_PATHS — v2.80.x → v2.81.0 auto-update copied the new hook.mjs
+// SWITCHABLE_PATHS - v2.80.x → v2.81.0 auto-update copied the new hook.mjs
 // (in the v2.80 manifest) but skipped lib/cite-back-hint.mjs (added in v2.81),
 // breaking SessionStart on every machine that auto-updated and killing the
 // hook chain that would otherwise self-heal on the next round.
@@ -521,7 +611,7 @@ async function downloadAndInstall(tarballUrl, expectedVersion, assets = []) {
       // R10 P3-18: `-f` makes curl exit non-zero on an HTTP error instead of writing the
       // error BODY to the output file. Without it a 404 or a rate-limit page was saved as
       // release.tar.gz, tar failed on it, and the debug log reported "tarball corrupt" for
-      // what was really a network or auth problem — the wrong thing to go debug.
+      // what was really a network or auth problem - the wrong thing to go debug.
       ['-fsL', '-H', 'Accept: application/vnd.github+json', tarballUrl, '-o', tarballPath],
       { timeout: 30000, stdio: 'pipe' },
     );
@@ -537,7 +627,7 @@ async function downloadAndInstall(tarballUrl, expectedVersion, assets = []) {
     }
 
     // P1 supply-chain: cryptographically verify the release before installing.
-    // Opportunistic + inert until keyed — ok=false ONLY on a real tampering
+    // Opportunistic + inert until keyed - ok=false ONLY on a real tampering
     // signal (signature present but invalid, or a file hash mismatch). Missing
     // key / missing signature assets / fetch failure / escape hatch all proceed,
     // so this never bricks auto-update for unsigned or pre-key releases.
@@ -546,7 +636,7 @@ async function downloadAndInstall(tarballUrl, expectedVersion, assets = []) {
       debugLog(
         'WARN',
         'hook-update',
-        `Release authenticity check failed (${authentic.action}) — aborting update`,
+        `Release authenticity check failed (${authentic.action}) - aborting update`,
       );
       return false;
     }
@@ -571,7 +661,7 @@ async function downloadAndInstall(tarballUrl, expectedVersion, assets = []) {
 //
 // This is NOT a full signature check. A motivated attacker who controls the
 // repo can rewrite package.json. Future: GitHub release attestations
-// (`gh attestation verify`) — requires publish.yml to opt into attestations
+// (`gh attestation verify`) - requires publish.yml to opt into attestations
 // and a sigstore trust anchor.
 export function validateExtractedTarball(sourceDir, expectedVersion, expectedName = 'qwen-mem-lite') {
   const pkgPath = join(sourceDir, 'package.json');
@@ -604,10 +694,10 @@ export function validateExtractedTarball(sourceDir, expectedVersion, expectedNam
 // Pure downgrade-guard predicate (exported for unit testing). True when `relVersion` is
 // strictly OLDER than the installed `localVersion`. Under signing an attacker cannot forge a
 // release, but CAN replay an older validly-signed one (a since-patched version) by pinning the
-// GitHub "latest" API response — so repair(), which installs whatever fetchLatestRelease()
+// GitHub "latest" API response - so repair(), which installs whatever fetchLatestRelease()
 // resolves, must refuse to move BACKWARD (parity with checkForUpdate, which only installs when
 // compareVersions(latest,current) > 0). A null/unknown local version (a broken install that
-// genuinely needs repair, or an unreadable package.json) is allowed through — fail toward
+// genuinely needs repair, or an unreadable package.json) is allowed through - fail toward
 // recoverability, since the signature check downstream still gates authenticity. (P3-3)
 export function isRepairDowngrade(relVersion, localVersion) {
   if (!relVersion || !localVersion) return false;
@@ -617,7 +707,7 @@ export function isRepairDowngrade(relVersion, localVersion) {
 // ── Release signature verification (P1 supply-chain hardening) ──────────────
 // Embedded Ed25519 PUBLIC key (SPKI PEM): THIS FORK's own signing key, rotated at the fork.
 // Upstream's private half is not ours to hold, so a fork release can never be verified by
-// upstream's key — and since this regime is FAIL CLOSED, an unsigned release is REFUSED,
+// upstream's key - and since this regime is FAIL CLOSED, an unsigned release is REFUSED,
 // which is the protection wanted here: nothing installs over the fork without a signature
 // the fork's own key produced.
 //
@@ -625,13 +715,13 @@ export function isRepairDowngrade(relVersion, localVersion) {
 // signer: scripts/sign-release.mjs; verifier core: lib/release-digest.mjs. The
 // QWEN_MEM_SKIP_SIG_VERIFY env escape hatch still forces a skip. To ROTATE: generate a new
 // keypair, set the new private key as the secret, ship one signed release with it, and only
-// THEN replace the key below — embedding a key whose releases are not yet signed bricks
+// THEN replace the key below - embedding a key whose releases are not yet signed bricks
 // auto-update (fail-closed on unsigned). Setting this back to '' reverts to opportunistic
 // (install-unsigned) behavior.
 //
 // Verified end-to-end before being embedded: the manifest this key signed for the current
 // commit validated against a real GitHub tarball of the same commit under this key, and came
-// back signature-invalid under upstream's — so the check below is bound to the right key.
+// back signature-invalid under upstream's - so the check below is bound to the right key.
 const RELEASE_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAcysf+tJfccnsSqkcUo1mTKR6rxc+MBdQR94YldUOssM=
 -----END PUBLIC KEY-----
@@ -639,7 +729,7 @@ MCowBQYDK2VwAyEAcysf+tJfccnsSqkcUo1mTKR6rxc+MBdQR94YldUOssM=
 const MANIFEST_ASSET_NAME = 'release-manifest.json';
 const SIGNATURE_ASSET_NAME = 'release-manifest.json.sig';
 
-// Pure verifier (no I/O) — exported for unit testing. ok=true ONLY when the
+// Pure verifier (no I/O) - exported for unit testing. ok=true ONLY when the
 // Ed25519 signature over `manifestBytes` is valid for `publicKeyPem` AND every
 // file the manifest lists matches its sha256 under `extractedDir`.
 export function verifyDownloadedRelease(
@@ -680,7 +770,7 @@ export async function fetchAssetBuffer(url) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    // getViaConnectProxy follows redirects itself — native fetch does that for
+    // getViaConnectProxy follows redirects itself - native fetch does that for
     // free, and this URL always 302s from github.com to the asset CDN, so a
     // tunnel without redirect handling would hand back an empty 302 body.
     const proxy = httpConnectProxyFor(url);
@@ -696,9 +786,9 @@ export async function fetchAssetBuffer(url) {
 
 // I/O gate called from downloadAndInstall after validateExtractedTarball.
 // Two regimes, switched by whether a public key is embedded:
-//   • No embedded key (the shipped default, RELEASE_PUBLIC_KEY=''): INERT —
+//   • No embedded key (the shipped default, RELEASE_PUBLIC_KEY=''): INERT -
 //     skipped-no-pubkey so an un-provisioned key can never brick auto-update.
-//   • Key embedded (signing active): FAIL CLOSED — a missing signature asset, a
+//   • Key embedded (signing active): FAIL CLOSED - a missing signature asset, a
 //     signature-asset fetch failure, or an invalid signature all return ok=false.
 //     Once we publish signed releases, an attacker who can publish a release or MITM
 //     the asset CDN must not bypass verification by stripping the signature assets
@@ -709,11 +799,11 @@ export async function fetchAssetBuffer(url) {
 export async function verifyReleaseAuthenticity(extractedDir, assets, publicKey = RELEASE_PUBLIC_KEY) {
   if (process.env.QWEN_MEM_SKIP_SIG_VERIFY) {
     // Loud on stderr, not via debugLog: this disables the strongest control in the
-    // update path, and debugLog is gated behind QWEN_MEM_DEBUG — the one case
+    // update path, and debugLog is gated behind QWEN_MEM_DEBUG - the one case
     // where silence is exactly wrong. An operator who set the var sees it; an
     // attacker who set it in someone's environment loses the quiet.
     process.stderr.write(
-      '[qwen-mem-lite] WARNING: QWEN_MEM_SKIP_SIG_VERIFY is set — installing this release WITHOUT signature verification.\n',
+      '[qwen-mem-lite] WARNING: QWEN_MEM_SKIP_SIG_VERIFY is set - installing this release WITHOUT signature verification.\n',
     );
     return { ok: true, action: 'skipped-env' };
   }
@@ -726,7 +816,7 @@ export async function verifyReleaseAuthenticity(extractedDir, assets, publicKey 
     debugLog(
       'WARN',
       'hook-update',
-      'Signed-release mode: release carries no signature assets — refusing to install (possible downgrade/strip)',
+      'Signed-release mode: release carries no signature assets - refusing to install (possible downgrade/strip)',
     );
     return { ok: false, action: 'missing-signature' };
   }
@@ -740,7 +830,7 @@ export async function verifyReleaseAuthenticity(extractedDir, assets, publicKey 
     debugLog(
       'WARN',
       'hook-update',
-      `Signed-release mode: signature asset fetch failed (${e.message}) — refusing to install this cycle`,
+      `Signed-release mode: signature asset fetch failed (${e.message}) - refusing to install this cycle`,
     );
     return { ok: false, action: 'signature-fetch-failed' };
   }
@@ -751,7 +841,7 @@ export async function verifyReleaseAuthenticity(extractedDir, assets, publicKey 
   return { ok: true, action: 'verified' };
 }
 
-// opts.skipNpmInstall — copy + atomically switch the source files WITHOUT
+// opts.skipNpmInstall - copy + atomically switch the source files WITHOUT
 // running `npm install` in staging. Used by syncDataDirFromCache: when the
 // source is a local plugin-cache version (not a downloaded tarball), the
 // target data dir already carries a working, ABI-correct node_modules, so a
@@ -764,18 +854,22 @@ export async function verifyReleaseAuthenticity(extractedDir, assets, publicKey 
 // post-install smoke gate so there is ONE rollback implementation.
 // Swap-window marker. The rename loop is atomic per FILE, not per file SET, so a
 // hook process that starts mid-loop can resolve hook.mjs from vN and one of its
-// imports from vN+1 — the install.lock only excludes concurrent WRITERS, not
+// imports from vN+1 - the install.lock only excludes concurrent WRITERS, not
 // readers. scripts/hook-launcher.mjs skips a fire while this marker is live;
 // hooks are best-effort, so losing one fire beats importing a mixed module graph.
 // Carries pid + ts because the launcher must never be muted permanently by an
 // updater that was killed mid-swap (it applies the same staleness bound).
-const SWAP_MARKER = join(STATE_DIR, 'runtime', 'swap-in-progress'); // runtime-dir:stays-put — installation identity
+const SWAP_MARKER = join(STATE_DIR, 'runtime', 'swap-in-progress'); // runtime-dir:stays-put - installation identity
 // Intent journal, written INSIDE the backup dir before each rename. On a hard kill
-// the backup dir survives (every normal exit deletes it) and this file says exactly
+// the backup dir survives (a normal exit deletes it, unless its journal cannot be
+// removed, D#283) and this file says exactly
 // which paths were in flight, so the next entry can finish the rollback at the right
-// granularity — a bare directory walk cannot tell a nested relPath from a directory
+// granularity - a bare directory walk cannot tell a nested relPath from a directory
 // relPath like `node_modules`.
-const SWAP_JOURNAL = '.swap-journal.json';
+const SWAP_JOURNAL = '.swap-journal.json'; // doctor and cleanup spell it SWAP_JOURNAL_NAME (lib/doctor-stale-temp.mjs)
+// Written into the backup dir when its swap is over (committed, or rolled back): never replay it
+// (D#292 C). Doctor and cleanup spell it SWAP_RESOLVED_NAME.
+const SWAP_RESOLVED = '.swap-resolved';
 
 function markSwapStart() {
   try {
@@ -796,22 +890,191 @@ function clearSwapMarker() {
 
 // Write-ahead: journal the INTENT before the rename, never after. Journalling after
 // a successful rename leaves a window where the file has already moved into the
-// backup dir but nothing records it — recovery would then delete the backup dir with
+// backup dir but nothing records it - recovery would then delete the backup dir with
 // the only copy of that file inside it. rollbackInstall guards every entry with
 // existsSync/force, so an intent that never happened is a harmless no-op.
+//
+// By temp file and rename, and it throws (D#289). writeFileSync truncates the journal before it
+// writes it, so a kill or ENOSPC in between left an empty journal, which recovery read as "nothing
+// moved" and then deleted the backups. A write error was swallowed, so the rename it was meant to
+// record went ahead unrecorded. Now the previous journal stays whole until the new one replaces
+// it, and a swap that cannot journal stops before the rename, through the rollback in the caller.
+//
+// Retried for a moment on EPERM/EBUSY/EACCES: the rename replaces a file just written, about twice
+// per switched path, and on Windows a scanner holding that file makes a rename over it fail
+// briefly. Each failure stopped the update and rolled it back, and a rollback is where a restore
+// can fail (D#292 A). Bounded at about 0.7 s, then it throws as before.
+const JOURNAL_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
 function journalSwap(backupDir, backedUp, installed) {
+  const data = JSON.stringify({ backedUp, installed });
+  for (let attempt = 1; ; attempt++) {
+    try {
+      atomicWriteFileSync(join(backupDir, SWAP_JOURNAL), data);
+      return;
+    } catch (e) {
+      if (attempt >= 8 || !JOURNAL_RETRY_CODES.has(e.code)) throw e;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * attempt);
+    }
+  }
+}
+
+// Clean up after a swap that is over: committed, or rolled back. Never throws, because a cleanup
+// that throws reaches the caller's catch, which rolls the swap back again (D#283; EBUSY is
+// ordinary on Windows and `force` does not suppress it).
+//
+// The dir is marked resolved first (D#292 C). A journal left behind (it could not be removed, or a
+// kill came first) was replayed by the next recovery: over a committed swap that put the previous
+// release back, and over a rolled-back one whose journal outlived a later swap it deleted a path
+// that swap had installed. Recovery, install, cleanup and doctor leave a resolved dir's journal
+// alone. The marker is a new empty file, so it needs no access to the journal a failed removal
+// could not get. With the marker written, a journal that stays is inert and the backups go anyway,
+// child by child around the journal and the marker: a recursive removal of the dir takes children
+// in directory order and stops at the first failure, so it could take the marker and then stop at
+// the journal (v6.25.1 delta review). If the marker cannot be written either, the journal still
+// goes before the backups, and if it stays, so do the backups, complete, so that a replay restores
+// one whole release.
+function discardBackupDir(backupDir) {
+  let resolved = false;
   try {
-    writeFileSync(join(backupDir, SWAP_JOURNAL), JSON.stringify({ backedUp, installed }));
+    writeFileSync(join(backupDir, SWAP_RESOLVED), '');
+    resolved = true;
   } catch (e) {
-    debugCatch(e, 'journalSwap');
+    debugCatch(e, 'mark-swap-resolved');
+  }
+  try {
+    rmSync(join(backupDir, SWAP_JOURNAL), { force: true });
+  } catch (e) {
+    debugCatch(e, 'discard-swap-journal');
+    if (resolved) removeBackupsBeside(backupDir);
+    return;
+  }
+  try {
+    rmSync(backupDir, { recursive: true, force: true });
+  } catch (e) {
+    debugCatch(e, 'discard-backup-dir');
+  }
+}
+
+function removeBackupsBeside(backupDir) {
+  let names = [];
+  try {
+    names = readdirSync(backupDir);
+  } catch (e) {
+    debugCatch(e, 'discard-backups-list');
+  }
+  for (const name of names) {
+    if (name === SWAP_JOURNAL || name === SWAP_RESOLVED) continue;
+    try {
+      rmSync(join(backupDir, name), { recursive: true, force: true });
+    } catch (e) {
+      debugCatch(e, 'discard-backup');
+    }
+  }
+}
+
+// Mark resolved the backup dirs a swap found left over and unfinished (recovery leaves one whose
+// journal it cannot read right now). Called once that swap has committed: it replaced every path
+// it switches, so a later replay of an older journal, once it can be read, would only mix the
+// releases back (v6.25.1 delta review). The same retirement install does after writing the tree.
+function retireUnresolvedBackups(targetDir, names) {
+  for (const name of names) {
+    try {
+      writeFileSync(join(targetDir, name, SWAP_RESOLVED), '');
+      debugLog('WARN', 'hook-update', `Retired ${name}: the committed swap replaced what its journal names`);
+    } catch (e) {
+      debugCatch(e, 'retire-unresolved-backup');
+    }
+  }
+}
+
+// Backup dirs still unresolved are undone like a stack, newest first (D#293), and their order is
+// carried in the dir NAME, `.update-backup-s<seq>-<ms>-<pid>`: a swap takes one more than the
+// highest seq among the unresolved dirs it finds. Neither the wall clock in the name nor a field in
+// the journal decides it: a clock can go back, and a journal can be unreadable at the moment the
+// order is needed (a scanner holding it on Windows), which made a replay lose a file (review P2-1).
+// A dir named before 6.25.2 has no seq and reads as 0, so it comes last.
+const BACKUP_SEQ_RE = /^\.update-backup-s(\d+)-/;
+const swapSeqOf = (name) => Number(BACKUP_SEQ_RE.exec(name)?.[1] ?? 0);
+const nextSwapSeq = (names) => Math.max(0, ...names.map(swapSeqOf)) + 1;
+
+/** Unresolved backup dir names in the order recovery undoes them: newest first, by seq, then name.
+ * cleanup --dry-run walks the same order to say what recovery would leave (D#307 F3). */
+const unresolvedSwapOrder = (names) =>
+  [...names].sort((a, b) => swapSeqOf(b) - swapSeqOf(a) || b.localeCompare(a));
+
+/**
+ * Which unresolved backup dirs recovery would leave in place because a newer one's journal cannot be
+ * read: recovery walks them newest first and stops there (recoverInterruptedSwaps). cleanup --dry-run
+ * reports from this instead of judging each dir alone (D#307 F3). It cannot foresee a file that
+ * fails to go back, which also stops the walk.
+ * @param {{name: string, readable: boolean}[]} swaps
+ * @returns {Map<string, string>} name → the newer unreadable dir that blocks it
+ */
+export function swapsBlockedByUnreadable(swaps) {
+  const readable = new Map(swaps.map((s) => [s.name, s.readable]));
+  const blockedBy = new Map();
+  let newestUnreadable = null;
+  for (const name of unresolvedSwapOrder([...readable.keys()])) {
+    if (newestUnreadable) blockedBy.set(name, newestUnreadable);
+    else if (!readable.get(name)) newestUnreadable = name;
+  }
+  return blockedBy;
+}
+
+// The `.update-backup-*` dirs in targetDir that carry no resolved marker.
+function unresolvedBackups(targetDir) {
+  try {
+    return readdirSync(targetDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name.startsWith('.update-backup-'))
+      .map((e) => e.name)
+      .filter((name) => !existsSync(join(targetDir, name, SWAP_RESOLVED)));
+  } catch (e) {
+    debugCatch(e, 'list-unresolved-backups');
+    return [];
+  }
+}
+
+// The backup dir is resolved before staging goes: removing a whole staging tree takes long enough
+// for a kill to land in, and a kill there left a committed swap's journal to be replayed.
+//
+// After a rollback, `notRestored` lists what it could not put back. The backup dir then holds the
+// only copy of each, so it stays whole with its journal, unresolved, and the next entry replays it
+// (D#293). The caller used to delete it. Nothing gates a later update on it: one that commits
+// retires it, so a restore that keeps failing cannot block updates (a2cf96a1's gate did).
+function discardSwapDirs(stagingDir, backupDir, notRestored = []) {
+  if (notRestored.length === 0) discardBackupDir(backupDir);
+  else
+    debugLog(
+      'WARN',
+      'hook-update',
+      `Kept ${backupDir}: could not put back ${notRestored.join(', ')}; the next update, install or cleanup tries again`,
+    );
+  try {
+    rmSync(stagingDir, { recursive: true, force: true });
+  } catch (e) {
+    debugCatch(e, 'discard-staging-dir');
+  }
+}
+
+// Whether a path is there, by lstat: a symlink counts whatever it points to, and an error other
+// than "no such path" counts as there. existsSync follows the link and answers false on EACCES, so
+// a backup that was a dangling symlink read as already put back, and was deleted (review r2 F11).
+function present(p) {
+  try {
+    lstatSync(p);
+    return true;
+  } catch (e) {
+    return e.code !== 'ENOENT' && e.code !== 'ENOTDIR';
   }
 }
 
 /**
  * Finish any swap a previous process was killed in the middle of, then clear its
  * residue. Called on every install entry, under the install lock, BEFORE a new
- * staging/backup pair is created.
- * @returns {number} number of interrupted swaps rolled back
+ * staging/backup pair is created; and by install.mjs, under the same lock, before
+ * `install` (and so `repair`) writes the tree and from `cleanup` (D#289).
+ * @returns {number} number of backup dirs processed, with a journal or without; one left in place
+ *   because its journal cannot be read is not counted
  */
 export function recoverInterruptedSwaps(targetDir = INSTALL_DIR) {
   let entries;
@@ -822,11 +1085,12 @@ export function recoverInterruptedSwaps(targetDir = INSTALL_DIR) {
   }
 
   let recovered = 0;
+  const pending = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dir = join(targetDir, entry.name);
 
-    // Staging holds only copies — nothing was switched out of it, so it is residue,
+    // Staging holds only copies - nothing was switched out of it, so it is residue,
     // not a torn swap.
     if (entry.name.startsWith('.update-staging-')) {
       try {
@@ -838,61 +1102,124 @@ export function recoverInterruptedSwaps(targetDir = INSTALL_DIR) {
     }
     if (!entry.name.startsWith('.update-backup-')) continue;
 
+    // Its swap is over and only its cleanup failed: remove what is left, never replay it (D#292 C).
+    if (existsSync(join(dir, SWAP_RESOLVED))) {
+      discardBackupDir(dir);
+      recovered++;
+      continue;
+    }
+    pending.push(entry.name);
+  }
+
+  // Several dirs are unresolved only when a rollback could not put every file back (D#293), and
+  // they are undone like a stack: newest first by the seq in the name, and none older while a newer
+  // one is unfinished or cannot be read. An older journal replayed first puts back a file that a
+  // newer journal, which installed that path, then deletes; with nothing left to restore it from.
+  for (const name of unresolvedSwapOrder(pending)) {
+    const dir = join(targetDir, name);
+    // No journal: the swap is over and its journal is gone (or it was killed before its first
+    // rename), so there is nothing to replay and the dir is residue. A journal that is there but
+    // cannot be read, or not as one (an in-place write of 6.25.0 or older torn by a kill), says
+    // nothing about what moved, and the dir may hold the only copy of it: leave it, and everything
+    // older with it. It used to be read as "nothing moved" and deleted (v6.25.1 review). doctor and
+    // cleanup name it; the next swap that commits, or an install, retires it.
+    let raw;
+    try {
+      raw = readFileSync(join(dir, SWAP_JOURNAL), 'utf8');
+    } catch (e) {
+      if (e.code === 'ENOENT') {
+        discardBackupDir(dir);
+        recovered++;
+        continue;
+      }
+      debugCatch(e, 'recover-read-journal');
+      break;
+    }
     let journal;
     try {
-      journal = JSON.parse(readFileSync(join(dir, SWAP_JOURNAL), 'utf8'));
+      journal = JSON.parse(raw);
     } catch {
       journal = null;
     }
-    const backedUp = Array.isArray(journal?.backedUp) ? journal.backedUp : [];
-    const installed = Array.isArray(journal?.installed) ? journal.installed : [];
-    // Copies: rollbackInstall reverses the arrays in place.
-    rollbackInstall([...installed], [...backedUp], dir, targetDir);
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch (e) {
-      debugCatch(e, 'recover-backup');
+    if (!Array.isArray(journal?.backedUp) || !Array.isArray(journal?.installed)) {
+      debugLog(
+        'WARN',
+        'hook-update',
+        `Left ${name} in place, and any older one: its swap journal cannot be read`,
+      );
+      break;
     }
+    const notRestored = rollbackInstall(journal.installed, journal.backedUp, dir, targetDir);
+    if (notRestored.length > 0) {
+      debugLog(
+        'WARN',
+        'hook-update',
+        `Could not finish ${name}: ${notRestored.join(', ')} not put back; left, with any older one, for the next entry`,
+      );
+      break;
+    }
+    discardBackupDir(dir);
     recovered++;
     debugLog(
       'WARN',
       'hook-update',
-      `Recovered an interrupted update swap: restored ${backedUp.length} path(s) from ${entry.name}`,
+      `Recovered an interrupted update swap: restored ${journal.backedUp.length} path(s) from ${name}`,
     );
   }
   return recovered;
 }
 
+// A rollback swaps a file SET back just as the install swapped it in, so it holds the same
+// marker for the same reason (D#239 g). After the MED-5 smoke gate the loop has already cleared
+// it; after a throw inside the loop it is still set, and this call takes it over.
+//
+// Safe to run twice over one journal (D#283). A backed-up path whose backup is gone holds the OLD
+// file already, restored by an earlier rollback or never moved out, so it is not deleted: a
+// second rollback used to delete every installed path, by then the only copy of the old install.
+// That holds for a journal this code wrote: its cleanup removes the journal before any backup, and
+// when the journal cannot be removed, the resolved marker keeps it from being replayed. A backup
+// dir 6.25.0 or older left half deleted beside its journal can still replay to a mix.
+// The arrays are copied, not reversed in place, so a caller's journal is left as it was.
+//
+// Returns the backed-up paths it could not put back, still in the backup dir (D#293).
 function rollbackInstall(installed, backedUp, backupDir, targetDir) {
-  for (const relPath of installed.reverse()) {
-    try {
-      rmSync(join(targetDir, relPath), { recursive: true, force: true });
-    } catch {
-      /* best-effort */
-    }
-  }
-  for (const relPath of backedUp.reverse()) {
-    const backupPath = join(backupDir, relPath);
-    const targetPath = join(targetDir, relPath);
-    try {
-      if (existsSync(backupPath)) {
-        mkdirSync(dirname(targetPath), { recursive: true });
-        renameSync(backupPath, targetPath);
+  markSwapStart();
+  try {
+    const restored = new Set(backedUp.filter((relPath) => !present(join(backupDir, relPath))));
+    for (const relPath of [...installed].reverse()) {
+      if (restored.has(relPath)) continue;
+      try {
+        rmSync(join(targetDir, relPath), { recursive: true, force: true });
+      } catch {
+        /* best-effort */
       }
-    } catch (restoreErr) {
-      debugCatch(restoreErr, `installExtractedRelease-restore-${relPath}`);
     }
+    for (const relPath of [...backedUp].reverse()) {
+      const backupPath = join(backupDir, relPath);
+      const targetPath = join(targetDir, relPath);
+      try {
+        if (present(backupPath)) {
+          mkdirSync(dirname(targetPath), { recursive: true });
+          renameSync(backupPath, targetPath);
+        }
+      } catch (restoreErr) {
+        debugCatch(restoreErr, `installExtractedRelease-restore-${relPath}`);
+      }
+    }
+  } finally {
+    clearSwapMarker();
   }
+  return backedUp.filter((relPath) => present(join(backupDir, relPath)));
 }
 
 // MED-5 post-install health gate: load-test the freshly-switched code in a SEPARATE
 // process before the backup is discarded. A clean file swap can still yield an
-// install that won't boot — a syntax error, an unresolved import from a half-applied
+// install that won't boot - a syntax error, an unresolved import from a half-applied
 // mixed-version swap (renameSync loop hard-killed mid-way), or a native ABI mismatch.
 // `cli.mjs help` boots the CLI entry, which dynamically imports the mem-cli module
 // graph (maintain-core / search-engine / scoring / db-backup / schema / …) and exits
 // 0 without opening the DB or a server. hook.mjs and server.mjs auto-execute on
-// import (so they can't be import-smoked) — they get a `node --check` syntax pass.
+// import (so they can't be import-smoked) - they get a `node --check` syntax pass.
 // execSync (not execFileSync) so the unit-test child_process mock intercepts it.
 function smokeInstalledRelease(targetDir) {
   const q = (s) => JSON.stringify(s);
@@ -914,8 +1241,8 @@ function smokeInstalledRelease(targetDir) {
     // without the launch.mjs probe, so this gate is their only check. Probe
     // in a child process (execSync so the unit-test mock intercepts, and so
     // the running old-version process's require cache can't mask it); on
-    // failure rebuild with scripts enabled for just this dep — plain-rebuild
-    // fallback for older npm — then re-probe. A still-broken binding throws
+    // failure rebuild with scripts enabled for just this dep - plain-rebuild
+    // fallback for older npm - then re-probe. A still-broken binding throws
     // out of the try, smoke fails, and the caller rolls back to the old
     // (working) install.
     if (existsSync(join(targetDir, 'node_modules', 'better-sqlite3'))) {
@@ -937,14 +1264,14 @@ function smokeInstalledRelease(targetDir) {
         try {
           execSync(probeCmd, { timeout: 20000, stdio: 'ignore' });
         } catch {
-          // Both npm rebuilds healed nothing — which is what better-sqlite3 13 does on a
+          // Both npm rebuilds healed nothing - which is what better-sqlite3 13 does on a
           // platform it ships no prebuild for, because there is no install script for them to
           // run. Without this step the re-probe threw, smoke failed, and the caller rolled the
           // whole update back, so auto-update could never land again on those platforms
           // (A20260906-R8b-P2-1, found by independent review of v4.0.0).
           //
           // The source build is `node-gyp clean && node-gyp rebuild`, i.e. it deletes build/
-          // first — which is why the SessionStart probe path must NOT run it. Here it is safe
+          // first - which is why the SessionStart probe path must NOT run it. Here it is safe
           // for two independent reasons: the binding is ALREADY unusable (the probe above just
           // threw), so clean destroys nothing; and this whole function is a smoke gate whose
           // failure rolls back to the previous, working install.
@@ -967,32 +1294,45 @@ function smokeInstalledRelease(targetDir) {
 export async function installExtractedRelease(sourceDir, targetDir = INSTALL_DIR, opts = {}) {
   // Cross-process lock: concurrent SessionStart self-heals / auto-updates must
   // not interleave the rename loop below (→ mixed-version install). A live peer
-  // holding the lock means an install is already in flight — skip rather than
+  // holding the lock means an install is already in flight - skip rather than
   // race. Shared path with install.mjs so direct install + repair + auto-update
   // are mutually exclusive.
-  const release = acquireLock(join(STATE_DIR, 'runtime', 'install.lock')); // runtime-dir:stays-put — install lock serialises real installers
+  const lockPath = join(STATE_DIR, 'runtime', 'install.lock'); // runtime-dir:stays-put - install lock serialises real installers
+  const { release, error: lockError } = procLock.takeLock
+    ? procLock.takeLock(lockPath)
+    : { release: procLock.acquireLock(lockPath) };
   if (!release) {
+    // doctor is the face that names a lock that cannot be taken (D#307); this log is debug-only.
     debugLog(
       'DEBUG',
       'hook-update',
-      'installExtractedRelease: another install/update is in progress — skipping',
+      lockError
+        ? `installExtractedRelease: install.lock cannot be taken - ${lockError.dir} (${lockError.code}) - skipping`
+        : 'installExtractedRelease: another install/update is in progress - skipping',
     );
     return false;
   }
   const ts = `${Date.now()}-${process.pid}`;
   const stagingDir = join(targetDir, `.update-staging-${ts}`);
-  const backupDir = join(targetDir, `.update-backup-${ts}`);
+  // Named once the seq is known, below; until then nothing has been written into it.
+  let backupDir = join(targetDir, `.update-backup-${ts}`);
   const backedUp = [];
   const installed = [];
+  let committed = false;
 
   const manifest = await loadReleaseManifest(sourceDir);
   const switchablePaths = buildSwitchablePaths(manifest.SOURCE_FILES);
 
   try {
     // Finish a prior swap that was hard-killed mid-rename before starting another
-    // one — otherwise this install stacks on top of a mixed-version tree and its
+    // one - otherwise this install stacks on top of a mixed-version tree and its
     // own backup can no longer restore a coherent state.
     recoverInterruptedSwaps(targetDir);
+    // What recovery left unfinished (a journal it cannot read right now, or a replay that could not
+    // put every file back, D#293) is retired if this swap commits, and left for the next entry if it
+    // rolls back. Nothing here waits on it: a gate on it blocked every later update (a2cf96a1).
+    const leftUnresolved = unresolvedBackups(targetDir);
+    backupDir = join(targetDir, `.update-backup-s${nextSwapSeq(leftUnresolved)}-${ts}`);
 
     mkdirSync(stagingDir, { recursive: true });
     mkdirSync(backupDir, { recursive: true });
@@ -1007,6 +1347,9 @@ export async function installExtractedRelease(sourceDir, targetDir = INSTALL_DIR
     }
 
     markSwapStart();
+    // Cleared here only when the loop finished. If a rename throws, the half-swapped tree keeps
+    // the marker through the catch below until rollbackInstall has put the old files back.
+    let swapped = false;
     try {
       for (const relPath of switchablePaths) {
         const stagedPath = join(stagingDir, relPath);
@@ -1018,7 +1361,7 @@ export async function installExtractedRelease(sourceDir, targetDir = INSTALL_DIR
         mkdirSync(dirname(targetPath), { recursive: true });
         mkdirSync(dirname(backupPath), { recursive: true });
 
-        if (existsSync(targetPath)) {
+        if (present(targetPath)) {
           backedUp.push(relPath);
           journalSwap(backupDir, backedUp, installed);
           renameSync(targetPath, backupPath);
@@ -1028,38 +1371,39 @@ export async function installExtractedRelease(sourceDir, targetDir = INSTALL_DIR
         journalSwap(backupDir, backedUp, installed);
         renameSync(stagedPath, targetPath);
       }
+      swapped = true;
     } finally {
-      clearSwapMarker();
+      if (swapped) clearSwapMarker();
     }
 
     // MED-5: before discarding the rollback backup, prove the switched code boots.
-    // If it can't, restore the backup and report failure — the running (old) version
+    // If it can't, restore the backup and report failure - the running (old) version
     // keeps working rather than leaving a broken install with no way back.
     if (!opts.skipSmoke && !smokeInstalledRelease(targetDir)) {
-      rollbackInstall(installed, backedUp, backupDir, targetDir);
-      rmSync(stagingDir, { recursive: true, force: true });
-      rmSync(backupDir, { recursive: true, force: true });
+      discardSwapDirs(stagingDir, backupDir, rollbackInstall(installed, backedUp, backupDir, targetDir));
       return false;
     }
 
-    rmSync(stagingDir, { recursive: true, force: true });
-    rmSync(backupDir, { recursive: true, force: true });
+    // Committed: from here on the catch below must not roll back (D#283).
+    committed = true;
+    retireUnresolvedBackups(targetDir, leftUnresolved);
+    discardSwapDirs(stagingDir, backupDir);
 
     // Post-update migration: reconcile settings.json against the release we just
-    // swapped in. `configureHooks()` already strips stale mem entries — but its only
+    // swapped in. `configureHooks()` already strips stale mem entries - but its only
     // caller is `install()`, and this path never runs it, while `buildSwitchablePaths`
     // replaces `scripts/` wholesale. So an upgrade that REMOVES a hook script deletes
     // the file and leaves settings.json pointing at it; the launcher then reports a
     // broken install on every fire, for a file that is not coming back (R9 review P1-1,
     // first hit by the `PreToolUse:Skill` removal). Plugin-channel installs are
-    // unaffected — hooks/hooks.json is replaced wholesale — so this is npm-channel only.
+    // unaffected - hooks/hooks.json is replaced wholesale - so this is npm-channel only.
     //
     // The reconciler lives in lib/hook-prune.mjs, not install.mjs: install.mjs already
     // imports THIS file, so importing it back would close a cycle the repo's import-graph
-    // guard rejects. Failure is non-fatal — a stale entry is noisy, not broken, and must
+    // guard rejects. Failure is non-fatal - a stale entry is noisy, not broken, and must
     // never roll back an otherwise-good update.
     try {
-      const settingsPath = join(homedir(), '.claude', 'settings.json');
+      const settingsPath = join(claudeConfigDir(), 'settings.json');
       if (existsSync(settingsPath)) {
         const { pruneDanglingMemHooks } = await import('./lib/hook-prune.mjs');
         const before = JSON.parse(readFileSync(settingsPath, 'utf8'));
@@ -1083,12 +1427,12 @@ export async function installExtractedRelease(sourceDir, targetDir = INSTALL_DIR
     // Post-update migration: clean stale global MCPs if plugin handles it.
     // Both "mem" (legacy, pre-v2.78) and "mem-lite" (current) are purged so a
     // user who manually ran `claude mcp add` in either era doesn't end up with
-    // duplicate global + plugin registrations after the rename — "mem" only when it runs
+    // duplicate global + plugin registrations after the rename - "mem" only when it runs
     // our server (lib/mcp-ownership.mjs): the name is generic, and a user's own `mem`
     // server was deleted on every plugin update that re-synced a direct install.
     try {
       if (isPluginMode()) {
-        const claudeJsonPath = join(homedir(), '.claude.json');
+        const claudeJsonPath = claudeStatePath();
         const cfg = JSON.parse(readFileSync(claudeJsonPath, 'utf8'));
         let changed = false;
         for (const k of ['mem', 'mem-lite']) {
@@ -1115,9 +1459,9 @@ export async function installExtractedRelease(sourceDir, targetDir = INSTALL_DIR
     }
 
     // Post-update: clear cache hooks.json in every remaining version. Claude Code
-    // runtime reads plugin hooks from cache, not marketplace source — leaving populated
+    // runtime reads plugin hooks from cache, not marketplace source - leaving populated
     // cache hooks.json alongside install.mjs-written settings.json causes double firing.
-    // Inline impl (no import of plugin-cache-guard.mjs — this module must run even when
+    // Inline impl (no import of plugin-cache-guard.mjs - this module must run even when
     // the guard module is absent on disk, e.g. auto-upgrading from pre-2.31.2).
     try {
       clearCacheHookResidue();
@@ -1129,17 +1473,10 @@ export async function installExtractedRelease(sourceDir, targetDir = INSTALL_DIR
     return true;
   } catch (err) {
     debugCatch(err, 'installExtractedRelease');
-    rollbackInstall(installed, backedUp, backupDir, targetDir);
-    try {
-      rmSync(stagingDir, { recursive: true, force: true });
-    } catch {
-      /* best-effort */
-    }
-    try {
-      rmSync(backupDir, { recursive: true, force: true });
-    } catch {
-      /* best-effort */
-    }
+    // Past the commit point the backups are gone and the new release IS the install: a rollback
+    // would delete the paths it added and restore nothing (D#283).
+    if (committed) return true;
+    discardSwapDirs(stagingDir, backupDir, rollbackInstall(installed, backedUp, backupDir, targetDir));
     return false;
   } finally {
     release();
@@ -1153,37 +1490,37 @@ export async function installExtractedRelease(sourceDir, targetDir = INSTALL_DIR
 // is advanced by Claude Code's marketplace updater; on launch it opens the
 // shared DB and migrates the schema FORWARD. The data-dir copy
 // (~/.qwen-mem-lite/) backs the standalone CLI symlink and the settings.json
-// hooks, but is only advanced by the GitHub-tarball auto-update — which plugin
+// hooks, but is only advanced by the GitHub-tarball auto-update - which plugin
 // mode disables (allowInstall=false) and which stalls easily (24h throttle,
 // rate limits, staging npm install). The data-dir code then lags the schema the
 // cache wrote and the CLI/hooks fail to open the DB
 // ("schema is vN but binary supports up to vN-1").
 //
 // Fix: make the data-dir code TRACK the plugin-cache version. The exact files
-// are already on disk in the cache, so this is a local source-file copy — no
-// network, no npm install — and the synced code is precisely the version that
+// are already on disk in the cache, so this is a local source-file copy - no
+// network, no npm install - and the synced code is precisely the version that
 // migrated the DB, so schema compatibility is guaranteed by construction.
 // node_modules is left untouched (skipNpmInstall). Only ever upgrades; equal
 // versions no-op, which is the natural per-session throttle.
 //
-// opts.sourceDir   — explicit source (launch.mjs passes the running ROOT, the
+// opts.sourceDir   - explicit source (launch.mjs passes the running ROOT, the
 //                    exact version that owns the migrated DB). Omitted → scan
 //                    the plugin cache for the highest valid version.
-// opts.targetDir   — defaults to INSTALL_DIR (the homedir code dir, NOT
-//                    QWEN_MEM_DIR — see schema.mjs CODE_DIR / #8632).
-// opts.cacheBase   — override the cache root (tests).
+// opts.targetDir   - defaults to INSTALL_DIR (the homedir code dir, NOT
+//                    QWEN_MEM_DIR - see schema.mjs CODE_DIR / #8632).
+// opts.cacheBase   - override the cache root (tests).
 export async function syncDataDirFromCache(opts = {}) {
   try {
     const targetDir = opts.targetDir || INSTALL_DIR;
 
     // Dev install: the data-dir entries are symlinks into the source repo.
-    // Overwriting them would clobber the working tree — never sync.
+    // Overwriting them would clobber the working tree - never sync.
     if (isDevMode()) return { synced: false, reason: 'dev-mode' };
 
     let sourceDir = opts.sourceDir || null;
     if (!sourceDir) {
       const cacheBase =
-        opts.cacheBase || join(homedir(), '.claude', 'plugins', 'cache', MARKETPLACE_KEY, PLUGIN_NAME);
+        opts.cacheBase || join(claudeConfigDir(), 'plugins', 'cache', MARKETPLACE_KEY, PLUGIN_NAME);
       if (!existsSync(cacheBase)) return { synced: false, reason: 'no-cache' };
       const versions = readdirSync(cacheBase)
         .filter((n) => /^\d+\.\d+/.test(n))
@@ -1204,7 +1541,7 @@ export async function syncDataDirFromCache(opts = {}) {
       return { synced: false, reason: 'source-is-target' };
     }
 
-    // Only heal an EXISTING standalone-CLI code install — the case that actually
+    // Only heal an EXISTING standalone-CLI code install - the case that actually
     // drifts. A pure-plugin user's ~/.qwen-mem-lite/ holds only DATA (DB +
     // runtime, maybe node_modules) and runs ALL code from the cache; setup.sh
     // never materializes source files there. Writing them in would create a
@@ -1272,7 +1609,7 @@ function copyReleaseIntoStaging(
     copied++;
   }
 
-  // scripts/ is curated to HOOK_SCRIPT_FILES — settings.json hook commands
+  // scripts/ is curated to HOOK_SCRIPT_FILES - settings.json hook commands
   // resolve only to these 5 files, and plugin mode does not consume this
   // directory at all. Pre-v2.55 used cpSync({recursive:true}) which silently
   // shipped dev-only files (mock-claude.mjs, extract-repos.mjs…)
@@ -1300,7 +1637,7 @@ function copyReleaseIntoStaging(
 
   // cli.mjs is invoked via the ~/.local/bin/qwen-mem-lite symlink, which needs
   // the target executable. copyFileSync preserves the source mode and git stores
-  // cli.mjs as 100644 — without this chmod, auto-update strips the +x bit set by
+  // cli.mjs as 100644 - without this chmod, auto-update strips the +x bit set by
   // install.mjs:408 and the next CLI invocation dies with "Permission denied".
   const stagedCli = join(stagingDir, 'cli.mjs');
   if (existsSync(stagedCli)) {
@@ -1323,7 +1660,7 @@ function copyReleaseIntoStaging(
 // appearing in a serialized hooks block) so the two cannot disagree about whether
 // settings.json owns the hooks.
 function hasInstallManagedSettingsHooks() {
-  const settingsPath = join(homedir(), '.claude', 'settings.json');
+  const settingsPath = join(claudeConfigDir(), 'settings.json');
   if (!existsSync(settingsPath)) return false;
   let s;
   try {
@@ -1335,7 +1672,7 @@ function hasInstallManagedSettingsHooks() {
   if (!(serialized.includes('.qwen-mem-lite/') || serialized.includes('/qwen-mem-lite/'))) return false;
   // Liveness, mirroring plugin-cache-guard.hasLiveInstallManagedHooks (see its docblock).
   // The string test alone says settings.json MENTIONS a path of ours, not that the path
-  // still exists — and a stale entry left by a removed global install fires nothing while
+  // still exists - and a stale entry left by a removed global install fires nothing while
   // making this function authorise emptying the plugin manifest that does. Narrow by
   // construction: only a command we parsed a path out of, ALL of whose paths are gone,
   // flips the answer; an unfamiliar shape yields no path and keeps the old result.
@@ -1361,11 +1698,11 @@ export function clearCacheHookResidue() {
   // Same precondition plugin-cache-guard.mjs documents and hook.mjs's self-heal
   // honours: this is a DEDUP against install.mjs-managed settings.json entries.
   // With no such entries the cache manifest is the ONLY hook registration, and
-  // "clearing residue" unregisters all seven events — invisibly, because
+  // "clearing residue" unregisters all seven events - invisibly, because
   // status/doctor then see the shape of a healthy plugin-only install. Inlined
   // here for the same reason the rest of this function is (see header).
   if (!hasInstallManagedSettingsHooks()) return 0;
-  const cacheBase = join(homedir(), '.claude', 'plugins', 'cache', MARKETPLACE_KEY, PLUGIN_NAME);
+  const cacheBase = join(claudeConfigDir(), 'plugins', 'cache', MARKETPLACE_KEY, PLUGIN_NAME);
   if (!existsSync(cacheBase)) return 0;
   let cleared = 0;
   for (const ver of readdirSync(cacheBase)) {
@@ -1379,7 +1716,7 @@ export function clearCacheHookResidue() {
         JSON.stringify(
           {
             description: h.description || 'qwen-mem-lite hooks',
-            _note: `Auto-cleared by hook-update.mjs post-install — prevents double hook registration (cache ver: ${ver})`,
+            _note: `Auto-cleared by hook-update.mjs post-install - prevents double hook registration (cache ver: ${ver})`,
             hooks: {},
           },
           null,
@@ -1414,7 +1751,7 @@ function isSameDir(a, b) {
 }
 
 export function prunePluginCache() {
-  const cacheBase = join(homedir(), '.claude', 'plugins', 'cache', MARKETPLACE_KEY, PLUGIN_NAME);
+  const cacheBase = join(claudeConfigDir(), 'plugins', 'cache', MARKETPLACE_KEY, PLUGIN_NAME);
   if (!existsSync(cacheBase)) return 0;
 
   const entries = readdirSync(cacheBase)
@@ -1426,21 +1763,21 @@ export function prunePluginCache() {
   // A20260905-R5-Q1: "not in the newest 3" is not the same question as "not in use".
   // CLAUDE_PLUGIN_ROOT is the version dir THIS process was launched from, and after a
   // marketplace rollback (a bad release withdrawn while >=3 newer dirs are already cached)
-  // it is not among the newest 3 — so keep-latest-3 rm -rf'd the tree the running hooks and
+  // it is not among the newest 3 - so keep-latest-3 rm -rf'd the tree the running hooks and
   // MCP server import from. scripts/setup.sh step 8 carries the same guard for the same
   // reason; the two prune the same directory and must agree.
   //
   // R10 P2-9: CLAUDE_PLUGIN_ROOT alone is not enough, because prune also runs from a
-  // TERMINAL — `self-update` — where Claude Code never sets it. There the guard was
+  // TERMINAL - `self-update` - where Claude Code never sets it. There the guard was
   // vacuous and keep-latest-3 deleted the recorded live version outright. detectInstallShape
   // now consults installed_plugins.json as well, so ask it rather than the env var, and
   // keep the env var as the first-hand answer inside a hook.
   const runningRoot = process.env.CLAUDE_PLUGIN_ROOT;
   let recordedRoot = null;
   try {
-    recordedRoot = detectInstallShape({ home: homedir() }).activePluginVersion?.root || null;
+    recordedRoot = detectInstallShape().activePluginVersion?.root || null;
   } catch {
-    /* best-effort — a failure here must not stop pruning entirely */
+    /* best-effort - a failure here must not stop pruning entirely */
   }
   const toRemove = entries.slice(PLUGIN_CACHE_KEEP);
   let removed = 0;
@@ -1473,8 +1810,11 @@ function readState() {
 }
 
 function saveState(state) {
+  // The update-check worker runs this after its release lookup; a data dir removed meanwhile
+  // stays removed (D#265, pre-tag review).
+  if (workerDirGone(STATE_DIR)) return;
   try {
-    const dir = join(STATE_DIR, 'runtime'); // runtime-dir:stays-put — mkdir for update-state.json above
+    const dir = join(STATE_DIR, 'runtime'); // runtime-dir:stays-put - mkdir for update-state.json above
     mkdirSync(dir, { recursive: true });
     const tmpFile = STATE_FILE + `.tmp-${process.pid}`;
     writeFileSync(tmpFile, JSON.stringify(state, null, 2));

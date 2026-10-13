@@ -5,20 +5,22 @@
 // OpenAI-compatible endpoint) → claude CLI fallback.
 //
 // Model configurable via QWEN_MEM_MODEL (haiku|sonnet). The two
-// OpenAI-dialect legs — OpenRouter and the generic endpoint — share ONE
+// OpenAI-dialect legs - OpenRouter and the generic endpoint - share ONE
 // transport (callOpenAICompatAPI) and differ only in target: OpenRouter's slug
 // via OPENROUTER_MODEL, the generic leg's model via OPENAI_MODEL (all tiers) or
 // OPENAI_MODEL_{HAIKU,SONNET} (one tier). The direct-API leg honours
-// ANTHROPIC_BASE_URL (no /v1 suffix - the path is appended) and per-tier
-// deployment names via ANTHROPIC_DEFAULT_{HAIKU,SONNET}_MODEL, the same vars
-// the `claude` CLI leg resolves its --model aliases through, so one env set
-// points both transports at a gateway (Azure AI Foundry, LiteLLM, Bedrock
-// proxies). Unset → public Anthropic API, unchanged.
+// ANTHROPIC_BASE_URL (no /v1 suffix - the path is appended) and, when that base
+// URL is set and usable, per-tier deployment names via
+// ANTHROPIC_DEFAULT_{HAIKU,SONNET}_MODEL - the same vars the `claude` CLI leg
+// resolves its --model aliases through, so one env set points both transports
+// at a gateway (Azure AI Foundry, LiteLLM, Bedrock proxies). Without a base URL
+// the tier vars stay CLI-only: they are also the Bedrock/Vertex aliases and
+// must not leak to api.anthropic.com. Unset → public Anthropic API, unchanged.
 //
 // Why the generic leg earns its place: "OpenAI-compatible" is the widest
 // provider contract there is (vLLM, Ollama, LM Studio, LiteLLM, Azure OpenAI,
-// DashScope, DeepSeek, Groq, Together, OpenAI itself), and this fork's host —
-// Qwen Code — already standardises on exactly OPENAI_API_KEY / OPENAI_BASE_URL /
+// DashScope, DeepSeek, Groq, Together, OpenAI itself), and this fork's host -
+// Qwen Code - already standardises on exactly OPENAI_API_KEY / OPENAI_BASE_URL /
 // OPENAI_MODEL, so the env that configures the host configures these background
 // calls too.
 //
@@ -36,7 +38,9 @@ import { randomUUID } from 'crypto';
 import { debugLog, debugCatch, parseJsonFromLLM } from './utils.mjs';
 import { DB_DIR } from './schema.mjs';
 import { resolveRuntimeDir } from './lib/resolve-data-dir.mjs';
-import { httpConnectProxyFor, postViaConnectProxy } from './lib/proxy-fetch.mjs';
+import { workerDirGone } from './lib/worker-data-dir.mjs';
+import { httpConnectProxyFor, postViaConnectProxy, postDirectHttp } from './lib/proxy-fetch.mjs';
+import { resolveAnthropicBaseUrl } from './lib/anthropic-base-url.mjs';
 
 /**
  * cwd for every `claude -p` spawn. R10 P2-13.
@@ -44,21 +48,24 @@ import { httpConnectProxyFor, postViaConnectProxy } from './lib/proxy-fetch.mjs'
  * This was `/tmp`, which is world-writable. Claude Code loads a project-level CLAUDE.md
  * and .claude/settings.json from its cwd, so on a shared host ANY local account could
  * create /tmp/CLAUDE.md and inject instructions into every episode summary, session
- * summary and optimize call this process makes — and the CLI leg is the fallback every
+ * summary and optimize call this process makes - and the CLI leg is the fallback every
  * keyed provider failure lands on, so it is not an exotic path.
  *
  * The original reason for /tmp was ghost sessions in the user's /resume list, and that is
  * already solved by --no-session-persistence on the same spawns. A private directory under
  * the runtime dir (whose parent is 0700) keeps that property and removes the injection
- * surface. Created lazily; if creation fails we still do not fall back to /tmp — an
+ * surface. Created lazily; if creation fails we still do not fall back to /tmp - an
  * unwritable cwd fails the spawn loudly, which is the better failure.
  */
 function cliSpawnCwd() {
   const dir = join(resolveRuntimeDir(DB_DIR), 'cli-cwd');
+  // A background worker whose data dir was removed during its API attempt must not re-create
+  // it here (D#265); the spawn then fails on the missing cwd, and the worker gives up.
+  if (workerDirGone(DB_DIR)) return dir;
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch {
-    /* already there, or unwritable — the spawn reports it */
+    /* already there, or unwritable - the spawn reports it */
   }
   return dir;
 }
@@ -81,12 +88,21 @@ const TIER_MODEL_ENV = {
 };
 
 /**
- * Model ID the direct Messages API should send for a tier. The tier override
- * env wins when set and non-blank, else the built-in Anthropic ID.
+ * Model ID the direct Messages API should send for a tier.
+ *
+ * Scoped to a usable ANTHROPIC_BASE_URL on purpose: these vars are ALSO the
+ * Claude Code aliases on Bedrock/Vertex, where the value is a provider-specific
+ * ID. Someone who set them for the CLI and has an ANTHROPIC_API_KEY would
+ * otherwise send that ID straight to api.anthropic.com (a 404 + CLI fallback on
+ * every call), and pointing the haiku alias at a bigger model would silently
+ * change model and cost. No base URL → the built-in Anthropic ID, as before.
  * @param {'haiku'|'sonnet'} tier
+ * @param {ReturnType<typeof resolveAnthropicBaseUrl>} [base] the resolved base URL;
+ *   callModelAPI passes the one it also builds the request URL from
  * @returns {string}
  */
-function apiModelId(tier) {
+function apiModelId(tier, base = resolveAnthropicBaseUrl()) {
+  if (!base.configured || base.error) return MODEL_MAP[tier];
   return (process.env[TIER_MODEL_ENV[tier]] || '').trim() || MODEL_MAP[tier];
 }
 
@@ -100,21 +116,21 @@ const DEFAULT_LLM_TEMPERATURE = 0;
 
 /**
  * Timeout budget for BACKGROUND LLM work (detached enrich/optimize/summary
- * workers, registry indexing) — the calls with no latency budget at all.
+ * workers, registry indexing) - the calls with no latency budget at all.
  *
  * Every dispatcher below degrades to `claude -p` when the keyed provider fails,
  * and the CLI leg pays a full Claude Code boot before inference: measured
  * 8.1s / 9.2s / 11.7s / 13.4s on an idle machine for a 400-token JSON reply
  * (2026-08-16), against API-leg latencies under 2s. Callers that sized their
- * timeout for the API leg (15–20s) were therefore killing the fallback
- * mid-flight — save-enrich's 15s budget left 1.6s of headroom over the worst
+ * timeout for the API leg (15-20s) were therefore killing the fallback
+ * mid-flight - save-enrich's 15s budget left 1.6s of headroom over the worst
  * sample, which is how 6/57 (10.5%) of instrumented runs landed on
  * reason:'llm-null' and why manual saves stopped getting search_aliases.
  *
  * Deliberately NOT applied as a floor inside callModelCLI / callHaikuCLI /
- * callModelCLIAsync: those are also reached from latency-bound callers — the
+ * callModelCLIAsync: those are also reached from latency-bound callers - the
  * lesson bridge's 2.5s fail-open budget on the PreToolUse hook, and deep-search
- * rerank on the MCP request path — where failing fast beats blocking a user for
+ * rerank on the MCP request path - where failing fast beats blocking a user for
  * 45s. The allowance is caller-side policy, not a clamp.
  * Pinned both ways by `tests/llm-timeout-budget.test.mjs`.
  */
@@ -146,7 +162,7 @@ const OPENROUTER_MODEL_MAP = {
 /**
  * Resolve the OpenRouter model slug for a given tier.
  * OPENROUTER_MODEL (if set, non-blank) overrides every tier with an explicit
- * slug — this is how users point qwen-mem-lite at any OpenRouter model
+ * slug - this is how users point qwen-mem-lite at any OpenRouter model
  * (e.g. openai/gpt-4o-mini, qwen/...). Otherwise the tier maps to its default
  * anthropic/* slug, falling back to the haiku slug for unknown tiers.
  * @param {string} tier 'haiku' | 'sonnet'
@@ -189,7 +205,7 @@ let _mode = null;
 const PROVIDER_LEGS = new Set(['api', 'openrouter', 'openai', 'cli']);
 
 /**
- * Is this leg actually configured here? `cli` always is — the fallback needs no
+ * Is this leg actually configured here? `cli` always is - the fallback needs no
  * credentials. The generic leg counts as configured by EITHER var, because a
  * keyless local server (Ollama, vLLM, LM Studio) has no OPENAI_API_KEY to set
  * and OPENAI_BASE_URL alone is its whole configuration.
@@ -205,7 +221,7 @@ function legConfigured(leg, env) {
 }
 
 /**
- * Pure mode detection — deliberately NOT memoized, so a diagnostic can ask per
+ * Pure mode detection - deliberately NOT memoized, so a diagnostic can ask per
  * call and get the current answer while the worker path caches it in
  * detectMode() below. It is the single source of the precedence order:
  * lib/llm-provider-probe.mjs imports it rather than re-deriving the contract,
@@ -216,8 +232,8 @@ function legConfigured(leg, env) {
  * OPENAI_API_KEY / OPENAI_BASE_URL → 'openai', else the `claude` CLI.
  *
  * QWEN_MEM_LLM_PROVIDER overrides that order when it names one of the four
- * legs AND the leg is configured. A pin that cannot be honoured — an unknown
- * name, or a named leg with no credentials — is logged and IGNORED rather than
+ * legs AND the leg is configured. A pin that cannot be honoured - an unknown
+ * name, or a named leg with no credentials - is logged and IGNORED rather than
  * obeyed: obeying it would point every call at a leg that cannot answer, and the
  * CLI fallback is what keeps summaries flowing.
  *
@@ -321,7 +337,7 @@ export function flattenForCLI(input) {
  * Call Haiku model with a prompt. Returns parsed text or null on failure.
  * Provider priority ANTHROPIC_API_KEY → OPENROUTER_API_KEY → CLI; if the keyed
  * provider call fails (HTTP error / network throw / empty), degrades to the
- * `claude -p` CLI. Never throws — returns null only when every path fails.
+ * `claude -p` CLI. Never throws - returns null only when every path fails.
  *
  * @param {string|{system?: string, user: string}} prompt Prompt text, or split form
  * @param {object} [opts] Options
@@ -337,7 +353,7 @@ export async function callHaiku(
 
   const mode = detectMode();
 
-  // CLI is terminal — no provider to fall back to.
+  // CLI is terminal - no provider to fall back to.
   if (mode === 'cli') {
     try {
       return callHaikuCLI(prompt, { timeout });
@@ -353,7 +369,7 @@ export async function callHaiku(
   let primary = null;
   try {
     // callModelAPI, not a second copy of it: the two were byte-identical apart from
-    // where the model id came from (MODEL_MAP[model] vs resolveModel().api — the same
+    // where the model id came from (MODEL_MAP[model] vs resolveModel().api - the same
     // value, since resolveModel().cli is a MODEL_MAP key) and a hardcoded 'haiku-api'
     // log label that lied under QWEN_MEM_MODEL=sonnet. Two copies of an HTTP client
     // means every proxy fix has to land twice, on the path where missing the proxy is
@@ -388,10 +404,10 @@ export async function callHaikuJSON(prompt, opts) {
 /**
  * Non-blocking sibling of callHaikuJSON for callers reachable from an MCP request
  * handler. R10 P3-28: this used to name `mem_registry enrich / import_url` as the caller,
- * a tool removed in v5.0.0 — read as a live example, it sent readers looking for a handler
+ * a tool removed in v5.0.0 - read as a live example, it sent readers looking for a handler
  * that does not exist. The REASON is what still applies to whatever calls it next: an MCP
  * request handler must not block the server event loop. Same
- * provider priority; the CLI leg — primary AND post-provider-failure fallback —
+ * provider priority; the CLI leg - primary AND post-provider-failure fallback -
  * is the async spawn, so a keyed-provider outage cannot freeze the server event
  * loop for BG_LLM_TIMEOUT_MS (D#138 MEDIUM-3).
  *
@@ -399,7 +415,7 @@ export async function callHaikuJSON(prompt, opts) {
  * reaches the model through resolveModel() on ALL three legs (callHaikuAPI,
  * callOpenAICompatAPI, callHaikuCLI), so it honours the documented QWEN_MEM_MODEL
  * knob. Pinning 'haiku' here would silently downgrade any caller's model for every user
- * who set QWEN_MEM_MODEL=sonnet — pre-tag review finding, v3.68.0, when the caller in
+ * who set QWEN_MEM_MODEL=sonnet - pre-tag review finding, v3.68.0, when the caller in
  * question was registry enrichment.
  *
  * Defaults also mirror callHaiku (10s / 500 tokens), not callModelJSONAsync's
@@ -420,7 +436,7 @@ export async function callHaikuJSONAsync(
 /**
  * Call LLM with explicit model selection. Supports 'haiku' and 'sonnet'.
  * Same provider priority + failure fallback to CLI as callHaiku.
- * Never throws — returns null only when every path fails.
+ * Never throws - returns null only when every path fails.
  *
  * @param {string} prompt The prompt text
  * @param {'haiku'|'sonnet'} model Model to use (default: 'haiku')
@@ -438,7 +454,7 @@ export async function callLLMWithModel(
   const resolvedModel = MODEL_MAP[model] ? model : 'haiku';
   const mode = detectMode();
 
-  // CLI is terminal — no provider to fall back to.
+  // CLI is terminal - no provider to fall back to.
   if (mode === 'cli') {
     try {
       return callModelCLI(prompt, resolvedModel, { timeout });
@@ -468,14 +484,14 @@ export async function callLLMWithModel(
 }
 
 /**
- * Non-blocking sibling of callLLMWithModel — returns the RAW {text} envelope
+ * Non-blocking sibling of callLLMWithModel - returns the RAW {text} envelope
  * without JSON-parsing it. For MCP-reachable callers whose answer is not
  * guaranteed to be an object: rerank accepts a bare `[2,1,3]` array, which a
  * JSON-parsing dispatcher would keep but whose contract (rerank.mjs:72) is the
  * envelope, not the parse. Both CLI legs use the async spawn, so a keyed-provider
  * outage cannot freeze the server event loop (D#138 MEDIUM-3).
  *
- * Behaviourally identical to callLLMWithModel otherwise — same `if (primary)`
+ * Behaviourally identical to callLLMWithModel otherwise - same `if (primary)`
  * test, same headless-flag compat retry and budget arithmetic, same timeout
  * salvage. Only the CLI transport differs.
  * @param {string|{system?:string,user:string}} prompt
@@ -492,7 +508,7 @@ export async function callLLMWithModelAsync(
   const resolvedModel = MODEL_MAP[model] ? model : 'haiku';
   const mode = detectMode();
 
-  // CLI is terminal — no provider to fall back to.
+  // CLI is terminal - no provider to fall back to.
   if (mode === 'cli') return callModelCLIAsync(prompt, resolvedModel, { timeout });
 
   let primary = null;
@@ -526,8 +542,8 @@ export async function callModelJSON(prompt, model = 'haiku', opts) {
 
 /**
  * JSON-returning, FULLY-ASYNC model call for the long-lived server hot path
- * (deep-search auto-escalation). Like callModelJSON, but every CLI invocation —
- * cli-mode primary AND the post-provider-failure fallback — uses the
+ * (deep-search auto-escalation). Like callModelJSON, but every CLI invocation -
+ * cli-mode primary AND the post-provider-failure fallback - uses the
  * non-blocking callModelCLIAsync, so a keyed-provider outage can never drop onto
  * the blocking execFileSync path and freeze the MCP event loop (D#40). Never
  * throws; returns parsed JSON or null.
@@ -551,7 +567,7 @@ export async function callModelJSONAsync(
   }
 
   // Keyed provider (api/openrouter): try it, then degrade to the ASYNC CLI on any
-  // failure — NOT the blocking execFileSync callModelCLI that callModelJSON uses.
+  // failure - NOT the blocking execFileSync callModelCLI that callModelJSON uses.
   let primary = null;
   try {
     primary = await callKeyedLeg(mode, prompt, resolvedModel, { timeout, maxTokens, temperature });
@@ -564,22 +580,12 @@ export async function callModelJSONAsync(
   return res?.text ? parseJsonFromLLM(res.text) : null;
 }
 
-// Messages-API base URL. ANTHROPIC_BASE_URL (the Claude Code / Anthropic SDK
-// convention, no /v1 suffix - the path below is appended) points the direct leg
-// at any Anthropic-compatible gateway. Azure AI Foundry serves Claude at
-// https://<resource>.services.ai.azure.com/anthropic with the same x-api-key +
-// anthropic-version contract callModelAPI already sends. Trailing slashes are
-// tolerated; unset keeps the public API, so existing users are unchanged.
-function anthropicBaseUrl() {
-  return (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').trim().replace(/\/+$/, '');
-}
-
 // Models that refused `temperature` with a 400 (see the retry in callModelAPI).
 // One name after the first rejection, so the cost is one failed request per
 // model per process rather than one per call.
 const _temperatureDeprecated = new Set();
 
-/** @internal test hook — module-level compat state must not leak across cases. */
+/** @internal test hook - module-level compat state must not leak across cases. */
 export function _resetTemperatureCompat() {
   _temperatureDeprecated.clear();
 }
@@ -588,9 +594,24 @@ async function callModelAPI(prompt, model, { timeout, maxTokens, temperature = D
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
 
-  const modelId = apiModelId(model);
+  // Read the base URL once: the request URL and the tier model must come from the
+  // same verdict, and a set-but-unusable value must not quietly move the key to
+  // the public endpoint (the cross-origin hop the redirect guard exists to stop).
+  // Skip the direct leg; the CLI fallback reads ANTHROPIC_BASE_URL itself.
+  const base = resolveAnthropicBaseUrl();
+  if (base.configured && base.error) {
+    debugLog('WARN', `${model}-api`, `ANTHROPIC_BASE_URL unusable (${base.error}); skipping direct API call`);
+    return null;
+  }
+
+  const modelId = apiModelId(model, base);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
+  // One deadline for the whole call. The AbortController bounds the fetch path
+  // across the temperature retry; the proxy tunnel takes what is LEFT of the
+  // deadline per send, so a retry cannot buy a second full timeout (a 1000ms
+  // budget that took 1633ms on the tunnel path). (pre-tag review on #33)
+  const deadline = Date.now() + timeout;
 
   try {
     const { system, user } = splitPrompt(prompt);
@@ -606,43 +627,68 @@ async function callModelAPI(prompt, model, { timeout, maxTokens, temperature = D
     // pays for itself once.
     if (!_temperatureDeprecated.has(modelId)) body.temperature = temperature;
     // System slot is constant per call type (instructions, schema, type taxonomy)
-    // — mark it cache_control:ephemeral so repeated calls within the 5-min cache
+    // - mark it cache_control:ephemeral so repeated calls within the 5-min cache
     // window pay the cached-input rate (~0.10× base). Sub-1024-token systems still
     // benefit since the API accepts the field but only caches above its minimum
-    // (no harm if too short — falls back to uncached).
+    // (no harm if too short - falls back to uncached).
     if (system) {
       body.system = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
     }
 
     // Proxy-aware, same as the OpenAI-dialect section below. Missing it here
     // meant the ANTHROPIC_API_KEY paths were the one keyed provider still doing
-    // a bare fetch — a silent outage behind a proxy, and one the new doctor check
+    // a bare fetch - a silent outage behind a proxy, and one the new doctor check
     // would have certified as healthy because it probes the hop this code was
     // ASSUMED to use. (pre-tag review SHOULD-FIX 3)
-    const apiUrl = `${anthropicBaseUrl()}/v1/messages`;
+    const apiUrl = `${base.url}/v1/messages`;
     const apiHeaders = {
       'Content-Type': 'application/json',
       'x-api-key': apiKey,
       'anthropic-version': '2023-06-01',
     };
+    // Plain http is loopback-only (resolveAnthropicBaseUrl), and loopback must stay on this
+    // machine: native fetch would hand it, x-api-key in cleartext, to HTTP_PROXY under
+    // NODE_USE_ENV_PROXY=1. (D#250) Parsed, not a prefix test: a prefix test let `HTTP://127.0.0.1`
+    // through to the proxy when the resolver still returned the raw text (b59e0cec, D#259).
+    const plainHttp = new URL(apiUrl).protocol === 'http:';
     const send = (payload) => {
       const json = JSON.stringify(payload);
+      if (plainHttp) {
+        return postDirectHttp(apiUrl, {
+          headers: apiHeaders,
+          body: json,
+          timeout: Math.max(1, deadline - Date.now()),
+        });
+      }
       const apiProxy = httpConnectProxyFor(apiUrl);
       return apiProxy
-        ? postViaConnectProxy(apiProxy, apiUrl, { headers: apiHeaders, body: json, timeout })
+        ? postViaConnectProxy(apiProxy, apiUrl, {
+            headers: apiHeaders,
+            body: json,
+            timeout: Math.max(1, deadline - Date.now()),
+          })
         : fetch(apiUrl, {
             method: 'POST',
             headers: apiHeaders,
             body: json,
             signal: controller.signal,
+            // A gateway must not be able to walk the x-api-key to another origin
+            // via a redirect. The tunnel path already surfaces a 3xx without
+            // following it; reject here so the native path behaves the same.
+            redirect: 'error',
           });
     };
 
     let res = await send(body);
 
-    // Temperature-deprecation compat, same shape as the claude-CLI flag retry:
-    // retry once without the field, cache the negative so later calls skip it. A
-    // 400 whose body does not name the field keeps the old single-attempt path.
+    // Temperature-deprecation compat. Unlike the claude-CLI flag retry, which
+    // caches the negative only after the retry succeeds, this pins the model the
+    // moment the 400 matches: the 400 itself proves the model refuses the field,
+    // so every later call omits it from the start. The body must name the
+    // BACKTICKED field - matching bare "temperature" also catches unrelated 400s
+    // that merely mention it, and a false match costs a request plus the 0-pin
+    // for that model for the rest of the process. A 400 that does not name the
+    // field keeps the old single-attempt path.
     if (res.status === 400 && body.temperature !== undefined) {
       let detail = '';
       try {
@@ -650,10 +696,14 @@ async function callModelAPI(prompt, model, { timeout, maxTokens, temperature = D
       } catch {
         /* body already gone - treat as a non-matching 400 */
       }
-      if (/temperature/i.test(detail) && /deprecat|unsupported|not support/i.test(detail)) {
+      if (/`temperature`/i.test(detail) && /deprecat|unsupported|not support/i.test(detail)) {
         _temperatureDeprecated.add(modelId);
-        delete body.temperature;
-        res = await send(body);
+        // Only spend the second request if real budget is left; otherwise the
+        // gateway bills a POST the client aborts before reading it.
+        if (deadline - Date.now() >= RETRY_MIN_BUDGET_MS) {
+          delete body.temperature;
+          res = await send(body);
+        }
       }
     }
 
@@ -673,18 +723,18 @@ async function callModelAPI(prompt, model, { timeout, maxTokens, temperature = D
 // ─── Headless CLI flag compatibility ─────────────────────────────────────────
 //
 // --no-session-persistence + DISABLE_CLAUDEMD_HOOKS (2026-08-16): these headless
-// calls were paying the full interactive-session tax — 1,004 transcripts piled up
+// calls were paying the full interactive-session tax - 1,004 transcripts piled up
 // in ~/.claude/projects/-tmp/, and every spawn ran the claudemd plugin's whole
 // hook fan-out (its SessionStart banner alone logged 682 rows in 3 days, drowning
 // that project's telemetry). The persistence flag is OAuth-safe (probed);
-// `--bare`/CLAUDE_CODE_SIMPLE are NOT (they hard-require ANTHROPIC_API_KEY —
+// `--bare`/CLAUDE_CODE_SIMPLE are NOT (they hard-require ANTHROPIC_API_KEY -
 // "Not logged in" on OAuth machines). The user's global CLAUDE.md injection has
 // no OAuth-safe opt-out; accepted (haiku + prompt caching keeps it cheap).
 //
 // The flag is an unguarded dependency on a recent Claude Code CLI: package.json
 // declares only node>=20, no Claude Code floor. On an older binary the spawn dies
 // in argument parsing, the catch swallows it, and every CLI-leg LLM call returns
-// null — no retry, no telemetry. That leg is what the keyed providers degrade to,
+// null - no retry, no telemetry. That leg is what the keyed providers degrade to,
 // so such a user loses enrichment, summarization and optimize all at once. So:
 // detect the arg-parse rejection, retry once without the flag, and cache the
 // negative only AFTER the retry actually succeeded. Caching on the failure
@@ -695,7 +745,7 @@ async function callModelAPI(prompt, model, { timeout, maxTokens, temperature = D
 const HEADLESS_FLAG = '--no-session-persistence';
 let _headlessFlagOk = true;
 
-/** @internal test hook — module-level compat state must not leak across cases. */
+/** @internal test hook - module-level compat state must not leak across cases. */
 export function _resetHeadlessFlag() {
   _headlessFlagOk = true;
 }
@@ -704,13 +754,13 @@ function claudeArgs(modelName) {
   return _headlessFlagOk ? ['-p', '--model', modelName, HEADLESS_FLAG] : ['-p', '--model', modelName];
 }
 
-// A retry is only ever worth it when the diagnostic NAMES the token it rejected —
+// A retry is only ever worth it when the diagnostic NAMES the token it rejected -
 // every argv parser does, and requiring it is what keeps this from firing on
 // Claude Code's own config diagnostics. The installed CLI carries strings like
 // `Skill X has invalid effort 'y'. Valid options: …` and `Input validation error:
 // Invalid arguments for tool`, which an unanchored unknown-word/option-word regex
-// matches outright. Those are emitted for a malformed agent/skill file — a
-// *persistent* condition — so an unanchored match would fire on the next transient
+// matches outright. Those are emitted for a malformed agent/skill file - a
+// *persistent* condition - so an unanchored match would fire on the next transient
 // 529, permanently revert v3.66.0's session-tax fix on a perfectly healthy CLI,
 // and log a WARN blaming a flag that was never the problem (pre-tag review, HIGH).
 // Deliberately NOT keyed on exit code alone either: a non-zero exit is also the
@@ -719,8 +769,10 @@ const FLAG_TOKEN = /no-session-persistence/;
 const PARSE_REJECTION =
   /(unknown|unrecognized|unsupported|invalid|unexpected)[^\n]{0,40}(option|argument|flag|switch)/i;
 
-// Below this many ms left, a retry can only spawn a process and immediately kill
-// it — worse than returning the original failure.
+// Below this many ms left, a retry is worse than returning the original failure:
+// the CLI retry can only spawn a process and immediately kill it, and the direct
+// API's temperature retry would send a request (billed by the gateway) whose
+// reply nobody waits for.
 const RETRY_MIN_BUDGET_MS = 500;
 
 export function _isUnknownFlagError(diagnostic) {
@@ -753,7 +805,7 @@ export function execClaudeCliSync(modelName, { input, timeout }) {
     encoding: 'utf8',
     env: { ...process.env, QWEN_MEM_HOOK_RUNNING: '1', DISABLE_CLAUDEMD_HOOKS: '1' },
     stdio: ['pipe', 'pipe', 'pipe'],
-    cwd: cliSpawnCwd(), // private dir, not /tmp — see cliSpawnCwd (R10 P2-13)
+    cwd: cliSpawnCwd(), // private dir, not /tmp - see cliSpawnCwd (R10 P2-13)
   };
   const args = claudeArgs(modelName);
   const started = Date.now();
@@ -763,15 +815,15 @@ export function execClaudeCliSync(modelName, { input, timeout }) {
     // A timeout is NOT a parse rejection. execFileSync kills the child and throws
     // with its partial buffers attached (callModelCLI's salvage depends on exactly
     // that), so without this guard a slow call whose output merely looked
-    // parse-shaped would be retried on the FULL original budget — doubling a
+    // parse-shaped would be retried on the FULL original budget - doubling a
     // latency-bound ceiling. lesson-bridge runs this leg at 2500ms on PreToolUse,
-    // where the CLI is measured at 8–13s and therefore times out routinely.
+    // where the CLI is measured at 8-13s and therefore times out routinely.
     if (e?.killed || e?.signal) throw e;
     // `args`, not the live flag: what matters is whether THIS attempt carried it.
     // Symmetry with the async leg, where the distinction is load-bearing (a
     // sibling can flip the flag across an await). Here execFileSync blocks the
     // event loop for the whole child, so no other JS can interleave and the two
-    // readings are behaviourally identical — the substitution is deliberately
+    // readings are behaviourally identical - the substitution is deliberately
     // mutation-silent, kept so the two legs cannot drift apart in meaning.
     if (!args.includes(HEADLESS_FLAG) || !_isUnknownFlagError(cliDiagnostic(e))) throw e;
     const remaining = timeout - (Date.now() - started);
@@ -781,7 +833,7 @@ export function execClaudeCliSync(modelName, { input, timeout }) {
     debugLog(
       'WARN',
       'cli-compat',
-      `claude CLI rejected ${HEADLESS_FLAG}; dropped for this process (the headless session tax returns — upgrade Claude Code to avoid it)`,
+      `claude CLI rejected ${HEADLESS_FLAG}; dropped for this process (the headless session tax returns - upgrade Claude Code to avoid it)`,
     );
     return out;
   }
@@ -809,7 +861,7 @@ function callModelCLI(prompt, model, { timeout }) {
 /**
  * Async, non-blocking sibling of callModelCLI for the long-lived MCP server hot
  * path (deep-search auto-escalation, D#40). execFileSync blocks the event loop for
- * the whole subprocess lifetime — acceptable in short-lived hook processes
+ * the whole subprocess lifetime - acceptable in short-lived hook processes
  * (callModelCLI), not inside an MCP request handler. Uses spawn + stdin so the
  * untrusted query stays out of argv (ps-visible) and the boundary-marker model is
  * preserved. Never rejects: resolves {text} on non-empty stdout, null on
@@ -838,7 +890,7 @@ export async function callModelCLIAsync(prompt, model, { timeout }) {
         // Same headless-tax flags + flag-compat retry as callModelCLI (rationale there).
         child = spawn(getClaudePath(), args, {
           env: { ...process.env, QWEN_MEM_HOOK_RUNNING: '1', DISABLE_CLAUDEMD_HOOKS: '1' },
-          cwd: cliSpawnCwd(), // private dir, not /tmp — see cliSpawnCwd (R10 P2-13)
+          cwd: cliSpawnCwd(), // private dir, not /tmp - see cliSpawnCwd (R10 P2-13)
           stdio: ['pipe', 'pipe', 'pipe'],
         });
       } catch (e) {
@@ -877,7 +929,7 @@ export async function callModelCLIAsync(prompt, model, { timeout }) {
         stdout += d;
       });
       // Keep draining stderr so a chatty child can't block on a full pipe, but keep
-      // a bounded head of it — the flag-compat probe needs the parser's complaint.
+      // a bounded head of it - the flag-compat probe needs the parser's complaint.
       // Slice AFTER appending: checking the length first lets one arbitrarily large
       // chunk through whole, which is the shape a single big stderr write takes.
       child.stderr?.setEncoding?.('utf8');
@@ -893,8 +945,8 @@ export async function callModelCLIAsync(prompt, model, { timeout }) {
         // Parity with callModelCLI: execFileSync THROWS on a non-zero exit, so the
         // sync leg only ever returns such output when parseJsonFromLLM accepts it
         // (its catch-salvage). Without the same gate, a CLI that prints a
-        // diagnostic to stdout and dies — auth failure, overload banner, wrapper
-        // error — has that diagnostic returned as the model's ANSWER. rerank is the
+        // diagnostic to stdout and dies - auth failure, overload banner, wrapper
+        // error - has that diagnostic returned as the model's ANSWER. rerank is the
         // first caller to consume the raw {text}: extractRanked's last resort
         // matches any bracketed number list in prose, so a `[1]` inside a stack
         // frame becomes a ranking and silently reorders search results. The
@@ -922,7 +974,7 @@ export async function callModelCLIAsync(prompt, model, { timeout }) {
   // flipped it between our spawn and our resume, and reading the global there
   // would silently deny THIS call the retry it earned (MCP server, concurrent
   // deep-search escalations). Gating on the exit code before `first.result` also
-  // covers a CLI that prints its usage banner to stdout and exits non-zero —
+  // covers a CLI that prints its usage banner to stdout and exits non-zero -
   // otherwise that banner is returned as the model's answer and nothing retries.
   const rejected =
     firstArgs.includes(HEADLESS_FLAG) &&
@@ -937,15 +989,15 @@ export async function callModelCLIAsync(prompt, model, { timeout }) {
   const second = await attempt(['-p', '--model', modelName], remaining);
   // Cache on the retry's EXIT, not its payload. Empty output is a designed
   // outcome here (emit-nothing prompts, an `N/A` that trims away), so keying on
-  // text left the long-lived MCP server re-probing — two spawns per call, for the
-  // life of the process — on exactly the old CLI this exists to rescue. The sync
+  // text left the long-lived MCP server re-probing - two spawns per call, for the
+  // life of the process - on exactly the old CLI this exists to rescue. The sync
   // twin caches on any non-throwing run; this now means the same thing.
   if (second.code === 0) {
     _headlessFlagOk = false;
     debugLog(
       'WARN',
       `${model}-cli-async`,
-      `claude CLI rejected ${HEADLESS_FLAG}; dropped for this process (the headless session tax returns — upgrade Claude Code to avoid it)`,
+      `claude CLI rejected ${HEADLESS_FLAG}; dropped for this process (the headless session tax returns - upgrade Claude Code to avoid it)`,
     );
   }
   return second.result;
@@ -956,7 +1008,7 @@ export async function callModelCLIAsync(prompt, model, { timeout }) {
 /**
  * One call onto whichever keyed leg detection selected. Every dispatcher above
  * enters here, so the leg→transport mapping lives in exactly one place rather
- * than in a ternary repeated at four call sites — which is how the fourth leg
+ * than in a ternary repeated at four call sites - which is how the fourth leg
  * would have been wired into three of them.
  * @param {'api'|'openrouter'|'openai'} mode
  * @param {string|{system?:string,user:string}} prompt
@@ -977,7 +1029,7 @@ function callKeyedLeg(mode, prompt, tier, opts) {
 // and the reply at choices[0].message.content. Anthropic's prompt-cache
 // `cache_control` field has no OpenAI-format equivalent and is omitted.
 //
-// The generic leg's base URL carries the version segment — the OpenAI SDK and
+// The generic leg's base URL carries the version segment - the OpenAI SDK and
 // Qwen Code convention, where OPENAI_BASE_URL=https://api.openai.com/v1 means
 // requests go to <base>/chat/completions. So the value a user already has for
 // Qwen Code, LiteLLM or a vLLM deployment works here unedited, and a trailing
@@ -1023,7 +1075,7 @@ async function callOpenAICompatAPI(
   const { label, url, apiKey, model, headers } = openAICompatTarget(mode, tier);
   // OpenRouter is key-only. The generic leg is not: a keyless local server
   // (Ollama, vLLM, LM Studio) is a real deployment, and there the Authorization
-  // header is omitted entirely rather than sent as a bare `Bearer ` — which
+  // header is omitted entirely rather than sent as a bare `Bearer ` - which
   // several servers reject outright.
   if (mode === 'openrouter' && !apiKey) return null;
 
@@ -1040,7 +1092,7 @@ async function callOpenAICompatAPI(
     if (apiKey) reqHeaders.Authorization = `Bearer ${apiKey}`;
     const reqBody = JSON.stringify({ model, max_tokens: maxTokens, temperature, messages });
     // Native fetch ignores HTTP(S)_PROXY; when a proxy is configured, tunnel the
-    // request through it — a direct fetch to the provider times out behind one.
+    // request through it - a direct fetch to the provider times out behind one.
     const proxy = httpConnectProxyFor(url);
     const res = proxy
       ? await postViaConnectProxy(proxy, url, { headers: reqHeaders, body: reqBody, timeout })
@@ -1069,7 +1121,7 @@ function callHaikuCLI(prompt, { timeout }) {
     const text = result.trim();
     return text ? { text } : null;
   } catch (e) {
-    // Try to extract partial output on timeout — validate via parseJsonFromLLM
+    // Try to extract partial output on timeout - validate via parseJsonFromLLM
     // (strips ```json fences per #8605) before returning. A raw brace check would
     // discard a complete-but-fenced payload the caller could still parse, throwing
     // away the JSON Haiku already emitted.

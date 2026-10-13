@@ -1151,6 +1151,73 @@ describe('re-enrich --scope wide (R-7)', () => {
     expect(obs.compressed_into).toBe(-1); // COMPRESSED_AUTO — narrow auto-hide preserved
   });
 
+  // D#268: a 0 reply reaches the write in narrow scope only for a row that may not be hidden.
+  // 4c174fa6 kept its title and narrative because the reply judged the row worthless, but the
+  // same UPDATE wrote that reply's type, lesson, concepts, facts, aliases and scope, permanently
+  // (it stamps optimized_at), and a lesson-bearing row is what pre-tool recall injects.
+  const ZERO_REPLY = {
+    type: 'bugfix',
+    title: 'y',
+    narrative: 'y',
+    importance: 0,
+    lesson_learned: 'a lesson from a reply that called the row worthless',
+    concepts: ['zero-reply-concept'],
+    facts: ['zero-reply-fact'],
+    search_aliases: ['zero reply alias'],
+    scope: 'project',
+  };
+  const REPLY_FIELDS = 'type, lesson_learned, concepts, facts, search_aliases, scope';
+
+  for (const [protection, protect, wantImportance] of [
+    [
+      'a person set its importance',
+      (db, id) =>
+        db
+          .prepare('UPDATE observations SET importance = 2, importance_set_at = ? WHERE id = ?')
+          .run(Date.now(), id),
+      2,
+    ],
+    [
+      'it is a compression keeper',
+      (db, id) => insertObs(db, { title: 'member', narrative: 'member body', compressedInto: id }),
+      1,
+    ],
+  ]) {
+    it(`a 0 reply on a narrow row kept visible because ${protection} writes nothing from the reply`, async () => {
+      const { executeReenrich } = await import('../hook-optimize.mjs');
+      insertObs(db, { title: 'protected row', narrative: 'stored body', type: 'discovery', importance: 0 });
+      const id = db.prepare('SELECT MIN(id) id FROM observations').get().id;
+      protect(db, id);
+      const before = db.prepare(`SELECT ${REPLY_FIELDS} FROM observations WHERE id = ?`).get(id);
+      callModelJSONAsync.mockResolvedValue(ZERO_REPLY);
+
+      expect((await executeReenrich(db, 10)).processed).toBe(1);
+      expect(db.prepare(`SELECT ${REPLY_FIELDS} FROM observations WHERE id = ?`).get(id)).toEqual(before);
+      const row = db
+        .prepare('SELECT compressed_into, importance, optimized_at FROM observations WHERE id = ?')
+        .get(id);
+      expect(row.compressed_into ?? 0, 'premise: kept visible').toBe(0);
+      expect(row.importance).toBe(wantImportance);
+      expect(row.optimized_at, 'left unstamped, the row would be re-sent every run').not.toBeNull();
+    });
+  }
+
+  it('premise: a 0 reply in wide scope still fills the lesson (a 0 there reads as a misjudgment)', async () => {
+    const { executeReenrich } = await import('../hook-optimize.mjs');
+    insertObs(db, {
+      type: 'decision',
+      title: 'Chose RRF over union-by-max for hybrid fusion',
+      narrative:
+        'Union-by-max let one strong lexical hit dominate the fused ranking; RRF blends rank positions so the vector and lexical signals contribute evenly.',
+    });
+    const id = db.prepare('SELECT MIN(id) id FROM observations').get().id;
+    callModelJSONAsync.mockResolvedValue({ ...ZERO_REPLY, type: 'decision' });
+    expect((await executeReenrich(db, 10, { scope: 'wide' })).processed).toBe(1);
+    expect(db.prepare('SELECT lesson_learned FROM observations WHERE id = ?').get(id).lesson_learned).toBe(
+      ZERO_REPLY.lesson_learned,
+    );
+  });
+
   // D10: an importance a person set (importance_set_at) is theirs. The two access promotions
   // skipped it, but re-enrich rewrote it from the model's reply, and on importance:0 its
   // narrow pass HID the row (v6.21.0 pre-tag claims review).
@@ -1191,6 +1258,113 @@ describe('re-enrich --scope wide (R-7)', () => {
     expect([row.importance, row.compressed_into ?? 0]).toEqual([2, 0]);
   });
 
+  // D#267. The hide branch reads "is this row protected?" in JS and then runs its UPDATE with no
+  // await in between, so only another process can change the answer inside that window, and the
+  // UPDATE's own WHERE is the only guard there. A handle that runs `afterRead` right after the
+  // matching SELECT stands in for that process.
+  function writeAfterRead(target, selectSql, afterRead) {
+    return new Proxy(target, {
+      get(t, prop) {
+        if (prop !== 'prepare') {
+          const v = t[prop];
+          return typeof v === 'function' ? v.bind(t) : v;
+        }
+        return (sql) => {
+          const stmt = t.prepare(sql);
+          if (sql !== selectSql) return stmt;
+          return {
+            get: (...args) => {
+              const row = stmt.get(...args);
+              afterRead(...args);
+              return row;
+            },
+          };
+        };
+      },
+    });
+  }
+
+  it('narrow re-enrich does not hide a row a person set importance on after the check read it', async () => {
+    const { executeReenrich } = await import('../hook-optimize.mjs');
+    insertObs(db, { title: 'stamped from another process', narrative: 'body text for the row' });
+    const id = db.prepare('SELECT MAX(id) id FROM observations').get().id;
+    let reads = 0;
+    const racing = writeAfterRead(db, 'SELECT importance_set_at FROM observations WHERE id = ?', () => {
+      reads++;
+      db.prepare('UPDATE observations SET importance = 2, importance_set_at = ? WHERE id = ?').run(
+        Date.now(),
+        id,
+      );
+    });
+    callModelJSONAsync.mockResolvedValue({ type: 'change', title: 'y', narrative: 'y', importance: 0 });
+    const result = await executeReenrich(racing, 10);
+    expect(reads, 'premise: the write ran after the protection check read the row').toBe(1);
+    const row = db
+      .prepare('SELECT compressed_into, optimized_at, importance_set_at FROM observations WHERE id = ?')
+      .get(id);
+    expect(row.importance_set_at, 'premise: the write landed').not.toBeNull();
+    expect(row.compressed_into ?? 0, 'hidden although a person had just set its importance').toBe(0);
+    expect([result.processed, row.optimized_at]).toEqual([0, null]);
+  });
+
+  it('narrow re-enrich does not hide a row that became a compression keeper after the check read it', async () => {
+    const { executeReenrich } = await import('../hook-optimize.mjs');
+    insertObs(db, { title: 'adopted from another process', narrative: 'body text for the row' });
+    const id = db.prepare('SELECT MAX(id) id FROM observations').get().id;
+    let reads = 0;
+    const racing = writeAfterRead(db, 'SELECT 1 FROM observations WHERE compressed_into = ? LIMIT 1', () => {
+      reads++;
+      insertObs(db, { title: 'member', narrative: 'member body', compressedInto: id });
+    });
+    callModelJSONAsync.mockResolvedValue({ type: 'change', title: 'y', narrative: 'y', importance: 0 });
+    const result = await executeReenrich(racing, 10);
+    expect(reads, 'premise: the write ran after the keeper check read the row').toBe(1);
+    expect(
+      db.prepare('SELECT COUNT(*) n FROM observations WHERE compressed_into = ?').get(id).n,
+      'premise: the member landed',
+    ).toBe(1);
+    const row = db.prepare('SELECT compressed_into, optimized_at FROM observations WHERE id = ?').get(id);
+    expect(row.compressed_into ?? 0, 'the new keeper, and with it its member, was hidden').toBe(0);
+    expect([result.processed, row.optimized_at]).toEqual([0, null]);
+  });
+
+  // The stamp-only write a 0 reply gets on a protected narrow row (D#268) runs after the same
+  // synchronous reads, so its WHERE is again the only guard against another process (post-release
+  // review: deleting either predicate left the suite green). Person-set row; the write lands right
+  // after the protection check reads it.
+  for (const [what, write, check] of [
+    [
+      'superseded',
+      (id) => db.prepare('UPDATE observations SET superseded_at = ? WHERE id = ?').run(Date.now(), id),
+      (row) => expect(row.optimized_at, 'a superseded row was stamped').toBeNull(),
+    ],
+    [
+      'stamped by another pass (a /verify approval)',
+      (id) => db.prepare('UPDATE observations SET optimized_at = 12345 WHERE id = ?').run(id),
+      (row) => expect(row.optimized_at, "the other pass's stamp was overwritten").toBe(12345),
+    ],
+  ]) {
+    it(`the stamp-only write of a 0 reply skips a protected row ${what} after the check read it`, async () => {
+      const { executeReenrich } = await import('../hook-optimize.mjs');
+      insertObs(db, { title: 'protected, then raced', narrative: 'body text for the row' });
+      const id = db.prepare('SELECT MAX(id) id FROM observations').get().id;
+      db.prepare('UPDATE observations SET importance = 2, importance_set_at = ? WHERE id = ?').run(
+        Date.now(),
+        id,
+      );
+      let reads = 0;
+      const racing = writeAfterRead(db, 'SELECT importance_set_at FROM observations WHERE id = ?', () => {
+        reads++;
+        write(id);
+      });
+      callModelJSONAsync.mockResolvedValue({ type: 'change', title: 'y', narrative: 'y', importance: 0 });
+      const result = await executeReenrich(racing, 10);
+      expect(reads, 'premise: the write ran after the protection check read the row').toBe(1);
+      check(db.prepare('SELECT optimized_at FROM observations WHERE id = ?').get(id));
+      expect(result.processed).toBe(0);
+    });
+  }
+
   // v6.21.0 pre-tag claims review: hiding a compression group's KEEPER hides every member
   // compressed into it (2eb44d1 guarded the five maintenance writers, not this one). A weekly
   // summary is exactly the thin row the narrow pool picks, and `optimize`'s default is narrow.
@@ -1221,6 +1395,97 @@ describe('re-enrich --scope wide (R-7)', () => {
     ).not.toBeNull();
     const members = db.prepare('SELECT COUNT(*) n FROM observations WHERE compressed_into = ?').get(keeper).n;
     expect(members).toBe(3);
+    // D#207: the reply scored the keeper 0, so its text is not trusted to replace the keeper's.
+    const text = db.prepare('SELECT title, narrative FROM observations WHERE id = ?').get(keeper);
+    expect(text).toEqual({ title: 'Weekly summary: auth refactor', narrative: 'three changes to auth' });
+  });
+
+  // Pre-tag review P3-8: the narrow rewrite moves an explicit save to the re-enrich writer's id,
+  // because its text becomes the model's. A 0 reply leaves the stored text, so the row must stay
+  // the explicit save it was (since D#268 a narrow 0 reply returns through the stamp-only write
+  // before the session-id rewrite).
+  it('a 0 reply on a person-set explicit save keeps the row under its manual author id', async () => {
+    const { executeReenrich } = await import('../hook-optimize.mjs');
+    insertSession(db, { id: 'manual-probe', project: 'test' });
+    insertObs(db, { sessionId: 'manual-probe', title: 'saved by hand', narrative: 'kept text' });
+    const id = db.prepare('SELECT MAX(id) id FROM observations').get().id;
+    db.prepare('UPDATE observations SET importance = 2, importance_set_at = ? WHERE id = ?').run(
+      Date.now(),
+      id,
+    );
+    callModelJSONAsync.mockResolvedValue({ type: 'change', title: 'y', narrative: 'y', importance: 0 });
+    expect((await executeReenrich(db, 10)).processed).toBe(1);
+    expect(
+      db.prepare('SELECT memory_session_id FROM observations WHERE id = ?').get(id).memory_session_id,
+    ).toBe('manual-probe');
+  });
+
+  it('control: a narrow rewrite of an explicit save does move it to the re-enrich writer', async () => {
+    const { executeReenrich } = await import('../hook-optimize.mjs');
+    insertSession(db, { id: 'manual-probe2', project: 'test' });
+    insertObs(db, { sessionId: 'manual-probe2', title: 'saved by hand', narrative: 'kept text' });
+    const id = db.prepare('SELECT MAX(id) id FROM observations').get().id;
+    callModelJSONAsync.mockResolvedValue({
+      type: 'change',
+      title: 'model title',
+      narrative: 'model text',
+      importance: 2,
+    });
+    expect((await executeReenrich(db, 10)).processed).toBe(1);
+    const row = db.prepare('SELECT title, memory_session_id FROM observations WHERE id = ?').get(id);
+    expect(row.title).toBe('model title');
+    expect(row.memory_session_id).not.toBe('manual-probe2');
+  });
+
+  it('a reply scoring a person-set row 0 does not rewrite its title or narrative (D#207)', async () => {
+    const { executeReenrich } = await import('../hook-optimize.mjs');
+    insertObs(db, { title: 'keep my words', narrative: 'the text a person kept' });
+    const id = db.prepare('SELECT MAX(id) id FROM observations').get().id;
+    db.prepare('UPDATE observations SET importance = 2, importance_set_at = ? WHERE id = ?').run(
+      Date.now(),
+      id,
+    );
+    callModelJSONAsync.mockResolvedValue({ type: 'change', title: 'y', narrative: 'y', importance: 0 });
+    expect((await executeReenrich(db, 10)).processed).toBe(1);
+    expect(db.prepare('SELECT title, narrative FROM observations WHERE id = ?').get(id)).toEqual({
+      title: 'keep my words',
+      narrative: 'the text a person kept',
+    });
+  });
+
+  it('premise: a reply scoring an unprotected narrow row above 0 still rewrites it', async () => {
+    const { executeReenrich } = await import('../hook-optimize.mjs');
+    insertObs(db, { title: 'thin', narrative: 'thin body' });
+    const id = db.prepare('SELECT MAX(id) id FROM observations').get().id;
+    callModelJSONAsync.mockResolvedValue({
+      type: 'change',
+      title: 'Rich title',
+      narrative: 'rich body',
+      importance: 2,
+    });
+    expect((await executeReenrich(db, 10)).processed).toBe(1);
+    expect(db.prepare('SELECT title, narrative FROM observations WHERE id = ?').get(id)).toEqual({
+      title: 'Rich title',
+      narrative: 'rich body',
+    });
+  });
+
+  // D#206: the stamp was read fresh after the model call, but the value written was the
+  // candidate's importance from BEFORE the call, so a person's change during the call was undone.
+  it('re-enrich keeps an importance a person set while the model call was running', async () => {
+    const { executeReenrich } = await import('../hook-optimize.mjs');
+    insertObs(db, { title: 'raced', narrative: 'body text for the row' });
+    const id = db.prepare('SELECT MAX(id) id FROM observations').get().id;
+    db.prepare('UPDATE observations SET importance = 2 WHERE id = ?').run(id);
+    callModelJSONAsync.mockImplementation(async () => {
+      db.prepare('UPDATE observations SET importance = 1, importance_set_at = ? WHERE id = ?').run(
+        Date.now(),
+        id,
+      );
+      return { type: 'change', title: 'x', narrative: 'x', importance: 3 };
+    });
+    expect((await executeReenrich(db, 10)).processed).toBe(1);
+    expect(db.prepare('SELECT importance FROM observations WHERE id = ?').get(id).importance).toBe(1);
   });
 });
 
@@ -1339,6 +1604,40 @@ describe('cluster-merge', () => {
 
     const other = db.prepare('SELECT compressed_into FROM observations WHERE id = ?').get(obs[1].id);
     expect(other.compressed_into).toBe(obs[0].id);
+  });
+
+  // D#198: the merged importance was max(model, cluster max) whatever a person had set on the
+  // keeper, so a keeper a person lowered to 1 came back at the model's 3. Set during the model
+  // call here, which also covers a person acting while the merge waits on the model.
+  it('cluster-merge keeps a keeper importance a person set; premise: an unset one takes the model value', async () => {
+    const { executeMergeCluster } = await import('../hook-optimize.mjs');
+    const reply = {
+      should_merge: true,
+      merged_title: 'Merged',
+      merged_narrative: 'merged text',
+      merged_concepts: [],
+      merged_facts: [],
+      merged_lesson: 'l',
+      importance: 3,
+    };
+    for (const personSets of [true, false]) {
+      db.prepare('DELETE FROM observations').run();
+      insertObs(db, { title: 'Fix FTS5 bug A', narrative: 'Handled special chars', accessCount: 3 });
+      insertObs(db, { title: 'Fix FTS5 bug B', narrative: 'Handled parentheses', accessCount: 1 });
+      const obs = db.prepare('SELECT * FROM observations ORDER BY id').all();
+      callModelJSONAsync.mockImplementation(async () => {
+        if (personSets) {
+          db.prepare('UPDATE observations SET importance = 1, importance_set_at = ? WHERE id = ?').run(
+            Date.now(),
+            obs[0].id,
+          );
+        }
+        return reply;
+      });
+      expect((await executeMergeCluster(db, obs)).merged).toBe(true);
+      const imp = db.prepare('SELECT importance FROM observations WHERE id = ?').get(obs[0].id).importance;
+      expect(imp, `personSets=${personSets}`).toBe(personSets ? 1 : 3);
+    }
   });
 
   // D#138: provenance is read from memory_session_id, and a manual- keeper rewritten with model

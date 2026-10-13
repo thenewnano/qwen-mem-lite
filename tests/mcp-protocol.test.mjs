@@ -1,4 +1,4 @@
-// MCP protocol subprocess test — validates the server over real stdio JSON-RPC,
+// MCP protocol subprocess test - validates the server over real stdio JSON-RPC,
 // not the handler functions in isolation.
 //
 // Why this is separate from unit tests: lessons #7837, #7843, #8126, #8127,
@@ -42,6 +42,7 @@ beforeAll(async () => {
       CLAUDE_PROJECT_DIR: '/test/project',
       PWD: '/test/project',
       QWEN_MEM_AUTO_DEEP: '0',
+      QWEN_MEM_SEARCH_TELEMETRY: '0',
     },
   });
   client = new Client({ name: 'mem-test-client', version: '0.0.0' });
@@ -69,7 +70,7 @@ function textOf(result) {
 }
 
 describe('MCP protocol surface', () => {
-  it('tools/list exposes exactly the 9 promised core tools', async () => {
+  it('tools/list exposes exactly the 9 default core tools', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
@@ -104,7 +105,7 @@ describe('MCP protocol surface', () => {
 
   // Regression guard for #7843: mem_maintain purge_stale silently deleted rows
   // without a confirm gate. The fix added `confirm: boolean` and makes the
-  // default a dry-run preview. Real guard asserts row counts are invariant —
+  // default a dry-run preview. Real guard asserts row counts are invariant -
   // the earlier prose-only check passed even if the SQL fired, so long as
   // the response contained the word "preview" anywhere.
   it('mem_maintain execute purge_stale without confirm does NOT delete rows', async () => {
@@ -133,7 +134,7 @@ describe('MCP protocol surface', () => {
       arguments: { action: 'execute', operations: ['purge_stale'] },
     });
     const resText = textOf(res);
-    // Response should clearly signal a dry-run — but text-only isn't enough.
+    // Response should clearly signal a dry-run - but text-only isn't enough.
     expect(resText.toLowerCase()).toMatch(/confirm|preview|dry|would/);
 
     // Hard assertion: row count is invariant after a no-confirm execute.
@@ -146,7 +147,7 @@ describe('MCP protocol surface', () => {
   });
 
   // Audit 2026-07-17 P4: mem_save on bugfix/decision without lesson_learned must
-  // nudge in the response text (naming mem_update with the new id) — the model
+  // nudge in the response text (naming mem_update with the new id) - the model
   // still holds the debugging context at save time; a later backfill pass cannot
   // reconstruct it. With a lesson, or for low-obligation types, no nudge.
   it('mem_save nudges when a bugfix arrives without lesson_learned', async () => {
@@ -206,7 +207,7 @@ describe('MCP protocol surface', () => {
 
   it('unknown tool name surfaces an explicit isError result (not a silent success)', async () => {
     // The MCP SDK returns { isError: true, content: [...] } rather than
-    // throwing — callers must check isError. Assert shape, not rejection.
+    // throwing - callers must check isError. Assert shape, not rejection.
     const res = await client.callTool({ name: 'mem_totally_not_a_tool', arguments: {} });
     expect(res.isError).toBe(true);
     expect(textOf(res)).toMatch(/not found|unknown/i);
@@ -215,7 +216,7 @@ describe('MCP protocol surface', () => {
   // Regression guard: single-source mem_search (obs_type / type / importance
   // filter) must report the TRUE total ("N of M"), not just the page size.
   // Pre-fix, formatSearchOutput gated the "of M" suffix on isCrossSource, so a
-  // type-filtered search showing 2 of 6 rendered "Found 2 result(s)" — hiding
+  // type-filtered search showing 2 of 6 rendered "Found 2 result(s)" - hiding
   // that more pages exist. The CLI never had this gate (mem-cli.mjs "N of M"),
   // so the two paths diverged on Claude's primary interface. countSearchTotal
   // already computes the true population; this asserts it reaches the header.
@@ -244,8 +245,8 @@ describe('MCP protocol surface', () => {
 
   // Regression guard: explicit single-source pagination (type='observations')
   // must not overlap or gap. Pre-fix the server pushed `offset` into the SQL
-  // (perSourceOffset=offset) AND re-sliced by offset at the merge step — a
-  // double-offset — while perSourceLimit=limit fetched too few rows to page at
+  // (perSourceOffset=offset) AND re-sliced by offset at the merge step - a
+  // double-offset - while perSourceLimit=limit fetched too few rows to page at
   // all. Result: offset 0 and offset 3 returned identical rows and the oldest
   // rows were never reachable. The CLI never had this (it over-fetches from
   // offset 0 and slices once); this asserts the server matches that contract.
@@ -427,13 +428,13 @@ describe('mem_timeline says when its query anchored nothing', () => {
     const text = textOf(res);
     expect(text).toMatch(/Timeline \(most recent \d+\)/); // premise: the fallback still ran
     expect(text).toMatch(
-      /No anchor found for "zzqqxxnomatch" — showing the most recent observations instead/,
+      /No anchor found for "zzqqxxnomatch" - showing the most recent observations instead/,
     );
   });
 });
 
 // ─── mem_defer refuses a blank title (E2E round 2026-09-29) ─────────────────
-// `{"title":"   "}` was accepted — "Deferred as D#N" — and the item then printed as an empty
+// `{"title":"   "}` was accepted - "Deferred as D#N" - and the item then printed as an empty
 // line in every SessionStart banner and defer list. The CLI (`defer add "   "`) refuses it,
 // and mem_save / mem_update refuse blank text the same way.
 describe('mem_defer refuses a whitespace-only title', () => {
@@ -447,7 +448,7 @@ describe('mem_defer refuses a whitespace-only title', () => {
   });
 });
 
-// ─── mem_browse on an empty tier (E2E round 2026-09-29) — see tests/browse-empty-tier ───
+// ─── mem_browse on an empty tier (E2E round 2026-09-29) - see tests/browse-empty-tier ───
 describe('mem_browse names an empty tier', () => {
   it('does not call a non-empty store empty', async () => {
     const res = await client.callTool({ name: 'mem_browse', arguments: { tier: 'archive' } });

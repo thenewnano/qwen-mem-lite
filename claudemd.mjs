@@ -4,7 +4,7 @@
 //
 // Why here and not memdir.mjs: a host loads its project context file and the memory-dir
 // MEMORY.md at EQUAL weight, so steering belongs in that context file (the canonical home
-// for project instructions) — seeding MEMORY.md just pollutes an index meant for the
+// for project instructions) - seeding MEMORY.md just pollutes an index meant for the
 // user's own memories. This module mirrors the design shipped by the sibling
 // code-graph-mcp plugin (claude-plugin/scripts/adopt.js) and the oh-my-claudecode
 // versioned `<!-- :begin vN -->` managed-block pattern.
@@ -28,7 +28,7 @@ import { memdirPath, removePluginSection, removePluginDoc, isAdopted as memdirIs
 
 // Two hosts, two context files, and they do not overlap: Claude Code loads the project
 // CLAUDE.md (+ .claude/) and ignores QWEN.md; Qwen Code loads QWEN.md (+ .qwen/) and
-// ignores CLAUDE.md — measured on Qwen Code 0.24.4, which loaded neither this repo's 20 KB
+// ignores CLAUDE.md - measured on Qwen Code 0.24.4, which loaded neither this repo's 20 KB
 // CLAUDE.md nor any other, its context-file default being QWEN.md alone. A single target
 // would therefore make the steering block invisible to whichever host it did not pick, and
 // adopt cannot detect the host: its own CLI runs with no host env at all.
@@ -62,7 +62,7 @@ function stateFilePath(cwd, slug, layout = PRIMARY_LAYOUT) {
   return join(dotDir(cwd, layout), `.plugin_${slugSnake(slug)}_state.json`);
 }
 /**
- * Every (context file, detail doc) pair this module manages — for callers that report
+ * Every (context file, detail doc) pair this module manages - for callers that report
  * rather than read, e.g. `adopt --status` and the adopt log lines.
  */
 export function contextTargets(cwd, slug) {
@@ -74,7 +74,7 @@ export function contextTargets(cwd, slug) {
   }));
 }
 
-// First line of the detail doc — an invisible (in rendered markdown) marker that
+// First line of the detail doc - an invisible (in rendered markdown) marker that
 // lets us distinguish our generated copy from a user's same-named file.
 function managedByMarker(slug) {
   return `<!-- managed-by: ${slug} -->`;
@@ -90,24 +90,24 @@ function escapeRe(s) {
 // (e.g. code-graph-mcp's `<!-- code-graph-mcp:begin -->`) sitting in the same
 // CLAUDE.md. Matches any version vN+ for migration/idempotency. The separators
 // are `\r?\n` (not bare `\n`) so a CLAUDE.md re-saved with Windows CRLF endings
-// still matches — otherwise the block read as "absent" and a fresh LF copy got
+// still matches - otherwise the block read as "absent" and a fresh LF copy got
 // appended every SessionStart, growing the file without bound (review C1/H2).
 // The body may not contain ANOTHER sentinel of the same slug. `[\s\S]*?` could, and that is
-// not a tidiness point — it is how a match stopped being one block. Drop the `:end` line by
+// not a tidiness point - it is how a match stopped being one block. Drop the `:end` line by
 // hand (a merge resolution, an editor, another tool) and the next adopt appends a second
 // block below whatever the user has written since; the adopt after THAT matched from the
-// orphaned begin, lazily, to the only `:end` in the file — which now sits past the user's
-// text and past the second begin — so `raw.replace(m[0], section)` deleted all of it.
+// orphaned begin, lazily, to the only `:end` in the file - which now sits past the user's
+// text and past the second begin - so `raw.replace(m[0], section)` deleted all of it.
 // Measured 2026-09-13: a "## Deployment runbook" section appended after adoption was gone
 // after two further adopts, silently, with both runs reporting success.
 //
 // The tempered token below cannot span a sentinel, so the engine backtracks to the
-// WELL-FORMED pair and the orphan is simply left alone — which is the right answer for a
+// WELL-FORMED pair and the orphan is simply left alone - which is the right answer for a
 // file we do not own: where the orphaned body ends is genuinely unknowable, so removeManaged
 // reports it (action 'partial') rather than guessing a span to delete.
 //
 // Safe by construction for legitimate blocks: the shipped body carries the slug twice and
-// never as a sentinel (measured: 1304 bytes — 1296 UTF-16 units, the body has em dashes —
+// never as a sentinel (measured: 1304 bytes - 1296 UTF-16 units, the body has em dashes -
 // with zero `:begin` / `:end` occurrences), and the
 // separators stay `\r?\n` for the CRLF reason below.
 function blockBody(esc) {
@@ -144,6 +144,64 @@ function blockRegexG(slug) {
   return new RegExp(blockBody(escapeRe(slug)), 'g');
 }
 
+// ─── adopt's AGENTS.md import ────────────────────────────────────────────────
+// Claude Code (v2.1.277+) stops reading AGENTS.md once a CLAUDE.md exists in the session's
+// directory or above it, so the CLAUDE.md adopt writes next to one imports it first, the remedy
+// code.claude.com/docs/en/memory#agents-md gives. The marker line says whose the imports are, so
+// unadopt can delete a file that holds nothing else; Claude Code strips a block-level HTML
+// comment before it injects the file. It must never read as a sentinel: no `:begin` / `:end`.
+function agentsImportMarker(slug) {
+  return `<!-- ${slug} adopt: imports AGENTS.md, which Claude Code stops reading once a CLAUDE.md exists -->`;
+}
+const AGENTS_IMPORT_LINE_RE = /^@(?:\.claude\/)?AGENTS\.md$/;
+
+// Is `rest` (a file's text with our blocks removed) nothing but adopt's import lines? The marker
+// alone counts too: it is still the plugin's line after the user deleted the import below it.
+function isOwnImportsOnly(rest, slug) {
+  const lines = rest
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return (
+    lines.length >= 1 &&
+    lines[0] === agentsImportMarker(slug) &&
+    lines.slice(1).every((l) => AGENTS_IMPORT_LINE_RE.test(l))
+  );
+}
+
+/**
+ * Whether the instructions file at `p` holds nothing but what this plugin wrote: its blocks and
+ * adopt's AGENTS.md imports. False for a missing file.
+ * @param {string} p absolute path
+ * @param {string} slug
+ * @returns {boolean}
+ */
+export function holdsOnlyOwnLines(p, slug) {
+  try {
+    if (!existsSync(p)) return false;
+    const rest = readFileSync(p, 'utf8').replace(blockRegexG(slug), '');
+    return rest.trim() === '' || isOwnImportsOnly(rest, slug);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Put adopt's AGENTS.md imports at the top of <cwd>/CLAUDE.md (created if absent), unless the
+ * marker is there already. `imports` are paths relative to `cwd` (`AGENTS.md`,
+ * `.claude/AGENTS.md`).
+ * @returns {'added'|'present'}
+ */
+export function addAgentsImports(cwd, slug, imports) {
+  const p = claudeMdPath(cwd);
+  const raw = existsSync(p) ? readFileSync(p, 'utf8') : '';
+  const marker = agentsImportMarker(slug);
+  if (raw.includes(marker)) return 'present';
+  const lines = `${marker}\n${imports.map((i) => `@${i}`).join('\n')}\n`;
+  atomicWrite(p, raw.trim() === '' ? lines : `${lines}\n${raw.replace(/^\s+/, '')}`);
+  return 'added';
+}
+
 function renderBlock(slug, version, body) {
   return `<!-- ${slug}:begin ${version} -->\n${body}\n<!-- ${slug}:end -->`;
 }
@@ -155,7 +213,7 @@ function sha256(s) {
 // `atomicWriteFileSync`, not a local temp+rename (audit 2026-09-02 P0-5). The local twin
 // renamed onto the PATH; when a project's CLAUDE.md is a symlink into a dotfiles repo
 // (chezmoi/stow/yadm) or a monorepo's shared root, that REPLACES the link with a regular
-// file — silently, on the first SessionStart, with no user-visible signal beyond a git
+// file - silently, on the first SessionStart, with no user-visible signal beyond a git
 // typechange. The shared writer lstats first and writes THROUGH to the real target. It has
 // been in this repo, shipped and used by install.mjs for ~/.claude/settings.json, since the
 // day that failure mode was first written down in its own docblock.
@@ -189,7 +247,7 @@ export function readBlock(cwd, slug, layout = PRIMARY_LAYOUT) {
   const m = raw.match(blockRegex(slug));
   if (!m) return { exists: true, version: null, body: null, raw };
   // Normalize CRLF in the captured body so drift comparison (needsRefresh) is
-  // line-ending-agnostic — a CRLF-saved file matching the shipped LF content
+  // line-ending-agnostic - a CRLF-saved file matching the shipped LF content
   // must NOT be seen as drifted and rewritten every session.
   return { exists: true, version: m[1], body: m[2].replace(/\r\n/g, '\n'), raw };
 }
@@ -209,7 +267,7 @@ export function isAdopted(cwd, slug) {
  * Any trace of adoption that unadopt should clean: managed block OR detail doc
  * OR state sidecar. Deliberately weaker than isAdopted (whose AND lets a
  * half-written adopt self-heal on the next SessionStart): the unadopt sweep
- * gated on isAdopted skipped partial residue forever — e.g. a user deleted the
+ * gated on isAdopted skipped partial residue forever - e.g. a user deleted the
  * detail doc but the CLAUDE.md block remained, and `unadopt --all` never
  * removed it. removeManaged cleans all three pieces, so sweep on any of them.
  */
@@ -227,19 +285,19 @@ export function hasResidue(cwd, slug) {
 // An unpaired sentinel is deliberately NOT in the list above (pre-ship review P2-3). A first
 // cut added it, reasoning that the sweep should see what the pair regex cannot. But
 // orphanSentinelCount counts sentinel-shaped TEXT, and a project the plugin never touched can
-// mention the marker in prose — documenting it, pasting half an example, a changelog line.
+// mention the marker in prose - documenting it, pasting half an example, a changelog line.
 // That one mention let `unadopt --all` into a stranger's project, where removeManaged
 // unconditionally deletes the detail doc and state sidecar and rmdir's an empty `.claude/`,
-// then printed "remove those lines by hand" at the user's own paragraph — and never
+// then printed "remove those lines by hand" at the user's own paragraph - and never
 // converged, because the mention is still there on the next sweep.
 //
 // The three entries above are all things the PLUGIN WROTE; a sentinel in prose is not. And
 // the sweep gains nothing by entering: removeManaged cannot clean an orphan anyway, by
-// design. The orphan is reported by removeManaged when unadopt genuinely runs — which is the
+// design. The orphan is reported by removeManaged when unadopt genuinely runs - which is the
 // real failure case, where the doc and sidecar are still present and do bring it in.
 
 /**
- * Whether the installed block/doc has drifted from the shipped content — i.e.
+ * Whether the installed block/doc has drifted from the shipped content - i.e.
  * a version bump or a template edit means we should refresh. Returns true when
  * the block is missing, the version differs, the block body differs, or the
  * detail doc is missing / differs. The block is plugin-managed: drift is
@@ -313,7 +371,7 @@ function writeManagedIn(cwd, layout, { slug, version, block, doc }) {
   }
   // H2: collapse any DUPLICATE same-slug blocks (keep the first, drop the rest).
   // Defends against a CRLF-orphaned copy a pre-fix build may have appended, or a
-  // user paste — otherwise the extras would be invisible to refresh/unadopt.
+  // user paste - otherwise the extras would be invisible to refresh/unadopt.
   let seen = 0;
   const deduped = next.replace(blockRegexG(slug), (whole) => (seen++ === 0 ? whole : ''));
   if (deduped !== next) {
@@ -350,10 +408,10 @@ function writeManagedIn(cwd, layout, { slug, version, block, doc }) {
  * delete the detail doc + state sidecar. Best-effort removes an emptied
  * .claude/ directory.
  *
- * THREE outcomes, not two — the same rule lib/db-unusable.mjs states about backups: "there
+ * THREE outcomes, not two - the same rule lib/db-unusable.mjs states about backups: "there
  * is nothing to do" and "I could not finish" must not print in the same voice, because a
  * green-sounding line ends the reader's search. `absent` used to cover both: with one
- * sentinel line missing, the pair regex matched nothing, so this returned 'absent' — while
+ * sentinel line missing, the pair regex matched nothing, so this returned 'absent' - while
  * having already deleted the detail doc and the state sidecar and left ~1.3 KB of managed
  * steering text in the user's CLAUDE.md, which it is then loaded from on every session.
  * `partial` is that case, and `residue` names what is left so the caller can say so.
@@ -367,7 +425,7 @@ function writeManagedIn(cwd, layout, { slug, version, block, doc }) {
 export function removeManaged(cwd, slug) {
   // One outcome for the caller, as before: 'removed' wins over 'partial' wins over
   // 'absent', and any residue text from either layout rides along. A sweep that empties
-  // one host's file and finds an orphan in the other's is 'removed' + residue — the two
+  // one host's file and finds an orphan in the other's is 'removed' + residue - the two
   // facts stay separate, as their docblocks below insist.
   let action = 'absent';
   const residues = [];
@@ -401,14 +459,17 @@ function removeManagedIn(cwd, slug, layout) {
       action = 'removed';
     }
     if (action === 'removed') {
+      // What is left may be adopt's AGENTS.md imports alone: they came with the block, and a
+      // CLAUDE.md holding only them is one adopt created (addAgentsImports).
+      if (isOwnImportsOnly(raw, slug)) raw = '';
       // When the managed block was the ENTIRE file (adopt created CLAUDE.md
       // because none existed), removing it leaves nothing but whitespace.
       // Delete the now-empty file rather than writing a 0-byte CLAUDE.md, so
-      // unadopt fully restores the pre-adopt state — mirrors the emptied-.claude/
+      // unadopt fully restores the pre-adopt state - mirrors the emptied-.claude/
       // cleanup below ("unadopt leaves no trace").
       //
       // UNLESS the path is a SYMLINK (audit R7 P2-2). writeManaged reaches this file
-      // through atomicWriteFileSync, which lstats and writes THROUGH a link on purpose —
+      // through atomicWriteFileSync, which lstats and writes THROUGH a link on purpose -
       // that is the audit 2026-09-02 P0-5 fix, for CLAUDE.md symlinked into a dotfiles
       // repo (chezmoi/stow/yadm). Unlinking here would delete the LINK and orphan the
       // target, i.e. undo that invariant on the removal side. Empty it through the link
@@ -423,8 +484,10 @@ function removeManagedIn(cwd, slug, layout) {
       if (raw.trim() === '' && !isLink) {
         try {
           unlinkSync(p);
-        } catch {
-          atomicWrite(p, raw);
+        } catch (e) {
+          // ENOENT: another process deleted it first (two sessions starting at once, pre-tag defect
+          // review of D#212, P1-1). Writing the empty text back would recreate it for good.
+          if (e?.code !== 'ENOENT') atomicWrite(p, raw);
         }
       } else {
         atomicWrite(p, raw);
@@ -436,7 +499,7 @@ function removeManagedIn(cwd, slug, layout) {
   }
   // Captured BEFORE the deletions below, because they are what it asks about: is there any
   // evidence the plugin ever wrote in this project? An unpaired sentinel is NOT such
-  // evidence — it is text, and a project that merely documents the marker in prose has one
+  // evidence - it is text, and a project that merely documents the marker in prose has one
   // (pre-ship review P2-3). Reporting residue there means telling a stranger to delete their
   // own paragraph, on a project this tool has never touched.
   const dp = detailDocPath(cwd, slug, layout);
@@ -449,14 +512,14 @@ function removeManagedIn(cwd, slug, layout) {
     }
   clearState(cwd, slug, layout);
   // Drop an emptied .claude/ (or .qwen/) so unadopt leaves no trace (skips if it holds
-  // anything else — e.g. settings.local.json).
+  // anything else - e.g. settings.local.json).
   try {
     const dir = dotDir(cwd, layout);
     if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
   } catch {
     /* best-effort */
   }
-  // `action` answers ONE question — what happened to the block — and `residue` is an
+  // `action` answers ONE question - what happened to the block - and `residue` is an
   // independent fact that rides alongside it. A first cut let an orphan override 'removed'
   // too, on the reasoning that both are "unfinished". Pre-ship review P2-1: unadoptAll's
   // else-branch prints "cleaned partial residue (detail doc/state, no block)" and counts
@@ -464,7 +527,7 @@ function removeManagedIn(cwd, slug, layout) {
   // removals. Two facts, two fields.
   const residue =
     orphans > 0 && wasOurs
-      ? `${orphans} unpaired \`${slug}\` sentinel line(s) remain in ${claudeMdPath(cwd, layout)} — the block they opened has no matching end marker, so its extent cannot be determined safely. Remove those lines and the text they wrap by hand.`
+      ? `${orphans} unpaired \`${slug}\` sentinel line(s) remain in ${claudeMdPath(cwd, layout)} - the block they opened has no matching end marker, so its extent cannot be determined safely. Remove those lines and the text they wrap by hand.`
       : null;
   if (action === 'removed') return residue ? { action, residue } : { action };
   if (residue) return { action: 'partial', residue };
@@ -522,8 +585,9 @@ export function readBlockAt(p, slug) {
 }
 
 /**
- * Is `relPath` nothing but this plugin's own adoption output? Used by the startup
- * dashboard / handoff so a clean repo does not read as "N uncommitted files".
+ * Is `relPath` nothing but this plugin's own adoption output (its managed block
+ * and adopt's AGENTS.md imports)? Used by the startup dashboard / handoff so a
+ * clean repo does not read as "N uncommitted files".
  * @param {string} cwd
  * @param {string} relPath
  * @param {string} slug
@@ -533,8 +597,8 @@ export function isOwnAdoptionArtifact(cwd, relPath, slug) {
   try {
     const rel = String(relPath).replace(/\/+$/, '');
     if (rel === 'CLAUDE.md' || rel === 'CLAUDE.local.md' || rel === 'QWEN.md') {
-      const blk = readBlockAt(join(cwd, rel), slug);
-      return blk.body !== null && blk.raw.replace(blockRegexG(slug), '').trim() === '';
+      const p = join(cwd, rel);
+      return readBlockAt(p, slug).body !== null && holdsOnlyOwnLines(p, slug);
     }
     const claudeDir = dotDir(cwd, PRIMARY_LAYOUT);
     const docName = basename(detailDocPath(cwd, slug));
@@ -589,7 +653,7 @@ export function writeBlockAt(p, { slug, version, block }) {
  * @returns {string}
  */
 export function orphanResidueNote(orphans, slug, p) {
-  return `${orphans} unpaired \`${slug}\` sentinel line(s) remain in ${p} — the block they opened has no matching end marker, so its extent cannot be determined safely. Remove those lines and the text they wrap by hand.`;
+  return `${orphans} unpaired \`${slug}\` sentinel line(s) remain in ${p} - the block they opened has no matching end marker, so its extent cannot be determined safely. Remove those lines and the text they wrap by hand.`;
 }
 
 /**
@@ -626,8 +690,10 @@ export function removeBlockAt(p, slug) {
       if (raw.trim() === '' && !isLink) {
         try {
           unlinkSync(p);
-        } catch {
-          atomicWrite(p, raw);
+        } catch (e) {
+          // ENOENT: another process deleted it first (two sessions starting at once, pre-tag defect
+          // review of D#212, P1-1). Writing the empty text back would recreate it for good.
+          if (e?.code !== 'ENOENT') atomicWrite(p, raw);
         }
       } else {
         atomicWrite(p, raw);

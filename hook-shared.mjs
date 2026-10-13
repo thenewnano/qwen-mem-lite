@@ -20,7 +20,7 @@ import { CITE_RECALL_FILE_PREFIX } from './lib/cite-recall-path.mjs';
 import { ensureDbWithWalRecovery, DB_DIR } from './schema.mjs';
 import { resolveRuntimeDir } from './lib/resolve-data-dir.mjs';
 // Pure-`node:`/local module (it imports only binding-probe + native-binding-hint, and
-// neither imports this file) — no cycle.
+// neither imports this file) - no cycle.
 import { recordHookError } from './lib/hook-telemetry.mjs';
 import {
   isSchemaSkewError,
@@ -30,12 +30,14 @@ import {
 } from './lib/schema-skew.mjs';
 import { isDbUnusableError, DB_UNUSABLE_MARKER_PREFIX } from './lib/db-unusable.mjs';
 import { shouldRecordOnce } from './lib/record-once.mjs';
+import { backgroundWorkerEnv, workerDirGone } from './lib/worker-data-dir.mjs';
+import { LIVE_HOLDER_MAX_MS } from './lib/proc-lock.mjs';
 import { hookSessionId } from './lib/provenance.mjs';
 import { PROJECT_REKEY_MARKER_PREFIX } from './lib/project-rekey.mjs';
 // Audit 2026-09-05 P1-2 (carried from 2026-09-02 P2-9): `callLLM`, the quiet/adoption
 // predicates and the handoff constants moved into `lib/` because two lib modules
-// imported them from here and dragged this file's whole import graph — haiku-client,
-// memdir, claudemd, adopt-content — along with them. Re-exported below so every caller
+// imported them from here and dragged this file's whole import graph - haiku-client,
+// memdir, claudemd, adopt-content - along with them. Re-exported below so every caller
 // of `hook-shared.mjs` is unchanged; those four imports now live with the moved code.
 export { callLLM } from './lib/llm-call.mjs';
 export { isQuietHooks, isAdoptedHere, effectiveQuiet } from './lib/quiet-scope.mjs';
@@ -53,7 +55,7 @@ import { DAY_MS, ORPHAN_EPISODE_AGE_MS } from './lib/time-constants.mjs';
 
 // P1-14: one resolver, so this module honours QWEN_MEM_RUNTIME_DIR like the five
 // standalone hook scripts already did. It did not, and hook.mjs / server.mjs /
-// hook-context.mjs / hook-episode.mjs all take RUNTIME_DIR from here — so the override
+// hook-context.mjs / hook-episode.mjs all take RUNTIME_DIR from here - so the override
 // split the runtime dir in half instead of relocating it.
 export const RUNTIME_DIR = resolveRuntimeDir(DB_DIR);
 export const SCRIPT_PATH = process.argv[1];
@@ -66,29 +68,31 @@ export const STALE_SESSION_MS = 24 * 60 * 60 * 1000; // 24h
 export const STALE_LOCK_MS = 30000; // 30s
 
 // Backstop for cleanStaleLockFiles(): a lock whose recorded pid is ALIVE is kept until it
-// reaches this age, not STALE_LOCK_MS. Deliberately LONGER than proc-lock.mjs's own 5-min
-// steal window, so the sweeper is never the more aggressive of the two — whatever it
-// removes, the lock protocol itself would already have let the next caller steal. Its only
-// job is to garbage-collect a leaked file whose pid was recycled onto an unrelated live
-// process, which would otherwise pin the file forever. (A20260905-R5-P1-1)
-export const ABANDONED_LOCK_MS = 10 * 60 * 1000; // 10 min
+// reaches this age, not STALE_LOCK_MS. The same bound proc-lock.mjs steals a live holder's lock
+// at, so the sweeper is never the more aggressive of the two - whatever it removes, the lock
+// protocol itself would already have let the next caller steal. Its only job is to
+// garbage-collect a leaked file whose pid was recycled onto an unrelated live process, which
+// would otherwise pin the file forever. (A20260905-R5-P1-1) It was 10 min, shorter than an
+// update holds install.lock while its smoke gate builds the binding from source (D#294).
+export const ABANDONED_LOCK_MS = LIVE_HOLDER_MAX_MS;
 
 // The background-maintenance mutex, defined HERE next to the sweeper policy it has to
 // escape. cleanStaleLockFiles() sweeps every `*.lock` in RUNTIME_DIR; until
-// A20260905-R5-P1-1 it did so on AGE ALONE once past STALE_LOCK_MS — right for the episode
+// A20260905-R5-P1-1 it did so on AGE ALONE once past STALE_LOCK_MS - right for the episode
 // lock's millisecond critical section, fatal for a maintenance pass that runs for seconds
 // to minutes. The sweeper now spares a live holder, but this mutex keeps the `.proclock`
 // name: not being swept at all is a stronger guarantee than being spared by a liveness
 // probe, and pid checks are meaningless across a shared homedir. `tests/auto-maintain-proc-lock.test.mjs`
 // asserts that against THIS constant rather than a re-typed copy: the first version of that
 // test built its own path from a literal, so renaming the lock left it green with the hazard
-// back. proc-lock's own staleness policy (age OR provably-dead pid) is the correct one.
+// back. proc-lock's own staleness policy (a provably-dead pid at once, a live one only past
+// LIVE_HOLDER_MAX_MS) is the correct one.
 export const AUTO_MAINTAIN_LOCK = 'auto-maintain.proclock';
 export const DEDUP_WINDOW_MS = 5 * 60 * 1000; // 5 min (title dedup)
 export const RELATED_OBS_WINDOW_MS = 7 * DAY_MS; // 7 days
 // Candidate rows the SessionStart Key Context surface considers (hook-context.mjs
 // keyObs; each of the two sections then renders at most 5). The user-prompt
-// exclude-set does NOT mirror this query — it reads the ids actually rendered
+// exclude-set does NOT mirror this query - it reads the ids actually rendered
 // from the keyctx marker (D#123 review C-1: query-mirroring suppressed
 // <memory-context> injection on quiet/adopted projects where nothing renders).
 export const KEY_CONTEXT_LIMIT = 10;
@@ -100,7 +104,7 @@ export const KEY_CONTEXT_LIMIT = 10;
 export { ORPHAN_EPISODE_AGE_MS };
 
 // `reads-<project>.txt` (bash fast-path Read tracker) is consumed by flushEpisode's
-// rename-collect on the next edit-flush, NOT by a background worker — so a project
+// rename-collect on the next edit-flush, NOT by a background worker - so a project
 // that reads but never triggers an edit-flush leaves it uncollected and unswept, and
 // it grows without bound (the 1h episode threshold is far too eager: a long read-only
 // investigation legitimately appends to it for hours). A dedicated 24h floor sweeps
@@ -108,14 +112,14 @@ export { ORPHAN_EPISODE_AGE_MS };
 // stale to any current episode) while leaving every active session's file untouched.
 export const ORPHAN_READS_AGE_MS = 24 * 60 * 60 * 1000;
 
-// `ep-<project>.json` — the LIVE episode buffer, one file per project — had no reclamation
+// `ep-<project>.json` - the LIVE episode buffer, one file per project - had no reclamation
 // path at all: it is excluded from both marker-GC lists below (correctly: it holds unflushed
 // observations, not cache) and `sweepOrphanEpisodeFiles` only ever matched `ep-flush-`.
 // A real install on 2026-09-02 held four of them for projects deleted months earlier, the
 // oldest 53 days (`ep-tmp--loop-testing-e2e.*.json`, 07-11).
 //
 // Leaving them is not neutral. `readEpisode` has no staleness gate, so `handleSessionStart`
-// unconditionally flushes whatever it finds (hook.mjs "Flush any leftover episode buffer") —
+// unconditionally flushes whatever it finds (hook.mjs "Flush any leftover episode buffer") -
 // revisiting such a project injects months-old tool activity into today's memory stamped
 // with today's date. The stale buffer is not preserved data, it is data that will be
 // mis-dated the moment anyone touches the project again.
@@ -124,14 +128,14 @@ export const ORPHAN_READS_AGE_MS = 24 * 60 * 60 * 1000;
 // `EPISODE_TIME_GAP_MS` is 5 min and `SESSION_EXPIRY_MS` is 12 h, so a buffer untouched for
 // 7 days outlived its owning session by an order of magnitude. The margin over 12 h is
 // deliberate slack for a laptop suspended across a long weekend, not a second threshold with
-// its own meaning. Considered and rejected: flushing on sweep instead of deleting — it would
+// its own meaning. Considered and rejected: flushing on sweep instead of deleting - it would
 // re-date the content exactly the way the revisit path does, i.e. commit the defect on
 // purpose rather than by omission.
 //
 // Exported as of the pre-tag review for v3.92.0, on this constant's own stated rule ("export
 // it the day something needs it"): the sweep alone does NOT close the harm described above.
 // `handleSessionStart` flushes the leftover buffer in the FOREGROUND, and the sweeper runs
-// later, in a detached auto-maintain worker — so on the revisit itself the mis-dated flush
+// later, in a detached auto-maintain worker - so on the revisit itself the mis-dated flush
 // happens first and the sweeper then finds nothing. What the sweep delivers is dir-wide
 // reclamation of OTHER projects' abandoned buffers; the same-project revisit needs the same
 // threshold applied at the flush, which is `hook.mjs`'s importer of this symbol.
@@ -144,7 +148,7 @@ export const STALE_EPISODE_BUFFER_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 // mtime. `onSweep(name, kind)` is called before each unlink so a caller can log the one
 // deletion that discards content rather than residue ('buffer'); it is a callback rather
 // than a debugLog here because this module is imported by every hook entry point and stays
-// dependency-free. Returns the number of files removed. fs-only — no DB / no network. Used by
+// dependency-free. Returns the number of files removed. fs-only - no DB / no network. Used by
 // handleSessionStart auto-maintain to prevent the doctor "Stale temp files" warning
 // from accumulating across crashes; equivalent to the manual path in
 // `node install.mjs cleanup` but age-gated so concurrent in-flight workers / active
@@ -172,7 +176,7 @@ export function sweepOrphanEpisodeFiles(
   for (const f of entries) {
     // Crash residue: this runtime dir writes four families of temp name, each the middle
     // of a rename-or-unlink pair that leaks if the process dies between the two steps.
-    // The predicate covered only `.claim-`, whose comment states the reason it exists —
+    // The predicate covered only `.claim-`, whose comment states the reason it exists -
     // and the other three are that same window (audit FLOW-3):
     //   .claim-   handleStop's lock-contended fallback   (hook.mjs)
     //   .collect- the reads-file rename a flush performs (hook.mjs)
@@ -183,7 +187,7 @@ export function sweepOrphanEpisodeFiles(
     //
     // Anchored to the END of the name, and the reason is not the one first written here.
     // The original note claimed it protected `reads-x.tmp-y.txt` from the short clock; it
-    // does not — that name ends in `.txt`, so `isReads` picks the 24h cutoff either way,
+    // does not - that name ends in `.txt`, so `isReads` picks the 24h cutoff either way,
     // and dropping the anchor killed no test (caught by a pre-tag reviewer). What the
     // anchor actually protects is the LIVE episode buffer of a project whose sanitized
     // name contains the token: `ep-x.tmp-y.json` matches an unanchored pattern, and would
@@ -201,7 +205,7 @@ export function sweepOrphanEpisodeFiles(
       // Residue takes the short cutoff and a live tracker takes the 24h one, with no
       // tie-break needed: residue always APPENDS its suffix, so it never ends in `.txt`
       // and `isReads` is already false for it. (A `&& !isCrashResidue` tie-break was
-      // written here first and no mutation could kill it — it was guarding a state the
+      // written here first and no mutation could kill it - it was guarding a state the
       // two predicates cannot both be in.) `isStaleBuffer` is in the same position: a
       // residue name ends in `.tmp-<pid>`, never `.json`.
       const fileCutoff = isReads ? readsCutoff : isStaleBuffer ? bufferCutoff : cutoff;
@@ -215,7 +219,7 @@ export function sweepOrphanEpisodeFiles(
         count++;
       }
     } catch {
-      /* concurrent unlink / permission — ignore */
+      /* concurrent unlink / permission - ignore */
     }
   }
   return count;
@@ -224,14 +228,14 @@ export function sweepOrphanEpisodeFiles(
 // ─── Per-project marker GC (P2-15) ───────────────────────────────────────────
 // RUNTIME_DIR had three sweeps and a hole. Per-SESSION files age out at 24h
 // (hook.mjs) and orphaned episode/read trackers at 1h/24h (above), but the
-// per-PROJECT markers — one file per project, written once, never revisited —
+// per-PROJECT markers - one file per project, written once, never revisited -
 // had no reclamation path at all. A live install on 2026-08-16 held 253 files,
 // 152 of them past 30 days, including entire families for test sandboxes
 // deleted months earlier (session-tmp--sdscc-e2e-*, cite-recall-scratchpad--
 // fixture-*) and a .skill-reco-cooldown-* family that nothing had ever swept.
 //
 // Deliberately a NAMED list rather than a wildcard: these markers share a shape
-// but not a meaning. The GC-able ones are caches — delete them and the next
+// but not a meaning. The GC-able ones are caches - delete them and the next
 // session re-derives the state (or, for a cooldown, merely allows a suggestion
 // sooner). The preserved ones are records of a side effect already performed;
 // removing them re-arms it (.auto-adopt-* re-attempts a write into the user's
@@ -244,21 +248,21 @@ export const GC_PROJECT_MARKER_PREFIXES = Object.freeze([
   'session-', // project → memory-session-id pointer
   CITE_RECALL_FILE_PREFIX, // last session's cite-recall snapshot (nudge input)
   // R10 P3-5: the auto-compressible 24h gate. One file per project, regenerated on demand,
-  // and it was in NEITHER list — so a project the user stops working on kept its marker
+  // and it was in NEITHER list - so a project the user stops working on kept its marker
   // forever. `.skill-cooldown-` / `.skill-reco-cooldown-` left with the skill registry in
   // v5.0.0; a prefix for files nothing writes any more is dead weight in a hot-path loop.
   'last-mark-compressible-', // per-project auto-compress 24h gate
   SKEW_MARKER_PREFIX, // per-project schema-skew log dedup; regenerated on the next skewed open
-  // Same shape, same reason, and it was missed here first time round — the note above is
+  // Same shape, same reason, and it was missed here first time round - the note above is
   // about exactly this defect, two entries up.
   DB_UNUSABLE_MARKER_PREFIX, // per-project unopenable-DB log dedup; regenerated on the next failing open
 ]);
 
-// Records of a completed side effect — never age out. `ep-`/`ep-flush-`/
+// Records of a completed side effect - never age out. `ep-`/`ep-flush-`/
 // `pending-`/`reads-` are absent from BOTH lists on purpose: they all belong to
 // sweepOrphanEpisodeFiles, on three cutoffs of their own (1h residue / 24h reads /
 // 7d abandoned buffer). `ep-<project>.json` was the one with no cutoff at all until
-// audit P1-12 — it is still not marker-GC-able here, because 30 days of unflushed
+// audit P1-12 - it is still not marker-GC-able here, because 30 days of unflushed
 // observations is far past the point where flushing them would mis-date them.
 export const GC_PRESERVED_MARKER_PREFIXES = Object.freeze([
   '.auto-adopt-',
@@ -266,15 +270,22 @@ export const GC_PRESERVED_MARKER_PREFIXES = Object.freeze([
   '.adopt-offered-',
   // r3: the one-time note that CLAUDE.local.md was written. Deleting it would repeat the note.
   '.local-steering-noted-',
+  // The one-time note that AGENTS.md keeps the steering out of a file. Deleting it would repeat it.
+  '.agents-md-noted-',
+  // D#212: the one-time note that the steering is in .claude/rules/. Deleting it would repeat it.
+  '.rules-steering-noted-',
+  // The one-time note that SessionStart imported AGENTS.md into an earlier version's CLAUDE.md.
+  '.agents-import-noted-',
   // D9: the one-time re-key of a project's rows off its pre-D9 id, and its one-time note.
   PROJECT_REKEY_MARKER_PREFIX,
   '.deferred-block-migrated-',
   '.legacy-claude-md-cleaned-',
   // v3.66.1: these two shipped in the GC list for one release and had to come
   // out. Both are version-keyed one-shot migration sentinels written by
-  // scripts/setup.sh, and their gate is `! -f <marker>` — deleting one re-runs
+  // scripts/setup.sh, and their gate is `! -f <marker>` - deleting one re-runs
   // its migration. `.mcp-dedup-v2.78` gates a block that removes
-  // mcpServers.mem / mcpServers["mem-lite"] from the user's ~/.claude.json with
+  // mcpServers.mem / mcpServers["mem-lite"] from the config home's .claude.json (one marker per
+  // .claude.json since D#270, the same prefix) with
   // a raw writeFileSync (no tmp+rename, no backup), which the repo's own test
   // documents as intentionally one-shot: "If a user later runs `claude mcp add
   // mem ...` themselves, the gate intentionally lets it stand." A 30-day sweep
@@ -335,7 +346,7 @@ export function sweepStaleProjectMarkers(
   // Kill switch (naming mirrors SKIP_COMPRESS / SKIP_OPTIMIZE / SKIP_SAVE_ENRICH):
   // this is the only sweep that deletes files a user might want to inspect, so a
   // released default that reclaims state needs a documented way back out.
-  // R10 P3-6: exact '1', not a truthy check, and that is on purpose — the truthy form the
+  // R10 P3-6: exact '1', not a truthy check, and that is on purpose - the truthy form the
   // sibling QWEN_MEM_SKIP_* flags use makes `=0` mean "skip", the opposite of intent.
   // README documents the difference; do not "align" this without aligning the others too.
   if (env.QWEN_MEM_SKIP_MARKER_GC === '1') return 0;
@@ -359,7 +370,7 @@ export function sweepStaleProjectMarkers(
         count++;
       }
     } catch {
-      /* concurrent unlink / permission / directory — ignore */
+      /* concurrent unlink / permission / directory - ignore */
     }
   }
   return count;
@@ -372,9 +383,11 @@ export function sweepStaleProjectMarkers(
 // exists, so harden here too: create 0700, and chmod a pre-existing dir a prior version
 // created at the default umask. A 0700 dir blocks traversal to every file inside,
 // current and future, regardless of individual file mode (audit sec P3-2 2026-07-24).
+// A background worker whose data dir was removed while it ran does not re-create it (D#265).
 try {
-  if (!existsSync(RUNTIME_DIR)) mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 });
-  else chmodSync(RUNTIME_DIR, 0o700);
+  if (!existsSync(RUNTIME_DIR)) {
+    if (!workerDirGone(DB_DIR)) mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 });
+  } else chmodSync(RUNTIME_DIR, 0o700);
 } catch {}
 
 // ─── Session ID Management ───────────────────────────────────────────────────
@@ -385,7 +398,7 @@ try {
  *
  * D14: the session file and the episode buffer were keyed by PROJECT, so a second session opened
  * in the same project overwrote the first one's session file, and every later hook of the first
- * session ran under the second one's id — its handoff "Working On" was the other session's
+ * session ran under the second one's id - its handoff "Working On" was the other session's
  * prompt, one summary row stood for two sessions, and one session's Stop flushed the other's
  * work in progress. The host PROCESS is the key, not the host session_id, because /clear rotates
  * session_id inside the same process and SessionStart's /clear branch has to find the session
@@ -394,7 +407,7 @@ try {
  * `CLAUDE_PID` is set by Claude Code on hook subprocesses (observed 2026-09-29: the hooks of two
  * concurrent sessions each saw their own host's pid, and it is inherited by spawnBackground
  * workers). It is not in the documented hook contract, so absent or malformed it degrades to ''
- * — the per-project names this replaced, byte for byte. `@` cannot occur in a project id
+ * - the per-project names this replaced, byte for byte. `@` cannot occur in a project id
  * (projectNameFromDir keeps only letters, marks, digits and `_.-`), so a suffixed name never
  * collides with another project's plain one. scripts/post-tool-use.sh mirrors this rule for
  * the reads file.
@@ -423,7 +436,7 @@ function processAlive(pid) {
 
 /**
  * True when `suffix` (a hostScopeSuffix() value) names a Claude Code process other than this one
- * that is still running — whose buffer, and lock-contention spill, are its own to flush. False
+ * that is still running - whose buffer, and lock-contention spill, are its own to flush. False
  * for this process, for a gone one, and for '' (a writer that had no host pid).
  *
  * @param {string} suffix
@@ -435,7 +448,7 @@ export function isOtherLiveHost(suffix) {
 }
 
 /**
- * Runtime files `<stem>@h<pid><ext>` left by a Claude Code process that has exited — files no
+ * Runtime files `<stem>@h<pid><ext>` left by a Claude Code process that has exited - files no
  * live session will read again (D14). Never this process's own, and none at all when this
  * process has no host pid. A recycled pid reads as alive, so such a file waits for the
  * age-based sweeps instead: the error is towards keeping.
@@ -486,7 +499,7 @@ export function createSessionId() {
 
 // Last forward-incompat ("the DB is newer than me") failure seen in THIS process, or null.
 // SessionStart needs the two version numbers to render its notice and openDb has just been
-// handed them, so this beats a second DB open — and on a skew there may be no working
+// handed them, so this beats a second DB open - and on a skew there may be no working
 // binding to open with anyway.
 let lastSkew = null;
 
@@ -529,8 +542,8 @@ export function openDb() {
     // Record it once and hand the numbers to SessionStart, which is the surface that speaks.
     // Forward-incompat is its own family: nothing this process can do heals it, it repeats on
     // every single open, and it is the one failure the USER has to act on. Dedup lives in
-    // lib/schema-skew.mjs so the `ups` face — which opens the DB itself and logged its own 15
-    // of the day's 727 lines — shares one implementation instead of drifting from this one.
+    // lib/schema-skew.mjs so the `ups` face - which opens the DB itself and logged its own 15
+    // of the day's 727 lines - shares one implementation instead of drifting from this one.
     //
     // shouldRecordSkew is TOTAL by contract. Nothing in this catch may throw: the first cut
     // called getSessionId() here, which MINTS and writes a session id, so an unwritable
@@ -557,7 +570,7 @@ export function openDb() {
     // repeats on every fire exactly like a skew does, and until now took the generic branch
     // below: one full stack trace per SessionStart fire (measured: 20 fires → 20 records, ~860 B
     // each), no dedup, and no user-visible word anywhere in the session. Same treatment as skew
-    // — record once per project per hour, and hand SessionStart a flag to speak with.
+    // - record once per project per hour, and hand SessionStart a flag to speak with.
     //
     // Nothing in this branch may throw: `isDbUnusableError` is a regex over a string and
     // `shouldRecordOnce` is total by contract, which is exactly the property the first cut of
@@ -576,11 +589,11 @@ export function openDb() {
       }
       return null;
     }
-    // Still null, still no throw — a hook must never crash the host session, and all 12
+    // Still null, still no throw - a hook must never crash the host session, and all 12
     // openDb() call sites in hook.mjs are written to no-op on null. But "returned null"
     // used to be the ONLY trace: nothing reached runtime/hook-errors/, so `stats`
     // reported 0 and doctor printed "no recent silent hook breakage" while every
-    // capture path was dead (audit B1, 2026-08-14 — the same blindness that hid the
+    // capture path was dead (audit B1, 2026-08-14 - the same blindness that hid the
     // v3.60 binding outage for four days). recordHookError is the established sink;
     // scripts/pre-tool-recall.js already logs its own db-open failures this way, and
     // routing through it also flags the native-binding family for the session-start
@@ -598,7 +611,7 @@ export function spawnBackground(bgEvent, ...extraArgs) {
     const child = spawn(process.execPath, args, {
       detached: true,
       stdio: 'ignore',
-      env: { ...process.env, QWEN_MEM_HOOK_RUNNING: '1' },
+      env: backgroundWorkerEnv(),
     });
     child.on('error', (err) => {
       debugCatch(err, 'spawnBackground');

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import {
   mkdirSync,
   writeFileSync,
@@ -10,7 +10,7 @@ import {
   symlinkSync,
   readlinkSync,
 } from 'fs';
-import { join, resolve } from 'path';
+import { join, resolve, isAbsolute } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
@@ -633,7 +633,7 @@ describe('install lifecycle checks', () => {
           {
             // A legacy (pre-v2.78) registration of OUR server — a `mem` that runs anything
             // else is the user's and must survive (tests/mcp-legacy-name-ownership.test.mjs).
-            mcpServers: { mem: { command: 'node', args: [join(home, '.claude-mem-lite', 'server.mjs')] } },
+            mcpServers: { mem: { command: 'node', args: [join(home, '.qwen-mem-lite', 'server.mjs')] } },
           },
           null,
           2,
@@ -691,7 +691,7 @@ describe('install lifecycle checks', () => {
           {
             // A legacy (pre-v2.78) registration of OUR server — a `mem` that runs anything
             // else is the user's and must survive (tests/mcp-legacy-name-ownership.test.mjs).
-            mcpServers: { mem: { command: 'node', args: [join(home, '.claude-mem-lite', 'server.mjs')] } },
+            mcpServers: { mem: { command: 'node', args: [join(home, '.qwen-mem-lite', 'server.mjs')] } },
           },
           null,
           2,
@@ -840,6 +840,229 @@ describe('install lifecycle checks', () => {
         rmSync(home, { recursive: true, force: true });
       } catch {}
     }
+  });
+
+  // D#176: with CLAUDE_CONFIG_DIR set, the plugin runs from <cfg>/plugins/cache and Claude Code
+  // keeps .claude.json and settings.json in <cfg>. Step 8 pruned ~/.claude/plugins/cache, which is
+  // then ANOTHER profile's cache, where CLAUDE_PLUGIN_ROOT protects nothing, and the MCP dedup
+  // edited that profile's ~/.claude.json. Both must stay in the config dir this session uses.
+  it('plugin setup under CLAUDE_CONFIG_DIR prunes and edits only the config dir, never ~/.claude', () => {
+    const home = makeTmpDir();
+    try {
+      const cfg = join(home, 'cfg');
+      const dataDir = join(home, '.qwen-mem-lite');
+      mkdirSync(join(dataDir, 'runtime'), { recursive: true });
+      symlinkSync(resolve('node_modules'), join(dataDir, 'node_modules'));
+      const cacheIn = (base) => join(base, 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
+      for (const base of [cfg, join(home, '.claude')]) {
+        for (const v of ['3.90.0', '3.94.0', '3.95.0', '3.96.0'])
+          mkdirSync(join(cacheIn(base), v), { recursive: true });
+      }
+      const ours = JSON.stringify({
+        mcpServers: { 'mem-lite': { command: 'node', args: ['/x/server.mjs'] } },
+      });
+      writeFileSync(join(cfg, '.claude.json'), ours);
+      writeFileSync(join(home, '.claude.json'), ours);
+
+      execFileSync('bash', [SETUP_PATH], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          HOME: home,
+          CLAUDE_CONFIG_DIR: cfg,
+          CLAUDE_PLUGIN_ROOT: join(cacheIn(cfg), '3.96.0'),
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      const versions = (base) =>
+        readdirSync(cacheIn(base))
+          .filter((n) => /^\d+\./.test(n))
+          .sort();
+      expect(versions(cfg)).toEqual(['3.94.0', '3.95.0', '3.96.0']);
+      expect(versions(join(home, '.claude')), "another profile's cache was pruned").toEqual([
+        '3.90.0',
+        '3.94.0',
+        '3.95.0',
+        '3.96.0',
+      ]);
+      expect(
+        JSON.parse(readFileSync(join(cfg, '.claude.json'), 'utf8')).mcpServers['mem-lite'],
+      ).toBeUndefined();
+      expect(
+        readFileSync(join(home, '.claude.json'), 'utf8'),
+        "another profile's .claude.json was edited",
+      ).toBe(ours);
+    } finally {
+      try {
+        rmSync(home, { recursive: true, force: true });
+      } catch {}
+    }
+  });
+
+  // D#270: steps 7 and 9 edit and inspect the config home, but their one-shot markers sat in the
+  // data dir, which every profile shares, so the first profile to start settled the question for
+  // all of them: a second CLAUDE_CONFIG_DIR profile never got the MCP dedup or the residue warning.
+  describe('setup.sh one-shot markers are per config home (D#270)', () => {
+    const ours = JSON.stringify({ mcpServers: { 'mem-lite': { command: 'node', args: ['/x/server.mjs'] } } });
+    const legacyHooks = JSON.stringify({
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node ~/.qwen-mem-lite/hook.mjs stop' }] }] },
+    });
+    function profileHome() {
+      const home = makeTmpDir();
+      const dataDir = join(home, '.qwen-mem-lite');
+      mkdirSync(join(dataDir, 'runtime'), { recursive: true });
+      symlinkSync(resolve('node_modules'), join(dataDir, 'node_modules'));
+      return home;
+    }
+    // A cfg that is not absolute here still gets its plugin root under ~/.claude, never the cwd.
+    function runSetup(home, cfg, { cwd, env: extra = {} } = {}) {
+      const base = cfg && isAbsolute(cfg) ? cfg : join(home, '.claude');
+      const root = join(base, 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', '6.24.0');
+      mkdirSync(root, { recursive: true });
+      const env = { ...process.env, HOME: home, CLAUDE_PLUGIN_ROOT: root, ...extra };
+      if (cfg) env.CLAUDE_CONFIG_DIR = cfg;
+      return spawnSync('bash', [SETUP_PATH], { encoding: 'utf8', env, cwd });
+    }
+
+    it('a second profile gets its own MCP dedup and residue warning', () => {
+      const home = profileHome();
+      try {
+        writeFileSync(join(home, '.claude.json'), ours);
+        const first = runSetup(home);
+        expect(first.status, first.stderr).toBe(0);
+        expect(
+          JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).mcpServers['mem-lite'],
+        ).toBeUndefined();
+
+        const cfg = join(home, 'work-profile');
+        mkdirSync(cfg, { recursive: true });
+        writeFileSync(join(cfg, '.claude.json'), ours);
+        writeFileSync(join(cfg, 'settings.json'), legacyHooks);
+        const second = runSetup(home, cfg);
+        expect(second.status, second.stderr).toBe(0);
+        expect(
+          JSON.parse(readFileSync(join(cfg, '.claude.json'), 'utf8')).mcpServers['mem-lite'],
+          "the first profile's marker skipped this profile's dedup",
+        ).toBeUndefined();
+        expect(second.stderr, "the first profile's marker skipped this profile's warning").toContain(
+          `Legacy direct-install hooks detected in ${join(cfg, 'settings.json')}`,
+        );
+
+        // Still one-shot per home: a second start of the same profile does neither again.
+        writeFileSync(join(cfg, '.claude.json'), ours);
+        const again = runSetup(home, cfg);
+        expect(readFileSync(join(cfg, '.claude.json'), 'utf8')).toBe(ours);
+        expect(again.stderr).not.toContain('Legacy direct-install hooks');
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    // D#269: setup.sh calls a value absolute exactly when Node's isAbsolute does on that platform
+    // (bash keeps an inherited OSTYPE). The cwd holds `<value>/.claude.json`, which setup edits
+    // only when it takes the value as absolute; otherwise it edits ~/.claude.json.
+    it('edits the .claude.json of the config home Node would pick on that platform (D#269)', () => {
+      for (const [ostype, value, absolute] of [
+        ['linux-gnu', 'C:/cfg', false],
+        ['msys', '\\\\srv\\cfg', true],
+        ['msys', 'C:/cfg', true],
+        ['cygwin', 'C:/cfg', true],
+      ]) {
+        const home = profileHome();
+        const cwd = makeTmpDir();
+        try {
+          mkdirSync(join(cwd, value), { recursive: true });
+          writeFileSync(join(cwd, value, '.claude.json'), ours);
+          writeFileSync(join(home, '.claude.json'), ours);
+          const r = runSetup(home, value, { cwd, env: { OSTYPE: ostype } });
+          expect(r.status, r.stderr).toBe(0);
+          const edited = (p) => JSON.parse(readFileSync(p, 'utf8')).mcpServers['mem-lite'] === undefined;
+          expect(
+            [edited(join(cwd, value, '.claude.json')), edited(join(home, '.claude.json'))],
+            ostype,
+          ).toEqual(absolute ? [true, false] : [false, true]);
+        } finally {
+          rmSync(home, { recursive: true, force: true });
+          rmSync(cwd, { recursive: true, force: true });
+        }
+      }
+    });
+
+    // Post-release review: the keys compared path TEXT, so `~/.claude/` repeated the residue warning
+    // for the default settings.json and gave ~/.claude/.claude.json a second dedup marker.
+    it('another spelling of the same path reuses its marker', () => {
+      const home = profileHome();
+      try {
+        const runtime = join(home, '.qwen-mem-lite', 'runtime');
+        writeFileSync(join(runtime, '.residue-warned-v2.55'), '');
+        const cfg = join(home, '.claude');
+        mkdirSync(cfg, { recursive: true });
+        writeFileSync(join(cfg, 'settings.json'), legacyHooks);
+        const dedupMarkers = () =>
+          readdirSync(runtime)
+            .filter((n) => n.startsWith('.mcp-dedup-'))
+            .sort();
+        expect(runSetup(home, cfg).status).toBe(0);
+        const keyed = dedupMarkers();
+        expect(keyed, 'premise: ~/.claude/.claude.json got its own marker').toHaveLength(1);
+        for (const spelling of [`${cfg}/`, `${cfg}//`, `${home}/./.claude`]) {
+          const r = runSetup(home, spelling);
+          expect(r.status, r.stderr).toBe(0);
+          expect(r.stderr, `${spelling}: the warning repeated for the default settings.json`).not.toContain(
+            'Legacy direct-install hooks',
+          );
+        }
+        expect(dedupMarkers(), 'a second marker for the same .claude.json').toEqual(keyed);
+
+        // A non-default profile, keyed by its own hash: the same under a trailing slash, `/.` and a
+        // symlink to it (delta review: the residue key once hashed the dir's parent plus its name).
+        const work = join(home, 'work-profile');
+        mkdirSync(work, { recursive: true });
+        writeFileSync(join(work, 'settings.json'), legacyHooks);
+        symlinkSync(work, join(home, 'work-link'));
+        expect(runSetup(home, work).stderr, 'premise: the first run warns').toContain(
+          'Legacy direct-install hooks',
+        );
+        for (const spelling of [`${work}/`, `${work}/.`, join(home, 'work-link')]) {
+          expect(runSetup(home, spelling).stderr, `${spelling} re-ran the warning`).not.toContain(
+            'Legacy direct-install hooks',
+          );
+        }
+        expect(
+          readdirSync(runtime).filter((n) => n.startsWith('.residue-warned-')),
+          'one residue marker per settings.json',
+        ).toHaveLength(2);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    // A marker is keyed by the file it gates, not by "is this ~/.claude": with CLAUDE_CONFIG_DIR
+    // naming ~/.claude, settings.json is the default one but .claude.json moves into ~/.claude.
+    it('CLAUDE_CONFIG_DIR=~/.claude: the settings.json marker every install has holds; .claude.json is a new file', () => {
+      const home = profileHome();
+      try {
+        const runtime = join(home, '.qwen-mem-lite', 'runtime');
+        writeFileSync(join(runtime, '.mcp-dedup-v2.78'), '');
+        writeFileSync(join(runtime, '.residue-warned-v2.55'), '');
+        const cfg = join(home, '.claude');
+        mkdirSync(cfg, { recursive: true });
+        writeFileSync(join(cfg, 'settings.json'), legacyHooks);
+        writeFileSync(join(cfg, '.claude.json'), ours);
+        const r = runSetup(home, cfg);
+        expect(r.status, r.stderr).toBe(0);
+        expect(r.stderr, 'the residue warning repeated for the same settings.json').not.toContain(
+          'Legacy direct-install hooks',
+        );
+        expect(
+          JSON.parse(readFileSync(join(cfg, '.claude.json'), 'utf8')).mcpServers['mem-lite'],
+          '~/.claude/.claude.json was skipped on the marker of ~/.claude.json',
+        ).toBeUndefined();
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
   });
 
   // Control for the case above: with the running root safely inside the keep window, the

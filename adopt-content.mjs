@@ -5,11 +5,11 @@
 //
 // CURRENT_SENTINEL_VERSION tags the managed block as `<!-- qwen-mem-lite:begin
 // vN -->`. needsRefresh() (claudemd.mjs) compares the version tag AND the block
-// body AND the detail-doc content — ANY of the three differing triggers an
+// body AND the detail-doc content - ANY of the three differing triggers an
 // in-place refresh (drift = intended content change, overwritten rather than
 // treated as a user edit). So a template edit propagates on the next SessionStart
 // even WITHOUT a version bump; the tag need not be monotonic and, in practice,
-// need not change at all — we keep `v1` across content edits (see mem #8846).
+// need not change at all - we keep `v1` across content edits (see mem #8846).
 // We deliberately use `v1` (not `v2`) so the version digit differs from
 // the sibling code-graph-mcp plugin's `<!-- code-graph-mcp:begin v2 -->` block in
 // the same CLAUDE.md; the slug already scopes the two independently (claudemd.mjs),
@@ -20,7 +20,7 @@
 export const PLUGIN_SLUG = 'qwen-mem-lite';
 export const CURRENT_SENTINEL_VERSION = 'v1';
 
-// The CLI name as written into the user's project tree — deliberately NOT `CLI_INVOKE`
+// The CLI name as written into the user's project tree - deliberately NOT `CLI_INVOKE`
 // (audit R7 P2-1). CLI_INVOKE resolves to an absolute, VERSION-PINNED path
 // (`node /home/<user>/.claude/plugins/cache/sdsrss/qwen-mem-lite/<version>/cli.mjs`), and
 // both generators below write files the user may commit: the managed block lands in
@@ -34,17 +34,17 @@ const CLI = 'qwen-mem-lite';
 
 /**
  * The concise managed block injected into <cwd>/CLAUDE.md (between the
- * slug-scoped sentinels — those are added by claudemd.renderBlock, NOT here).
+ * slug-scoped sentinels - those are added by claudemd.renderBlock, NOT here).
  * Universal: the memory contract is the same for every project, so there is no
  * per-project-type variation. Keep it tight (cheap always-loaded context); the
  * full tables + rules live in the detail doc this block points to.
  */
 export function buildClaudeMdBlock({ detailDocRef = '.claude/plugin_claude_mem_lite.md' } = {}) {
   // Intentionally machine-stable: MCP tool names only, NO CLI_INVOKE (that
-  // resolves to an absolute path that differs per install — it would make this
+  // resolves to an absolute path that differs per install - it would make this
   // committed/refreshed block churn across machines). The detail doc holds the
-  // full CLI table and, since R7 P2-1, is held to the same standard — see CLI above.
-  return `## qwen-mem-lite — persistent memory
+  // full CLI table and, since R7 P2-1, is held to the same standard - see CLI above.
+  return `## qwen-mem-lite - persistent memory
 
 PreToolUse hooks already run \`mem_recall\` for past lessons before Read/Edit/Write. The calls worth making proactively:
 
@@ -57,14 +57,14 @@ PreToolUse hooks already run \`mem_recall\` for past lessons before Read/Edit/Wr
 | Deferring to a future session | \`mem_defer({title, priority:1|2|3, detail})\`; when fixed, add \`closes_deferred=[N]\` to \`mem_save\` |
 | Looking up past work / history | \`mem_search "keywords"\` · \`mem_recent\` · \`mem_timeline\` |
 
-Path cost is round-trips, not milliseconds: the PreToolUse hook above already recalls (0 calls) — prefer it. For an explicit query, if these \`mem_*\` tools are deferred behind ToolSearch this session, the Bash CLI \`${CLI}\` is one call vs two (ToolSearch + call); the MCP server instructions carry the absolute path to use when it is not on PATH.
+Path cost is round-trips, not milliseconds: the PreToolUse hook above already recalls (0 calls) - prefer it. For an explicit query, if these \`mem_*\` tools are deferred behind ToolSearch this session, the Bash CLI \`${CLI}\` is one call vs two (ToolSearch + call); the MCP server instructions carry the absolute path to use when it is not on PATH.
 
 Full tool + CLI tables, citation/decay rules, and save discipline → \`${detailDocRef}\``;
 }
 
 /**
  * Full detail doc rendered into `<cwd>/.claude/plugin_claude_mem_lite.md`.
- * Not auto-loaded by Claude Code — the CLAUDE.md block points to it and Claude
+ * Not auto-loaded by Claude Code - the CLAUDE.md block points to it and Claude
  * reads it on demand. claudemd.writeManaged() prepends the `managed-by` marker;
  * this returns pure content.
  */
@@ -185,8 +185,8 @@ PreToolUse hook 在你 Read / Edit / Write 文件前已自动 \`mem_recall\` 该
 
 | 命令 | 签名（含硬约束） |
 |------|------------------|
-| 存观测 | \`${CLI} save "<text>" --type bugfix\\|decision --lesson "<≤500 字符>" [--importance 1-3] [--closes-deferred N] [--supersedes 12,E#34]\` — \`<text>\` **必填定位参数**；\`--lesson\` 超 500 直接 fail；\`--supersedes\` 替换代码已推翻的旧记忆 |
-| 推迟工作 | \`${CLI} defer add "<title ≤200>" [--priority 1\\|2\\|3] [--detail "<约束+为何推迟>"]\` — 标题 >200 挪到 \`--detail\` |
+| 存观测 | \`${CLI} save "<text>" --type bugfix\\|decision --lesson "<≤500 字符>" [--importance 1-3] [--closes-deferred N] [--supersedes 12,E#34]\` - \`<text>\` **必填定位参数**；\`--lesson\` 超 500 直接 fail；\`--supersedes\` 替换代码已推翻的旧记忆 |
+| 推迟工作 | \`${CLI} defer add "<title ≤200>" [--priority 1\\|2\\|3] [--detail "<约束+为何推迟>"]\` - 标题 >200 挪到 \`--detail\` |
 | 改某条 | \`${CLI} update <id> [--lesson "<≤500>"] [--title T] [--type T] [--importance 1-3] [--narrative T] [--concepts "a b c"]\` |
 | 事件日志 | \`${CLI} activity save --type <bugfix\\|lesson\\|bug\\|discovery\\|refactor\\|feature\\|observation\\|decision> "<title>" [--body T] [--files f1,f2]\` |
 

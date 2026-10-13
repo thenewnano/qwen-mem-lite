@@ -1,7 +1,7 @@
 {
   "name": "qwen-mem-lite",
   "version": "7.1.1",
-  "description": "Persistent long-term memory for Qwen Code and Claude Code via MCP — captures coding decisions, bugfixes, and context across sessions. Hybrid FTS5 + TF-IDF search with episode batching. Single SQLite DB, no external services. A lighter, lower-cost alternative to claude-mem (episode batching + a smaller model; cost savings are an internal estimate, not a measured benchmark).",
+  "description": "Persistent long-term memory for Qwen Code and Claude Code via MCP - captures coding decisions, bugfixes, and context across sessions. Hybrid FTS5 + TF-IDF search with episode batching. Single SQLite DB, no external services. A lighter, lower-cost alternative to claude-mem (episode batching + a smaller model; cost savings are an internal estimate, not a measured benchmark).",
   "type": "module",
   "packageManager": "npm@10.9.2",
   "engines": {
@@ -83,6 +83,7 @@
     "hooks/hooks.json",
     "install.mjs",
     "lib/activity.mjs",
+    "lib/anthropic-base-url.mjs",
     "lib/atomic-write.mjs",
     "lib/bash-file-targets.mjs",
     "lib/binding-probe.mjs",
@@ -173,6 +174,7 @@
     "lib/schema-skew.mjs",
     "lib/scrub-record.mjs",
     "lib/search-core.mjs",
+    "lib/search-telemetry.mjs",
     "lib/shard-gc.mjs",
     "lib/startup-dashboard.mjs",
     "lib/stats-core.mjs",
@@ -189,6 +191,8 @@
     "lib/upgrade-banner.mjs",
     "lib/ups-query.mjs",
     "lib/verify-apply-core.mjs",
+    "lib/wal-open-blocked.mjs",
+    "lib/worker-data-dir.mjs",
     "mem-cli.mjs",
     "memdir.mjs",
     "nlp.mjs",
@@ -246,18 +250,18 @@
     "@hono/node-server": ">=2.0.11",
     "body-parser": ">=2.3.0",
     "fast-uri": ">=3.1.4 <4",
-    "ip-address": ">=10.1.1",
+    "ip-address": ">=10.6.0 <11",
     "brace-expansion": ">=5.0.9"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@vitest/coverage-v8": "^5.0.1",
+    "@vitest/coverage-v8": "^5.0.3",
     "acorn": "8.18.0",
     "eslint": "^10.11.0",
     "fast-check": "^4.10.2",
     "knip": "^6.38.0",
     "picomatch": "^4.0.4",
     "prettier": "3.9.9",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.3"
   }
 }

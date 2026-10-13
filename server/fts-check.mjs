@@ -20,7 +20,7 @@ export function handleMemFtsCheck(db, args) {
         {
           type: 'text',
           text: result.healthy
-            ? 'FTS5 indexes are healthy — all integrity checks passed.'
+            ? 'FTS5 indexes are healthy - all integrity checks passed.'
             : `FTS5 issues found:\n${result.details.join('\n')}`,
         },
       ],

@@ -7,7 +7,7 @@
 //     a cache-key bug and a parser bug; the same query without obs_type said "No results".
 //   - a query that sanitizes to nothing ("C", "AND", "🚀") in the default AUTO mode skipped the
 //     early "was filtered" return (deep MAY rewrite it) and, when deep did not run, printed the
-//     recency listing as matches — `Found 20 of 57 result(s) for "C"` — while `deep:false`
+//     recency listing as matches - `Found 20 of 57 result(s) for "C"` - while `deep:false`
 //     said "was filtered".
 import { describe, it, expect } from 'vitest';
 import { handleSearchForTest } from '../server.mjs';
@@ -53,7 +53,7 @@ describe('mem_search never presents a listing as matches', () => {
     db.close();
     expect(res.results.map((r) => r.id).sort()).toEqual([1, 2]); // the fallback still lists
     expect(text(res)).not.toMatch(/Found \d+ result\(s\) for "segfault"/);
-    expect(text(res)).toMatch(/No match for "segfault" — the 2 most recent bugfix observation\(s\) instead/);
+    expect(text(res)).toMatch(/No match for "segfault" - the 2 most recent bugfix observation\(s\) instead/);
   });
 
   it('a real match under obs_type keeps the "Found … for" header', async () => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// scripts/hook-launcher.mjs — Self-healing wrapper for Node hook entry points.
+// scripts/hook-launcher.mjs - Self-healing wrapper for Node hook entry points.
 //
 // Why: pre-v2.84 a stale-manifest bug in hook-update.mjs could leave the
 // install with a hook.mjs that imports lib/cite-back-hint.mjs (or any other
@@ -10,9 +10,9 @@
 // half-applied install, manual file deletion).
 //
 // Behavior: try-import the target entry. On ERR_MODULE_NOT_FOUND originating
-// from our install — either a missing relative module (e.url under the install
+// from our install - either a missing relative module (e.url under the install
 // dir) or a missing bare dependency like better-sqlite3 (e.url is undefined and
-// the importer named in the message is under the install dir) — run
+// the importer named in the message is under the install dir) - run
 // `install.mjs repair` (rate-limited via a 6h marker file under runtime/) and
 // retry the import once. That repair runs at SESSION-START ONLY; every other
 // event records the breakage and defers (A20260905-R5-Q2, see attemptHeal).
@@ -23,7 +23,7 @@
 // error surface is preserved.
 //
 // HARD constraint: pure node: imports only. Importing anything from lib/ here
-// would defeat the entire purpose — the launcher must survive a broken
+// would defeat the entire purpose - the launcher must survive a broken
 // install.
 
 import { existsSync, mkdirSync, writeFileSync, statSync, unlinkSync, readFileSync } from 'node:fs';
@@ -47,13 +47,13 @@ const DATA_DIR = MEM_DIR && isAbsolute(MEM_DIR) ? MEM_DIR : join(homedir(), '.qw
 // `swap-in-progress`, which is installation identity and must NOT follow a per-harness
 // override (two installers pointed at different override dirs would each see no swap in
 // progress). `HOOK_RUNTIME_DIR` is override-aware and serves every marker another component
-// reads back — the launcher's own breakage/heal markers, which `install.mjs doctor` reads,
+// reads back - the launcher's own breakage/heal markers, which `install.mjs doctor` reads,
 // and the native-binding pair below. That second constant already existed here as
 // `NB_RUNTIME_DIR` and was applied to only half this file's markers.
 //
 // Inline `||`, not `lib/resolve-data-dir.mjs::resolveRuntimeDir`, and this is the single
 // declared exception in the tree: the launcher runs BEFORE the native binding is known to
-// work, so it imports only `node:` builtins on purpose — even a leaf lib module is a
+// work, so it imports only `node:` builtins on purpose - even a leaf lib module is a
 // resolution it declines to make on the path whose job is surviving a broken install. The
 // standalone hook scripts it mirrors (pre-tool-recall / post-tool-recall) honour the same
 // variable and write 78 of every 79 of these markers, so reading a different dir would mean
@@ -61,18 +61,18 @@ const DATA_DIR = MEM_DIR && isAbsolute(MEM_DIR) ? MEM_DIR : join(homedir(), '.qw
 // is NOT identical to it: the resolver additionally makes a RELATIVE override absolute
 // (`isAbsolute(raw) ? raw : resolve(raw)`), while this hands the relative value straight to
 // `fs`, which resolves it against cwd at call time rather than at module load. They agree on
-// unset, empty and absolute — the three cases that reach a real install. Keep the DEFAULTING
+// unset, empty and absolute - the three cases that reach a real install. Keep the DEFAULTING
 // behaviour in step; do not read "identical" into the difference.
 // `tests/runtime-dir-single-home.test.mjs` asserts this file still carries the rule.
-const RUNTIME_DIR = join(DATA_DIR, 'runtime'); // runtime-dir:stays-put — serves swap-in-progress only; HOOK_RUNTIME_DIR carries the hook markers
+const RUNTIME_DIR = join(DATA_DIR, 'runtime'); // runtime-dir:stays-put - serves swap-in-progress only; HOOK_RUNTIME_DIR carries the hook markers
 const HOOK_RUNTIME_DIR = process.env.QWEN_MEM_RUNTIME_DIR || RUNTIME_DIR;
 // Per CODE HOME, not per machine. The runtime dir is data-dir-relative and therefore SHARED
-// by every install shape on this box — a plugin cache version, a managed ~/.qwen-mem-lite,
+// by every install shape on this box - a plugin cache version, a managed ~/.qwen-mem-lite,
 // a dev checkout. With one global name, a failed heal attempt for root A silenced root B's
 // heal for the next six hours, and the two are repaired by different commands. The suffix is
 // derived from INSTALL_DIR, which is what `cli.mjs repair` below actually acts on.
 //
-// node:crypto only — the pure-`node:` charter above still holds. No migration: a pre-6.4.0
+// node:crypto only - the pure-`node:` charter above still holds. No migration: a pre-6.4.0
 // unsuffixed marker is simply ignored, which costs at most one extra heal attempt once.
 const INSTALL_KEY = createHash('sha256').update(INSTALL_DIR).digest('hex').slice(0, 12);
 const HEAL_MARKER = join(HOOK_RUNTIME_DIR, `hook-launcher-lastheal-${INSTALL_KEY}`);
@@ -84,25 +84,25 @@ const BROKEN_MARKER = join(HOOK_RUNTIME_DIR, 'hook-launcher-broken');
 
 // ── Native-binding (ABI) self-heal ──────────────────────────────────────────
 // A stale better_sqlite3.node after a Node upgrade does NOT throw at import time
-// — better-sqlite3 dlopen's it lazily at the first `new Database()`, deep inside
+// - better-sqlite3 dlopen's it lazily at the first `new Database()`, deep inside
 // the hook script, whose own catch swallows it. So it never reaches the
 // ERR_MODULE_NOT_FOUND path below.
 //
 // scripts/setup.sh has probed + rebuilt the binding at SessionStart since v3.58,
 // but ONLY on plugin-manifest installs: hooks/hooks.json registers setup.sh,
-// while an install.mjs-managed settings.json does NOT — it wires the launcher
+// while an install.mjs-managed settings.json does NOT - it wires the launcher
 // alone. On that install shape nothing healed. Field result (2026-08-13): 4 days
 // with a dead memory system, 79 failed fires in one day.
 //
 // The hook scripts now drop a marker on every such fire (via
 // lib/hook-telemetry.mjs and lib/native-binding-hint.mjs); this heals from it at
-// SESSION-START only — never on the per-tool hot path, where an npm run would
+// SESSION-START only - never on the per-tool hot path, where an npm run would
 // stall the user's edit.
 // Marker dir: HOOK_RUNTIME_DIR (see its definition above for why it is override-aware).
 // BOTH stay machine-wide, unlike HEAL_MARKER above, and the difference is the SUBJECT of the
 // repair. HEAL_MARKER gates `cli.mjs repair`, which fixes THIS install dir. This pair gates
 // the native-binding rebuild, and `install.mjs rebuildBinding()` iterates
-// `shape.runtimeRoots` — "Every code home on this machine, not just the one this file sits
+// `shape.runtimeRoots` - "Every code home on this machine, not just the one this file sits
 // in", as its own comment puts it, which is also what install.mjs tells the user. Keying it
 // per code home would let N homes each spawn npm within one 6h window for a repair that
 // already covered all of them. A first cut of this change did exactly that; pre-ship review
@@ -112,7 +112,7 @@ const NB_HEAL_MARKER = join(HOOK_RUNTIME_DIR, 'native-binding-lastheal');
 // Literal, not imported: the pure-`node:` charter above forbids importing lib/
 // here (this file must survive a broken install). Kept in sync with
 // lib/binding-probe.mjs::nativeBindingRepairHint, which is the single home
-// everywhere the charter allows an import — and pinned to it by
+// everywhere the charter allows an import - and pinned to it by
 // tests/audit-r8-binding-repair-hint.test.mjs, because a literal kept in sync by
 // a comment is a literal that drifts (A20260906-R8-P1-1).
 //
@@ -132,7 +132,7 @@ const CLI_REPAIR = `node ${shellWord(join(INSTALL_DIR, 'cli.mjs'))} repair`;
 
 // Last-resort recovery string for users whose `cli.mjs repair` path
 // itself failed (install.mjs missing / repair errored / retry still drifting).
-// Duplicated from install.mjs::MANUAL_TARBALL_FALLBACK — the pure-`node:` charter above
+// Duplicated from install.mjs::MANUAL_TARBALL_FALLBACK - the pure-`node:` charter above
 // forbids importing it, and this path is reachable exactly when local scripts are broken.
 // Pinned to that constant by tests/manual-fallback-sync.test.mjs, which also fails if a
 // fifth surface starts hardcoding its own. Resolves the latest RELEASE tag rather than
@@ -148,27 +148,23 @@ if (!entryArg) {
 
 const entryAbs = entryArg.startsWith('/') ? entryArg : join(INSTALL_DIR, entryArg);
 
-// Swap barrier. An auto-update renames files into the install dir one at a time —
-// atomic per file, not per file SET — so a hook process that starts mid-swap can
+// Swap barrier. An auto-update renames files into the install dir one at a time -
+// atomic per file, not per file SET - so a hook process that starts mid-swap can
 // resolve its entry from the old version and an import from the new one.
 // hook-update.mjs marks that window; skip the fire instead of importing a mixed
 // module graph. Hooks are best-effort and the swap lasts ~a second, so the next
 // fire runs against a settled install.
 //
-// This covers the AUTO-UPDATE path only, and the distinction is not pedantic:
-// `hook-update.mjs:719` is the sole writer of this marker in the whole tree (name set,
-// 2026-09-07), so the barrier is never armed for `install.mjs install` — which copies the
-// same file set in place with copyFileSync (`install.mjs:341-350`) and is what
-// `install.mjs repair` ends up executing (`:2388`, after verifying the release). A repair
-// spawned in the background at SessionStart therefore overwrites this tree while hooks
-// keep firing into it. That is R10 P2-12, still open: the mechanism is settled, the runtime
-// symptom is not reproduced, and R10 §8 asks for a repro in tests/sandbox/phaseB-npm.mjs
-// before install()'s main path is touched. An earlier draft of this comment said "auto-update
-// / repair", which reads as though the repair path were already covered — it is not.
+// Two writers arm it: hook-update.mjs around its renames, and install.mjs's install()
+// around deploying the code tree and its npm install - also what `install.mjs repair`
+// ends in, which SessionStart can spawn in the background while hooks keep firing. The
+// install side came late (R10 P2-12, D#223): it copied in place with copyFileSync, and
+// tests/sandbox/phaseB-npm.mjs B10 caught a fire importing a truncated module on a
+// same-version re-install. Its copies now go through a rename as well.
 //
 // Stale-guarded on BOTH pid and ts: an updater killed mid-swap leaves the marker
 // behind, and a marker that outlives its writer must never mute hooks permanently.
-// Anything unreadable/torn/expired reads as "no swap" — fail-open, like the rest
+// Anything unreadable/torn/expired reads as "no swap" - fail-open, like the rest
 // of this launcher. Inline (not lib/proc-lock.mjs) per the pure-node: charter.
 const SWAP_MARKER = join(RUNTIME_DIR, 'swap-in-progress');
 const SWAP_MAX_MS = 2 * 60 * 1000;
@@ -196,7 +192,7 @@ async function runEntry({ bustCache = false } = {}) {
   process.argv = [process.argv[0], entryAbs, ...rest];
   // Node ESM caches resolution outcomes (success AND failure) by URL. On the
   // post-self-heal retry the freshly-written module file lives at the same
-  // path the first import already cached as ERR_MODULE_NOT_FOUND — without a
+  // path the first import already cached as ERR_MODULE_NOT_FOUND - without a
   // cache-buster query the second await import() returns the cached rejection
   // and the heal looks like it did nothing.
   const url = pathToFileURL(entryAbs).href + (bustCache ? `?t=${Date.now()}` : '');
@@ -211,10 +207,10 @@ async function runEntry({ bustCache = false } = {}) {
 //     file://INSTALL_DIR prefix test never matched it in a dev-dir install, so
 //     a missing dependency was misread as a foreign error and re-thrown as a
 //     Node stack trace on every hook fire.
-// Anchor on any path the error exposes — the missing URL and/or the importer
+// Anchor on any path the error exposes - the missing URL and/or the importer
 // (present in both messages as "imported from <path>"). If it sits inside our
 // install, a self-heal could fix it.
-// package.json dependency set of THIS install — read lazily, best-effort. Lets
+// package.json dependency set of THIS install - read lazily, best-effort. Lets
 // isLocalModuleErr tell a genuinely-ours missing bare dependency (better-sqlite3,
 // zod, …) apart from a foreign/mistyped package name that merely happens to be
 // imported from an install-dir file. The former is self-healable; the latter is
@@ -241,14 +237,14 @@ function isLocalModuleErr(e) {
   // Missing BARE dependency: e.url is UNDEFINED; message is
   // `Cannot find package '<name>' imported from <importer>`. The (.+) capture
   // needs no `m` flag (`.` stops at a newline) and so tolerates a multi-line
-  // message that appends a hint line after the importer path — the old
+  // message that appends a hint line after the importer path - the old
   // `(.+?)\s*$` returned undefined there and misclassified the dep. (review #11/#15)
   const msg = String(e.message || '');
   const importer = /imported from (.+)/.exec(msg)?.[1]?.trim();
   if (!importer) return false;
   const importerPath = importer.replace(/^file:\/\//, '');
   if (!(importerPath.startsWith(INSTALL_DIR) || importerPath.includes('.qwen-mem-lite'))) return false;
-  // Importer is ours — but only self-heal if the missing package is one we
+  // Importer is ours - but only self-heal if the missing package is one we
   // actually declare. A foreign/typo'd name re-throws so the bug is visible.
   const pkgName = /Cannot find package '([^']+)'/.exec(msg)?.[1];
   const deps = ownDependencies();
@@ -294,7 +290,7 @@ function clearHealMarker() {
   try {
     unlinkSync(HEAL_MARKER);
   } catch {
-    /* already gone — fine */
+    /* already gone - fine */
   }
 }
 
@@ -319,11 +315,11 @@ function clearBreakage() {
 //
 // attemptHeal() runs `install.mjs repair` SYNCHRONOUSLY with a 300s timeout. The events
 // this launcher fires on cannot host that: hooks/hooks.json gives PreToolUse 3s,
-// PostToolUse 3s, UserPromptSubmit 2s, Stop and PreCompact 5s — only SessionStart's 15s is
+// PostToolUse 3s, UserPromptSubmit 2s, Stop and PreCompact 5s - only SessionStart's 15s is
 // in the same order of magnitude as an npm run. Worse than being killed: recordHealAttempt()
 // arms the 6h cooldown BEFORE the spawn, deliberately, as concurrent-fire rate limiting (see
 // clearHealMarker below). So a repair the host killed at 2s still bought six hours of
-// "Self-heal skipped" — including for the SessionStart fire that had the budget to finish it.
+// "Self-heal skipped" - including for the SessionStart fire that had the budget to finish it.
 // The hot path now records the breakage for `doctor` and gets out of the way.
 //
 // This is the same rule healNativeBindingIfBroken() below already follows, for the same
@@ -334,12 +330,12 @@ function clearBreakage() {
 //
 // Known gap this does NOT close, because it was already open: if the missing module sits on
 // a DIFFERENT entry's import chain and session-start's own entry imports cleanly, nothing
-// heals — a clean session-start clears the breakage marker without repairing. Narrow in
+// heals - a clean session-start clears the breakage marker without repairing. Narrow in
 // practice (hook.mjs imports most of lib/), and closing it needs a detached, stdio-ignored
 // spawn like the native-binding path, not this one.
 function deferHealToSessionStart(reason) {
   process.stderr.write(
-    `[qwen-mem-lite] Broken install (${reason}) — self-heal deferred to the next SessionStart ` +
+    `[qwen-mem-lite] Broken install (${reason}) - self-heal deferred to the next SessionStart ` +
       `(this hook has a 2-5s budget; repair needs minutes).\n` +
       `[qwen-mem-lite] Manual recovery: ${CLI_REPAIR}\n`,
   );
@@ -356,18 +352,18 @@ async function attemptHeal(reason) {
     return false;
   }
   recordHealAttempt();
-  process.stderr.write(`[qwen-mem-lite] Detected broken install (${reason}) — running self-heal\n`);
+  process.stderr.write(`[qwen-mem-lite] Detected broken install (${reason}) - running self-heal\n`);
   const installer = join(INSTALL_DIR, 'install.mjs');
   if (!existsSync(installer)) {
     process.stderr.write(
-      `[qwen-mem-lite] install.mjs missing at ${installer} — cannot self-heal\n` +
+      `[qwen-mem-lite] install.mjs missing at ${installer} - cannot self-heal\n` +
         `[qwen-mem-lite] Manual recovery: ${TARBALL_FALLBACK}\n`,
     );
     return false;
   }
   const result = spawnSync(process.execPath, [installer, 'repair'], {
     // R10 P2-15: NOT 'inherit'. The installer prints progress on stdout, and this process's
-    // stdout is the hook channel — the host parses it as one JSON envelope. With 'inherit',
+    // stdout is the hook channel - the host parses it as one JSON envelope. With 'inherit',
     // `✓ repair: copied 3 files…` was prepended to `{"suppressOutput":true,…}`, the whole
     // stream stopped being JSON, and it went down the plainText path with suppressOutput
     // silently inoperative. The installer's own diagnostics belong on stderr, which the host
@@ -382,26 +378,26 @@ async function attemptHeal(reason) {
 // (A20260905-R5-Q2, second half).
 //
 // Since the heal moved off the hot path, a hot-path fire that hits a missing module records
-// the breakage and defers. But this launcher fronts several entries — hook.mjs plus
-// pre-tool-recall.js, post-tool-recall.js, user-prompt-search.js — and
+// the breakage and defers. But this launcher fronts several entries - hook.mjs plus
+// pre-tool-recall.js, post-tool-recall.js, user-prompt-search.js - and
 // the missing module may sit on one of THEIR import chains and not on hook.mjs's. Then
 // session-start's own entry imports cleanly, the catch below never fires, and before this
 // function existed the clean fire simply cleared the marker: nothing ever repaired it. (That
-// gap predates the hot-path gate — a clean session-start always cleared the marker — but the
+// gap predates the hot-path gate - a clean session-start always cleared the marker - but the
 // gate is what makes it the ONLY remaining route, so it is closed here.)
 //
 // DETACHED with stdio ignored, exactly like healNativeBindingIfBroken() below and for the
 // same two reasons: the fire is capped at 15s while `install.mjs repair` can take minutes,
 // and install.mjs logs to STDOUT while SessionStart stdout is a JSON envelope Claude Code
 // parses. That is also why this cannot reuse attemptHeal(), whose spawn is synchronous and
-// inherits stdio — correct where the entry failed and nothing has been written yet, wrong
+// inherits stdio - correct where the entry failed and nothing has been written yet, wrong
 // here, where runEntry() has already emitted the envelope.
 //
 // Marker bookkeeping, and why it differs from the native-binding path: `install.mjs repair`
 // does not know about `hook-launcher-broken` (only doctor reads it, only this file writes
 // it), so no child can clear it on our behalf. Clearing it here after spawning keeps
-// `doctor` honest — a repair that did not take is re-recorded by the very next failing fire
-// — while the 6h cooldown, not the marker, is what bounds repair spawns to one per window.
+// `doctor` honest - a repair that did not take is re-recorded by the very next failing fire
+// - while the 6h cooldown, not the marker, is what bounds repair spawns to one per window.
 // Within that window the marker is deliberately left in place so doctor still reports the
 // unrepaired breakage.
 function healRecordedBreakage() {
@@ -413,17 +409,17 @@ function healRecordedBreakage() {
       clearHealMarker();
       return;
     }
-    if (recentHealAttempt()) return; // on cooldown — keep the marker, doctor should see it
+    if (recentHealAttempt()) return; // on cooldown - keep the marker, doctor should see it
     const installer = join(INSTALL_DIR, 'install.mjs');
     if (!existsSync(installer)) {
       process.stderr.write(
-        `[qwen-mem-lite] A hook fire degraded to exit 0 and install.mjs is missing — ${TARBALL_FALLBACK}\n`,
+        `[qwen-mem-lite] A hook fire degraded to exit 0 and install.mjs is missing - ${TARBALL_FALLBACK}\n`,
       );
       return;
     }
     recordHealAttempt();
     process.stderr.write(
-      '[qwen-mem-lite] A previous hook fire degraded to exit 0 — repairing in the background\n',
+      '[qwen-mem-lite] A previous hook fire degraded to exit 0 - repairing in the background\n',
     );
     const child = spawn(process.execPath, [installer, 'repair'], {
       detached: true,
@@ -432,14 +428,14 @@ function healRecordedBreakage() {
     child.unref();
     clearBreakage();
   } catch {
-    /* best-effort — a heal failure must never stop the fire */
+    /* best-effort - a heal failure must never stop the fire */
   }
 }
 
 // Defense-in-depth for plugin-mode version drift: the plugin-cache MCP server
 // (kept current by Claude Code) migrates the shared DB schema forward, while
 // this data-dir code (the standalone CLI + these hooks) is only advanced by the
-// GitHub-tarball auto-update, which plugin mode disables — so it can lag the
+// GitHub-tarball auto-update, which plugin mode disables - so it can lag the
 // schema and fail to open the DB. syncDataDirFromCache copies the current cache
 // source files locally to close that gap. launch.mjs (MCP start) is the primary
 // healer; this is a backup that also covers the case where the MCP server never
@@ -453,12 +449,12 @@ function healRecordedBreakage() {
 // Rebuild the native binding when a prior fire recorded it as unusable.
 //
 // DETACHED, never awaited. This hook runs under a 15s Claude Code cap
-// (hooks/hooks.json) while a rebuild can take far longer — prebuild-install has
+// (hooks/hooks.json) while a rebuild can take far longer - prebuild-install has
 // to fetch, and a node-gyp fallback is minutes. Waiting would trade a broken
 // binding for a SIGKILL'd session-start (no memory context at all) plus a
 // half-written .node, the exact hazard scripts/setup.sh's 20s exec cap documents.
 // Detaching costs one fire: the rebuild lands within seconds and the NEXT hook
-// fire — usually the same session's first PreToolUse — is already healthy.
+// fire - usually the same session's first PreToolUse - is already healthy.
 // stdio is fully ignored: install.mjs logs to STDOUT, and SessionStart stdout is
 // a JSON envelope Claude Code parses, so inheriting it corrupts the fire.
 //
@@ -466,7 +462,7 @@ function healRecordedBreakage() {
 // no compiler, offline) does not re-spawn npm every session. The cooldown is
 // dropped once the binding is confirmed healthy, so a LATER unrelated break heals
 // immediately instead of waiting out a stale window.
-// Best-effort throughout — a heal failure must never stop the hook fire.
+// Best-effort throughout - a heal failure must never stop the hook fire.
 function healNativeBindingIfBroken() {
   try {
     if (!existsSync(NB_BROKEN_MARKER)) {
@@ -493,24 +489,22 @@ function healNativeBindingIfBroken() {
     const installer = join(INSTALL_DIR, 'install.mjs');
     if (!existsSync(installer)) {
       process.stderr.write(
-        `[qwen-mem-lite] native DB binding unusable and install.mjs is missing — run: cd ${shellWord(INSTALL_DIR)} && ${NB_MANUAL_CMD}\n`,
+        `[qwen-mem-lite] native DB binding unusable and install.mjs is missing - run: cd ${shellWord(INSTALL_DIR)} && ${NB_MANUAL_CMD}\n`,
       );
       return;
     }
     // The CHILD clears the breakage marker, and only on a verified-good rebuild
     // (install.mjs::rebuildBinding). Clearing it here would mean a rebuild that
-    // silently did nothing — lock contention, a no-op npm — still reads as
+    // silently did nothing - lock contention, a no-op npm - still reads as
     // "healed", dropping the cooldown and re-spawning npm on every session.
-    process.stderr.write(
-      '[qwen-mem-lite] native DB binding unusable (Node version change?) — rebuilding in the background\n',
-    );
+    process.stderr.write('[qwen-mem-lite] native DB binding unusable - rebuilding in the background\n');
     const child = spawn(process.execPath, [installer, 'rebuild-binding'], {
       detached: true,
       stdio: 'ignore',
     });
     child.unref();
   } catch {
-    /* best-effort — never block the hook fire */
+    /* best-effort - never block the hook fire */
   }
 }
 
@@ -519,7 +513,7 @@ async function trySyncDataDirFromCache() {
     const { syncDataDirFromCache } = await import(pathToFileURL(join(INSTALL_DIR, 'hook-update.mjs')).href);
     if (typeof syncDataDirFromCache === 'function') await syncDataDirFromCache();
   } catch {
-    /* best-effort — proceed to the normal entry regardless */
+    /* best-effort - proceed to the normal entry regardless */
   }
 }
 
@@ -528,7 +522,7 @@ const IS_SESSION_START = rest.includes('session-start');
 if (IS_SESSION_START) {
   // Before the entry: this process has not dlopen'd better-sqlite3 yet, so the
   // freshly built .node is picked up by the very fire that follows. (After a
-  // failed dlopen, only a NEW process can load the replacement — the module
+  // failed dlopen, only a NEW process can load the replacement - the module
   // handle is cached and an in-process retry dies with "did not self-register".)
   healNativeBindingIfBroken();
   await trySyncDataDirFromCache();
@@ -538,7 +532,7 @@ try {
   await runEntry();
   // Our entry imported cleanly, but that is NOT the same as "the install is whole": this
   // launcher fronts five entries and the missing module may be on another one's chain. So
-  // act on the recorded breakage instead of just clearing it — background repair if there is
+  // act on the recorded breakage instead of just clearing it - background repair if there is
   // one to do, clear either way. Gated to session-start so the hot path pays nothing.
   // (Was an unconditional clearBreakage(); A20260905-R5-Q2.)
   if (IS_SESSION_START) healRecordedBreakage();
@@ -553,7 +547,7 @@ try {
   if (!healed) {
     // Broken/missing dependency we can't repair right now (repair failed, or
     // was skipped within the 6h cooldown). attemptHeal already wrote actionable
-    // guidance — degrade quietly instead of re-throwing the original import
+    // guidance - degrade quietly instead of re-throwing the original import
     // error, which would spew a Node stack trace on every hook fire. Record the
     // breakage so the exit-0 silence stays observable to `doctor`. (#4/#8)
     recordBreakage(reason);
