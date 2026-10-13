@@ -14,8 +14,9 @@
 # EVERY Read, while the 24h sweep that reaps those files (sweepOrphanEpisodeFiles, via
 # runSessionStartAutoMaintain) sits behind that same Node-side exit — unbounded growth
 # in runtime/ for a plugin the user believes is off.
-# MUST agree with hook.mjs isPluginExplicitlyDisabled(): same $HOME/.claude/settings.json
-# (NOT CLAUDE_CONFIG_DIR — hook.mjs resolves it via homedir()), same plugin key, and the
+# MUST agree with hook.mjs isPluginExplicitlyDisabled(): the same settings.json — the host's
+# config home, an absolute CLAUDE_CONFIG_DIR else $HOME/.claude (lib/data-paths.mjs
+# claudeConfigDir; a relative value is ignored on both sides) — the same plugin key, and the
 # same fail-open-on-unreadable semantics (its try/catch returns false). Parity pinned by
 # tests/post-tool-use-disabled.test.mjs.
 # Cheap by construction: no `node`, no external command on this ~5ms per-tool-call path.
@@ -27,7 +28,19 @@
 # to the key, so only that key's own value can satisfy it.
 # Deliberately NOT applied to the Node handoff at the tail: hook.mjs already self-guards
 # there, so a bash false positive could only lose data, never save work.
-_mem_settings_file="${HOME}/.claude/settings.json"
+# "Absolute" as Node's path.isAbsolute reads it on this platform (D#269): a leading / anywhere,
+# and in a Windows shell (Git Bash, MSYS, Cygwin) also a leading \ (UNC, root of the drive) or a
+# drive letter and a slash. The same body sits in scripts/setup.sh.
+_mem_is_abs() {
+  case "$1" in /*) return 0 ;; esac
+  case "${OSTYPE:-}" in
+    msys* | cygwin*) case "$1" in \\* | [A-Za-z]:[\\/]*) return 0 ;; esac ;;
+  esac
+  return 1
+}
+_mem_config_home="${HOME}/.claude"
+_mem_is_abs "${CLAUDE_CONFIG_DIR:-}" && _mem_config_home="$CLAUDE_CONFIG_DIR"
+_mem_settings_file="$_mem_config_home/settings.json"
 _mem_plugin_disabled() {
   [[ -r "$_mem_settings_file" ]] || return 1
   local _settings

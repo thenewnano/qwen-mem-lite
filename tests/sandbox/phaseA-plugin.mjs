@@ -1,4 +1,4 @@
-// phaseA-plugin.mjs — simulate a real user installing via the Claude Code plugin marketplace.
+// phaseA-plugin.mjs - simulate a real user installing via the Claude Code plugin marketplace.
 //
 //   /plugin marketplace add thenewnano/qwen-mem-lite
 //   /plugin install qwen-mem-lite
@@ -42,7 +42,7 @@ const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).ver
 // Every check this phase must run. A phase that quietly shrinks has stopped measuring:
 // phase B's self-heal section lost eight checks to a stale `if (existsSync(…))` and the
 // only symptom was a tally nobody compared. Change this when you add or remove a check
-// on purpose — never to silence it.
+// on purpose - never to silence it.
 const EXPECTED_CHECKS = 47;
 const MP = 'thenewnano';
 const CACHE = join(HOME, '.claude', 'plugins', 'cache', MP, 'qwen-mem-lite', VERSION);
@@ -72,7 +72,7 @@ check('marketplace clone carries .claude-plugin/marketplace.json', () =>
 
 // Claude Code copies the marketplace source into the versioned cache dir.
 snapshotRepo(CACHE);
-// ...but NOT node_modules — the cache is a git checkout, deps are absent.
+// ...but NOT node_modules - the cache is a git checkout, deps are absent.
 check(
   'plugin cache has no node_modules (cold install, as Claude Code leaves it)',
   () => !existsSync(join(CACHE, 'node_modules')),
@@ -101,7 +101,7 @@ writeFileSync(
 );
 
 // ── 2. First SessionStart: setup.sh (hook #1) ───────────────────────────────
-setPhase('A2: first SessionStart — setup.sh cold path (real npm install)');
+setPhase('A2: first SessionStart - setup.sh cold path (real npm install)');
 
 const t0 = Date.now();
 const setup1 = runHook(`bash "${CACHE}/scripts/setup.sh"`, {}, { env: ENV, cwd: PROJECT });
@@ -129,7 +129,7 @@ check('ABI-keyed binding marker written', () => {
 });
 
 // ── 3. SessionStart hook #2: hook.mjs session-start ─────────────────────────
-setPhase('A3: SessionStart — hook.mjs session-start envelope');
+setPhase('A3: SessionStart - hook.mjs session-start envelope');
 
 const ssPayload = {
   session_id: SESSION,
@@ -148,22 +148,42 @@ check('session-start hook exits 0', () => ({
 }));
 check('session-start stdout is ONE parseable JSON envelope (no raw prose alongside)', () => {
   const s = ss.stdout.trim();
-  if (!s) return { ok: true, detail: '(empty stdout — allowed: no context to inject)' };
+  if (!s) return { ok: true, detail: '(empty stdout - allowed: no context to inject)' };
   const o = JSON.parse(s); // throws if a second raw block trails the envelope
   return {
     ok: o.suppressOutput === true && o.hookSpecificOutput?.hookEventName === 'SessionStart',
     detail: JSON.stringify(o).slice(0, 220),
   };
 });
-check('auto-adopt wrote the steering block into the project CLAUDE.md', () => {
-  const p = join(PROJECT, 'CLAUDE.md');
-  if (!existsSync(p)) return { ok: false, detail: 'CLAUDE.md not created' };
-  const txt = readFileSync(p, 'utf8');
-  return { ok: txt.includes('qwen-mem-lite'), detail: `${txt.length} bytes` };
+// Since 6.20.0 auto-adopt puts the block in CLAUDE.local.md at the repository root, out of
+// git via .git/info/exclude, and never creates the project's CLAUDE.md; the detail doc the
+// block points at lives in the data dir. This repo has no AGENTS.md, so 6.22.0's
+// inject-instead branch does not apply. Until 2026-10-06 these two checks still asserted the
+// pre-6.20.0 shape (project CLAUDE.md + .claude/plugin_qwen_mem_lite.md) and were red on
+// every scheduled run after that release (D#223).
+check('auto-adopt wrote the block into CLAUDE.local.md, kept it out of git, left CLAUDE.md alone', () => {
+  const local = join(PROJECT, 'CLAUDE.local.md');
+  if (!existsSync(local)) return { ok: false, detail: 'CLAUDE.local.md not created' };
+  const txt = readFileSync(local, 'utf8');
+  const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
+    cwd: PROJECT,
+    encoding: 'utf8',
+  });
+  const claudeMd = existsSync(join(PROJECT, 'CLAUDE.md'));
+  return {
+    ok: txt.includes('qwen-mem-lite') && !status.includes('CLAUDE.local.md') && !claudeMd,
+    detail: `${txt.length} bytes; git status: ${status.trim().replace(/\n/g, ' | ') || '(clean)'}; CLAUDE.md ${claudeMd ? 'created' : 'absent'}`,
+  };
 });
-check('auto-adopt wrote the detail doc', () =>
-  existsSync(join(PROJECT, '.claude', 'plugin_qwen_mem_lite.md')),
-);
+check('auto-adopt wrote the detail doc the block points at', () => {
+  const doc = join(HOME, '.qwen-mem-lite', 'plugin_qwen_mem_lite.md');
+  const local = join(PROJECT, 'CLAUDE.local.md');
+  const block = existsSync(local) ? readFileSync(local, 'utf8') : '';
+  return {
+    ok: existsSync(doc) && block.includes('plugin_qwen_mem_lite.md'),
+    detail: `${doc} ${existsSync(doc) ? 'present' : 'missing'}; block names it: ${block.includes('plugin_qwen_mem_lite.md')}`,
+  };
+});
 
 // ── 4. UserPromptSubmit ─────────────────────────────────────────────────────
 setPhase('A4: UserPromptSubmit hooks');
@@ -319,11 +339,11 @@ check('MCP initialize responds', () => {
     detail: JSON.stringify(r?.result?.serverInfo || mcp.stderr.slice(0, 400)),
   };
 });
-check('MCP tools/list exposes the 9 core tools', () => {
+check('MCP tools/list exposes the 9 default core tools', () => {
   const r = mcp.responses.find((x) => x.id === 2);
   const names = (r?.result?.tools || []).map((t) => t.name);
   return {
-    ok: names.length === 9 && names.includes('mem_search') && names.includes('mem_save'),
+    ok: names.length === 9 && !names.includes('mem_search_feedback') && names.includes('mem_save'),
     detail: `${names.length}: ${names.join(',')}`,
   };
 });
@@ -374,12 +394,12 @@ for (const [label, args] of [
 }
 
 // ── 9. Auto-update in plugin mode ───────────────────────────────────────────
-setPhase('A9: auto-update — plugin mode must report, never self-install');
+setPhase('A9: auto-update - plugin mode must report, never self-install');
 
 // Audit 2026-09-02 P1-13: this drove `node hook-update.mjs --check` with
 // QWEN_MEM_FORCE_UPDATE_CHECK=1. `hook-update.mjs` has NO argv entry point and nothing
 // anywhere reads that env var, so the process imported the module, ran nothing and exited
-// 0 — both checks passed vacuously, and the contract in this phase's own title was never
+// 0 - both checks passed vacuously, and the contract in this phase's own title was never
 // exercised. The real entry is `hook.mjs update-check` (the detached worker SessionStart
 // spawns). The env var is gone rather than renamed: inventing a reader for it would be
 // building a mechanism to justify a test.
@@ -393,7 +413,7 @@ const readLastCheck = () => {
 };
 // Backdate the 24h gate so the real entry point actually does its work. `checkForUpdate`
 // returns the CACHED state when `shouldCheck` says the last check was recent, and an
-// earlier step in this phase has already written one — so without this the entry runs and
+// earlier step in this phase has already written one - so without this the entry runs and
 // writes nothing, which is indistinguishable from the no-op entry this case replaced. The
 // second draft of this case caught exactly that (before === after) and this is the fix;
 // the first draft, which only asserted the file exists, passed against both.
@@ -402,7 +422,7 @@ try {
   st.lastCheck = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
   writeFileSync(STATE_JSON, JSON.stringify(st));
 } catch {
-  /* no prior state — shouldCheck() then returns true on its own */
+  /* no prior state - shouldCheck() then returns true on its own */
 }
 const lastCheckBefore = readLastCheck();
 const before = readdirSync(join(HOME, '.claude', 'plugins', 'cache', MP, 'qwen-mem-lite'));
@@ -412,12 +432,12 @@ check('hook.mjs update-check exits 0 in plugin mode', () => ({
   detail: `exit=${upd.code} ${(upd.stdout || upd.stderr).slice(0, 300)}`,
 }));
 // PREMISE, and the whole point of the rewrite: prove the path RAN. checkForUpdate writes
-// update-state.json on every branch that reaches the network — including the failure and
-// rate-limited ones — so this holds with or without connectivity, while a no-op entry
+// update-state.json on every branch that reaches the network - including the failure and
+// rate-limited ones - so this holds with or without connectivity, while a no-op entry
 // point (the state this replaces) leaves the file absent.
 check('update-check actually ran (update-state.json lastCheck advanced)', () => {
   // Compares BEFORE and AFTER rather than asserting the file exists. The first cut did the
-  // latter and the very first real run reported `existedBefore=true` — an earlier phase step
+  // latter and the very first real run reported `existedBefore=true` - an earlier phase step
   // had already written it, so "exists && has a lastCheck" would have passed against a
   // no-op entry point too. That is this item's own defect, reproduced in its replacement.
   const lastCheckAfter = readLastCheck();
@@ -428,7 +448,7 @@ check('update-check actually ran (update-state.json lastCheck advanced)', () => 
 });
 // STATED LIMIT: `hook.mjs`'s update-check case passes `allowInstall: false` unconditionally
 // (the F6 staging note there), and canInstall is `!pluginMode && allowInstall`. So this
-// proves the update-check worker never installs — it does NOT isolate the plugin-mode arm,
+// proves the update-check worker never installs - it does NOT isolate the plugin-mode arm,
 // because the flag alone already forces the same answer. Testing plugin mode on its own
 // would need a caller that passes allowInstall:true, and no shipped entry point does.
 check('the update-check worker did not mutate the plugin cache', () => {
@@ -437,11 +457,11 @@ check('the update-check worker did not mutate the plugin cache', () => {
 });
 
 // ── 10. Self-heal: stale-ABI native binding (the v3.60 field failure) ────────
-setPhase('A10: self-heal — stale-ABI better-sqlite3 binding');
+setPhase('A10: self-heal - stale-ABI better-sqlite3 binding');
 
 // The file to break is RESOLVED, never named. This block spent v4.0.0 through v5.1.0
 // corrupting `build/Release/better_sqlite3.node`, which better-sqlite3 13 does not
-// produce and no resolver loads — so the four "self-heal worked" checks below were
+// produce and no resolver loads - so the four "self-heal worked" checks below were
 // vacuous for the whole of that window, and only the control said so.
 const bindingPath = loadedBindingPath(CACHE);
 check('the addon the resolver actually loads exists before we break it', () => ({
@@ -455,11 +475,11 @@ check('binding is genuinely unloadable now (control)', () => {
   return { ok: !r.ok, detail: r.detail };
 });
 // What SessionStart owes the user here is NOT a heal. The compile is
-// `node-gyp clean && node-gyp rebuild`, it takes ~41 s, and the hook budget is 20 s — a
+// `node-gyp clean && node-gyp rebuild`, it takes ~41 s, and the hook budget is 20 s - a
 // truncated attempt deletes build/ and leaves nothing, so scripts/binding-probe-cli.mjs
 // passes sourceBuild:false on purpose (A20260906-R8b-P0-1). The contract is therefore:
 // degrade without crashing, say so, and hand over a repair THAT WORKS. This block used to
-// assert a heal, which is why it needed a binding npm rebuild could fix — a v12 assumption
+// assert a heal, which is why it needed a binding npm rebuild could fix - a v12 assumption
 // that outlived v12.
 const DEPS_FLAG = join(HOME, '.qwen-mem-lite', 'runtime', '.deps-broken');
 const heal = runHook(`bash "${CACHE}/scripts/setup.sh"`, {}, { env: ENV, cwd: PROJECT });
@@ -502,7 +522,7 @@ check('hooks work again after the heal', () => {
 });
 
 // ── 11. Uninstall ───────────────────────────────────────────────────────────
-setPhase('A11: /plugin uninstall — residue check');
+setPhase('A11: /plugin uninstall - residue check');
 
 const dbBefore = existsSync(join(HOME, '.qwen-mem-lite', 'qwen-mem-lite.db'));
 rmSync(join(HOME, '.claude', 'plugins', 'cache', MP, 'qwen-mem-lite'), { recursive: true, force: true });

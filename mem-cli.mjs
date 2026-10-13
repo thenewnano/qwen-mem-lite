@@ -2,7 +2,8 @@
 // qwen-mem-lite CLI — lightweight command layer for direct memory access
 // No MCP SDK or heavy deps — only imports schema.mjs and utils.mjs
 
-import { ensureDbWithWalRecovery, DB_PATH, DB_DIR, CODE_DIR } from './schema.mjs';
+import { ensureDbWithWalRecovery, refreshPlannerStats, DB_PATH, DB_DIR, CODE_DIR } from './schema.mjs';
+import { dirAccessError, walOpenBlocked, dataDirRemedy, WAL_BLOCKED_WHY } from './lib/wal-open-blocked.mjs';
 import { resolveRuntimeDir } from './lib/resolve-data-dir.mjs';
 import { isFtsCorruptionError, FTS_CORRUPTION_REMEDY } from './lib/db-unusable.mjs';
 import {
@@ -141,6 +142,7 @@ import {
 } from './lib/search-core.mjs';
 import { AUTO_MERGE_THRESHOLD } from './lib/dedup-constants.mjs';
 import { countRecentHookErrors } from './lib/hook-telemetry.mjs';
+import { computeSearchTelemetry, formatSearchTelemetryReport } from './lib/search-telemetry.mjs';
 import {
   computeCitationFunnelTrend,
   computeSurfaceFunnel,
@@ -1570,6 +1572,24 @@ async function cmdStats(db, args) {
   const project = flags.project ? resolveProject(db, flags.project) : null;
   const days = parseIntFlag(flags.days, { name: '--days', defaultValue: 30, max: 3650 });
   const jsonOutput = flags.json === true || flags.json === 'true';
+  const searchTelemetry = flags['search-telemetry'] === true || flags['search-telemetry'] === 'true';
+  if (searchTelemetry) {
+    const now = Date.now();
+    const recordingFailureDays = Math.min(days, 14);
+    const report = computeSearchTelemetry(db, {
+      project,
+      days,
+      now,
+      recordingFailures: countRecentHookErrors(
+        resolveRuntimeDir(DB_DIR),
+        now - recordingFailureDays * DAY_MS,
+        'search-telemetry:',
+      ),
+      recordingFailureDays,
+    });
+    out(jsonOutput ? JSON.stringify(report) : formatSearchTelemetryReport(report));
+    return;
+  }
   // N-1: --quality routes to a separate quality-focused report (lesson rate,
   // LOW_SIGNAL rate, per-type hit+lesson %, R-2 watchdog targets). Intended as
   // the baseline metric dashboard for the future Haiku prompt A/B test.
@@ -3321,6 +3341,7 @@ Commands:
     --days N            Lookback window (default 30)
     --quality           Quality dashboard: lesson rate, LOW_SIGNAL rate, per-type
                         hit/lesson %, top-accessed lessons, R-2 watchdog targets
+    --search-telemetry  Search exposure, relevance coverage, rank, and entry report
     --json              Output as JSON: nested by section
                         ({totals,recent,type_distribution,top_projects,
                           daily_activity,data_health,tier_distribution})
@@ -3474,6 +3495,9 @@ async function cmdImportJsonl(db, argv) {
       `, ${totalSkip} skipped from ${files.length} file(s)${errorTail}.`,
   );
   if (totalPrompts > 0 || totalObs > 0) {
+    // A bulk load is exactly when the planner's statistics are missing or 10-fold stale;
+    // without them every hook search runs FTS5 MATCH once per row (#41). Never throws.
+    refreshPlannerStats(db);
     // Orphan tool_use events persist as (truncated) observations and are counted INSIDE
     // totalObs (lib/import-jsonl.mjs), so they already count as "something was imported"
     // — an orphan-only first import must not fall through to the "already imported"
@@ -3850,6 +3874,21 @@ async function runDispatch(argv) {
           }),
         }),
       );
+      out(`[mem] DB path: ${DB_PATH}`);
+      process.exitCode = 1;
+      return;
+    }
+    // A closed WAL store in a data dir this user cannot write: name the cause and its fix rather
+    // than relay "attempt to write a readonly database", or "unable to open database file" on a
+    // read-only mount (D#296, D#295; doctor and status say the same).
+    const dirDenied = /^SQLITE_(READONLY_DIRECTORY|CANTOPEN)$/.test(e.code ?? '')
+      ? dirAccessError(DB_DIR)
+      : null;
+    if (walOpenBlocked(e.code, dirDenied, DB_PATH)) {
+      out(
+        `[mem] Error: Cannot open database: ${WAL_BLOCKED_WHY}, and ${DB_DIR} cannot be written (${dirDenied})`,
+      );
+      out(`[mem] Fix: ${dataDirRemedy(dirDenied, DB_DIR)}`);
       out(`[mem] DB path: ${DB_PATH}`);
       process.exitCode = 1;
       return;

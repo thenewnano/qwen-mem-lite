@@ -99,7 +99,7 @@ describe('qwen-mem-lite defer CLI', () => {
     const { stdout, exitCode } = runCli(['defer', 'add', 'test item one', '--priority', '3']);
     expect(exitCode).toBe(0);
     expect(stdout).toMatch(/D#\d+/);
-    // Ordinal "(item 1)" — first open item in this fresh project.
+    // Ordinal "(item 1)" - first open item in this fresh project.
     expect(stdout).toMatch(/item 1/);
   });
 
@@ -179,7 +179,7 @@ describe('qwen-mem-lite defer CLI', () => {
     // Closure annotation must echo the resolved D#N (not the ordinal).
     expect(save.stdout).toMatch(/Closed: D#\d+/);
 
-    // List must now be empty — the only deferred item transitioned to 'done'.
+    // List must now be empty - the only deferred item transitioned to 'done'.
     const list = runCli(['defer', 'list']);
     expect(list.stdout).toMatch(/No open deferred items/);
   });
@@ -192,13 +192,13 @@ describe('qwen-mem-lite defer CLI', () => {
     const add = runCli(['defer', 'add', 'fix the FTS leak', '--priority', '2']);
     const dId = /D#(\d+)/.exec(add.stdout)[1];
 
-    // Drop it "by mistake" — reason worded as a completion, so the advisory
+    // Drop it "by mistake" - reason worded as a completion, so the advisory
     // hint must fire on this very call.
     const drop = runCli(['defer', 'drop', '1', '--reason', 'already fixed in this round']);
     expect(drop.exitCode).toBe(0);
     expect(drop.stdout).toMatch(/closes-deferred/);
 
-    // The ordinal is gone with the row — ordinals are defined over OPEN rows
+    // The ordinal is gone with the row - ordinals are defined over OPEN rows
     // only, so recovery MUST go through the explicit D#N form.
     const byOrdinal = runCli(['save', 'x', '--type', 'bugfix', '--closes-deferred', '1']);
     expect(byOrdinal.exitCode).not.toBe(0);
@@ -240,7 +240,7 @@ describe('qwen-mem-lite defer CLI', () => {
   // (z.string().min(1).max(200)).
   it('defer add rejects titles longer than 200 chars (parity with MCP schema)', () => {
     const longTitle = 'Z'.repeat(250);
-    // `fail()` writes to stderr — check there, not stdout.
+    // `fail()` writes to stderr - check there, not stdout.
     const { stderr, exitCode } = runCli(['defer', 'add', longTitle]);
     expect(exitCode).not.toBe(0);
     expect(stderr).toMatch(/title too long/);
@@ -249,7 +249,7 @@ describe('qwen-mem-lite defer CLI', () => {
 
   // Dogfood-4 regression: `save --closes-deferred` accepted comma-separated batches but
   // `defer drop` only took a single token, forcing N shell invocations for N items.
-  // Sibling-command symmetry — drop now mirrors closes-deferred's batch form.
+  // Sibling-command symmetry - drop now mirrors closes-deferred's batch form.
   it('defer drop accepts comma-separated batch ordinals', () => {
     runCli(['defer', 'add', 'batch-A', '--priority', '2']);
     runCli(['defer', 'add', 'batch-B', '--priority', '2']);
@@ -294,7 +294,7 @@ describe('qwen-mem-lite defer CLI', () => {
     expect(first.stdout).toMatch(/Saved #\d+/);
     expect(first.stdout).toMatch(/Closed: D#\d+/);
 
-    // Second save: dedup short-circuit — the duplicate path MUST NOT mention
+    // Second save: dedup short-circuit - the duplicate path MUST NOT mention
     // a "Closed: D#" suffix because closeDeferredItems is gated on
     // result.kind !== 'duplicate' (mirrors server.mjs:934).
     const second = runCli(args);
@@ -333,10 +333,10 @@ describe('qwen-mem-lite defer CLI', () => {
   });
 });
 
-// ─── get D#N — deferred detail read surface (2026-07-18) ─────────────────────
+// ─── get D#N - deferred detail read surface (2026-07-18) ─────────────────────
 // RED-first: `defer list` is title-only by design (dashboard noise budget);
 // `get D#N` is the full-detail reader. Locks CLI routing + render + hint line.
-describe('get D#N — deferred detail read surface', () => {
+describe('get D#N - deferred detail read surface', () => {
   const DETAIL = 'design doc: docs/specs/precheck.md; exit codes 0/5/6 baked into gen_script';
 
   it('get D#N prints full detail + status', () => {
@@ -363,7 +363,7 @@ describe('get D#N — deferred detail read surface', () => {
 
   it('mixed get D#1,#77 renders the deferred section and still exits 0', () => {
     // Partial-missing obs ids are silently absent by pre-existing design (the
-    // probe hint only fires when ALL sources come back empty) — this test locks
+    // probe hint only fires when ALL sources come back empty) - this test locks
     // only the new contract: D# and obs buckets coexist in one call.
     runCli(['defer', 'add', 'env precheck design', '--detail', DETAIL]);
     const { stdout, exitCode } = runCli(['get', 'D#1,#77']);
@@ -377,13 +377,13 @@ describe('get D#N — deferred detail read surface', () => {
     expect(stdout).toMatch(/get D#/);
   });
 
-  // FAILS IF: a page smaller than the open set drops rows without saying so — 11 open items
+  // FAILS IF: a page smaller than the open set drops rows without saying so - 11 open items
   // listed as 10, with nothing telling the reader one exists.
   it('defer list says how many open items the page left out', () => {
     for (let i = 1; i <= 12; i++) runCli(['defer', 'add', `paged item ${i}`]);
     const { stdout } = runCli(['defer', 'list']);
     expect(stdout.match(/paged item \d+/g)).toHaveLength(10);
-    expect(stdout).toContain('2 more open items not shown — raise --limit (max 100)');
+    expect(stdout).toContain('2 more open items not shown - raise --limit (max 100)');
     const all = runCli(['defer', 'list', '--limit', '12']).stdout;
     expect(all.match(/paged item \d+/g)).toHaveLength(12);
     expect(all).not.toMatch(/more open item/);
@@ -406,13 +406,13 @@ describe('get D#N — deferred detail read surface', () => {
     for (let i = 1; i <= 100; i++) insertDeferred(db, { project, title: `max page item ${i}` });
     const { stdout } = runCli(['defer', 'list', '--limit', '100']);
     expect(stdout.match(/max page item \d+/g), 'premise: the page holds 100 rows').toHaveLength(100);
-    expect(stdout).toContain('1 more open item not shown — this is already the largest page (100)');
+    expect(stdout).toContain('1 more open item not shown - this is already the largest page (100)');
     expect(stdout).not.toContain('raise --limit');
   });
 });
 
 // ─── P2: search surfaces open deferred items (trailer) ───────────────────────
-describe('search — deferred trailer (P2)', () => {
+describe('search - deferred trailer (P2)', () => {
   const TITLE = '实施环境自检步设计定稿';
   const DET = '设计文档 docs/specs/env-precheck-design.md';
 
@@ -425,7 +425,7 @@ describe('search — deferred trailer (P2)', () => {
     expect(stdout).toContain('D#1');
     expect(stdout).toContain(TITLE);
     expect(stdout).toMatch(/get D#/);
-    // Main population is empty (no obs seeded) — the trailer must not be
+    // Main population is empty (no obs seeded) - the trailer must not be
     // counted as a search result.
     expect(stdout).toMatch(/No results/);
   });

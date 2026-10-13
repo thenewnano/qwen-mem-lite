@@ -1,17 +1,26 @@
 // Install-family commands used to ignore every flag they did not read, so `uninstall --dry-run`
-// and `uninstall --help` UNINSTALLED — removed the MCP registration, the CLI symlink and every
-// hook — and `install --help` installed. `cleanup` honours `--dry-run`, which is exactly why a
+// and `uninstall --help` UNINSTALLED - removed the MCP registration, the CLI symlink and every
+// hook - and `install --help` installed. `cleanup` honours `--dry-run`, which is exactly why a
 // user expects its siblings to. A command that writes must refuse a flag it does not know, and
 // `--help` / `-h` must print usage and do nothing.
 //
 // §8.V3: destructive paths run against a sandbox HOME with a fake `claude` on PATH that only
 // records its argv, so an unguarded run shows up as a recorded `mcp remove` rather than as damage.
 import { describe, it, expect, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  chmodSync,
+  symlinkSync,
+} from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import Database from 'better-sqlite3';
 import { makeFixtureTracker } from './test-helpers.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -36,21 +45,28 @@ function sandbox() {
   return { root, home, settings, bin, calls, before: readFileSync(settings, 'utf8') };
 }
 
+function runEnv(s) {
+  return {
+    ...process.env,
+    HOME: s.home,
+    // cleanup sweeps os.tmpdir(); keep an unguarded run inside the sandbox too.
+    TMPDIR: s.root,
+    PATH: `${s.bin}:${process.env.PATH}`,
+    QWEN_MEM_DIR: join(s.root, 'data'),
+    QWEN_MEM_SKIP_UPDATE: '1',
+    MEM_NO_AUTO_ADOPT: '1',
+    // A runtime-dir override exported in the developer's shell would move the markers the
+    // cases below write; spawnSync drops an undefined value, so the child never sees it.
+    QWEN_MEM_RUNTIME_DIR: undefined,
+  };
+}
+
 function run(s, args) {
   return spawnSync(process.execPath, [join(REPO, 'install.mjs'), ...args], {
     cwd: s.root,
     encoding: 'utf8',
     timeout: 60_000,
-    env: {
-      ...process.env,
-      HOME: s.home,
-      // cleanup sweeps os.tmpdir(); keep an unguarded run inside the sandbox too.
-      TMPDIR: s.root,
-      PATH: `${s.bin}:${process.env.PATH}`,
-      QWEN_MEM_DIR: join(s.root, 'data'),
-      QWEN_MEM_SKIP_UPDATE: '1',
-      MEM_NO_AUTO_ADOPT: '1',
-    },
+    env: runEnv(s),
   });
 }
 
@@ -60,7 +76,7 @@ const untouched = (s) => {
 };
 
 describe('install-family commands do nothing on a flag they do not know', () => {
-  it('premise: plain uninstall does write — the sandbox can see damage', () => {
+  it('premise: plain uninstall does write - the sandbox can see damage', () => {
     const s = sandbox();
     const r = run(s, ['uninstall']);
     expect(r.status).toBe(0);
@@ -124,8 +140,8 @@ describe('install-family commands do nothing on a flag they do not know', () => 
 });
 
 // Same file, neighbouring defect: install and uninstall refused an unparseable settings.json
-// only AFTER their first side effects — install had copied files, run npm and registered the
-// MCP server; uninstall had removed the MCP registration and the CLI link — and then printed
+// only AFTER their first side effects - install had copied files, run npm and registered the
+// MCP server; uninstall had removed the MCP registration and the CLI link - and then printed
 // "fix it first; nothing was written". Both now check it before doing anything.
 describe('an unparseable settings.json stops install/uninstall before any side effect', () => {
   for (const cmd of ['uninstall', 'install']) {
@@ -142,8 +158,8 @@ describe('an unparseable settings.json stops install/uninstall before any side e
 });
 
 // Same round: a data dir the user cannot enter (chmod 000, wrong owner after `sudo`) read as
-// ABSENT everywhere — doctor said "no database yet" and "server.mjs: missing" over an intact
-// install, and install said "Another install/repair is in progress — skipping" and exited 0,
+// ABSENT everywhere - doctor said "no database yet" and "server.mjs: missing" over an intact
+// install, and install said "Another install/repair is in progress - skipping" and exited 0,
 // because acquireLock answers null for a permission error and for a live peer alike.
 describe('an inaccessible data dir is named as a permission problem', () => {
   const skip = process.getuid?.() === 0; // root ignores the mode bits this relies on
@@ -178,6 +194,433 @@ describe('an inaccessible data dir is named as a permission problem', () => {
       restore();
     }
   });
+  // status had no access check at all and said "⚠ Database: not found" over the same store.
+  it.skipIf(skip)('status names the locked data dir instead of a missing database', () => {
+    const { s, data, restore } = locked();
+    try {
+      const r = run(s, ['status']);
+      expect(r.stdout).toMatch(new RegExp(`✗ Database: ${data} is not accessible \\(EACCES\\)`));
+      expect(r.stdout).not.toMatch(/Database: not found/);
+      const j = JSON.parse(run(s, ['status', '--json']).stdout);
+      expect(j.database).toMatchObject({ level: 'fail', exists: null, error: 'EACCES' });
+    } finally {
+      restore();
+    }
+  });
+  // D#199: the lines below the ✗ still read the locked dir as an empty one - a ✓ "no
+  // database yet" and a 0.0MB footprint over a store that exists. They now say they did not look.
+  it.skipIf(skip)('doctor does not grade the locked store as absent or empty', () => {
+    const { s, restore } = locked();
+    try {
+      const r = run(s, ['doctor']);
+      expect(r.stdout).not.toMatch(/DB schema: no database yet/);
+      expect(r.stdout).not.toMatch(/Database: not found/);
+      expect(r.stdout).not.toMatch(/✓ Disk footprint/);
+      for (const what of ['DB schema', 'Database', 'Disk footprint']) {
+        expect(r.stdout).toMatch(new RegExp(`⚠ ${what}: not checked - .* is not accessible`));
+      }
+    } finally {
+      restore();
+    }
+  });
+  // Default shape: the code and the data share ~/.qwen-mem-lite, so the entry-point check
+  // read the locked dir as an install with no server.mjs and added two issues to the one above.
+  it.skipIf(skip)('doctor does not call the entry points missing when the shared dir is locked', () => {
+    const s = sandbox();
+    const dir = join(s.home, '.qwen-mem-lite');
+    mkdirSync(join(dir, 'runtime'), { recursive: true });
+    writeFileSync(join(dir, 'server.mjs'), '');
+    writeFileSync(join(dir, 'hook.mjs'), '');
+    chmodSync(dir, 0o000);
+    try {
+      const env = { ...process.env, HOME: s.home, TMPDIR: s.root, PATH: `${s.bin}:${process.env.PATH}` };
+      env.QWEN_MEM_SKIP_UPDATE = '1';
+      env.MEM_NO_AUTO_ADOPT = '1';
+      for (const k of ['QWEN_MEM_DIR', 'CLAUDE_CONFIG_DIR', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY'])
+        delete env[k];
+      const r = spawnSync(process.execPath, [join(REPO, 'install.mjs'), 'doctor'], {
+        cwd: s.root,
+        encoding: 'utf8',
+        timeout: 60_000,
+        env,
+      });
+      expect(r.stdout).toMatch(/✗ Data directory: .*not accessible/);
+      expect(r.stdout).not.toMatch(/server\.mjs: missing/);
+      expect(r.stdout).not.toMatch(/hook\.mjs: missing/);
+      expect(r.stdout).toMatch(/⚠ Entry points: not checked - .* is not accessible/);
+      // The two drift checks read the same dir as a never-deployed install.
+      expect(r.stdout).not.toMatch(/no qwen-mem-lite code is deployed/);
+      expect(r.stdout).not.toMatch(/Hook scripts: .* is absent/);
+      for (const what of ['Managed files', 'Hook scripts']) {
+        expect(r.stdout).toMatch(new RegExp(`⚠ ${what}: not checked - .* is not accessible`));
+      }
+    } finally {
+      chmodSync(dir, 0o755);
+    }
+  });
+  // Under QWEN_MEM_DIR the data dir is fine and only the code dir is locked: nothing above
+  // reports it, so the entry-point line is the ✗ and carries the fix.
+  it.skipIf(skip)('a locked code dir under relocation is one ✗ with its fix, not two missing files', () => {
+    const s = sandbox();
+    mkdirSync(join(s.root, 'data'), { recursive: true });
+    const dir = join(s.home, '.qwen-mem-lite');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'server.mjs'), '');
+    chmodSync(dir, 0o000);
+    try {
+      const r = run(s, ['doctor']);
+      expect(r.stdout).not.toMatch(/Data directory: .*not accessible/);
+      expect(r.stdout).not.toMatch(/server\.mjs: missing/);
+      expect(r.stdout).toMatch(
+        new RegExp(`✗ Entry points: ${dir} is not accessible \\(EACCES\\) - Fix: chmod u\\+rwx`),
+      );
+    } finally {
+      chmodSync(dir, 0o755);
+    }
+  });
+
+  // Pre-tag review of D#199. Every case above sets QWEN_MEM_SKIP_UPDATE, which answers Update
+  // state before it looks; with checks on (the default) it and Hook self-heal still graded the
+  // locked dir ("no state file (first run?)" over a state file that exists).
+  const doctorEnv = (s, extra = {}) => {
+    const env = { ...process.env, HOME: s.home, TMPDIR: s.root, PATH: `${s.bin}:${process.env.PATH}` };
+    env.MEM_NO_AUTO_ADOPT = '1';
+    for (const k of [
+      'QWEN_MEM_DIR',
+      'CLAUDE_CONFIG_DIR',
+      'QWEN_MEM_RUNTIME_DIR',
+      'QWEN_MEM_SKIP_UPDATE',
+      'OPENROUTER_API_KEY',
+      'ANTHROPIC_API_KEY',
+    ])
+      delete env[k];
+    return { ...env, ...extra };
+  };
+  const doctor = (s, env) =>
+    spawnSync(process.execPath, [join(REPO, 'install.mjs'), 'doctor'], {
+      cwd: s.root,
+      encoding: 'utf8',
+      timeout: 60_000,
+      env,
+    });
+
+  it.skipIf(skip)(
+    'with update checks on, Update state and Hook self-heal do not grade the locked dir',
+    () => {
+      const s = sandbox();
+      const dir = join(s.home, '.qwen-mem-lite');
+      mkdirSync(join(dir, 'runtime'), { recursive: true });
+      writeFileSync(join(dir, 'runtime', 'update-state.json'), '{}');
+      chmodSync(dir, 0o000);
+      try {
+        const r = doctor(s, doctorEnv(s));
+        expect(r.stdout).not.toMatch(/no state file \(first run\?\)/);
+        expect(r.stdout).not.toMatch(/✓ Hook self-heal/);
+        for (const what of ['Update state', 'Hook self-heal']) {
+          expect(r.stdout).toMatch(new RegExp(`⚠ ${what}: not checked - .* is not accessible`));
+        }
+      } finally {
+        chmodSync(dir, 0o755);
+      }
+    },
+  );
+
+  // A dir a `sudo` run created as root is usually 755: readable, not writable. Its checks read
+  // it correctly, so they run; only the ✗ says what is wrong (review P3-5).
+  it.skipIf(skip)('a readable but unwritable data dir is a ✗, and the checks that read it still run', () => {
+    const { s, data, restore } = locked();
+    chmodSync(data, 0o500);
+    try {
+      const r = run(s, ['doctor']);
+      expect(r.stdout).toMatch(
+        new RegExp(
+          `✗ Data directory: ${data} is not accessible \\(EACCES\\) - it can be read but not written`,
+        ),
+      );
+      expect(r.stdout).not.toMatch(/not checked - .* is not accessible/);
+      expect(r.stdout).toMatch(/DB schema: /);
+    } finally {
+      restore();
+    }
+  });
+
+  // One directory spelled two ways (a trailing slash on QWEN_MEM_DIR) is still one directory:
+  // one ✗, not a second one for the "separate" code dir (review P3-6).
+  it.skipIf(skip)('QWEN_MEM_DIR naming the code dir with a trailing slash counts the lock once', () => {
+    const s = sandbox();
+    const dir = join(s.home, '.qwen-mem-lite');
+    mkdirSync(join(dir, 'runtime'), { recursive: true });
+    chmodSync(dir, 0o000);
+    try {
+      const r = doctor(s, doctorEnv(s, { QWEN_MEM_DIR: `${dir}/`, QWEN_MEM_SKIP_UPDATE: '1' }));
+      expect(r.stdout).not.toMatch(/✗ Entry points/);
+      expect(r.stdout).toMatch(/⚠ Entry points: not checked/);
+      // The sandbox's settings.json carries a fixture hook, so count the lock's own ✗ lines.
+      expect(r.stdout.match(/✗ .* is not accessible/g)).toHaveLength(1);
+    } finally {
+      chmodSync(dir, 0o755);
+    }
+  });
+
+  // D#284. status asked for read, write AND search access, so the 755 a `sudo` run leaves owned
+  // by root printed "not accessible" and dropped the counts it could read (6.24.0 printed them).
+  // The store is WAL (schema.mjs), as every real one is: a read-only open needs <db>-shm, which
+  // SQLite creates in the directory unless a live connection already holds it.
+  function walStore(s) {
+    const data = join(s.root, 'data');
+    mkdirSync(data, { recursive: true });
+    const db = new Database(join(data, 'qwen-mem-lite.db'));
+    db.pragma('journal_mode = WAL');
+    db.exec(
+      'CREATE TABLE observations (id INTEGER); CREATE TABLE session_summaries (memory_session_id TEXT);',
+    );
+    db.exec("INSERT INTO observations VALUES (1), (2); INSERT INTO session_summaries VALUES ('s1');");
+    return { data, db };
+  }
+  it.skipIf(skip)('status reads the counts of a readable but unwritable data dir, under its ✗', () => {
+    const s = sandbox();
+    const { data, db } = walStore(s); // held open: -wal and -shm exist
+    expect(run(s, ['status']).stdout).toMatch(/✓ Database: 2 observations, 1 sessions/); // premise
+    chmodSync(data, 0o500);
+    try {
+      const r = run(s, ['status']);
+      expect(r.stdout).toMatch(
+        new RegExp(
+          `✗ Database: 2 observations, 1 sessions - ${data} can be read but not written \\(EACCES\\)`,
+        ),
+      );
+      expect(r.stdout).toContain(`chmod u+rwx ${data}`);
+      const j = JSON.parse(run(s, ['status', '--json']).stdout);
+      expect(j.database).toMatchObject({ level: 'fail', exists: true, observations: 2, error: 'EACCES' });
+    } finally {
+      chmodSync(data, 0o755);
+      db.close();
+    }
+  });
+  // Closed, as a `sudo` run leaves it: SQLite cannot read it there at all (D#284 review P2-1). The
+  // line says why instead of passing on SQLite's "attempt to write a readonly database", and the
+  // JSON keeps the errno a consumer keys on.
+  // The errno replaces SQLite's message only where the directory is the cause: a corrupt store in the
+  // same dir is still reported as corrupt to a JSON consumer (D#284 review round 2, F7).
+  it.skipIf(skip)('status --json names a corrupt store in an unwritable dir by its own error', () => {
+    const s = sandbox();
+    const data = join(s.root, 'data');
+    mkdirSync(data, { recursive: true });
+    writeFileSync(join(data, 'qwen-mem-lite.db'), 'this is not an sqlite database, just text '.repeat(200));
+    chmodSync(data, 0o500);
+    try {
+      const j = JSON.parse(run(s, ['status', '--json']).stdout);
+      expect(j.database).toMatchObject({ level: 'fail', exists: true });
+      expect(j.database.error).toMatch(/not a database/);
+    } finally {
+      chmodSync(data, 0o755);
+    }
+  });
+  it.skipIf(skip)('status says why a closed WAL store in an unwritable dir has no counts', () => {
+    const s = sandbox();
+    const { data, db } = walStore(s);
+    db.close(); // checkpoints and removes -wal / -shm
+    expect(existsSync(join(data, 'qwen-mem-lite.db-shm'))).toBe(false); // premise
+    chmodSync(data, 0o500);
+    try {
+      const r = run(s, ['status']);
+      expect(r.stdout).toMatch(
+        new RegExp(
+          `✗ Database: exists, but SQLite cannot open a WAL database without creating its -wal/-shm files beside it - ${data} can be read but not written \\(EACCES\\)`,
+        ),
+      );
+      expect(r.stdout).not.toMatch(/attempt to write a readonly database/);
+      const j = JSON.parse(run(s, ['status', '--json']).stdout);
+      expect(j.database).toMatchObject({ level: 'fail', exists: true, error: 'EACCES' });
+    } finally {
+      chmodSync(data, 0o755);
+    }
+  });
+
+  // D#287. doctor over the same closed store relayed SQLite's "attempt to write a readonly
+  // database" on three lines, and its ✗ Database counted a second issue for the fault the
+  // ✗ Data directory line already names and counts (the D#199 shape). The lines now say they did
+  // not look, and why, in status's words.
+  it.skipIf(skip)('doctor says why it could not check a closed WAL store in an unwritable dir', () => {
+    const s = sandbox();
+    const { data, db } = walStore(s);
+    db.exec('CREATE TABLE schema_version (version INTEGER); INSERT INTO schema_version VALUES (1);');
+    db.close();
+    chmodSync(data, 0o500);
+    try {
+      const r = run(s, ['doctor']);
+      expect(r.stdout).toMatch(/✗ Data directory: .*it can be read but not written/); // premise
+      expect(r.stdout).not.toMatch(/attempt to write a readonly database/);
+      expect(r.stdout).not.toMatch(/✗ Database/);
+      for (const what of ['DB schema', 'Database', 'DB stats']) {
+        expect(r.stdout).toMatch(
+          new RegExp(
+            `⚠ ${what}: not checked.* - SQLite cannot open a WAL database without creating its -wal/-shm files beside it`,
+          ),
+        );
+      }
+    } finally {
+      chmodSync(data, 0o755);
+    }
+  });
+
+  // D#296. The deeper doctor modes plain doctor points to, and every other command that opens the
+  // DB through mem-cli, exited 1 relaying "attempt to write a readonly database" for that store.
+  it.skipIf(skip)(
+    'doctor --metrics, --session-audit and search say why a closed WAL store will not open',
+    () => {
+      const s = sandbox();
+      const { data, db } = walStore(s);
+      db.close();
+      chmodSync(data, 0o500);
+      try {
+        for (const args of [
+          ['doctor', '--metrics'],
+          ['doctor', '--session-audit'],
+          ['search', 'x'],
+        ]) {
+          const r = spawnSync(process.execPath, [join(REPO, 'cli.mjs'), ...args], {
+            cwd: s.root,
+            encoding: 'utf8',
+            timeout: 60_000,
+            env: runEnv(s),
+          });
+          const out = r.stdout + r.stderr;
+          expect(r.status, `${args.join(' ')}: ${out}`).toBe(1);
+          expect(out).not.toMatch(/attempt to write a readonly database/);
+          expect(out).toMatch(
+            new RegExp(
+              `SQLite cannot open a WAL database without creating its -wal/-shm files beside it, and ${data} cannot be written \\(EACCES\\)`,
+            ),
+          );
+          expect(out).toMatch(new RegExp(`Fix: chmod u\\+rwx ${data}`));
+        }
+      } finally {
+        chmodSync(data, 0o755);
+      }
+    },
+  );
+
+  // D#295. On a read-only mount SQLite answers SQLITE_CANTOPEN "unable to open database file" for
+  // the same closed store, not SQLITE_READONLY_DIRECTORY, so every face relayed that message and
+  // doctor counted ✗ Database beside ✗ Data directory. The mount is simulated by
+  // tests/fixtures/erofs-sim-preload.mjs at the two boundaries a kernel read-only mount was measured
+  // to change; this test's premise run reproduced that mount's doctor output line for line.
+  it.skipIf(skip)('a closed WAL store on a read-only mount is named on every face, and counted once', () => {
+    const s = sandbox();
+    const { data, db } = walStore(s);
+    db.exec('CREATE TABLE schema_version (version INTEGER); INSERT INTO schema_version VALUES (1);');
+    db.close();
+    chmodSync(data, 0o500);
+    const env = {
+      ...runEnv(s),
+      NODE_OPTIONS: `--import=${pathToFileURL(join(REPO, 'tests', 'fixtures', 'erofs-sim-preload.mjs')).href}`,
+      CML_EROFS_SIM_DIR: data,
+      CML_EROFS_SIM_REQUIRE_FROM: join(REPO, 'package.json'),
+    };
+    const go = (file, args) =>
+      spawnSync(process.execPath, [join(REPO, file), ...args], {
+        cwd: s.root,
+        encoding: 'utf8',
+        timeout: 60_000,
+        env,
+      });
+    try {
+      const d = go('install.mjs', ['doctor']).stdout;
+      expect(d).toMatch(/✗ Data directory: .* \(EROFS\) .*remount it read-write/); // premise: the mount is read-only
+      expect(d).not.toMatch(/unable to open database file/);
+      expect(d).not.toMatch(/✗ Database/);
+      for (const what of ['DB schema', 'Database', 'DB stats'])
+        expect(d).toMatch(
+          new RegExp(`⚠ ${what}: not checked.* - SQLite cannot open a WAL database without creating`),
+        );
+
+      const st = go('install.mjs', ['status']).stdout;
+      expect(st).toMatch(
+        /✗ Database: exists, but SQLite cannot open a WAL database without creating its -wal\/-shm files beside it - .* \(EROFS\)/,
+      );
+      expect(st).not.toMatch(/unable to open database file/);
+
+      const m = go('cli.mjs', ['doctor', '--metrics']);
+      const out = m.stdout + m.stderr;
+      expect(m.status, out).toBe(1);
+      expect(out).toMatch(/cannot be written \(EROFS\)/);
+      expect(out).toMatch(/Fix: the file system holding .* is mounted read-only - remount it read-write/);
+      expect(out).not.toMatch(/unable to open database file/);
+    } finally {
+      chmodSync(data, 0o755);
+    }
+  });
+
+  // D#284. The breakage marker sits in the locked dir, so it read as absent and the line said ✓.
+  it.skipIf(skip)('doctor does not put a ✓ on a native-binding marker it could not read', () => {
+    const s = sandbox();
+    const dir = join(s.home, '.qwen-mem-lite');
+    mkdirSync(join(dir, 'runtime'), { recursive: true });
+    writeFileSync(
+      join(dir, 'runtime', 'native-binding-broken'),
+      JSON.stringify({ reason: 'abi', ts: Date.now() }),
+    );
+    const env = doctorEnv(s, { QWEN_MEM_SKIP_UPDATE: '1' });
+    expect(doctor(s, env).stdout).toMatch(/⚠ Native DB binding: healthy now, but a fire failed/); // premise
+    chmodSync(dir, 0o000);
+    try {
+      const r = doctor(s, env);
+      expect(r.stdout).not.toMatch(/✓ Native DB binding/);
+      expect(r.stdout).toMatch(/⚠ Native DB binding: .*not checked - .* is not accessible/);
+    } finally {
+      chmodSync(dir, 0o755);
+    }
+  });
+
+  // Guards for two branches nothing exercised (D#284). A runtime dir moved OUT of the locked data
+  // dir by QWEN_MEM_RUNTIME_DIR is readable, so the checks that read it still run.
+  it.skipIf(skip)('a runtime dir outside the locked data dir is still read', () => {
+    const { s, restore } = locked();
+    const runtime = join(s.root, 'elsewhere');
+    mkdirSync(runtime, { recursive: true });
+    writeFileSync(join(runtime, 'hook-launcher-broken'), JSON.stringify({ reason: 'gone', ts: Date.now() }));
+    writeFileSync(join(runtime, 'native-binding-broken'), JSON.stringify({ reason: 'abi', ts: Date.now() }));
+    try {
+      const r = spawnSync(process.execPath, [join(REPO, 'install.mjs'), 'doctor'], {
+        cwd: s.root,
+        encoding: 'utf8',
+        timeout: 60_000,
+        env: {
+          ...doctorEnv(s, { QWEN_MEM_SKIP_UPDATE: '1' }),
+          QWEN_MEM_DIR: join(s.root, 'data'),
+          QWEN_MEM_RUNTIME_DIR: runtime,
+        },
+      });
+      expect(r.stdout).toMatch(/✗ Data directory: .*not accessible/); // premise: the data dir is locked
+      expect(r.stdout).toMatch(/⚠ Hook self-heal: a recent hook fire degraded to exit-0 \(last: gone/);
+      expect(r.stdout).toMatch(/⚠ Native DB binding: healthy now, but a fire failed/);
+    } finally {
+      restore();
+    }
+  });
+
+  // One directory reached through a symlinked HOME and through its real path is still one
+  // directory: one ✗, not a second one for the "separate" code dir (D#284; review P3-6 pinned only
+  // the trailing slash, which resolve() alone also fixes).
+  it.skipIf(skip)('a symlinked HOME and the real path count one locked dir once', () => {
+    const s = sandbox();
+    const linkHome = join(s.root, 'home-link');
+    symlinkSync(s.home, linkHome);
+    const dir = join(s.home, '.qwen-mem-lite');
+    mkdirSync(join(dir, 'runtime'), { recursive: true });
+    chmodSync(dir, 0o000);
+    try {
+      const env = { ...doctorEnv(s, { QWEN_MEM_DIR: dir, QWEN_MEM_SKIP_UPDATE: '1' }), HOME: linkHome };
+      const r = doctor(s, env);
+      expect(r.stdout).toMatch(/✗ Data directory: .*not accessible/);
+      expect(r.stdout).not.toMatch(/✗ Entry points/);
+      expect(r.stdout).toMatch(/⚠ Entry points: not checked/);
+      expect(r.stdout.match(/✗ .* is not accessible/g)).toHaveLength(1);
+    } finally {
+      chmodSync(dir, 0o755);
+    }
+  });
 });
 
 // A failed `repair` left its staging dir behind: the catch ended in process.exit(1), which
@@ -201,6 +644,14 @@ describe('a failed repair cleans up its staging dir', () => {
         QWEN_MEM_DIR: join(s.root, 'data'),
         QWEN_MEM_SKIP_UPDATE: '1',
         MEM_NO_AUTO_ADOPT: '1',
+        // Load-bearing: with any of these set, the release lookup takes the CONNECT tunnel,
+        // which never calls globalThis.fetch. On a proxy-bound machine this test then passed
+        // only because the tunnel sent `Host: api.github.com:80` and GitHub answered 400;
+        // once that was fixed, the "offline" repair ran a real one for 17 s.
+        HTTPS_PROXY: '',
+        https_proxy: '',
+        HTTP_PROXY: '',
+        http_proxy: '',
       },
     });
     expect(r.status).toBe(1);
@@ -209,7 +660,7 @@ describe('a failed repair cleans up its staging dir', () => {
   });
 });
 
-// uninstall printed "run `qwen-mem-lite unadopt --all` — best done BEFORE uninstall, while
+// uninstall printed "run `qwen-mem-lite unadopt --all` - best done BEFORE uninstall, while
 // the CLI is still on PATH" right after it had removed that CLI link: advice the reader could
 // no longer follow. It now names a command that still runs.
 describe('uninstall names an unadopt command that still works afterwards', () => {
@@ -219,5 +670,23 @@ describe('uninstall names an unadopt command that still works afterwards', () =>
     expect(r.status).toBe(0);
     expect(r.stdout).not.toMatch(/while the CLI is still on PATH/);
     expect(r.stdout).toMatch(/npx qwen-mem-lite unadopt --all|cli\.mjs"? unadopt --all/);
+  });
+});
+
+// D#287. accessSync(W_OK) on a read-only mount fails with EROFS, and every face printed
+// "Fix: chmod u+rwx <dir>", which cannot help there. The remedy is chosen by the error code; no
+// call site may leave the code out (EROFS itself needs a read-only mount, which this suite cannot make).
+describe('the data dir remedy follows the error', () => {
+  it('a read-only file system is not a chmod problem', async () => {
+    const { dataDirAccessRemedy } = await import('../install.mjs');
+    expect(dataDirAccessRemedy('EROFS')).toMatch(/is mounted read-only - remount it read-write$/);
+    expect(dataDirAccessRemedy('EROFS')).not.toMatch(/chmod/);
+    expect(dataDirAccessRemedy('EACCES')).toMatch(/^chmod u\+rwx /);
+  });
+  it('every call site passes the code it is reporting', () => {
+    const src = readFileSync(join(REPO, 'install.mjs'), 'utf8');
+    const calls = src.match(/dataDirAccessRemedy\([^)]*\)/g) || [];
+    expect(calls.length, 'premise: the call sites are found').toBeGreaterThanOrEqual(4);
+    expect(calls.filter((c) => c === 'dataDirAccessRemedy()')).toEqual([]);
   });
 });

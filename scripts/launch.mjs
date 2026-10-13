@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// launch.mjs — Auto-installs dependencies then starts MCP server
+// launch.mjs - Auto-installs dependencies then starts MCP server
 // Uses only Node built-ins so it works before npm install
 import { execSync } from 'node:child_process';
 import { existsSync, lstatSync } from 'node:fs';
@@ -14,7 +14,7 @@ if (!existsSync(join(ROOT, 'node_modules', 'better-sqlite3'))) {
   // Platform gate BEFORE npm, not after it. package.json's `os` field is an npm install
   // gate: npm exits EBADPLATFORM without resolving anything, so the catch below sees only
   // "Command failed" and answers with a fixed cause list that cannot contain this cause.
-  // That is issue #28 — a Windows user got CONNECTION_CLOSED in /mcp plus a wrong reason,
+  // That is issue #28 - a Windows user got CONNECTION_CLOSED in /mcp plus a wrong reason,
   // where the field was added (b6a2579, R10 P3-19) precisely so they would be TOLD.
   // Letting npm fail and then guessing is the shape that failed; asking the manifest first
   // is the shape that names both sides of the mismatch. Guarded import: lib/ can be absent
@@ -28,7 +28,7 @@ if (!existsSync(join(ROOT, 'node_modules', 'better-sqlite3'))) {
         `[qwen-mem-lite] npm install is blocked by this package's own platform list (npm EBADPLATFORM).\n`,
       );
       process.stderr.write(
-        `[qwen-mem-lite]   package.json declares os: ${gate.declared.join(', ')} — this machine is ${gate.platform}\n`,
+        `[qwen-mem-lite]   package.json declares os: ${gate.declared.join(', ')} - this machine is ${gate.platform}\n`,
       );
       process.stderr.write(
         `[qwen-mem-lite] Nothing was installed, so the MCP server cannot start. See "Platform Support" in the README.\n`,
@@ -59,7 +59,7 @@ if (!existsSync(join(ROOT, 'node_modules', 'better-sqlite3'))) {
     // v3.70.2, and the difference is the `stdio` above: stderr is **inherit**, so
     // npm's own diagnosis (`npm error code EROFS`, `path …`, `rofs EROFS: read-only
     // file system …`) has already streamed straight to the user's terminal by the time
-    // we get here — verified by running this file against an unwritable ROOT. With
+    // we get here - verified by running this file against an unwritable ROOT. With
     // stderr inherited, execSync's `e.message` holds only "Command failed: <cmd>";
     // there is no captured diagnosis to lose. Do NOT "fix" this by piping stderr to
     // recover it: piping is what made a compiling better-sqlite3 look hung under the
@@ -67,14 +67,14 @@ if (!existsSync(join(ROOT, 'node_modules', 'better-sqlite3'))) {
     //
     // A pre-tag review measured `e.message` under `stdio: 'pipe'`, where stderr IS
     // folded into the message, and concluded this line drops the diagnosis. It does
-    // not — the stdio differs. Recorded here because the same wrong conclusion is
+    // not - the stdio differs. Recorded here because the same wrong conclusion is
     // easy to reach from the code alone.
     //
     // `e.status` not `e.code`: execSync failures carry the exit status on `status`,
     // so the old `|| e.code` rung was dead.
     // `?? null` not `!= null`: the loose form is the idiom, but this file is
     // linted under `eqeqeq: always`, and rewriting it as `!== undefined` would
-    // be a BEHAVIOUR change — execSync reports a signal kill with `status: null`,
+    // be a BEHAVIOUR change - execSync reports a signal kill with `status: null`,
     // which `!== undefined` accepts and would render as "npm exited null".
     // Coalescing first keeps the original both-nullish semantics exactly, `0`
     // included.
@@ -84,14 +84,14 @@ if (!existsSync(join(ROOT, 'node_modules', 'better-sqlite3'))) {
       (status !== null ? `npm exited ${status}` : '') ||
       (e?.signal ? `npm killed by ${e.signal}` : '') ||
       'unknown error';
-    process.stderr.write(`[qwen-mem-lite] npm install failed in ${ROOT} — ${detail}\n`);
+    process.stderr.write(`[qwen-mem-lite] npm install failed in ${ROOT} - ${detail}\n`);
     // "Likely cause: …" until issue #28: it asserted three causes, and the one that was
     // actually firing (EBADPLATFORM, gated above) was not among them. stderr is inherited,
-    // so npm's own `npm error code <CODE>` line is already on this stream a few lines up —
+    // so npm's own `npm error code <CODE>` line is already on this stream a few lines up -
     // point at that instead of competing with it. A guess presented as a diagnosis costs
     // more than no diagnosis: it sends the reader looking at their disk and their network.
     process.stderr.write(
-      `[qwen-mem-lite] npm printed its own error above — read its "npm error code" line first. Common causes: read-only directory, disk full, network blocked.\n`,
+      `[qwen-mem-lite] npm printed its own error above - read its "npm error code" line first. Common causes: read-only directory, disk full, network blocked.\n`,
     );
     process.stderr.write(`[qwen-mem-lite] Repair: cd "${ROOT}" && npm install --omit=dev\n`);
     process.exit(1);
@@ -106,18 +106,26 @@ if (!existsSync(join(ROOT, 'node_modules', 'better-sqlite3'))) {
 try {
   const { ensureBetterSqlite3Working, probeBindingInFreshProcess, nativeBindingRepairHint } =
     await import('../lib/binding-probe.mjs');
-  // The rebuild inside ensureBetterSqlite3Working mutates node_modules — the
+  // The rebuild inside ensureBetterSqlite3Working mutates node_modules - the
   // same write class as install/repair/update, and this was the ONE rebuild
   // path outside the shared install.lock: a second MCP launch or a concurrent
   // `install.mjs repair` (hook-launcher heal) could clobber the .node
   // mid-compile. Take the lock for the rebuild-capable path; a live peer →
   // wait up to 10s, then degrade to a probe-only pass (healthy binding
   // proceeds; a broken one defers to the peer instead of racing it).
-  const { acquireLock } = await import('../lib/proc-lock.mjs');
+  const { takeLock } = await import('../lib/proc-lock.mjs');
   const { resolveDataDir } = await import('../lib/resolve-data-dir.mjs');
-  const lockPath = join(resolveDataDir(process.env.QWEN_MEM_DIR), 'runtime', 'install.lock'); // runtime-dir:stays-put — install lock serialises real installers
+  const lockPath = join(resolveDataDir(process.env.QWEN_MEM_DIR), 'runtime', 'install.lock'); // runtime-dir:stays-put - install lock serialises real installers
+  // A lock that cannot be created at all (a runtime dir a sudo run left root-owned, a link to
+  // nowhere, a full disk) is not a peer to wait for: nothing ever releases it, and waiting cost
+  // every MCP launch 10 s (D#307). takeLock says which it is.
   let release = null;
-  for (let i = 0; i < 20 && !(release = acquireLock(lockPath)); i++) {
+  let blocked = null;
+  for (let i = 0; i < 20; i++) {
+    const taken = takeLock(lockPath);
+    release = taken.release || null;
+    blocked = taken.error || null;
+    if (release || blocked) break;
     await new Promise((r) => setTimeout(r, 500));
   }
   let verify;
@@ -128,13 +136,15 @@ try {
       // Out of process, like the rebuild-capable branch above: this process goes
       // on to import the MCP server, and a stale .node loaded here would leave a
       // dead module handle cached for it. Also keeps the exit(1) guidance below
-      // reachable — an in-process load of a stale binding can SIGSEGV instead.
+      // reachable - an in-process load of a stale binding can SIGSEGV instead.
       const probe = probeBindingInFreshProcess(ROOT);
       verify = probe.ok
         ? { ok: true, action: 'verified' }
         : {
             ok: false,
-            error: `${probe.error} (another install/repair holds the lock — not rebuilding concurrently; reconnect with /mcp once it finishes)`,
+            error: blocked
+              ? `${probe.error} (install.lock cannot be taken - ${blocked.dir} cannot be written (${blocked.code}), so it was not rebuilt; \`doctor\` names the fix)`
+              : `${probe.error} (another install/repair holds the lock - not rebuilding concurrently; reconnect with /mcp once it finishes)`,
           };
     }
   } finally {
@@ -149,7 +159,7 @@ try {
     process.stderr.write('[qwen-mem-lite] Rebuilt better-sqlite3 binding for current Node ABI\n');
   }
 } catch (e) {
-  // Probe module itself failed to load — fall through to server import and let
+  // Probe module itself failed to load - fall through to server import and let
   // the native FATAL surface as before. Don't block launch on a probe regression.
   process.stderr.write(`[qwen-mem-lite] binding probe skipped: ${e.message}\n`);
 }
@@ -161,7 +171,7 @@ try {
   await import('@modelcontextprotocol/sdk/server/mcp.js');
 } catch (firstErr) {
   process.stderr.write(
-    `[qwen-mem-lite] MCP SDK broken (${firstErr.code || firstErr.message}) — reinstalling...\n`,
+    `[qwen-mem-lite] MCP SDK broken (${firstErr.code || firstErr.message}) - reinstalling...\n`,
   );
   try {
     execSync('npm install @modelcontextprotocol/sdk --force --omit=dev --no-audit --no-fund', {
@@ -178,7 +188,7 @@ try {
   }
 }
 
-// Keep the data-dir code (~/.qwen-mem-lite/ — backs the standalone CLI symlink
+// Keep the data-dir code (~/.qwen-mem-lite/ - backs the standalone CLI symlink
 // and the settings.json hooks) in lockstep with THIS running version. In plugin
 // mode the MCP server runs from the plugin cache (kept current by Claude Code's
 // marketplace updater) and migrates the shared DB schema forward; the data-dir
@@ -187,7 +197,7 @@ try {
 // fail to open the DB the cache migrated ("schema is vN but binary supports up
 // to vN-1"). syncDataDirFromCache copies the source files locally (no network,
 // no npm install) so the data-dir becomes exactly the version that owns the DB.
-// Best-effort — a sync failure must never block the MCP server launch. It runs
+// Best-effort - a sync failure must never block the MCP server launch. It runs
 // from the current cache code, so an already-drifted install self-heals on the
 // next launch once its cache reaches a version carrying this call.
 if (process.env.CLAUDE_PLUGIN_ROOT) {
@@ -212,12 +222,12 @@ try {
 // The MCP server opens the DB while it is being imported, so a forward-incompat store
 // (schema.mjs's "DB schema is vN but this binary supports up to vN-1") throws right here
 // and kills the process before the stdio handshake. All the host can say about that is
-// `-32000 Connection closed`, which names nothing — measured 2026-09-08, a full day of it
+// `-32000 Connection closed`, which names nothing - measured 2026-09-08, a full day of it
 // with the real cause visible only in a JSONL file the user has no reason to open.
 //
 // stderr is the one channel a launcher still has at that point. It reaches the plugin's own
 // log rather than the transcript, so this is a diagnosis for whoever goes looking, not a
-// substitute for the SessionStart notice — which is why both exist.
+// substitute for the SessionStart notice - which is why both exist.
 async function importServerOrExplain(run, { dev = false } = {}) {
   try {
     await run();
@@ -226,7 +236,7 @@ async function importServerOrExplain(run, { dev = false } = {}) {
     // error. Importing it unconditionally destroyed `e`: this path exists to diagnose an
     // install whose files are missing (issue #15), lib/schema-skew.mjs is a brand-new file,
     // and resolveLaunchEntry can serve the server from dataDir while `../lib/…` still
-    // resolves against ROOT. Proven by review — with the module moved aside the process died
+    // resolves against ROOT. Proven by review - with the module moved aside the process died
     // naming ERR_MODULE_NOT_FOUND for the classifier while the real boot failure never
     // appeared anywhere in the output.
     let skewMod;
@@ -249,7 +259,7 @@ async function importServerOrExplain(run, { dev = false } = {}) {
       skewMod.formatSchemaSkewNotice({
         dbVersion: skew.dbVersion,
         binaryVersion: skew.binaryVersion,
-        // `dev` is passed because the useDevServer branch IS the dev install by definition —
+        // `dev` is passed because the useDevServer branch IS the dev install by definition -
         // omitting it told a checkout to `npm i -g` over its own working tree. `root: ROOT`
         // so a mixed managed+plugin machine gets the remedy for the tree that is behind.
         remedy: skewMod.schemaSkewRemedy({
@@ -268,7 +278,7 @@ async function importServerOrExplain(run, { dev = false } = {}) {
 if (useDevServer) {
   await importServerOrExplain(() => import(pathToFileURL(devServer).href), { dev: true });
 } else {
-  // Preflight: detect incomplete primary install (issue #15) — if relative
+  // Preflight: detect incomplete primary install (issue #15) - if relative
   // imports referenced by server.mjs are missing on disk, fall back to the
   // hook-update.mjs-maintained ~/.qwen-mem-lite/ copy when healthy, or exit
   // with a clear repair command instead of a Node ERR_MODULE_NOT_FOUND stack.

@@ -1,30 +1,43 @@
 ---
 name: adopt
-description: "Use when: user asks to increase qwen-mem-lite's tool-invocation rate in the current project, or to (re)install the steering block. Writes a sentinel-wrapped managed block into <cwd>/CLAUDE.md plus a <cwd>/.claude/plugin_qwen_mem_lite.md detail doc, and migrates away any legacy memory-dir sentinel. Runs automatically on SessionStart; use this to force it now. Run /unadopt to remove."
+description: "Use when: user asks to put the qwen-mem-lite steering block into the current project's CLAUDE.md (for example to share it with the team), or to (re)install it there. Writes a sentinel-wrapped managed block into <cwd>/CLAUDE.md plus a <cwd>/.claude/plugin_qwen_mem_lite.md detail doc, removes the auto-written local copy (CLAUDE.local.md or .claude/rules/qwen-mem-lite.md), and migrates away any legacy memory-dir sentinel. Auto-adopt never adds the block to CLAUDE.md itself; it only keeps an existing one in sync. Run /unadopt to remove."
 ---
 
 # /adopt
 
 Install the qwen-mem-lite **steering block** into the current project's
-`CLAUDE.md` (the canonical home for project instructions — loaded by Claude Code
+`CLAUDE.md` (the canonical home for project instructions - loaded by Claude Code
 at system-prompt authority). This replaces the pre-v3.13 scheme that seeded the
 project's memory-dir `MEMORY.md`; that polluted an index meant for the user's own
 memories, and `MEMORY.md` carries no more weight than `CLAUDE.md` anyway.
 
-This normally runs automatically on every SessionStart — invoke `/adopt` only to
-force it immediately (e.g. after editing the block out by hand).
+This normally runs on demand. Auto-adopt keeps a local copy on every SessionStart: in a git
+repository the block goes to `CLAUDE.local.md` at the repository root, excluded from git
+through `.git/info/exclude`. Next to an `AGENTS.md` that file would switch off, and where it
+cannot be written (outside git, for example), it adds the text to each session's context
+instead; with `QWEN_MEM_RULES_STEERING=1` it keeps the block in `.claude/rules/qwen-mem-lite.md`
+next to an `AGENTS.md`, excluded the same way. Run `/adopt` when you want the block in
+`CLAUDE.md` - a file that is normally committed, so your team gets it too. It removes the local
+copy so the text does not load twice. A project that carries the block is kept in sync on every
+SessionStart, and a `CLAUDE.md` holding nothing but the block gets the `AGENTS.md` import
+described below.
 
 ## What it writes
 
-1. **`<cwd>/CLAUDE.md`** — a concise `<!-- qwen-mem-lite:begin v1 -->…<!-- :end -->`
+1. **`<cwd>/CLAUDE.md`** - a concise `<!-- qwen-mem-lite:begin v1 -->…<!-- :end -->`
    managed block (trigger table → `mem_recall` / `mem_save` / `mem_defer`).
-   Slug-scoped: only this block is managed; the rest of your `CLAUDE.md` is
-   preserved verbatim. Auto-refreshes when the shipped content drifts.
-2. **`<cwd>/.claude/plugin_qwen_mem_lite.md`** — the full contract (tool tables,
+   Slug-scoped: only this block, and the import below in a file adopt created, are
+   managed; the rest of your `CLAUDE.md` is preserved verbatim. Auto-refreshes when
+   the shipped content drifts. Claude Code stops reading `AGENTS.md` once a `CLAUDE.md`
+   exists, so a `CLAUDE.md` adopt creates next to an `AGENTS.md` (or `.claude/AGENTS.md`)
+   starts with a marker comment and `@AGENTS.md`, which keeps it loading. An `AGENTS.md`
+   above the directory or tracked below it cannot be imported; the output names it with
+   the setting that keeps it.
+2. **`<cwd>/.claude/plugin_qwen_mem_lite.md`** - the full contract (tool tables,
    CLI cheatsheet, citation/decay + save discipline). First line is a
    `<!-- managed-by: qwen-mem-lite -->` marker. Not auto-loaded; the CLAUDE.md
    block points to it and Claude reads it on demand.
-3. **`<cwd>/.claude/.plugin_qwen_mem_lite_state.json`** — drift-tracking sidecar.
+3. **`<cwd>/.claude/.plugin_qwen_mem_lite_state.json`** - drift-tracking sidecar.
 
 It also **migrates** this project's legacy memory-dir sentinel away (strips the
 `qwen-mem-lite:*` block from `MEMORY.md` and deletes the old memory-dir detail
@@ -32,20 +45,29 @@ doc). Other plugins' blocks (e.g. `code-graph-mcp:*`) and your own prose survive
 
 ## Flags
 
-- `--force` — also force-clean a legacy memory-dir block lacking a state sidecar
-- `--dry-run` — print intended writes without touching disk
-- `--all` — legacy-cleanup sweep: strip the old memory-dir sentinel across **every**
-  project at once. (It does NOT write CLAUDE.md blocks for other projects — their
+- `--force` - also force-clean a legacy memory-dir block lacking a state sidecar
+- `--dry-run` - print intended writes without touching disk
+- `--all` - legacy-cleanup sweep: strip the old memory-dir sentinel across **every**
+  project at once. (It does NOT write CLAUDE.md blocks for other projects - their
   real paths can't be recovered from the encoded memdir slug; those adopt
   per-project on each one's next SessionStart.)
-- `--status` — show this project's adoption + count of memdirs awaiting migration
-- `--disable` / `--enable` — per-project opt-out of automatic SessionStart adopt
+- `--status` - show this project's adoption + count of memdirs awaiting migration
+- `--disable` / `--enable` - per-project opt-out of automatic SessionStart adopt
+  (`--enable` also lets the plugin write a removed local block again; beside an `AGENTS.md`
+  that `CLAUDE.local.md` would switch off, only with `QWEN_MEM_RULES_STEERING=1`)
 
 ## Removal & opt-out
 
-- `/unadopt` removes the CLAUDE.md block + `.claude/` detail doc (your prose stays).
-- `qwen-mem-lite adopt --disable` permanently stops auto-adopt for this project.
-- `MEM_NO_AUTO_ADOPT=1` disables auto-adopt globally.
+- `/unadopt` removes the CLAUDE.md block + `.claude/` detail doc (your prose stays),
+  and the local block. The next session writes a local file if the plugin never
+  created one in this repository; one it created before is not written back (the
+  text is injected instead) until `qwen-mem-lite adopt --enable`. Beside an
+  `AGENTS.md` that `CLAUDE.local.md` would switch off, no file is written unless
+  `QWEN_MEM_RULES_STEERING=1`.
+- `qwen-mem-lite adopt --disable` permanently stops auto-adopt for this project
+  (also for sessions started in its subdirectories) and removes the local block; a
+  `CLAUDE.md` block stays until `/unadopt`.
+- `MEM_NO_AUTO_ADOPT=1` disables auto-adopt globally; blocks already written stay.
 - `QWEN_MEM_NO_TEMPLATE_REFRESH=1` freezes the block against drift-refresh
   (keeps your hand-edits to the managed block).
 

@@ -180,7 +180,8 @@ describe('R10 P1-7 — a stale lock is stolen by exactly one process', () => {
   it('still steals a lock whose ts has aged out, and one whose pid is dead', () => {
     const byAge = join(root, 'runtime', 'age.lock');
     mkdirSync(dirname(byAge), { recursive: true });
-    writeFileSync(byAge, JSON.stringify({ pid: process.pid, ts: Date.now() - 10 * 60 * 1000 }));
+    // A live pid is stolen only past LIVE_HOLDER_MAX_MS (D#294); 2 h is past it.
+    writeFileSync(byAge, JSON.stringify({ pid: process.pid, ts: Date.now() - 2 * 60 * 60 * 1000 }));
     expect(acquireLock(byAge), 'an aged-out lock must still be reclaimable').toBeTypeOf('function');
 
     const byPid = join(root, 'runtime', 'pid.lock');
@@ -326,14 +327,19 @@ describe('R10 P1-8 — a settings.json that is not valid JSON is never overwritt
 // source-compile window between swap-in and smoke-pass.
 
 describe('R10 P2-10 — cleanup does not delete an in-flight update rollback copy', () => {
+  // The residue goes in the CODE dir, $HOME/.qwen-mem-lite, where hook-update's swap writes it;
+  // QWEN_MEM_DIR moves the data dir and the lock, not the code dir (D#289). The backup dir here
+  // holds no swap journal, so it is the leftover of a swap that is over: cleanup removes it.
   function seedDataDir() {
     const data = join(root, 'data');
+    const code = join(root, 'home', '.qwen-mem-lite');
     mkdirSync(join(data, 'runtime'), { recursive: true });
-    mkdirSync(join(data, '.update-backup-1700000000000'), { recursive: true });
-    writeFileSync(join(data, '.update-backup-1700000000000', 'journal.json'), '{}');
-    mkdirSync(join(data, '.update-staging-1700000000000'), { recursive: true });
+    mkdirSync(join(code, '.update-backup-1700000000000'), { recursive: true });
+    writeFileSync(join(code, '.update-backup-1700000000000', 'journal.json'), '{}');
+    mkdirSync(join(code, '.update-staging-1700000000000'), { recursive: true });
     return data;
   }
+  const code = () => join(root, 'home', '.qwen-mem-lite');
 
   function runCleanup(data, extra = []) {
     return execFileSync(process.execPath, [INSTALL_PATH, 'cleanup', ...extra], {
@@ -357,16 +363,31 @@ describe('R10 P2-10 — cleanup does not delete an in-flight update rollback cop
     // A live holder: this very process.
     writeFileSync(lock, JSON.stringify({ pid: process.pid, ts: Date.now() }));
     const out = runCleanup(data);
-    expect(existsSync(join(data, '.update-backup-1700000000000')), out).toBe(true);
-    expect(existsSync(join(data, '.update-staging-1700000000000'))).toBe(true);
+    expect(existsSync(join(code(), '.update-backup-1700000000000')), out).toBe(true);
+    expect(existsSync(join(code(), '.update-staging-1700000000000'))).toBe(true);
     expect(out).toMatch(/install in progress|skipped/i);
+  });
+
+  // D#294 (v6.25.1 defect review P3-2): the holder is a live process whose lock is 6 minutes
+  // old, as an update is while its smoke gate rebuilds the binding from source. cleanup took
+  // the lock on age alone and replayed the running swap's journal.
+  it('skips update residue while a live installer has held install.lock for 6 minutes (D#294)', () => {
+    const data = seedDataDir();
+    const lock = join(data, 'runtime', 'install.lock');
+    const holder = JSON.stringify({ pid: process.pid, ts: Date.now() - 6 * 60 * 1000 });
+    writeFileSync(lock, holder);
+    const out = runCleanup(data);
+    expect(existsSync(join(code(), '.update-backup-1700000000000')), out).toBe(true);
+    expect(existsSync(join(code(), '.update-staging-1700000000000'))).toBe(true);
+    expect(out).toMatch(/install in progress/i);
+    expect(readFileSync(lock, 'utf8'), 'the live holder lost its lock').toBe(holder);
   });
 
   it('still removes update residue when no installer is running', () => {
     const data = seedDataDir();
     runCleanup(data);
-    expect(existsSync(join(data, '.update-backup-1700000000000'))).toBe(false);
-    expect(existsSync(join(data, '.update-staging-1700000000000'))).toBe(false);
+    expect(existsSync(join(code(), '.update-backup-1700000000000'))).toBe(false);
+    expect(existsSync(join(code(), '.update-staging-1700000000000'))).toBe(false);
   });
 
   it('releases the lock it takes, so a later installer is not blocked', () => {

@@ -18,25 +18,31 @@ const RUNNING = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).ver
 let home;
 
 function updateStateLine(latestVersion) {
+  return doctorUpdateLine({ lastCheck: '2026-09-27T12:56:14Z', latestVersion, updateAvailable: true });
+}
+
+// `state` null: no state file. QWEN_MEM_SKIP_UPDATE is unset unless `extraEnv` sets it, so a
+// developer shell that exports it cannot flip these cases.
+function doctorUpdateLine(state, extraEnv = {}) {
   const runtime = join(home, 'data', 'runtime');
   mkdirSync(runtime, { recursive: true });
-  writeFileSync(
-    join(runtime, 'update-state.json'),
-    JSON.stringify({ lastCheck: '2026-09-27T12:56:14Z', latestVersion, updateAvailable: true }),
-  );
+  if (state) writeFileSync(join(runtime, 'update-state.json'), JSON.stringify(state));
+  // No code home under this HOME, so the running version is CLAUDE_PLUGIN_ROOT's - the
+  // plugin-mode shape #35 is about.
+  const env = {
+    ...process.env,
+    HOME: home,
+    MEM_NO_AUTO_ADOPT: '1',
+    QWEN_MEM_DIR: join(home, 'data'),
+    CLAUDE_PLUGIN_ROOT: ROOT,
+  };
+  delete env.QWEN_MEM_SKIP_UPDATE;
+  Object.assign(env, extraEnv);
   let stdout;
   try {
     stdout = execFileSync(process.execPath, [INSTALL_PATH, 'doctor'], {
       encoding: 'utf8',
-      // No code home under this HOME, so the running version is CLAUDE_PLUGIN_ROOT's — the
-      // plugin-mode shape #35 is about.
-      env: {
-        ...process.env,
-        HOME: home,
-        MEM_NO_AUTO_ADOPT: '1',
-        QWEN_MEM_DIR: join(home, 'data'),
-        CLAUDE_PLUGIN_ROOT: ROOT,
-      },
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) {
@@ -63,5 +69,74 @@ describe('doctor judges a cached update against the running version (#35, D#115 
     const line = updateStateLine(RUNNING);
     expect(line, 'doctor printed no Update state line at all').toContain(`latest: v${RUNNING}`);
     expect(line).not.toContain('update pending');
+  });
+});
+
+// D#255: from 2026-08-19 to 2026-10-07 every update lookup through a proxy failed (GitHub
+// answered the tunnel's `Host: …:80` with 400), the background check is silent by design, and
+// this line read ✓ with a fresh "last check" the whole time.
+describe('doctor warns when the last update lookup failed (D#255)', () => {
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'doctor-update-lookup-'));
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('names the reason and the start of the failing run', () => {
+    const line = doctorUpdateLine({
+      lastCheck: '2026-10-07T09:00:00Z',
+      latestVersion: RUNNING,
+      lookupError: 'HTTP 400 via proxy http://proxy.test:3128',
+      lookupFailingSince: '2026-08-19T08:00:00Z',
+    });
+    expect(line, 'doctor printed no Update state line at all').toContain('⚠');
+    expect(line).toContain('HTTP 400 via proxy http://proxy.test:3128');
+    expect(line).toContain('2026-08-19T08:00:00Z');
+  });
+
+  it('control: the same state with no lookup error stays ✓', () => {
+    const line = doctorUpdateLine({ lastCheck: '2026-10-07T09:00:00Z', latestVersion: RUNNING });
+    expect(line, 'doctor printed no Update state line at all').toContain('✓');
+    expect(line).not.toContain('failed');
+  });
+});
+
+// D#266: with QWEN_MEM_SKIP_UPDATE set neither the background check nor self-update looks up
+// (only a repair does), so a failure recorded before it was set stayed a warning, and with no
+// state file doctor asked "first run?" about a check that does not run.
+describe('doctor with update checks turned off (D#266)', () => {
+  const failing = {
+    lastCheck: '2026-09-01T00:00:00Z',
+    latestVersion: RUNNING,
+    lookupError: 'HTTP 400',
+    lookupFailingSince: '2026-08-20T00:00:00Z',
+  };
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'doctor-update-off-'));
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('premise: the same recorded failure warns while checks are on', () => {
+    expect(doctorUpdateLine(failing)).toContain('⚠');
+  });
+
+  it('says the checks are off instead of warning about a failure no background check will clear', () => {
+    const line = doctorUpdateLine(failing, { QWEN_MEM_SKIP_UPDATE: '1' });
+    expect(line, 'doctor printed no Update state line at all').toContain('QWEN_MEM_SKIP_UPDATE');
+    expect(line).toContain('✓');
+    expect(line).not.toContain('failed');
+  });
+
+  it('with no state file, says the checks are off rather than "first run?"', () => {
+    const line = doctorUpdateLine(null, { QWEN_MEM_SKIP_UPDATE: '1' });
+    expect(line, 'doctor printed no Update state line at all').toContain('QWEN_MEM_SKIP_UPDATE');
+    expect(line).not.toContain('first run');
+  });
+
+  it('control: no state file with checks on still reads "first run?"', () => {
+    expect(doctorUpdateLine(null)).toContain('first run');
   });
 });

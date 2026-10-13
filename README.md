@@ -33,7 +33,7 @@ A ground-up redesign of [claude-mem](https://github.com/thedotmack/claude-mem), 
 
 ### Token & cost efficiency
 
-For a typical 50-tool-call session (illustrative cost model — the ratios below are
+For a typical 50-tool-call session (illustrative cost model - the ratios below are
 architecture estimates derived from batch size, token counts, and model pricing, **not**
 a measured end-to-end benchmark):
 
@@ -71,14 +71,14 @@ How qwen-mem-lite differs from the major neighbors in the LLM-memory space (veri
 | **Code-aware retrieval** | FTS5 + 100+ synonym pairs (incl. CJK↔EN)                 | General-purpose                                | Generic graph nodes                                                                            | Code-aware                                                        |
 | **Search**               | FTS5 BM25 + query expansion (PRF, concept co-occurrence) | Hybrid: semantic + BM25 + entity linking       | Knowledge-graph traversal                                                                      | FTS5 + Chroma vector                                              |
 | **Storage**              | Single local SQLite                                      | Pluggable; Qdrant or configurable vector store | Single JSONL file (knowledge graph)                                                            | SQLite + Chroma                                                   |
-| **LLM dependency**       | Haiku per episode (5–10 ops batched)                     | LLM per add/search op                          | None (graph CRUD only)                                                                         | Sonnet per tool call                                              |
+| **LLM dependency**       | Haiku per episode (5-10 ops batched)                     | LLM per add/search op                          | None (graph CRUD only)                                                                         | Sonnet per tool call                                              |
 | **Setup**                | One command (`/plugin install` or `npx`)                 | SDK integration + vector store config          | MCP install (per-client)                                                                       | Bun + Python + Chroma                                             |
 
 **When to pick which**: pick `mem0` if you need a memory layer for a non-Claude-Code app (your own agent, multiple LLM providers). Pick the MCP reference `memory` server if you specifically want a knowledge-graph data model and don't mind invoking memory tools by hand. Pick qwen-mem-lite if you want zero-touch automatic capture purpose-built for Qwen Code's and Claude Code's hook lifecycles, with code-domain retrieval and no external services.
 
 ## Features
 
-- **Automatic capture** -- Hooks into the host lifecycle (SessionStart, PreCompact, PreToolUse, PostToolUse, PostToolUseFailure, Stop, UserPromptSubmit — the seven events in `hooks/hooks.json`) to record observations without manual effort
+- **Automatic capture** -- Hooks into the host lifecycle (SessionStart, PreCompact, PreToolUse, PostToolUse, PostToolUseFailure, Stop, UserPromptSubmit - the seven events in `hooks/hooks.json`) to record observations without manual effort
 - **Lexical search with query expansion** -- FTS5 BM25 scoring, an AND->OR rescue pass, pseudo-relevance feedback and concept co-occurrence. A TF-IDF vector arm shipped alongside it until it was measured net-negative and removed; `--deep` still fuses multiple LLM-rewritten queries with Reciprocal Rank Fusion
 - **Timeline browsing** -- Navigate observations chronologically with anchor-based context windows
 - **Episode batching** -- Groups related file operations into coherent episodes before LLM encoding
@@ -108,7 +108,7 @@ How qwen-mem-lite differs from the major neighbors in the LLM-memory space (veri
 - **Robust locking** -- PID-aware lock files with automatic stale/orphan cleanup (>30s timeout or dead PID)
 - **Stale session cleanup** -- Sessions active for >24h are automatically marked as abandoned on next start
 - **Domain synonym expansion** -- Search queries expand to domain synonyms (e.g., "fix" → debug, bugfix, troubleshoot, diagnose, repair)
-- **Multi-provider LLM mode** -- Provider priority `ANTHROPIC_API_KEY` (direct Anthropic API) → `OPENROUTER_API_KEY` (OpenRouter) → `OPENAI_API_KEY` / `OPENAI_BASE_URL` (**any OpenAI-compatible endpoint** — vLLM, Ollama, LM Studio, LiteLLM, Azure OpenAI, DashScope, DeepSeek, Groq, OpenAI itself) → `claude -p` CLI fallback when no key is set. `QWEN_MEM_LLM_PROVIDER` pins the leg when several are configured at once
+- **Multi-provider LLM mode** -- Provider priority `ANTHROPIC_API_KEY` (direct Anthropic API) → `OPENROUTER_API_KEY` (OpenRouter) → `OPENAI_API_KEY` / `OPENAI_BASE_URL` (**any OpenAI-compatible endpoint** - vLLM, Ollama, LM Studio, LiteLLM, Azure OpenAI, DashScope, DeepSeek, Groq, OpenAI itself) → `claude -p` CLI fallback when no key is set. `QWEN_MEM_LLM_PROVIDER` pins the leg when several are configured at once
 - **Lesson-learned indexing** -- `lesson_learned` field indexed in FTS5 with weight 8, making past debugging insights directly searchable
 - **Cross-source normalization** -- `mem_search` normalizes scores across observations, sessions, and prompts before merging, preventing any source from dominating results
 - **Exponential recency decay** -- Type-differentiated half-lives (decisions: 90d, discoveries: 60d, bugfixes: 14d, changes: 7d) consistently applied in all ranking paths
@@ -123,17 +123,17 @@ How qwen-mem-lite differs from the major neighbors in the LLM-memory space (veri
 - **LLM concurrency control** -- File-based semaphore limits background workers to 2 concurrent LLM calls, preventing resource contention
 - **stdin overflow protection** -- Hook input truncated at 256KB with regex-based action salvage for oversized tool outputs
 - **Cross-session handoff** -- Captures session state on `/exit` and `/clear`, then injects context when the next session detects continuation intent
-  <br>**Changed in v6.10.0**: the injected block went from two sections to six. Its observation queries were keyed on the hook-minted session id while every `mem_save` writes a `manual-<project>` id, so `completed` and `key_decisions` could not reach a saved lesson at all — 17 of 17 stored rows held 0 bytes in both. The block now also carries `## Tree state` (branch, short sha, uncommitted count) and `## Next steps`, read from the project's newest `tasks/<slug>-paused.md` when it is under a week old. Four additive nullable columns land on `session_handoffs`; the schema version deliberately does not move, so an older build still opens the database (measured: the v6.9.1 tree read and wrote a database this release had migrated). Revert by pinning `claude-mem-lite@6.9.1` — no data-directory work.
-  <br>Original behaviour and the measurements behind it via explicit keywords or FTS5 term overlap. **The `/clear` and `/compact` arm fires since v5.4.0** (R10-P1-1); before that it had never once written a row — `session_handoffs` on the maintainer's install held 4 `exit` rows and **0** `clear` rows. Two host facts settled it, both measured rather than assumed. (1) `Stop` runs at the end of every assistant _turn_, not once per session, and it deleted the session file that SessionStart reads to learn which session just ended — so the branch was unreachable, and mem sessions were minted per turn (58 prompts over 16 host sessions produced 56 mem sessions and 56 summary rows, 2026-09-07). (2) Claude Code **rotates its session id across `/clear`**: of 21 real transcripts, 12 carry a `/clear` command record, and in 12/12 that record's timestamp precedes its own file's first record by ~0.1s — the command is issued in the old session and replayed into a new file under a new id. So `Stop` no longer deletes the file, SessionStart asks the host's `source` (`startup`/`clear`/`compact`/`resume`) instead of guessing from the file, and the handoff's prompt lookup falls back to the unscoped set when the new session's id matches none. Revert path: `QWEN_MEM_LEGACY_STOP_UNLINK=1`
+  <br>**Changed in v6.10.0**: the injected block went from two sections to six. Its observation queries were keyed on the hook-minted session id while every `mem_save` writes a `manual-<project>` id, so `completed` and `key_decisions` could not reach a saved lesson at all - 17 of 17 stored rows held 0 bytes in both. The block now also carries `## Tree state` (branch, short sha, uncommitted count) and `## Next steps`, read from the project's newest `tasks/<slug>-paused.md` when it is under a week old. Four additive nullable columns land on `session_handoffs`; the schema version deliberately does not move, so an older build still opens the database (measured: the v6.9.1 tree read and wrote a database this release had migrated). Revert by pinning `claude-mem-lite@6.9.1` - no data-directory work.
+  <br>Original behaviour and the measurements behind it via explicit keywords or FTS5 term overlap. **The `/clear` and `/compact` arm fires since v5.4.0** (R10-P1-1); before that it had never once written a row - `session_handoffs` on the maintainer's install held 4 `exit` rows and **0** `clear` rows. Two host facts settled it, both measured rather than assumed. (1) `Stop` runs at the end of every assistant _turn_, not once per session, and it deleted the session file that SessionStart reads to learn which session just ended - so the branch was unreachable, and mem sessions were minted per turn (58 prompts over 16 host sessions produced 56 mem sessions and 56 summary rows, 2026-09-07). (2) Claude Code **rotates its session id across `/clear`**: of 21 real transcripts, 12 carry a `/clear` command record, and in 12/12 that record's timestamp precedes its own file's first record by ~0.1s - the command is issued in the old session and replayed into a new file under a new id. So `Stop` no longer deletes the file, SessionStart asks the host's `source` (`startup`/`clear`/`compact`/`resume`) instead of guessing from the file, and the handoff's prompt lookup falls back to the unscoped set when the new session's id matches none. Revert path: `QWEN_MEM_LEGACY_STOP_UNLINK=1`
 - **Git-SHA continuation anchor** (v2.31.0) -- Handoff rows include `git_sha_at_handoff`; any handoff matching the current `HEAD` counts as continuation regardless of TTL. Code state is a stronger continuation signal than wall-clock time
 - **Startup dashboard** (v2.31.0) -- SessionStart hook aggregates `git status` + `~/.claude/tasks/*.json` + `~/.claude/plans/*.md` + most-recent exit handoff + recent event count into a single structured block injected via `hookSpecificOutput.additionalContext`
-- **Activity namespace** (v2.31.0) -- Dedicated `events` table + FTS5 for non-memdir types (`bugfix`, `lesson`, `bug`, `discovery`, `refactor`, `feature`, `observation`, `decision`) that don't compete with `WHAT_NOT_TO_SAVE` semantics on the observations table. CLI: `qwen-mem-lite activity save|search|recent|show`. `hook-llm` routes non-memdir summary types through `persistHaikuSummary` so upgrades from observations→events are atomic. (v3.39: the `/lesson` and `/bug` slash commands were redirected from this events table to searchable **observations** — `mem_search` never read the events table, so explicit saves were unfindable; the events table remains the auto-capture activity log.)
+- **Activity namespace** (v2.31.0) -- Dedicated `events` table + FTS5 for non-memdir types (`bugfix`, `lesson`, `bug`, `discovery`, `refactor`, `feature`, `observation`, `decision`) that don't compete with `WHAT_NOT_TO_SAVE` semantics on the observations table. CLI: `qwen-mem-lite activity save|search|recent|show`. `hook-llm` routes non-memdir summary types through `persistHaikuSummary` so upgrades from observations→events are atomic. (v3.39: the `/lesson` and `/bug` slash commands were redirected from this events table to searchable **observations** - `mem_search` never read the events table, so explicit saves were unfindable; the events table remains the auto-capture activity log.)
 - **In-place observation updates** -- `mem_update` tool modifies existing observations atomically (field update + FTS text rebuild in one transaction), preserving original IDs and references
 - **Bulk export** -- `mem_export` tool exports observations as JSON or JSONL, with project/type/date filtering and 1000-row pagination cap with batch guidance
 - **FTS integrity management** -- `mem_fts_check` tool verifies FTS5 index health or rebuilds indexes on demand, useful after database recovery or when search results seem wrong
 - **Atomic multi-table writes** -- `saveObservation` wraps the observations + observation_files INSERTs in a single `db.transaction()`, preventing orphaned rows on crash
 - **Modular NLP pipeline** -- Synonym maps, stop words, scoring constants, and query building extracted into focused modules (`synonyms.mjs`, `stop-words.mjs`, `scoring-sql.mjs`, `nlp.mjs`) for independent testing and maintenance
-- **Surface-form PRF expansion** -- `observations_fts` is built on FTS5's default `unicode61` tokenizer, so the index is **not stemmed**: a query term matches the word forms actually stored, and `crash` does not match a row that only contains `crashes`. Pseudo-relevance feedback therefore uses the Porter stemmer only to _bucket_ morphological variants when judging which candidate terms are discriminative, and emits the most frequent **surface** form of each — emitting a bare stem (`cach`) would match nothing and kill expansion recall
+- **Surface-form PRF expansion** -- `observations_fts` is built on FTS5's default `unicode61` tokenizer, so the index is **not stemmed**: a query term matches the word forms actually stored, and `crash` does not match a row that only contains `crashes`. Pseudo-relevance feedback therefore uses the Porter stemmer only to _bucket_ morphological variants when judging which candidate terms are discriminative, and emits the most frequent **surface** form of each - emitting a bare stem (`cach`) would match nothing and kill expansion recall
 
 ## Platform Support
 
@@ -141,12 +141,12 @@ How qwen-mem-lite differs from the major neighbors in the LLM-memory space (veri
 | ----------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Linux**   | Supported                | Primary development and testing platform; the whole CI matrix runs here                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | **macOS**   | Supported                | Fully compatible (Intel and Apple Silicon)                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| **Windows** | Installs, not CI-covered | The MCP server, the CLI and the `node` hooks work (`better-sqlite3` ships `win32-x64` and `win32-arm64` prebuilds, so nothing is compiled). **Three hook commands run under `bash`** — `setup.sh`, `post-tool-use.sh`, `pre-agent-inject.sh` — and need Git for Windows or WSL on `PATH`; `qwen-mem-lite doctor` reports it when `bash` cannot be found. No GitHub Actions runner exercises Windows, so this rests on user reports ([#28](https://github.com/sdsrss/claude-mem-lite/issues/28)), not on a green pipeline |
+| **Windows** | Installs, not CI-covered | The MCP server, the CLI and the `node` hooks work (`better-sqlite3` ships `win32-x64` and `win32-arm64` prebuilds, so nothing is compiled). **Three hook commands run under `bash`** - `setup.sh`, `post-tool-use.sh`, `pre-agent-inject.sh` - and need Git for Windows or WSL on `PATH`; `qwen-mem-lite doctor` reports it when `bash` cannot be found. No GitHub Actions runner exercises Windows, so this rests on user reports ([#28](https://github.com/sdsrss/claude-mem-lite/issues/28)), not on a green pipeline |
 | **WSL2**    | Untested                 | Linux under the hood, so it should behave as the Linux row; nobody has reported either way                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 From v5.1.0 through v6.1.0, `package.json` declared `os: ["darwin", "linux"]`. That is an npm _install_
 gate, not a runtime check: on Windows it made `npm install` exit `EBADPLATFORM`, which the
-plugin launcher runs on the first MCP start after every plugin update — so the server never
+plugin launcher runs on the first MCP start after every plugin update - so the server never
 came up and `/mcp` reported `CONNECTION_CLOSED`. `win32` is now in the list. A platform that
 is still outside it gets a message naming both sides of the mismatch instead of a guess.
 
@@ -154,7 +154,7 @@ is still outside it gets a message naming both sides of the mismatch instead of 
 
 - **Node.js** >= 22
 - **Qwen Code** or **Claude Code** CLI installed and configured
-- **SQLite3** support (provided by `better-sqlite3` 13, which ships prebuilt binaries for 8 platforms — no compiler needed on any of them; a platform it has no prebuild for falls back to building from source)
+- **SQLite3** support (provided by `better-sqlite3` 13, which ships prebuilt binaries for 8 platforms - no compiler needed on any of them; a platform it has no prebuild for falls back to building from source)
 - **Platform**: Linux or macOS; Windows installs and runs but is not CI-covered and needs Git Bash or WSL for three hooks (see [Platform Support](#platform-support))
 
 ## Installation
@@ -176,10 +176,10 @@ qwen extensions link /path/to/qwen-mem-lite    # instead, to track a working cop
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Hooks               | Qwen Code loads `hooks/hooks.json` verbatim and substitutes `${CLAUDE_PLUGIN_ROOT}`. Its payloads carry Qwen's own tool ids (`write_file`, `read_file`, `edit`, `run_shell_command`); `lib/tool-names.mjs` translates them once, so skip lists, edit weighting, Bash significance and error recall behave exactly as they do on Claude Code.                                                                                                                 |
 | LLM backend         | Point the background calls anywhere OpenAI-compatible with `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL`; set `QWEN_MEM_LLM_PROVIDER=openai` to make that stick, because Qwen's `settings.json` env block injects `ANTHROPIC_API_KEY` into every session and it would otherwise win. Full table under [Environment Variables](#environment-variables).                                                                                                   |
-| MCP server          | Declared by the extension itself — keep it that way. A `mem-lite` entry in `~/.qwen/settings.json` **overrides** the extension's (settings win) and then runs whatever copy it points at, which is how a stale `~/.qwen-mem-lite/server.mjs` ends up serving a session.                                                                                                                                                                                      |
+| MCP server          | Declared by the extension itself - keep it that way. A `mem-lite` entry in `~/.qwen/settings.json` **overrides** the extension's (settings win) and then runs whatever copy it points at, which is how a stale `~/.qwen-mem-lite/server.mjs` ends up serving a session.                                                                                                                                                                                      |
 | Steering block      | Written to **both** `<cwd>/CLAUDE.md` and `<cwd>/QWEN.md`: Qwen Code reads only the latter and Claude Code only the former, and `adopt` cannot tell which host it is running under.                                                                                                                                                                                                                                                                          |
 | Transcript features | Qwen records its transcript as `message.parts`; `lib/transcript-scan.mjs` normalizes that shape, so citation tracking, the unsaved-bugfix nudge and the fast summary keep working.                                                                                                                                                                                                                                                                           |
-| Auto-update         | **On by default**, reading **this fork's own repo** (`thenewnano/qwen-mem-lite`) — never upstream, whose release tarball is the Claude-only build and would revert the Qwen support silently. `QWEN_MEM_SKIP_UPDATE=1` disables the check; `QWEN_MEM_UPDATE_REPO=<owner>/<name>` aims it at a mirror. Installable releases need this fork's own signing key: the install path is fail-closed on release signatures, so an unsigned tag is found but refused. |
+| Auto-update         | **On by default**, reading **this fork's own repo** (`thenewnano/qwen-mem-lite`) - never upstream, whose release tarball is the Claude-only build and would revert the Qwen support silently. `QWEN_MEM_SKIP_UPDATE=1` disables the check; `QWEN_MEM_UPDATE_REPO=<owner>/<name>` aims it at a mirror. Installable releases need this fork's own signing key: the install path is fail-closed on release signatures, so an unsigned tag is found but refused. |
 | Slash commands      | `/mem`, `/memory`, `/lesson`, `/bug`, `/adopt`, `/unadopt`, `/update` come from `commands/`.                                                                                                                                                                                                                                                                                                                                                                 |
 
 > **Heads-up when working _inside this repository_:** Qwen reports `mem-lite` as
@@ -188,23 +188,9 @@ qwen extensions link /path/to/qwen-mem-lite    # instead, to track a working cop
 > slash commands and memory capture are unaffected; every other project uses the extension's
 > own entry.
 
-The Claude Code install path (`node install.mjs install`, which writes `~/.claude/settings.json`)
-is untouched and still works - run either host, or both.
-
-### Method 2: Claude Code plugin marketplace
-
-```bash
-/plugin marketplace add thenewnano/qwen-mem-lite
-/plugin install qwen-mem-lite
-```
-
-Plugin mode manages its own hooks/runtime. On session start it only **checks and reports** new qwen-mem-lite versions; it does **not** self-overwrite plugin files in place. Update plugin-mode installs through Claude's plugin workflow.
-
-> **The plugin install is complete on its own** — hooks, MCP tools, and the bundled slash commands (`/mem`, `/lesson`, `/bug`, `/adopt`) all run from the plugin with no second step. The slash commands invoke the bundled CLI by an absolute path resolved from the plugin directory (`${CLAUDE_PLUGIN_ROOT}/cli.mjs <cmd>`), so they work without anything on your `PATH`. A global `qwen-mem-lite` **shell** command (for running queries yourself in a terminal) is **optional** — `npm i -g github:thenewnano/qwen-mem-lite` — and is a _separate_ npm install: the plugin's auto-update does **not** refresh it, so re-run `npm i -g github:thenewnano/qwen-mem-lite` if you want that shell command kept in sync. You do **not** need it for the plugin to be fully functional.
-
-> **Auto-adopt writes into your project, on every SessionStart (v3.13+).** The plugin adds a slug-scoped **managed block** to your project's own **`<cwd>/CLAUDE.md`** **and `<cwd>/QWEN.md`** — files that are normally committed to git — plus a `<cwd>/.claude/plugin_qwen_mem_lite.md` / `<cwd>/.qwen/plugin_qwen_mem_lite.md` detail file. Both context files are written because the two hosts do not read each other's: Claude Code loads `CLAUDE.md`, Qwen Code loads `QWEN.md`. The block is a system-authority pointer that boosts Claude's proactive use of `mem_recall` / `mem_save`. Everything outside the block is preserved verbatim, and it coexists with other plugins' blocks in the same file ([details](#invited-memory-v232)). This happens on **every** SessionStart, not just the first: the sync is idempotent and re-applies the block if it is edited away, and refreshes it when the shipped template changes. It applies regardless of install path (npm, npx, `/plugin`, manual), so **no manual `/adopt` is needed**.
+> **Auto-adopt never writes into a fresh project unasked (changed in 7.2; v3.13-7.1 wrote `<cwd>/CLAUDE.md` before that).** On every SessionStart the plugin delivers its steering text - the trigger table that boosts proactive `mem_recall` / `mem_save` use. A project that already carries the managed block keeps it in sync in **`<cwd>/CLAUDE.md` and `<cwd>/QWEN.md`** (normally-committed files; both are written because the two hosts do not read each other's) plus the `<cwd>/.claude/plugin_qwen_mem_lite.md` / `<cwd>/.qwen/plugin_qwen_mem_lite.md` detail files: the sync is idempotent, re-applies the block if it is edited away, and refreshes it when the shipped template changes, on **every SessionStart**. A project with no block gets no committed file written: inside a git repository the text goes to a managed block in `CLAUDE.local.md` at the repository root (Claude Code loads that file like `CLAUDE.md`; `.git/info/exclude` keeps it out of commits), and where that file cannot be written (outside git, a tracked or symlinked `CLAUDE.local.md`, an npm-publishable package root) the text is **injected** into each session's context instead, with a one-time notice. Where Claude Code reads an `AGENTS.md`, a new `CLAUDE.md`/`CLAUDE.local.md` would switch it off, so nothing is written and the text is injected; with `QWEN_MEM_RULES_STEERING=1` the block goes to `.claude/rules/qwen-mem-lite.md` instead (excluded from git the same way, and `AGENTS.md` keeps loading). `/adopt` remains the way to put the block into a committed `CLAUDE.md`: it removes the automatic local copy so the text does not load twice, and imports a neighbouring `AGENTS.md` so it keeps loading. It applies regardless of install path (npm, npx, `/plugin`, manual); silence the one-time notices with `MEM_NO_ADOPT_HINT=1`.
 >
-> Opt out per project with `qwen-mem-lite adopt --disable` (`--enable` to re-arm), globally with `export MEM_NO_AUTO_ADOPT=1`, or freeze an already-adopted block against template refreshes with `QWEN_MEM_NO_TEMPLATE_REFRESH=1`. `qwen-mem-lite unadopt` removes the block and the detail file. Manual `/adopt` remains available for re-applying after edits and for the `--all` batch path.
+> Opt out per project with `qwen-mem-lite adopt --disable` (`--enable` to re-arm; `--enable` also lets a removed local block come back), globally with `export MEM_NO_AUTO_ADOPT=1`, or freeze an adopted block against template refreshes with `QWEN_MEM_NO_TEMPLATE_REFRESH=1`. `qwen-mem-lite unadopt` removes the block, the detail file, and the automatic local block with its exclude entry.
 
 ### Method 3: npx (one-liner)
 
@@ -224,12 +210,12 @@ cd qwen-mem-lite
 node install.mjs install
 ```
 
-Source files stay in the cloned repo. Update via `git pull && node install.mjs install`.
+`install` copies the source files to `~/.claude-mem-lite/`, as the npx method does. Update with `node install.mjs update`, which installs the latest signed release. `git pull && node install.mjs install` installs the checked-out branch instead: it can be ahead of the latest release, and no signature is checked.
 
 ### What happens during installation
 
 1. **Install dependencies** -- `npm install --omit=dev` (compiles native `better-sqlite3`)
-2. **Register MCP server** -- `mem-lite` server with 18 tools (9 core exposed via `tools/list` + 9 hidden-but-callable; see the Usage section for the full table). The pre-v2.78 generic server name `mem` is renamed to `mem-lite` for namespace hygiene; the tool names themselves (`mem_search`, `mem_recall`, ...) are unchanged.
+2. **Register MCP server** -- `mem-lite` server with 19 tool definitions (10 core + 9 hidden-but-callable; `mem_search_feedback` is registered only when search telemetry is enabled). The pre-v2.78 generic server name `mem` is renamed to `mem-lite` for namespace hygiene; the tool names themselves (`mem_search`, `mem_recall`, ...) are unchanged.
 3. **Configure hooks** -- all seven lifecycle events: `SessionStart`, `PreCompact`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `UserPromptSubmit`
 4. **Create data directory** -- `~/.qwen-mem-lite/` (hidden) for database, runtime, and managed resource files
 5. **Auto-migrate** -- If `~/.claude-mem/` (original claude-mem) or `~/claude-mem-lite/` (pre-v0.5 unhidden) exists, migrates database and runtime files to `~/.qwen-mem-lite/`, preserving the original untouched
@@ -266,7 +252,7 @@ rm -rf ~/claude-mem-lite/   # pre-v0.5 unhidden (if not auto-moved)
 
 ```
 ~/.qwen-mem-lite/
-  qwen-mem-lite.db       # SQLite database — memory (WAL mode)
+  qwen-mem-lite.db       # SQLite database - memory (WAL mode)
   runtime/
     session-<project>    # Active session state
     ep-<project>.json    # Episode buffer
@@ -275,6 +261,32 @@ rm -rf ~/claude-mem-lite/   # pre-v0.5 unhidden (if not auto-moved)
   managed/
     repos/               # Shallow-cloned source repos
 ```
+
+## Upgrading to 7.2.0 (upstream sync)
+
+**This release folds in everything upstream shipped between v6.21.0 and v6.25.3** (154
+commits). No schema change, no data move and no configuration change.
+
+- **Auto-adopt stops writing into fresh projects.** A project that never carried the steering
+  block no longer gets files written unasked: inside a git work tree the text goes to a managed
+  block in `CLAUDE.local.md` at the repository root (kept out of commits), where that file
+  cannot be written it is injected into each session's context, and where it would switch off
+  an `AGENTS.md` nothing is written (`QWEN_MEM_RULES_STEERING=1` switches it to
+  `.claude/rules/qwen-mem-lite.md`). A project that already carries the block keeps it in sync
+  in `CLAUDE.md` + `QWEN.md` on every SessionStart, as before.
+- **Gateway support on the direct API leg.** `ANTHROPIC_BASE_URL` (no `/v1` suffix) routes
+  background LLM calls through any Anthropic-compatible gateway, and
+  `ANTHROPIC_DEFAULT_{HAIKU,SONNET}_MODEL` names the deployment - scoped to a configured
+  gateway, so the Bedrock/Vertex aliases no longer leak to `api.anthropic.com`. `doctor` probes
+  the gateway and warns about a `/v1` suffix; a set-but-unusable base URL skips the direct leg
+  with a warning instead of failing silently.
+- **`CLAUDE_CONFIG_DIR` is followed everywhere** (installer, updates, hooks), and npm / `npx`
+  installs no longer pull the development toolchain (298 packages / 541 MB -> 96 / 57 MB).
+- **Also in this release:** recall framing defaults back to `legacy`; large stores no longer
+  time out (SQLite planner statistics); `doctor` says "not checked" where the data directory
+  is unreadable; the update machinery survives rollbacks and blocked locks; better-sqlite3 13
+  self-heals after a Node upgrade; opt-in MCP search telemetry (`QWEN_MEM_SEARCH_TELEMETRY=1`)
+  adds `mem_search_feedback`. Details in CHANGELOG.md.
 
 ## Upgrading to 7.1.0 (upstream sync)
 
@@ -338,7 +350,7 @@ settings inject `ANTHROPIC_API_KEY` into every session and would otherwise win.
 ## Upgrading to 6.8.0
 
 **Two things change on upgrade. Neither needs an action from you, and neither is a schema
-change — an older build can still open the database.**
+change - an older build can still open the database.**
 
 _The first open backfills the file-lookup table, once._ Observations imported from a
 transcript before 6.7.2 carry their modified-files list but no row in the junction table the
@@ -354,12 +366,12 @@ limits, both measured:
   imported row carries `1`.
 - Not for `NotebookEdit` rows imported before 6.7.2. Those were stored with an empty
   modified-files list, because the importer of the day read `file_path` and `NotebookEdit`
-  sets `notebook_path` instead — so the backfill, which selects on that column being
+  sets `notebook_path` instead - so the backfill, which selects on that column being
   non-empty, passes over them. Re-importing the transcript is what recovers those, and 6.7.2
   made that work by putting the path into the title the dedup key is built from.
 
 _`doctor --json` changes shape._ Checks that print a repair command now carry it in a
-`details` array — previously the human screen got the command and the JSON got only the
+`details` array - previously the human screen got the command and the JSON got only the
 diagnosis. And four checks (dev drift, managed files, and both hook-script branches) now
 report `"level": "fail"` where they used to report `"warn"`, with a new `"glyph": "warn"`
 recording that they still render as ⚠ rather than ✗. They always counted toward the issue
@@ -371,7 +383,7 @@ are unchanged.
 
 **One default changes, and only for the daily background pass.** Until 6.1.0 the unattended
 `normalize` task read the concept vocabulary of EVERY project at once, sent it to the model as
-one list, and wrote the answer back across every project — so one project's stored content
+one list, and wrote the answer back across every project - so one project's stored content
 could steer the synonym groups applied to an unrelated project's rows. It now runs one scoped
 pass per project.
 
@@ -383,20 +395,20 @@ pass per project.
 
 **What you may notice:** `k8s` in one project and `kubernetes` in another are no longer folded
 together by the daily pass. Nothing is deleted, no row moves project, and search behaviour is
-unchanged — only which terms the background pass will unify.
+unchanged - only which terms the background pass will unify.
 
 **It is forward-only.** Terms that earlier cross-project runs already unified stay unified.
 The replaced term is kept on the row as a search alias, so those rows are still findable under
 the old wording, but there is no record of which unification came from another project.
 
 **To keep the old behaviour:** set `QWEN_MEM_NORMALIZE_CROSS_PROJECT=1`. It restores the
-cross-project scope — and that scope is exactly the guard it gives up. The other two checks
+cross-project scope - and that scope is exactly the guard it gives up. The other two checks
 added in this release (a shape gate on concept tokens, and a check that the model's answer only
 uses terms the corpus already had) do still run on that path, but the second one is then judged
 against the union of every project's vocabulary, so it no longer keeps one project's term out
 of another project's rows. Set it only if you want cross-project unification and trust the
 contents of every project in the store. A foreground `optimize` run prints a warning when the
-flag is set, and `qwen-mem-lite doctor` reports it as ⚠ — the daily pass runs in a worker
+flag is set, and `qwen-mem-lite doctor` reports it as ⚠ - the daily pass runs in a worker
 with stderr closed, so it cannot warn you itself.
 <!-- normalize-per-project-note:end -->
 
@@ -405,7 +417,7 @@ with stderr closed, so it cannot warn you itself.
 ## Upgrading to 6.0.0 (breaking)
 
 **The default search path does not change.** 6.0.0 removes the TF-IDF vector arm, which has
-been disabled by default since 3.17.0 — if you never set QWEN_MEM_VECTORS, upgrading is
+been disabled by default since 3.17.0 - if you never set QWEN_MEM_VECTORS, upgrading is
 behaviour-identical and there is nothing to do.
 
 Three surfaces are gone:
@@ -417,14 +429,14 @@ Three surfaces are gone:
 | Tables `observation_vectors`, `vocab_state` | Dropped by schema migration v49 on first open.    |
 
 **The migration is one-way.** Once a 6.0.0 build has opened your database, older versions
-refuse it — `schema.mjs`'s forward-incompat guard throws _"DB schema is v49 but this
+refuse it - `schema.mjs`'s forward-incompat guard throws _"DB schema is v49 but this
 qwen-mem-lite binary supports up to v48"_. If you want to stay on the vector arm, pin
 `claude-mem-lite@5.6.0` **before** upgrading. If you have already upgraded and need to go
 back, either re-upgrade, point `QWEN_MEM_DIR` at a fresh directory, or restore a
 pre-upgrade backup (`qwen-mem-lite export` / the snapshots under your data dir).
 
 Why it was removed: measured directly against the shipped path, the arm was negative on both
-benchmark fixtures — including the vocabulary-mismatch suite that is the only reason a vector
+benchmark fixtures - including the vocabulary-mismatch suite that is the only reason a vector
 arm would exist (Recall@10 0.3407 → 0.3018, and roughly +88% P95 latency). No observations
 are lost; only the derived vector index is.
 <!-- vector-arm-removal-note:end -->
@@ -433,29 +445,31 @@ are lost; only the derived vector index is.
 
 ### MCP Tools (used automatically by Claude)
 
-As of v2.70.0, the server registers 18 tools in total but only the 9 **core**
-tools appear in `tools/list`. The 9 **hidden** tools remain callable at the
+The server defines 19 tools but registers `mem_search_feedback` only when
+`CLAUDE_MEM_SEARCH_TELEMETRY=1`. The other 9 **core** tools appear in `tools/list`
+by default. The 9 **hidden** tools remain callable at the
 protocol layer (`tools/call` by exact name still routes normally); they're
 omitted from the list response so Claude Code sessions don't load 9 extra
 tool schemas at startup. (It read 20 / 11 until v5.0.0 removed the two skill-registry
-tools — `tool-schemas.mjs` is the source of truth, and
+tools - `tool-schemas.mjs` is the source of truth, and
 `tests/tool-count-docs.test.mjs` now holds this paragraph, the README tool table,
 `llms.txt` and `docs/ARCHITECTURE.md` to it.) Hidden tools are the maintenance / admin / browser
-surface — reach them through the CLI column in the second table.
+surface - reach them through the CLI column in the second table.
 
-**Core (9, exposed to Claude Code)**
+**Core (10 definitions; `mem_search_feedback` requires search telemetry)**
 
-| Tool             | Description                                                                                                                    |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `mem_search`     | FTS5 full-text search with BM25 ranking. Filters by type, project, date range, importance level.                               |
-| `mem_recent`     | Show most recent observations, ordered by time. Quick snapshot of latest activity.                                             |
-| `mem_recall`     | Recall observations related to a file. Use before editing to surface past bugfixes and context.                                |
-| `mem_timeline`   | Browse observations chronologically around an anchor point.                                                                    |
-| `mem_get`        | Retrieve full details for specific observation IDs (includes importance and related_ids).                                      |
-| `mem_save`       | Manually save a memory/observation. Accepts `closes_deferred` array for transactional closure of deferred work.                |
-| `mem_defer`      | Mark work for a future session (v2.70+). First-class carry-forward signal, surfaced in SessionStart `### Deferred Work` block. |
-| `mem_defer_list` | List open deferred items for the current project.                                                                              |
-| `mem_defer_drop` | Drop a deferred item without fixing it; requires a `reason` for the audit trail.                                               |
+| Tool                  | Description                                                                                                                    |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `mem_search`          | FTS5 full-text search with BM25 ranking. Filters by type, project, date range, importance level.                               |
+| `mem_search_feedback` | Record sparse relevance labels for results from an existing `mem_search` Search ID.                                            |
+| `mem_recent`          | Show most recent observations, ordered by time. Quick snapshot of latest activity.                                             |
+| `mem_recall`          | Recall observations related to a file. Use before editing to surface past bugfixes and context.                                |
+| `mem_timeline`        | Browse observations chronologically around an anchor point.                                                                    |
+| `mem_get`             | Retrieve full details for specific observation IDs (includes importance and related_ids).                                      |
+| `mem_save`            | Manually save a memory/observation. Accepts `closes_deferred` array for transactional closure of deferred work.                |
+| `mem_defer`           | Mark work for a future session (v2.70+). First-class carry-forward signal, surfaced in SessionStart `### Deferred Work` block. |
+| `mem_defer_list`      | List open deferred items for the current project.                                                                              |
+| `mem_defer_drop`      | Drop a deferred item without fixing it; requires a `reason` for the audit trail.                                               |
 
 **Hidden-but-callable (9, CLI-routed)**
 
@@ -472,6 +486,24 @@ surface — reach them through the CLI column in the second table.
 | `mem_browse`    | `qwen-mem-lite browse`                          | Tier-grouped dashboard (working / active / archive).                                   |
 
 ### Skill Commands (in the host's chat: Qwen Code or Claude Code)
+
+**Headless runs (`claude -p`).** With no permission prompt to answer, Claude Code 2.1.292
+refused every `mem_*` call until the server's tools were allowed, and the model did not switch
+to the CLI by itself: in an 88-session headless run (2026-10-06) all 13 calls were refused and
+nothing was saved. On 2.1.284 (2026-09-29) the same flags let these calls through, so this
+depends on the Claude Code version. Allow the server once in the `settings.json` the run reads:
+
+```json
+{ "permissions": { "allow": ["mcp__plugin_qwen-mem-lite_mem-lite"] } }
+```
+
+For a single run, `claude -p ... --allowedTools "mcp__plugin_qwen-mem-lite_mem-lite"` does the
+same (both forms checked on 2.1.292, 2026-10-07: no refusal, and `mem_search` answered). That is
+the server's name under a plugin install. An npx or git-clone install registers it as
+`mem-lite`, so the rule there is `mcp__mem-lite`. An interactive session asks instead; answering
+"always allow" there records a rule of its own. The plugin does not tell the model to fall back
+to the CLI when a call is refused: the refusal is Claude Code's permission check for a tool you
+have not allowed, and routing the same action through Bash would sidestep it.
 
 ```
 /mem search <query>        # Full-text search across all memories
@@ -498,7 +530,7 @@ surface — reach them through the CLI column in the second table.
 
 Opt-in mechanism that installs a slug-scoped managed block into the project's
 own `CLAUDE.md` (plus an on-demand detail doc under `.claude/`) so Claude Code
-loads the plugin's MCP-tool triggers as **project instructions** — a higher
+loads the plugin's MCP-tool triggers as **project instructions** - a higher
 instruction-following authority than MCP server instructions (which are framed
 as tool metadata). Claude Code loads `CLAUDE.md` and the memdir `MEMORY.md` at
 equal weight, so steering lives in `CLAUDE.md` (the canonical home for project
@@ -508,12 +540,12 @@ automatically on the next SessionStart.
 
 ```bash
 qwen-mem-lite adopt              # install for current project
-qwen-mem-lite adopt --all        # install for every project under ~/.claude/projects/
+qwen-mem-lite adopt --all        # legacy clean-up: strip the old memory-dir sentinel in every project
 qwen-mem-lite adopt --status     # list adopted/disabled projects + current gating snapshot
 qwen-mem-lite adopt --dry-run    # preview without writing
 qwen-mem-lite adopt --disable    # opt out of auto-adopt for current project (writes .mem-no-auto-adopt sentinel)
 qwen-mem-lite adopt --enable     # re-arm auto-adopt for current project (deletes the sentinel)
-qwen-mem-lite unadopt            # remove sentinel + doc (runtime marker stays to honor the explicit removal)
+qwen-mem-lite unadopt            # remove the CLAUDE.md block + doc, and the local block (CLAUDE.local.md or .claude/rules/; not written again)
 ```
 
 Slash commands `/adopt` and `/unadopt` wrap the same CLI.
@@ -522,7 +554,7 @@ Slash commands `/adopt` and `/unadopt` wrap the same CLI.
 
 - A `<!-- qwen-mem-lite:begin v1 -->…<!-- qwen-mem-lite:end -->` managed
   block is added to `<cwd>/CLAUDE.md` under its own
-  `## qwen-mem-lite — persistent memory` header, containing a compact trigger
+  `## qwen-mem-lite - persistent memory` header, containing a compact trigger
   table pointing at `mem_recall` / `mem_save` / `mem_defer` with their key
   arguments. The block is slug-scoped: only this region is managed; the rest of
   your `CLAUDE.md` is preserved verbatim, and it coexists with other plugins'
@@ -542,30 +574,38 @@ Slash commands `/adopt` and `/unadopt` wrap the same CLI.
   `Key Context` / lesson suffix) apply on the **next SessionStart** (any new
   Claude Code session in the adopted project).
 - The MCP server instructions are built once at server boot and MCP has no
-  "push" protocol — the `WHEN TO USE` / `Decision rules` trim only applies
+  "push" protocol - the `WHEN TO USE` / `Decision rules` trim only applies
   after Claude Code restarts and re-spawns the mem-lite MCP server. A single
   `/exit` + fresh session is enough. Same caveat applies to `unadopt`.
 
 **Safety:**
 
 - Regenerated, not hand-edit-safe: `adopt` rewrites the managed block to the shipped
-  template, and so does every SessionStart whenever the block differs from it — hand edits
+  template, and so does every SessionStart whenever the block differs from it - hand edits
   included. Keep your own notes outside the `qwen-mem-lite:begin…end` markers, or set
   `QWEN_MEM_NO_TEMPLATE_REFRESH=1` to freeze the block.
 - Slug-scoped & dedup-guarded: only the `qwen-mem-lite:begin…end` region is
   ever rewritten, and duplicate / CRLF-orphaned copies are collapsed to one.
-  Unlike the legacy `MEMORY.md` scheme there is no line-budget gate — `CLAUDE.md`
+  Unlike the legacy `MEMORY.md` scheme there is no line-budget gate - `CLAUDE.md`
   has no truncation cap.
-- **Auto-adopt runs on EVERY SessionStart, for any install path (v2.82.1+;
-  target moved from the memdir to `<cwd>/CLAUDE.md` in v3.13).** The sync is
-  idempotent — it re-applies the managed block if it was edited away and
-  refreshes it when the shipped template changes (freeze with
-  `QWEN_MEM_NO_TEMPLATE_REFRESH=1`). Per-project opt-out: `qwen-mem-lite adopt --disable`
-  (writes a durable `<memdir>/.mem-no-auto-adopt` sentinel that survives marker
-  deletion / plugin reinstalls). Global opt-out: `MEM_NO_AUTO_ADOPT=1`.
-  Pre-v2.82.1 the `CLAUDE_PLUGIN_ROOT` gate left auto-adopt unreachable for
-  every `install.mjs`-written hook (the common path) — see CHANGELOG v2.82.1.
-- The fallback hook layer is never removed from source — conditional trim is
+- **Auto-adopt runs on EVERY SessionStart, for any install path (v2.82.1+; the target moved from
+  the memdir to `<cwd>/CLAUDE.md` in v3.13, and to `CLAUDE.local.md` / injection in 7.2).** A
+  project that already carries the block keeps it in sync in `<cwd>/CLAUDE.md` and
+  `<cwd>/QWEN.md` - refreshed when the shipped template changes (freeze with
+  `QWEN_MEM_NO_TEMPLATE_REFRESH=1`) - and a `CLAUDE.md` holding only the block also gets
+  adopt's `AGENTS.md` import when an `AGENTS.md` is beside it. A git project without the block
+  gets the text in `CLAUDE.local.md` at the git root (kept out of git via `.git/info/exclude`),
+  or in SessionStart context where `CLAUDE.local.md` would stop Claude Code reading the
+  project's `AGENTS.md` (in `.claude/rules/qwen-mem-lite.md` with `QWEN_MEM_RULES_STEERING=1`),
+  outside git, and where no file can be written; sessions started from a subdirectory see the
+  root's file. A local block (`CLAUDE.local.md` or the rules file) the plugin created and you
+  (or `unadopt`) removed is not written back; `adopt --enable` re-arms it (beside such an
+  `AGENTS.md`, together with `QWEN_MEM_RULES_STEERING=1`). Per-project opt-out:
+  `qwen-mem-lite adopt --disable` (writes a durable `<memdir>/.mem-no-auto-adopt` sentinel that
+  survives marker deletion / plugin reinstalls; run at the repository root it also covers
+  sessions started in its subdirectories, and it removes the local block). Global opt-out:
+  `MEM_NO_AUTO_ADOPT=1` (blocks already written stay until `unadopt`).
+- The fallback hook layer is never removed from source - conditional trim is
   runtime-gated on sentinel presence, so projects without adoption get the
   full verbose output.
 
@@ -691,7 +731,7 @@ node install.mjs install              # Install and configure
 node install.mjs uninstall            # Remove (keep data)
 node install.mjs uninstall --purge    # Remove and delete all data
 node install.mjs status               # Show current status
-node cli.mjs doctor                   # Diagnose issues  (cli.mjs, not install.mjs — see note)
+node cli.mjs doctor                   # Diagnose issues  (cli.mjs, not install.mjs - see note)
 node cli.mjs repair                   # Recover a broken install from the latest signed release
 node install.mjs cleanup-hooks        # Remove only stale qwen-mem-lite hooks from settings.json
 node install.mjs update               # Force-check for updates and install them (direct install / npx mode)
@@ -704,10 +744,11 @@ npx github:thenewnano/qwen-mem-lite doctor            # Diagnose issues
 
 > `doctor` and `repair` are spelled `cli.mjs`, not `install.mjs`, on purpose. Those two are
 > the commands you reach for when the install is already broken, and `install.mjs` resolves
-> around a dozen static imports before its first line runs — one missing file and it exits
+> around a dozen static imports before its first line runs - one missing file and it exits
 > with a Node stack instead of telling you which file. `cli.mjs` has no static local imports
 > and catches that, naming the file and a repair command. Everything else in the list is
-> unaffected either way.
+> unaffected either way, except `update`: through `cli.mjs` (and the `claude-mem-lite`
+> command) `update <id>` edits a memory, and the updater is `self-update`.
 
 Notes:
 
@@ -718,17 +759,18 @@ Notes:
   /plugin install qwen-mem-lite@thenewnano
   ```
   (The first command refreshes the local marketplace clone; the second reinstalls from it. Without the first command, `/plugin install` reuses the stale local clone and you stay on whichever version you originally pulled.)
-- Direct install / npx mode keeps auto-update enabled and uses staged replacement with rollback on install failure.
+- Direct install / npx mode checks GitHub Releases once a day (every 6 hours while GitHub is rate-limiting), from a session start, and shows a notice about a newer version at the next session start; the check does not install it. `npx qwen-mem-lite self-update` (from a git clone, `node install.mjs update`) installs it, with staged replacement and rollback on install failure. Two things install without a command: when a hook finds a module or dependency missing, a session start runs `repair` (at most once per 6 hours), which installs the latest release if its signature verifies; and when the plugin is installed too, a session start copies a newer plugin version into the direct install (that copy is not signature-checked).
+- `QWEN_MEM_SKIP_UPDATE` turns off the check, the notice, and `self-update` / `install.mjs update` as well, so unset it before updating. It stops neither of the two installs above.
 - If you disabled the plugin but still have old mem hooks in `~/.claude/settings.json`, run `node install.mjs cleanup-hooks`.
 
 #### Trust model per install path
 
-The three install paths do **not** carry the same supply-chain guarantees — pick the one that matches your threat model:
+The three install paths do **not** carry the same supply-chain guarantees - pick the one that matches your threat model:
 
 | Path                                 | Update mechanism                                | Ed25519 release-signature verification                                                                                                                                                                                      |
 | ------------------------------------ | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| npm / npx / git-clone direct install | auto-update from GitHub Releases                | **Yes** — every runtime file (140 entries incl. hook scripts, MCP launcher, plugin declaration files) is hash-pinned in a signed manifest; verification is fail-closed                                                      |
-| `/plugin install` (marketplace)      | manual `/plugin marketplace update` + reinstall | **No** — Claude Code installs from a git clone of the marketplace repo; the plugin's own signature chain is not consulted on this path. You are trusting GitHub + the repo's branch protection, not the release signing key |
+| npm / npx / git-clone direct install | auto-update from GitHub Releases                | **Yes** - every runtime file (140 entries incl. hook scripts, MCP launcher, plugin declaration files) is hash-pinned in a signed manifest; verification is fail-closed                                                      |
+| `/plugin install` (marketplace)      | manual `/plugin marketplace update` + reinstall | **No** - Claude Code installs from a git clone of the marketplace repo; the plugin's own signature chain is not consulted on this path. You are trusting GitHub + the repo's branch protection, not the release signing key |
 
 **Rollback recipe (plugin path).** If an update misbehaves, pin the marketplace clone to the previous release tag and reinstall from it:
 
@@ -740,7 +782,7 @@ ls ~/.claude/plugins/marketplaces/          # e.g. thenewnano
 cd ~/.claude/plugins/marketplaces/thenewnano
 git fetch --tags && git checkout v3.62.0
 
-# 3. Reinstall from the pinned clone — inside Claude Code:
+# 3. Reinstall from the pinned clone - inside Claude Code:
 #    /plugin install qwen-mem-lite@thenewnano
 # 4. To leave the pin later: git checkout main, then the normal update flow.
 ```
@@ -753,7 +795,7 @@ Checks Node.js version, dependencies, server/hook files, database integrity, FTS
 stale processes, MCP registration, and whether the marketplace clone can still be updated.
 
 It runs `claude mcp list` to answer the registration question, and that **health-checks every
-MCP server you have configured** — i.e. briefly launches each one, including remote endpoints.
+MCP server you have configured** - i.e. briefly launches each one, including remote endpoints.
 `status` deliberately does not: on a plugin install it answers from the manifest instead.
 
 ### status
@@ -762,7 +804,7 @@ Shows MCP registration, hook configuration, plugin disabled state, and database 
 
 ### Recovery (stuck install / hook errors)
 
-If you see `ERR_MODULE_NOT_FOUND` on PreToolUse:Read/Edit hooks, or `qwen-mem-lite` commands crash with import errors, you're likely hit by a partial auto-update — the updater copied new scripts but missed a sibling `lib/*` file, breaking the hook chain (and the next auto-update that would have healed it).
+If you see `ERR_MODULE_NOT_FOUND` on PreToolUse:Read/Edit hooks, or `qwen-mem-lite` commands crash with import errors, you're likely hit by a partial auto-update - the updater copied new scripts but missed a sibling `lib/*` file, breaking the hook chain (and the next auto-update that would have healed it).
 
 **v2.84.0+** ships a `repair` subcommand that re-syncs from the latest GitHub release:
 
@@ -770,13 +812,13 @@ If you see `ERR_MODULE_NOT_FOUND` on PreToolUse:Read/Edit hooks, or `qwen-mem-li
 qwen-mem-lite repair
 ```
 
-**If `repair` itself fails** (the bin is older than v2.84.0, or the bin is also broken), run this one-liner — it pulls a fresh tarball into a temp dir and runs _that_ tarball's `install.mjs`, bypassing every file on your disk:
+**If `repair` itself fails** (the bin is older than v2.84.0, or the bin is also broken), run this one-liner - it pulls a fresh tarball into a temp dir and runs _that_ tarball's `install.mjs`, bypassing every file on your disk:
 
 ```bash
 T=$(mktemp -d) && U=$(curl -sL https://api.github.com/repos/thenewnano/qwen-mem-lite/releases/latest | grep -o '"tarball_url"[^,]*' | cut -d'"' -f4) && curl -sL "$U" | tar xz -C "$T" --strip-components=1 && node "$T/install.mjs" install
 ```
 
-It resolves the latest **release** tag first. A shell one-liner cannot verify the release signature the way `repair` does, so running it is a trust decision you are making explicitly — that is why it is the last resort and not the first suggestion.
+It resolves the latest **release** tag first. A shell one-liner cannot verify the release signature the way `repair` does, so running it is a trust decision you are making explicitly - that is why it is the last resort and not the first suggestion.
 
 After it finishes, `~/.qwen-mem-lite/` is back in sync with the latest release and `qwen-mem-lite repair` is available for next time.
 
@@ -805,7 +847,7 @@ rm -rf ~/.qwen-mem-lite/
 **`/plugin uninstall` does not delete the plugin cache.** Claude Code materializes each
 version under `~/.claude/plugins/cache/`, with its own `node_modules`. While the plugin is
 installed these get pruned to the newest three (SessionStart does it, and so does the update
-path), so the directory is bounded — measured at 241 MB — not unbounded. But `/plugin
+path), so the directory is bounded - measured at 241 MB - not unbounded. But `/plugin
 uninstall` removes the manifest and there is no uninstall hook a plugin can attach to, so the
 hooks stop firing and whatever is left is never reclaimed. `qwen-mem-lite uninstall` does
 reclaim it, but after `/plugin uninstall` that command may no longer be on your PATH. Either
@@ -817,7 +859,7 @@ rm -rf ~/.claude/plugins/cache/thenewnano/qwen-mem-lite
 
 ### Mixed-install residue (read this if you've used multiple install methods)
 
-`/plugin uninstall` only removes the plugin manifest — it **does not touch `~/.claude/settings.json`**. If you've ever run `qwen-mem-lite install` (npx or git-clone path), hook entries pointing at `~/.qwen-mem-lite/hook.mjs` were written into your user-global settings, and they keep firing after `/plugin uninstall`. If `~/.qwen-mem-lite/hook.mjs` still exists they double-fire alongside the plugin; if you also ran `rm -rf ~/.qwen-mem-lite/` they error every session.
+`/plugin uninstall` only removes the plugin manifest - it **does not touch `~/.claude/settings.json`**. If you've ever run `qwen-mem-lite install` (npx or git-clone path), hook entries pointing at `~/.qwen-mem-lite/hook.mjs` were written into your user-global settings, and they keep firing after `/plugin uninstall`. If `~/.qwen-mem-lite/hook.mjs` still exists they double-fire alongside the plugin; if you also ran `rm -rf ~/.qwen-mem-lite/` they error every session.
 
 **The safe sequence is**: run `qwen-mem-lite uninstall` first (which cleans the settings.json hooks plus the global MCP registration), then `/plugin uninstall qwen-mem-lite`, then optionally `rm -rf ~/.qwen-mem-lite/`.
 
@@ -880,7 +922,7 @@ qwen-mem-lite/
 ## Search Quality
 
 Benchmarked on 200 observations across 30 queries (standard + hard-negative categories),
-measuring the **production-hybrid** retriever (the real `searchObservationsHybrid`) — the path
+measuring the **production-hybrid** retriever (the real `searchObservationsHybrid`) - the path
 `mem_search` / `recall` actually use. The CI gate (`npm run benchmark:gate`) runs this same
 path and fails on regression.
 
@@ -893,7 +935,7 @@ path and fails on regression.
 | P95 search latency | ~1.0ms (host-dependent; not a gated metric) |
 
 > **Where these numbers come from.** Reproduce with
-> `node benchmark/benchmark.mjs --production-hybrid` (deterministic — same fixture corpus,
+> `node benchmark/benchmark.mjs --production-hybrid` (deterministic - same fixture corpus,
 > same query set, no sampling). The CI reference capture is `benchmark/baseline.json`, and
 > `npm run benchmark:gate` fails the build when a run drifts more than 5% from it. This is
 > the single source for every retrieval figure quoted in this README.
@@ -902,7 +944,7 @@ path and fails on regression.
 > which is why the figures have moved twice. An older revision reported a narrower FTS-only
 > harness (Precision@10 0.96, P95 0.15ms); a later one attributed the lower precision to a
 > TF-IDF vector arm "trading precision for recall". **That attribution was wrong and the
-> claim is withdrawn** — the gate's `hybrid_over_bm25` delta never executed a vector path at
+> claim is withdrawn** - the gate's `hybrid_over_bm25` delta never executed a vector path at
 > all, so it could not have measured that trade. The arm was later A/B'd directly, came out
 > negative on both fixtures, and was removed; these numbers are the shipped path with no
 > vector arm in it. For field-comparable recall, see the LongMemEval section below.
@@ -910,12 +952,12 @@ path and fails on regression.
 ### Recall on LongMemEval (standard benchmark)
 
 Beyond the in-repo micro-benchmark above, qwen-mem-lite is measured on
-[LongMemEval](https://github.com/xiaowu0162/LongMemEval) (Wu et al.) — a
-500-question long-term-memory benchmark — so its recall is comparable to the
+[LongMemEval](https://github.com/xiaowu0162/LongMemEval) (Wu et al.) - a
+500-question long-term-memory benchmark - so its recall is comparable to the
 field, not just to itself. Metric is **recall_any@k**: does _any_ gold evidence session appear in the
 top _k_ retrieved? This is the same session-level definition the systems we
-compare against report on this split — [agentmemory](https://github.com/rohitg00/agentmemory)
-(BM25 + vector + graph) and dense-embedding systems like MemPalace — so the rows
+compare against report on this split - [agentmemory](https://github.com/rohitg00/agentmemory)
+(BM25 + vector + graph) and dense-embedding systems like MemPalace - so the rows
 below sit on one axis, not metric-shopped. (Note: 65% of the 500 questions have
 multiple gold sessions, so `recall_any@k` is looser than fractional recall there;
 all systems in this comparison report the any-hit form.) Corpus is user-turns-only
@@ -924,25 +966,25 @@ and `benchmark/longmemeval-rerank.mjs` (rerank).
 
 | Retriever (zero embeddings)           | @1        | @5        | @10       |
 | ------------------------------------- | --------- | --------- | --------- |
-| Lexical — FTS5 BM25 + query expansion | **83.4%** | **95.2%** | **96.0%** |
+| Lexical - FTS5 BM25 + query expansion | **83.4%** | **95.2%** | **96.0%** |
 | + one top-20 LLM rerank pass †        | 92.8%     | 96.8%     | 97.4%     |
 
-_n = 500 questions._ The lexical row was re-measured 2026-07-18: the v3.39–v3.45
+_n = 500 questions._ The lexical row was re-measured 2026-07-18: the v3.39-v3.45
 alias/synonym-pipeline work lifted it from the previously published 76.8/90.6/95.2
-on the **same harness and dataset** (both unchanged since that run — the gain is
+on the **same harness and dataset** (both unchanged since that run - the gain is
 engine-side, not metric drift). † The rerank row is the 2026-06 measurement taken
 against the _older_ lexical baseline; with lexical now at 95.2 @5 its remaining
 headroom is ~1.6pt and a re-measurement is pending. The rerank pass hands the top
 20 lexical candidates to a single Haiku call (~1.4 s/query) that reorders them; it
-is **never worse than the lexical baseline by construction** — any LLM or parse
+is **never worse than the lexical baseline by construction** - any LLM or parse
 failure falls back to the original candidate order.
 
-**Stricter metric, for the record.** The rows above are `recall_any@k` — does _any_
-gold session reach the top _k_ — the metric agentmemory and MemPalace publish, so the
+**Stricter metric, for the record.** The rows above are `recall_any@k` - does _any_
+gold session reach the top _k_ - the metric agentmemory and MemPalace publish, so the
 comparison is like-for-like. Under the stricter **standard recall@k** (`|gold ∩ top-k| /
 |gold|`, the _fraction_ of all gold sessions retrieved), the lexical stack scores
 @1 = 52.9% / @5 = 87.8% / @10 = 91.0%. The whole gap is the 65% of questions with
-multiple gold sessions — any-hit needs one, fractional needs them all, and @1 is capped
+multiple gold sessions - any-hit needs one, fractional needs them all, and @1 is capped
 at 1/|gold| there; single-gold question types score identically under both.
 `benchmark/longmemeval.mjs` reports both columns (the rerank row's fractional is not yet
 measured).
@@ -981,44 +1023,45 @@ qwen-mem-lite.
 
 ### Core
 
-| Variable                                     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Default                           |
-| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
-| `QWEN_MEM_DIR`                               | Custom data directory. All databases, runtime files, and managed resources are stored here.                                                                                                                                                                                                                                                                                                                                                                                                                             | `~/.qwen-mem-lite/`               |
-| `QWEN_MEM_MODEL`                             | LLM model for background calls (episode extraction, session summaries). Accepts `haiku` or `sonnet`.                                                                                                                                                                                                                                                                                                                                                                                                                    | `haiku`                           |
-| `ANTHROPIC_API_KEY`                          | Anthropic API key. When set, all background LLM calls go directly to the Anthropic Messages API (with prompt caching) - or to the `ANTHROPIC_BASE_URL` gateway when that is set. Highest priority.                                                                                                                                                                                                                                                                                                                      | _(unset → CLI)_                   |
-| `ANTHROPIC_BASE_URL`                         | Base URL for the direct Messages API when an Anthropic-compatible gateway serves the models (Azure AI Foundry, LiteLLM, Bedrock/Vertex proxies). No `/v1` suffix - the endpoint path is appended. The `claude -p` fallback reads the same variable, so one value covers both transports.                                                                                                                                                                                                                                | `https://api.anthropic.com`       |
-| `ANTHROPIC_DEFAULT_HAIKU_MODEL`              | Model ID or gateway deployment name for the `haiku` tier. Set it when the gateway routes on deployment names rather than Anthropic model IDs (Azure Foundry deployments). The `claude -p` fallback resolves its `--model haiku` alias through it too.                                                                                                                                                                                                                                                                   | built-in `claude-haiku-4-5-…`     |
-| `ANTHROPIC_DEFAULT_SONNET_MODEL`             | Same as above for the `sonnet` tier.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | built-in `claude-sonnet-4-5-…`    |
-| `OPENROUTER_API_KEY`                         | OpenRouter API key (OpenAI-compatible). Used for background LLM calls when `ANTHROPIC_API_KEY` is **not** set. If neither key is set, calls fall back to the `claude -p` CLI.                                                                                                                                                                                                                                                                                                                                           | _(unset)_                         |
-| `OPENROUTER_MODEL`                           | Overrides the OpenRouter model slug for **all** background calls (e.g. `openai/gpt-4o-mini`, `qwen/qwen-2.5-72b-instruct`). When unset, the `QWEN_MEM_MODEL` tier maps to `anthropic/claude-haiku-4.5` (haiku) or `anthropic/claude-sonnet-4.5` (sonnet).                                                                                                                                                                                                                                                               | _(tier default)_                  |
-| `OPENAI_API_KEY`                             | API key for the generic OpenAI-compatible leg. Used for background LLM calls when neither `ANTHROPIC_API_KEY` nor `OPENROUTER_API_KEY` is set. **Optional**: a keyless local server (Ollama, vLLM, LM Studio) is configured by `OPENAI_BASE_URL` alone, and no `Authorization` header is sent in that case. These are Qwen Code's own variable names, so one env set points both the host and this plugin at the same backend.                                                                                          | _(unset)_                         |
-| `OPENAI_BASE_URL`                            | Base URL of the OpenAI-compatible endpoint, **including** the version segment — the OpenAI SDK convention: `https://api.openai.com/v1`, `http://127.0.0.1:11434/v1`, `https://dashscope.aliyuncs.com/compatible-mode/v1`. Requests go to `<OPENAI_BASE_URL>/chat/completions`. Trailing slashes are tolerated.                                                                                                                                                                                                          | `https://api.openai.com/v1`       |
-| `OPENAI_MODEL`                               | Model id for **all** tiers on the generic leg (e.g. `qwen3.5-plus`, `llama3.2`, `gpt-4o-mini`). Set this for any backend that is not api.openai.com — local servers have no `gpt-*` deployment.                                                                                                                                                                                                                                                                                                                         | _(tier default)_                  |
-| `OPENAI_MODEL_HAIKU` / `OPENAI_MODEL_SONNET` | Per-tier model ids, which is how the haiku/sonnet split survives a uniform backend. Beat `OPENAI_MODEL`.                                                                                                                                                                                                                                                                                                                                                                                                                | built-in `gpt-4o-mini` / `gpt-4o` |
-| `QWEN_MEM_LLM_PROVIDER`                      | Pin the provider leg: `api` \| `openrouter` \| `openai` \| `cli`. Needed when several provider keys are set at once and key-presence order picks the wrong one — the normal case under Qwen Code, whose `settings.json` `env` block injects `ANTHROPIC_API_KEY` into every session. A pin naming a leg that is not configured is logged and ignored rather than obeyed.                                                                                                                                                 | _(auto-detect)_                   |
-| `QWEN_MEM_DEBUG`                             | Enable debug logging (`1` to enable).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | _(disabled)_                      |
-| `MEM_QUIET_HOOKS`                            | Low-noise hooks. `1` drops the `File Lessons` / `Key Context` sections from SessionStart injection, the lesson suffix from `[mem] Related memories`, and the `WHEN TO USE` / `Decision rules` blocks from MCP server instructions. IDs and the `Recent` table still surface so `mem_get(ids=[…])` remains reachable. Intended for users running the invited-memory adopt path or who otherwise want minimal auto-injection. **Since v2.82.0 this env no longer gates auto-adopt — use `MEM_NO_AUTO_ADOPT=1` for that.** | _(disabled)_                      |
-| `MEM_NO_AUTO_ADOPT`                          | Global opt-out for auto-adopt (v2.82.0+). `1` prevents the per-SessionStart auto-write of the `CLAUDE.md` managed block across **all** projects. For per-project opt-out use `qwen-mem-lite adopt --disable` instead (writes a durable `<memdir>/.mem-no-auto-adopt` sentinel that survives marker deletion).                                                                                                                                                                                                           | _(disabled)_                      |
-| `MEM_NO_ADOPT_HINT`                          | Silences the one-line "Invited-memory not enabled: `qwen-mem-lite adopt` writes the CLAUDE.md managed block..." hint that SessionStart appends when the current project hasn't been adopted. Since v2.82.1 auto-adopt runs on every SessionStart for any install path, so this hint typically surfaces only when you've explicitly opted out (`MEM_NO_AUTO_ADOPT=1` or `qwen-mem-lite adopt --disable`).                                                                                                                | _(disabled)_                      |
+| Variable                                     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Default                           |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| `QWEN_MEM_DIR`                               | Custom data directory. All databases, runtime files, and managed resources are stored here.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | `~/.qwen-mem-lite/`               |
+| `QWEN_MEM_MODEL`                             | LLM model for background calls (episode extraction, session summaries). Accepts `haiku` or `sonnet`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `haiku`                           |
+| `ANTHROPIC_API_KEY`                          | Anthropic API key. When set, all background LLM calls go directly to the Anthropic Messages API (with prompt caching) - or to the `ANTHROPIC_BASE_URL` gateway when that is set. Highest priority.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | _(unset → CLI)_                   |
+| `ANTHROPIC_BASE_URL`                         | Base URL for the direct Messages API when an Anthropic-compatible gateway serves the models (Azure AI Foundry, LiteLLM, Bedrock/Vertex proxies). No `/v1` suffix - the endpoint path is appended. The `claude -p` fallback reads the same variable, so one value covers both transports. Plain `http://` is accepted only for a loopback host; that request always goes straight to the loopback host, even when `NODE_USE_ENV_PROXY=1` would send other requests through `HTTP_PROXY`. A value that is set but unusable skips the direct API leg, so background calls fall back to the `claude -p` CLI, and `doctor` warns.                                                                                                                                                                                                                                        | `https://api.anthropic.com`       |
+| `ANTHROPIC_DEFAULT_HAIKU_MODEL`              | Model ID or gateway deployment name for the `haiku` tier, honored on the direct API **only when `ANTHROPIC_BASE_URL` is set**; without a base URL it stays CLI-only, so the Bedrock/Vertex form of this alias is never sent to `api.anthropic.com`. Set it when the gateway routes on deployment names rather than Anthropic model IDs (Azure Foundry deployments). The `claude -p` fallback resolves its `--model haiku` alias through it too.                                                                                                                                                                                                                                                                                                                                                                                                                     | built-in `claude-haiku-4-5-...`   |
+| `ANTHROPIC_DEFAULT_SONNET_MODEL`             | Same as above for the `sonnet` tier.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | built-in `claude-sonnet-4-5-…`    |
+| `OPENROUTER_API_KEY`                         | OpenRouter API key (OpenAI-compatible). Used for background LLM calls when `ANTHROPIC_API_KEY` is **not** set. If neither key is set, calls fall back to the `claude -p` CLI.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | _(unset)_                         |
+| `OPENROUTER_MODEL`                           | Overrides the OpenRouter model slug for **all** background calls (e.g. `openai/gpt-4o-mini`, `qwen/qwen-2.5-72b-instruct`). When unset, the `QWEN_MEM_MODEL` tier maps to `anthropic/claude-haiku-4.5` (haiku) or `anthropic/claude-sonnet-4.5` (sonnet).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | _(tier default)_                  |
+| `OPENAI_API_KEY`                             | API key for the generic OpenAI-compatible leg. Used for background LLM calls when neither `ANTHROPIC_API_KEY` nor `OPENROUTER_API_KEY` is set. **Optional**: a keyless local server (Ollama, vLLM, LM Studio) is configured by `OPENAI_BASE_URL` alone, and no `Authorization` header is sent in that case. These are Qwen Code's own variable names, so one env set points both the host and this plugin at the same backend.                                                                                                                                                                                                                                                                                                                                                                                                                                      | _(unset)_                         |
+| `OPENAI_BASE_URL`                            | Base URL of the OpenAI-compatible endpoint, **including** the version segment - the OpenAI SDK convention: `https://api.openai.com/v1`, `http://127.0.0.1:11434/v1`, `https://dashscope.aliyuncs.com/compatible-mode/v1`. Requests go to `<OPENAI_BASE_URL>/chat/completions`. Trailing slashes are tolerated.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `https://api.openai.com/v1`       |
+| `OPENAI_MODEL`                               | Model id for **all** tiers on the generic leg (e.g. `qwen3.5-plus`, `llama3.2`, `gpt-4o-mini`). Set this for any backend that is not api.openai.com - local servers have no `gpt-*` deployment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | _(tier default)_                  |
+| `OPENAI_MODEL_HAIKU` / `OPENAI_MODEL_SONNET` | Per-tier model ids, which is how the haiku/sonnet split survives a uniform backend. Beat `OPENAI_MODEL`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | built-in `gpt-4o-mini` / `gpt-4o` |
+| `QWEN_MEM_LLM_PROVIDER`                      | Pin the provider leg: `api` \| `openrouter` \| `openai` \| `cli`. Needed when several provider keys are set at once and key-presence order picks the wrong one - the normal case under Qwen Code, whose `settings.json` `env` block injects `ANTHROPIC_API_KEY` into every session. A pin naming a leg that is not configured is logged and ignored rather than obeyed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | _(auto-detect)_                   |
+| `QWEN_MEM_DEBUG`                             | Enable debug logging (`1` to enable).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | _(disabled)_                      |
+| `MEM_QUIET_HOOKS`                            | Low-noise hooks. `1` drops the `File Lessons` / `Key Context` sections from SessionStart injection, the lesson suffix from `[mem] Related memories`, and the `WHEN TO USE` / `Decision rules` blocks from MCP server instructions. IDs and the `Recent` table still surface so `mem_get(ids=[…])` remains reachable. Intended for users running the invited-memory adopt path or who otherwise want minimal auto-injection. **Since v2.82.0 this env no longer gates auto-adopt - use `MEM_NO_AUTO_ADOPT=1` for that.**                                                                                                                                                                                                                                                                                                                                             | _(disabled)_                      |
+| `MEM_NO_AUTO_ADOPT`                          | Global opt-out for auto-adopt (v2.82.0+). `1` stops auto-adopt across **all** projects - no injected steering, no new local file (`CLAUDE.local.md` or `.claude/rules/qwen-mem-lite.md`), and no sync of an existing `CLAUDE.md` or local block (those stay, and keep loading, until `qwen-mem-lite unadopt`). For per-project opt-out use `qwen-mem-lite adopt --disable` instead (writes a durable `<memdir>/.mem-no-auto-adopt` sentinel that survives marker deletion).                                                                                                                                                                                                                                                                                                                                                                                         | _(disabled)_                      |
+| `MEM_NO_ADOPT_HINT`                          | Silences the one-time notices shown to you the first time a project gets `CLAUDE.local.md` or is steered by injection (the latter suggests `/adopt`, except at `$HOME`; in a project whose `AGENTS.md` the file would switch off it names that file and the setting too), the one-time notice that the guidance went to `.claude/rules/qwen-mem-lite.md`, the one-time notice that SessionStart imported `AGENTS.md` into a `CLAUDE.md` holding only the block, and the one-line "Invited-memory not enabled: `qwen-mem-lite adopt` writes the CLAUDE.md managed block..." hint that SessionStart appends when the current project hasn't been adopted. Since v2.82.1 auto-adopt runs on every SessionStart for any install path, so this hint typically surfaces only when you've explicitly opted out (`MEM_NO_AUTO_ADOPT=1` or `qwen-mem-lite adopt --disable`). | _(disabled)_                      |
 
 ### What gets injected into your context
 
-| Variable                         | Description                                                                                                                                                | Default       |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| `QWEN_MEM_ALL_TOOLS`             | `1` exposes all 18 MCP tools in `tools/list` instead of the 9 core ones (pre-v2.34.0 behavior). The 9 hidden tools stay callable by exact name either way. | _(9 core)_    |
-| `QWEN_MEM_FILE_INTEL`            | `0` disables the file-intel block injected before `Read` (past observations about the file you are about to open).                                         | _(on)_        |
-| `QWEN_MEM_FILE_INTEL_MIN_TOKENS` | Files smaller than this stay silent — file-intel only pays for itself on large files.                                                                      | `800`         |
-| `QWEN_MEM_REREAD_GUARD`          | `0` disables the warning when the same file is read twice in a session. Never fires on `offset`/`limit` paging.                                            | _(on)_        |
-| `QWEN_MEM_REREAD_MIN_TOKENS`     | Token floor below which the re-read guard stays silent.                                                                                                    | `600`         |
-| `QWEN_MEM_PRETOOL_NUDGE`         | `1` extends the pre-tool recall nudge from `Read` to other tools.                                                                                          | _(Read only)_ |
-| `QWEN_MEM_KEEP_LOW_SIGNAL`       | `1` keeps low-signal observations that the deterministic filter would otherwise drop before dedup/vector work.                                             | _(filtered)_  |
-| `QWEN_MEM_NO_TEMPLATE_REFRESH`   | `1` stops SessionStart from refreshing the adopted `CLAUDE.md` managed block when the shipped template changes.                                            | _(refreshes)_ |
-| `MEM_QUIET_HOOKS`                | See Core above — the broadest injection-volume switch.                                                                                                     | _(disabled)_  |
+| Variable                         | Description                                                                                                                                                                                                                                                                                                                                                                                                                                  | Default       |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `QWEN_MEM_ALL_TOOLS`             | `1` exposes every registered MCP tool in `tools/list` instead of only the core ones (pre-v2.34.0 behavior). The 9 hidden tools stay callable by exact name either way; `mem_search_feedback` is registered only when search telemetry is enabled.                                                                                                                                                                                            | _(9 core)_    |
+| `QWEN_MEM_FILE_INTEL`            | `0` disables the file-intel block injected before `Read` (past observations about the file you are about to open).                                                                                                                                                                                                                                                                                                                           | _(on)_        |
+| `QWEN_MEM_FILE_INTEL_MIN_TOKENS` | Files smaller than this stay silent - file-intel only pays for itself on large files.                                                                                                                                                                                                                                                                                                                                                        | `800`         |
+| `QWEN_MEM_REREAD_GUARD`          | `0` disables the warning when the same file is read twice in a session. Never fires on `offset`/`limit` paging.                                                                                                                                                                                                                                                                                                                              | _(on)_        |
+| `QWEN_MEM_REREAD_MIN_TOKENS`     | Token floor below which the re-read guard stays silent.                                                                                                                                                                                                                                                                                                                                                                                      | `600`         |
+| `QWEN_MEM_PRETOOL_NUDGE`         | `1` extends the pre-tool recall nudge from `Read` to other tools.                                                                                                                                                                                                                                                                                                                                                                            | _(Read only)_ |
+| `QWEN_MEM_KEEP_LOW_SIGNAL`       | `1` keeps low-signal observations that the deterministic filter would otherwise drop before dedup/vector work.                                                                                                                                                                                                                                                                                                                               | _(filtered)_  |
+| `QWEN_MEM_NO_TEMPLATE_REFRESH`   | `1` stops SessionStart from refreshing the adopted `CLAUDE.md` managed block when the shipped template changes.                                                                                                                                                                                                                                                                                                                              | _(refreshes)_ |
+| `QWEN_MEM_RULES_STEERING`        | `1` makes auto-adopt write its block to `.claude/rules/qwen-mem-lite.md` (git-excluded) where `CLAUDE.local.md` would stop Claude Code reading the project's `AGENTS.md`, instead of injecting it; the file reaches subagents and leaves `AGENTS.md` loading. A file written while it was on stays the channel. Off by default: a pre-registered A/B showed no gain over injection that cleared the bar (`docs/audits/20261006-d212-ab.md`). | _(inject)_    |
+| `MEM_QUIET_HOOKS`                | See Core above - the broadest injection-volume switch.                                                                                                                                                                                                                                                                                                                                                                                       | _(disabled)_  |
 
 ### Retrieval tuning
 
 Prompt-time search (`UPS_*` = the UserPromptSubmit surface). Defaults are the values the
-benchmark and A/B harness are calibrated against — changing them invalidates the numbers in
+benchmark and A/B harness are calibrated against - changing them invalidates the numbers in
 [Search Quality](#search-quality).
 
 | Variable                             | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Default             |
@@ -1030,9 +1073,9 @@ benchmark and A/B harness are calibrated against — changing them invalidates t
 | `QWEN_MEM_UPS_OR_BM25_MIN`           | Floor applied to the OR-fallback arm (looser query, needs a stricter floor).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | `30`                |
 | `QWEN_MEM_UPS_TOP_MIN`               | Minimum score for the top hit; `0` disables (useful on tiny test corpora).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `50`                |
 | `QWEN_MEM_UPS_FLOOR_REF_CORPUS`      | Reference corpus size the score floors are normalized against, so a fresh install with few rows is not silently gated to zero injections. Shared by every floor-bearing surface, including error-recall below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `584`               |
-| `QWEN_MEM_ERROR_RECALL_BM25_MIN`     | Relevance floor for the error-recall surface (memories injected after a failed Bash command). **Off by default.** Setting it to `10.5` (the calibrated value) makes the surface stay silent when its best-matching memory is not actually about the failure — the whole set is dropped, never trimmed row-by-row. **It is a real trade, not a free win:** measured on a live database at that threshold, injections fall ~37% and ~39% of firings go silent, concentrated in projects with few memories. Off by default because nothing shows the dropped rows were noise. Explore with `node benchmark/error-recall-suite.mjs --sweep`.                                                                                                                                                                                              | `0` (off)           |
+| `QWEN_MEM_ERROR_RECALL_BM25_MIN`     | Relevance floor for the error-recall surface (memories injected after a failed Bash command). **Off by default.** Setting it to `10.5` (the calibrated value) makes the surface stay silent when its best-matching memory is not actually about the failure - the whole set is dropped, never trimmed row-by-row. **It is a real trade, not a free win:** measured on a live database at that threshold, injections fall ~37% and ~39% of firings go silent, concentrated in projects with few memories. Off by default because nothing shows the dropped rows were noise. Explore with `node benchmark/error-recall-suite.mjs --sweep`.                                                                                                                                                                                              | `0` (off)           |
 | `QWEN_MEM_ERROR_RECALL_RERANK`       | `off` restores the flat keyword ordering of the error-recall surface. **On by default**, and unlike the floor above it removes nothing: memories that share only the failed command's vocabulary are demoted below memories that mention the failure itself, and when a project has none of the latter the result is unchanged. Measured on a live database over 52 real failing commands × 15 projects: the lead memory matched no error term in 42.3% of firings before, 21.5% after, with the injected row count identical.                                                                                                                                                                                                                                                                                                        | _(on)_              |
-| `QWEN_MEM_ERROR_RECALL_ON_FAILURE`   | `off` stops the plugin from recalling memories when a Bash command **fails at the host level**. On by default. Claude Code delivers failed tool calls to a separate `PostToolUseFailure` hook event, so before this the surface only ever saw commands that exited `0` while printing error-ish text — a genuinely failing build recalled nothing. Denials from your own guardrails (sandbox, policy hooks, declined permission prompts) and commands you interrupted are never recalled for.                                                                                                                                                                                                                                                                                                                                         | _(on)_              |
+| `QWEN_MEM_ERROR_RECALL_ON_FAILURE`   | `off` stops the plugin from recalling memories when a Bash command **fails at the host level**. On by default. Claude Code delivers failed tool calls to a separate `PostToolUseFailure` hook event, so before this the surface only ever saw commands that exited `0` while printing error-ish text - a genuinely failing build recalled nothing. Denials from your own guardrails (sandbox, policy hooks, declined permission prompts) and commands you interrupted are never recalled for.                                                                                                                                                                                                                                                                                                                                         | _(on)_              |
 | `QWEN_MEM_UPS_IDENTIFIER_BYPASS`     | `0` disables the bypass that lets an exact identifier match skip the score floors.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | _(on)_              |
 | `QWEN_MEM_UPS_PROMPT_FALLBACK_LIMIT` | How many past-prompt rows the fallback arm may return.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `1`                 |
 | `MEM_COVERAGE_THRESHOLD`             | Fraction of query terms a memory must cover to qualify (∈ [0,1]).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `0.4`               |
@@ -1040,70 +1083,78 @@ benchmark and A/B harness are calibrated against — changing them invalidates t
 | `MEM_OR_FALLBACK_MAX_TOKENS`         | Max query tokens allowed into the OR fallback (∈ [0,50]).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `8`                 |
 | `QWEN_MEM_CJK_PREC_MIN`              | Precision floor for CJK segmentation candidates.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `0.2`               |
 | `QWEN_MEM_AUTO_DEEP`                 | `0` disables automatic deep-search escalation (one Haiku call rewriting a weak query into keyword/concept/HyDE variants). Explicit `deep: true` still works.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | _(auto)_            |
-| `QWEN_MEM_DEEP_DISCLOSURE`           | `off` suppresses the one-line caveat appended to a multi-variant deep result. The caveat exists because deep search fills the page even when the corpus cannot answer — measured at 10 of 10 slots on queries whose answers had been removed (`benchmark/deep-search-holdout.mjs`) — and `deep` is AUTO by default on the MCP surface, i.e. it escalates precisely when the honest answer is "nothing". It does not change retrieval, ranking, or which rows are returned.                                                                                                                                                                                                                                                                                                                                                            | _(on)_              |
-| `QWEN_MEM_REACH_DISCLOSURE`          | `off` suppresses the one-line note that fires when a search's reported `total` exceeds what its pagination can hand back. The candidate pool is sized from `limit` alone and deliberately does not grow with `offset` (D#30 — an offset-scaled pool re-ranks its own prefix under RRF, so pages overlapped and gapped), while `total` is the full match count. Measured on a 128-row corpus: at the default limit of 20 the last non-empty offset is 59, so 60 of 128 rows are unreachable at any offset. The note reports that; it does not change retrieval, ranking, or which rows are returned. It stays **silent** when a filter you asked for (`tier`, or the CJK precision gate on prompts) removed rows after the count was taken — that gap is your filter, not the pool, and raising the limit would not recover it.        | _(on)_              |
-| `QWEN_MEM_NORMALIZE_CROSS_PROJECT`   | `1` restores the pre-fix behaviour where the daily unattended `normalize` runs ONCE over every project's concepts at the same time. That is how one project's stored content could steer synonym groups applied to another project's rows, so the default is now one scoped pass per project (bounded to 8 per run). The cost of the default is that `k8s` in one project and `kubernetes` in another are no longer unified automatically. Note that EVERY unscoped run fans out, including an explicit `optimize --run --task normalize` with no `--project` — this variable is the only route back to the single cross-project pass. A foreground `optimize` run prints a warning when it is set; the daily unattended pass cannot (its worker is spawned with stderr closed), so `qwen-mem-lite doctor` reports it as a ⚠ instead. | _(off)_             |
+| `QWEN_MEM_DEEP_DISCLOSURE`           | `off` suppresses the one-line caveat appended to a multi-variant deep result. The caveat exists because deep search fills the page even when the corpus cannot answer - measured at 10 of 10 slots on queries whose answers had been removed (`benchmark/deep-search-holdout.mjs`) - and `deep` is AUTO by default on the MCP surface, i.e. it escalates precisely when the honest answer is "nothing". It does not change retrieval, ranking, or which rows are returned.                                                                                                                                                                                                                                                                                                                                                            | _(on)_              |
+| `QWEN_MEM_REACH_DISCLOSURE`          | `off` suppresses the one-line note that fires when a search's reported `total` exceeds what its pagination can hand back. The candidate pool is sized from `limit` alone and deliberately does not grow with `offset` (D#30 - an offset-scaled pool re-ranks its own prefix under RRF, so pages overlapped and gapped), while `total` is the full match count. Measured on a 128-row corpus: at the default limit of 20 the last non-empty offset is 59, so 60 of 128 rows are unreachable at any offset. The note reports that; it does not change retrieval, ranking, or which rows are returned. It stays **silent** when a filter you asked for (`tier`, or the CJK precision gate on prompts) removed rows after the count was taken - that gap is your filter, not the pool, and raising the limit would not recover it.        | _(on)_              |
+| `QWEN_MEM_NORMALIZE_CROSS_PROJECT`   | `1` restores the pre-fix behaviour where the daily unattended `normalize` runs ONCE over every project's concepts at the same time. That is how one project's stored content could steer synonym groups applied to another project's rows, so the default is now one scoped pass per project (bounded to 8 per run). The cost of the default is that `k8s` in one project and `kubernetes` in another are no longer unified automatically. Note that EVERY unscoped run fans out, including an explicit `optimize --run --task normalize` with no `--project` - this variable is the only route back to the single cross-project pass. A foreground `optimize` run prints a warning when it is set; the daily unattended pass cannot (its worker is spawned with stderr closed), so `qwen-mem-lite doctor` reports it as a ⚠ instead. | _(off)_             |
 | `QWEN_MEM_AUTO_DEEP_CLI`             | `0` disables the same auto-escalation on the CLI path only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | _(auto)_            |
-| `QWEN_MEM_SCOPE_FILTER`              | `1` stops environment-scoped observations from firing on file-triggered recall. They stay reachable via search. **Leave it off**: on the face it gates, `environment` is not the low-relevance class its premise assumes — it cites at least as well as `project` (47.5% vs 44.3%, intervals overlapping), and an earlier measurement left 173 recall groups empty with it on.                                                                                                                                                                                                                                                                                                                                                                                                                                                        | _(off)_             |
+| `QWEN_MEM_SCOPE_FILTER`              | `1` stops environment-scoped observations from firing on file-triggered recall. They stay reachable via search. **Leave it off**: on the face it gates, `environment` is not the low-relevance class its premise assumes - it cites at least as well as `project` (47.5% vs 44.3%, intervals overlapping), and an earlier measurement left 173 recall groups empty with it on.                                                                                                                                                                                                                                                                                                                                                                                                                                                        | _(off)_             |
 | `QWEN_MEM_READS_CARRY`               | An episode flush collects `reads-<project>.txt` only when it will actually save an observation, so a flush that records nothing no longer discards the Read paths it swept up (42.2% of the paths a flush consumed, measured over 1122 transcripts). `0` restores the pre-v3.83.0 behaviour.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | _(on)_              |
-| `QWEN_MEM_EPISODE_INPUT_FILTER`      | `off` restores the unfiltered summarizer input, including subagent calls (the D#69 capture filter drops a subagent's own reads/edits).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | _(on)_              |
-| `QWEN_MEM_LESSON_GROUNDING`          | `0` stops requiring a summarizer lesson to quote the episode window; ungrounded lessons are dropped instead.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | _(on)_              |
-| `QWEN_MEM_LESSON_OUTPUT_CAP`         | Character cap on a lesson the summarizer may keep.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | _(default)_         |
+| `QWEN_MEM_EPISODE_INPUT_FILTER`      | What the episode summarizer may learn from. A subagent's tool calls stay out of the episode buffer unless they edit a file inside the project, and mutation probes (mutate -> RED run -> restore) and the agent's own failing inline scripts are dropped before a window is saved or summarized. `off` restores the unfiltered input.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | _(on)_              |
+| `QWEN_MEM_LESSON_GROUNDING`          | An auto-captured event keeps its lesson only when the lesson quotes the window's own diagnosis (a failing output line, a comment the edit added, or the commit message); otherwise the row is kept without it at importance 1, below every injection face. `off` keeps unquoted lessons.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | _(on)_              |
+| `QWEN_MEM_LESSON_OUTPUT_CAP`         | An auto-captured lesson that shares four consecutive words with TOOL OUTPUT is kept off the injection faces: an event keeps its row and lesson, searchable, at importance 1; a `change` observation loses the lesson. `off` restores the model's importance and the lesson.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | _(on)_              |
 | `QWEN_MEM_RECALL_FRAMING`            | `0` pins the quiet recall framing line; by default the framing line A/Bs once per session.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | _(A/B)_             |
-| `QWEN_MEM_SESSION_EVENTS`            | `1` (or `on`) restores the SessionStart `### Key Events` section — opt-in since upstream v6.13, which measured it accurate at 2/30.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | _(off)_             |
-| `QWEN_MEM_SUMMARY_TAIL`              | How many trailing lines of the final reply the fast (non-LLM) summary keeps.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | _(default)_         |
+| `QWEN_MEM_SESSION_EVENTS`            | `1` (or `on`) restores the SessionStart `### Key Events` section - opt-in since upstream v6.13, which measured it accurate at 2/30.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | _(off)_             |
+| `QWEN_MEM_SUMMARY_TAIL`              | `0`/`off` stops Stop from using the head of the final reply (first 120 characters, code blocks and line-leading markers removed) as a session's Completed line; Completed then falls back to observation titles, as before v6.18.0. A line already written gives way to the titles at the session's next turn. A later reply under 400 characters does not replace an earlier one.                                                                                                                                                                                                                                                                                                                                                                                                                                                    | _(on)_              |
 
 ### Citation tracking and feedback
 
 | Variable                               | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Default     |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| `QWEN_MEM_NO_CITATION_TRACK`           | `1` disables both the access-count bump and the decay loop — no citation bookkeeping at all.                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | _(enabled)_ |
+| `QWEN_MEM_NO_CITATION_TRACK`           | `1` disables both the access-count bump and the decay loop - no citation bookkeeping at all.                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | _(enabled)_ |
 | `MEM_DISABLE_CITATION_DECAY`           | `1` disables only the decay writes, keeping access-count bumps.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | _(enabled)_ |
-| `QWEN_MEM_CITATION_ADOPTION_THRESHOLD` | **Removed — inert.** Tuned the per-project adoption gate, which is gone (D#204). Setting it warns on stderr and changes nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                          | _(n/a)_     |
+| `QWEN_MEM_CITATION_ADOPTION_THRESHOLD` | **Removed - inert.** Tuned the per-project adoption gate, which is gone (D#204). Setting it warns on stderr and changes nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                          | _(n/a)_     |
 | `QWEN_MEM_NO_CITE_NUDGE`               | `1` fully silences the cite-back nudge.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | _(enabled)_ |
 | `QWEN_MEM_CITE_NUDGE_THRESHOLD`        | Cite-rate below which the nudge fires.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | `0.4`       |
 | `QWEN_MEM_CITE_NUDGE_WIDE_DENOMINATOR` | `1` judges the wide cite-recall ratio (every `#NN`-shaped token the model saw) instead of the lessons the hooks injected. **Half of the revert**: the threshold moved too, so pre-v6.6.0 gating needs this **and** `QWEN_MEM_CITE_NUDGE_THRESHOLD=0.6`. This switch alone gives you the wide ratio judged at 0.4, which is neither release's behaviour.                                                                                                                                                                                                                   | unset       |
 | `QWEN_MEM_CITE_NUDGE_MIN_INJECTED`     | Minimum injection volume before the ratio gate is judged at all.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | `5`         |
 | `QWEN_MEM_CITE_NUDGE_SILENCE_AFTER`    | Consecutive low-cite sessions before the nudge goes quiet; `0` = never silence.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | `3`         |
-| `QWEN_MEM_CITATION_RELEVANCE_GATE`     | Stop credits an `access_count` to a memory the session cited only when something made that memory relevant to the session — it was injected, or you typed its `#NN` yourself. `off` restores the pre-v3.84.0 behaviour of crediting every `#NN` the assistant wrote, which over-counts sessions that discuss memories in prose (release notes, audit reports): measured on real transcripts, 267 of 859 credited (id, session) pairs — 31.1% — were mentions nothing had put in front of the model. Superseded citations are redirected to their keeper on both settings. | _(on)_      |
-| `QWEN_MEM_SUBAGENT_DECAY`              | The `subagent` injection face feeds the decay loop: memories handed to a dispatched agent enter the denominator, and the citation that agent makes in its own transcript counts as the numerator. `0` returns the face to metered-but-never-decaying (v3.77–v3.82).                                                                                                                                                                                                                                                                                                       | _(on)_      |
+| `QWEN_MEM_CITATION_RELEVANCE_GATE`     | Stop credits an `access_count` to a memory the session cited only when something made that memory relevant to the session - it was injected, or you typed its `#NN` yourself. `off` restores the pre-v3.84.0 behaviour of crediting every `#NN` the assistant wrote, which over-counts sessions that discuss memories in prose (release notes, audit reports): measured on real transcripts, 267 of 859 credited (id, session) pairs - 31.1% - were mentions nothing had put in front of the model. Superseded citations are redirected to their keeper on both settings. | _(on)_      |
+| `QWEN_MEM_SUBAGENT_DECAY`              | The `subagent` injection face feeds the decay loop: memories handed to a dispatched agent enter the denominator, and the citation that agent makes in its own transcript counts as the numerator. `0` returns the face to metered-but-never-decaying (v3.77-v3.82).                                                                                                                                                                                                                                                                                                       | _(on)_      |
 | `QWEN_MEM_METRICS`                     | `1` records feature-injection counters surfaced by `qwen-mem-lite stats`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | _(off)_     |
+| `QWEN_MEM_SEARCH_TELEMETRY`            | `1` records MCP `mem_search` queries and results, prints Search IDs for optional `mem_search_feedback`, and stamps each search with the running qwen-mem-lite version.                                                                                                                                                                                                                                                                                                                                                                                                    | _(off)_     |
+
+Search telemetry rows are retained until you delete them. Inspect their volume with
+`qwen-mem-lite stats --search-telemetry`; clear them from the configured SQLite
+database (normally `~/.qwen-mem-lite/qwen-mem-lite.db`) with
+`DELETE FROM search_results; DELETE FROM search_runs; VACUUM;`. Pre-delete snapshots
+beside that database retain their earlier contents until those `.bak` files are removed.
 
 ### Background work
 
 All of these turn _off_ work that normally happens in the background. Nothing here changes
-what is already stored — only whether new work runs.
+what is already stored - only whether new work runs.
 
 | Variable                         | Description                                                                                                                                                                                                                                                                                                                                    | Default                    |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| `QWEN_MEM_SKIP_SUMMARY`          | Skip the background LLM session summary at **both** of its spawn sites — `Stop`, and the SessionStart `/clear`-handoff path. Until v5.3.0 only the `Stop` one honoured it.                                                                                                                                                                     | _(runs)_                   |
+| `QWEN_MEM_SKIP_SUMMARY`          | Skip the background LLM session summary at **both** of its spawn sites - `Stop`, and the SessionStart `/clear`-handoff path. Until v5.3.0 only the `Stop` one honoured it.                                                                                                                                                                     | _(runs)_                   |
 | `QWEN_MEM_LEGACY_STOP_UNLINK`    | Restore the pre-v5.4.0 behaviour where `Stop` deletes the session file. Documented revert path for the session-lifecycle change, not a supported configuration: it re-mints a mem session per turn and makes the `/clear` handoff unreachable again. Only reach for it on a host that fires `Stop` once per session rather than once per turn. | _(file kept)_              |
-| `QWEN_MEM_SKIP_EPISODE_LLM`      | Skip LLM extraction on episode flush — observations are still batched, just not summarized.                                                                                                                                                                                                                                                    | _(runs)_                   |
+| `QWEN_MEM_SKIP_EPISODE_LLM`      | Skip LLM extraction on episode flush - observations are still batched, just not summarized.                                                                                                                                                                                                                                                    | _(runs)_                   |
 | `QWEN_MEM_SKIP_SAVE_ENRICH`      | Skip the background Haiku call that backfills `lesson_learned` / search aliases after a save.                                                                                                                                                                                                                                                  | _(runs)_                   |
 | `QWEN_MEM_SKIP_COMPRESS`         | Skip auto-compression of old observations.                                                                                                                                                                                                                                                                                                     | _(runs)_                   |
 | `QWEN_MEM_SKIP_MAINTAIN`         | Skip the 24h auto-maintain pass (decay, purge, backup).                                                                                                                                                                                                                                                                                        | _(runs)_                   |
 | `QWEN_MEM_SKIP_OPTIMIZE`         | Skip the LLM optimization pass (re-enrich, normalize, cluster-merge).                                                                                                                                                                                                                                                                          | _(runs)_                   |
 | `QWEN_MEM_SKIP_AUTO_DEDUP_FUZZY` | Skip the MinHash near-duplicate pass, keeping exact dedup.                                                                                                                                                                                                                                                                                     | _(runs)_                   |
-| `QWEN_MEM_SKIP_MARKER_GC`        | Skip the runtime-marker sweep. **Must be exactly `1`** — unlike the other `QWEN_MEM_SKIP_*` flags, which accept any truthy value, this one compares against the string `1`. That is deliberate: a truthy check makes `=0` mean "skip", which is the opposite of what anyone typing it intends.                                                 | _(runs)_                   |
-| `QWEN_MEM_SKIP_UPDATE`           | Skip the 24h auto-update check. The check reads **this fork's** releases, never upstream's, whose tarball is the Claude-only build and would revert the Qwen support.                                                                                                                                                                          | _(runs)_                   |
-| `QWEN_MEM_UPDATE_REPO`           | Aim the auto-update check at another repository (`<owner>/<name>`) — a private mirror or another fork. The install path is fail-closed on release signatures, so releases there must be signed with a key this tree trusts (`scripts/sign-release.mjs`), or set `QWEN_MEM_SKIP_SIG_VERIFY=1` knowingly.                                        | `thenewnano/qwen-mem-lite` |
-| `QWEN_MEM_SKIP_SIG_VERIFY`       | Skip Ed25519 signature verification of a downloaded update. **Escape hatch — leaves updates unauthenticated.**                                                                                                                                                                                                                                 | _(verifies)_               |
+| `QWEN_MEM_SKIP_MARKER_GC`        | Skip the runtime-marker sweep. **Must be exactly `1`** - unlike the other `QWEN_MEM_SKIP_*` flags, which accept any truthy value, this one compares against the string `1`. That is deliberate: a truthy check makes `=0` mean "skip", which is the opposite of what anyone typing it intends.                                                 | _(runs)_                   |
+| `QWEN_MEM_SKIP_UPDATE`           | Skip the 24h auto-update check (its session-start notice too, and `self-update` / `install.mjs update` - unset it to update; a `repair` triggered by a missing module or dependency still runs). The check reads **this fork's** releases, never upstream's, whose tarball is the Claude-only build and would revert the Qwen support.         | _(runs)_                   |
+| `QWEN_MEM_UPDATE_REPO`           | Aim the auto-update check at another repository (`<owner>/<name>`) - a private mirror or another fork. The install path is fail-closed on release signatures, so releases there must be signed with a key this tree trusts (`scripts/sign-release.mjs`), or set `QWEN_MEM_SKIP_SIG_VERIFY=1` knowingly.                                        | `thenewnano/qwen-mem-lite` |
+| `QWEN_MEM_SKIP_SIG_VERIFY`       | Skip Ed25519 signature verification of a downloaded update. **Escape hatch - leaves updates unauthenticated.**                                                                                                                                                                                                                                 | _(verifies)_               |
 | `QWEN_MEM_NO_LESSON_RETRY`       | `1` disables the one-shot retry that re-asks for a missing `lesson_learned`.                                                                                                                                                                                                                                                                   | _(retries)_                |
 | `QWEN_MEM_FLUSH_TIMEOUT`         | Seconds the Stop hook waits for pending episode flushes.                                                                                                                                                                                                                                                                                       | `15`                       |
 | `QWEN_MEM_BACKUP_BUDGET_MB`      | Disk budget for backup snapshots; the next maintain/save evicts oldest snapshots past the 7-day undo grace.                                                                                                                                                                                                                                    | `256`                      |
 
 ### Experimental
 
-Off or shadow-mode by default. These are measurement arms, not finished features — behavior
+Off or shadow-mode by default. These are measurement arms, not finished features - behavior
 and names can change between releases.
 
-| Variable                   | Description                                                                                       | Default   |
-| -------------------------- | ------------------------------------------------------------------------------------------------- | --------- |
-| `QWEN_MEM_TASK_IMPERATIVE` | `on`/`1` injects the single most relevant lesson at prompt position under an imperative template. | _(off)_   |
-| `QWEN_MEM_SUBAGENT_INJECT` | Dispatch-time memory injection for subagents.                                                     | _(off)_   |
-| `QWEN_MEM_SALIENCE`        | Selects a comprehension-bridge arm (`bridge`, `bind`); unset = current default behavior.          | _(unset)_ |
-| `QWEN_MEM_EDGE_DECAY`      | Enables decay of file↔observation edges.                                                          | _(off)_   |
-| `QWEN_MEM_EDGE_DECAY_K`    | Edge-decay threshold when the flag above is on (clamped to ≥1).                                   | `3`       |
+| Variable                   | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Default   |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `QWEN_MEM_TASK_IMPERATIVE` | `on`/`1` injects the single most relevant lesson at prompt position under an imperative template.                                                                                                                                                                                                                                                                                                                                                                                                                                              | _(off)_   |
+| `QWEN_MEM_SUBAGENT_INJECT` | Dispatch-time memory injection for subagents.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | _(off)_   |
+| `QWEN_MEM_RECALL_FRAMING`  | First line of a PreToolUse / PostToolUse recall block. Unset or `legacy` = "system-injected context, continue your planned action"; `factual` = a plain statement of where the notes come from; `ab` = each session gets one of the two, for `benchmark/citation-live-replay.mjs --by-framing`. Any other value is `legacy`.                                                                                                                                                                                                                   | `legacy`  |
+| `QWEN_MEM_SALIENCE`        | Selects how the pre-edit lesson line asks for a response: unset = name a lesson's `#NN` only where it changed the edit; `verdict` = the pre-6.17 per-lesson `applied` / `n/a` verdict (the adoption row in CLAUDE.md and the detail doc keep the new wording, and since 6.17.1 the directive says it overrides them); `bind` / `bridge` = comprehension-bridge arms (`bridge` keeps the pre-6.17 verdict wording as its fallback; neither says it overrides the adopted text, so their measured wording stays fixed); `legacy` = no directive. | _(unset)_ |
+| `QWEN_MEM_EDGE_DECAY`      | Enables decay of file↔observation edges.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | _(off)_   |
+| `QWEN_MEM_EDGE_DECAY_K`    | Edge-decay threshold when the flag above is on (clamped to ≥1).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `3`       |
 
 ### Internal and test-only
 
@@ -1114,7 +1165,7 @@ Set by the tool or by the test harness. Setting these by hand is not supported:
 `CLAUDE_PLUGIN_ROOT` is set by Claude Code itself.
 
 The last two are worth one more sentence each, because they are the ones a harness reaches
-for. `QWEN_MEM_RUNTIME_DIR` relocates the runtime directory for hook-written state — markers,
+for. `QWEN_MEM_RUNTIME_DIR` relocates the runtime directory for hook-written state - markers,
 cooldowns, hook-error telemetry, the native-binding breakage marker, episode buffers.
 (`metrics/` is NOT in that set: it is a sibling of `runtime/` under the data dir and moves
 with `QWEN_MEM_DIR` only.) Before v3.93.0 it was honoured by some readers and ignored by others, so setting it
@@ -1122,24 +1173,24 @@ split the runtime rather than moving it. Installation-identity state (`install.l
 `update-state.json`, update residue) deliberately stays under `QWEN_MEM_DIR`: two
 installers pointed at different override directories would otherwise each take their own
 lock and both proceed. **`QWEN_MEM_DB_PATH` still has the split shape**, and more narrowly
-than it looks: exactly ONE component reads it — `scripts/pre-tool-recall.js` — so setting it
+than it looks: exactly ONE component reads it - `scripts/pre-tool-recall.js` - so setting it
 aims that single hook at one database and leaves the other four hook faces, the CLI and the
-MCP server on the default. Use `QWEN_MEM_DIR` — the only override
-every component respects, including the bash pre-filter — to isolate state.
+MCP server on the default. Use `QWEN_MEM_DIR` - the only override
+every component respects, including the bash pre-filter - to isolate state.
 
 Three more are set by `vitest.config.mjs` / `tests/global-setup.mjs` and exist only to
 keep a test run off the live database: `QWEN_MEM_TEST_GUARD` (`1` arms the guard, `off`
 opts a test out), `QWEN_MEM_TEST_REALDIR` (the live data dir, captured before the suite
 relocates anything) and `QWEN_MEM_TEST_SANDBOX` (this run's throwaway dir). With the
 guard armed, any resolution that lands on the live data dir is redirected to the sandbox
-instead — including from a subprocess that inherited the ambient environment. Unset in
+instead - including from a subprocess that inherited the ambient environment. Unset in
 normal use, and inert when unset.
 
 ## FAQ
 
 ### What is a memory system for coding agents?
 
-A memory system lets Claude Code remember context — coding decisions, bug fixes, file history — across sessions. By default Claude Code's context resets each session; qwen-mem-lite persists observations to a local SQLite database and re-injects them at session start and on relevant prompts.
+A memory system lets Claude Code remember context - coding decisions, bug fixes, file history - across sessions. By default Claude Code's context resets each session; qwen-mem-lite persists observations to a local SQLite database and re-injects them at session start and on relevant prompts.
 
 ### Does Claude Code have built-in long-term memory?
 
@@ -1151,15 +1202,15 @@ No. Claude Code's `CLAUDE.md` and `MEMORY.md` files act as static instruction me
 
 ### Why "lite"? What did the original claude-mem do differently?
 
-The original called an LLM on every tool use with raw JSON inputs. qwen-mem-lite batches 5–10 operations per LLM call, uses a smaller model (Haiku), and runs a deterministic code-level filter before sending anything to the model. Net result: an estimated ~600× lower cost (an architecture estimate from the cost model above, not a measured benchmark) with equivalent search quality. See the [Architecture comparison](#architecture-comparison) above.
+The original called an LLM on every tool use with raw JSON inputs. qwen-mem-lite batches 5-10 operations per LLM call, uses a smaller model (Haiku), and runs a deterministic code-level filter before sending anything to the model. Net result: an estimated ~600× lower cost (an architecture estimate from the cost model above, not a measured benchmark) with equivalent search quality. See the [Architecture comparison](#architecture-comparison) above.
 
 ### Does this work cross-project? Cross-machine?
 
-Project-scoped by default — each project has its own memory namespace. Single-machine only (SQLite, not networked). Use `mem_export` (JSON / JSONL) to back up or migrate between machines.
+Project-scoped by default - each project has its own memory namespace. Single-machine only (SQLite, not networked). Use `mem_export` (JSON / JSONL) to back up or migrate between machines.
 
 ### What about privacy? Does it call external APIs?
 
-Only the Haiku summarization step calls Anthropic's API (or the local `claude -p` CLI if no API key is set). All search, storage, and retrieval is local SQLite — no telemetry, no third-party services.
+Only the Haiku summarization step calls Anthropic's API (or the local `claude -p` CLI if no API key is set). All search, storage, and retrieval is local SQLite - no telemetry, no third-party services.
 
 ### Does it support Chinese (or other CJK) content?
 

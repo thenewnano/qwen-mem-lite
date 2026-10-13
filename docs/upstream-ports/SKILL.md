@@ -102,3 +102,9 @@ git branch -d port/<slug>
 - Translate Chinese to English; keep the rebrand; keep both hosts working.
 - When unsure whether a change is host-specific, grep both `lib/tool-names.mjs`
   and the host path helpers before deciding to skip.
+- `package.json` does not merge cleanly (both sides reorder `files` and move dep
+  pins). Do not resolve it hunk-by-hunk: keep the fork's identity fields
+  (`name` / `version` / `bin` / `repository` / `description`), take upstream's
+  newest dependency pins, and upgrade every dependency to the newest compatible
+  version. Then regenerate `package-lock.json` with `npm install` and keep
+  `npm audit --omit=dev` at 0.

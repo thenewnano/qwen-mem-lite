@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// qwen-mem-lite Hook v2 — Cognitive memory architecture
+// qwen-mem-lite Hook v2 - Cognitive memory architecture
 // Selective encoding, episodic batching, error-triggered recall
 // Hooks (fast <100ms): post-tool-use, session-start, stop
 // Background workers (slow): llm-episode, llm-summary
 //
-// ─── Session-id invariant (do not violate — see bf121aa / v2.33.2) ──────────
+// ─── Session-id invariant (do not violate - see bf121aa / v2.33.2) ──────────
 // Two session identifiers coexist in this codebase:
 //   • mem-internal id: `hook-<project>-<hash>`, produced by getSessionId().
 //     handleUserPrompt writes it into user_prompts / sdk_sessions.content_session_id
@@ -12,7 +12,7 @@
 //     for those three tables.
 //   • CC UUID: `hookData.session_id` from stdin. Use ONLY for
 //     session_handoffs.session_id (parallel-session scoping, per bf121aa).
-// Mixing them silently breaks everything — UPDATE matches 0 rows, SELECT returns
+// Mixing them silently breaks everything - UPDATE matches 0 rows, SELECT returns
 // empty, buildAndSaveHandoff early-returns, no throw. Precedent: v2.33.1 shipped
 // with the two mixed since 2026-04-12; 48 stale 'active' sessions + 0 handoffs
 // for projects--mem went unnoticed for 4 days. Keep the split or document why
@@ -55,7 +55,7 @@ import { isPluginExplicitlyDisabled } from './lib/plugin-key.mjs';
 import { readHookStdin } from './lib/hook-stdin.mjs';
 import { normalizeToolName } from './lib/tool-names.mjs';
 // Aliased: `acquireLock` from hook-episode.mjs below is the episode buffer's own
-// (argument-less) lock — a different mutex with a different staleness policy.
+// (argument-less) lock - a different mutex with a different staleness policy.
 import { acquireLock as acquireProcLock } from './lib/proc-lock.mjs';
 import {
   readEpisodeRaw,
@@ -77,7 +77,7 @@ import {
 } from './hook-episode.mjs';
 // CODE_DIR, not DB_DIR: the schema-skew notice asks which CODE homes exist, and those are
 // always homedir-rooted even when QWEN_MEM_DIR relocates the data.
-import { DB_DIR, DB_PATH, CODE_DIR } from './schema.mjs';
+import { DB_DIR, DB_PATH, CODE_DIR, refreshPlannerStats } from './schema.mjs';
 import { cleanupClaudeMdLegacyBlock, buildSessionContextLines } from './hook-context.mjs';
 import { entry as preCompactEntry } from './hook-precompact.mjs';
 import {
@@ -200,7 +200,7 @@ import {
 } from './lib/cite-back-hint.mjs';
 import { citeRecallPathFor } from './lib/cite-recall-path.mjs';
 import { detectUnpersistedDecision } from './lib/persist-reminder.mjs';
-// plugin-cache-guard.mjs loaded dynamically — pre-2.31.2 installs that auto-upgraded
+// plugin-cache-guard.mjs loaded dynamically - pre-2.31.2 installs that auto-upgraded
 // from an older hook-update.mjs SOURCE_FILES (which did not list this module) would
 // crash on static import. Degrade gracefully to no-op when the module is absent.
 let _cacheGuardCache = null;
@@ -214,12 +214,12 @@ async function loadCacheGuard() {
   return _cacheGuardCache;
 }
 // Audit 2026-09-02 P1-8. `hook.mjs` is ONE entry point for seven events, so every static
-// import is paid by every event — PostToolUse, the highest-frequency one, was loading 85
+// import is paid by every event - PostToolUse, the highest-frequency one, was loading 85
 // modules (1.37 MB) to use a handful. The six modules below are loaded inside the handler
 // that needs them instead: patha-exclude-meter, hook-update, hook-optimize, adopt-cli,
 // upgrade-banner. Measured marginal cost of the largest, same process: hook-update
 // 9.4 ms, hook-optimize 5.9, the rest 0.5-2.4 each. (registry-recommend, 5.1 ms, was a
-// sixth entry until the skill-registry subsystem was removed — see docs/audits/20260906-145304.md.)
+// sixth entry until the skill-registry subsystem was removed - see docs/audits/20260906-145304.md.)
 //
 // A failing dynamic import lands in the dispatcher's tail catch -> recordHookError, the
 // same place a failing static import would have landed the whole process; each site keeps
@@ -228,25 +228,27 @@ async function loadCacheGuard() {
 //
 // Three named by the audit are deliberately NOT converted, because the reason they are
 // loaded is not that nobody looked:
-//   * hook-llm.mjs (+16.3 ms, the single largest) — `flushEpisode` is SYNCHRONOUS and on
+//   * hook-llm.mjs (+16.3 ms, the single largest) - `flushEpisode` is SYNCHRONOUS and on
 //     the PostToolUse path, and it calls `saveEpisodeImmediate` from that module. Lazy
 //     loading needs either an async rewrite of the flush path or extracting the function,
 //     and extraction does not pay: `saveEpisodeImmediate` reaches `saveObservation`, which
-//     pulls tfidf / observation-write / activity / maintain-core anyway — only
+//     pulls tfidf / observation-write / activity / maintain-core anyway - only
 //     haiku-client would actually stop loading.
-//   * lib/db-backup.mjs and lib/compress-core.mjs (<=2.4 ms each) — their call sites sit
+//   * lib/db-backup.mjs and lib/compress-core.mjs (<=2.4 ms each) - their call sites sit
 //     in `runSessionStartAutoMaintain` and `handleAutoCompress`, both synchronous. Turning
 //     two functions and their callers async across a background-worker path costs more
 //     risk than the milliseconds are worth.
 import { SKIP_TOOLS, SKIP_PREFIXES } from './skip-tools.mjs';
 
 import { DAY_MS } from './lib/time-constants.mjs';
+import { workerDirGone } from './lib/worker-data-dir.mjs';
+import { claudeConfigDir } from './lib/data-paths.mjs';
 // Prevent recursive hooks from background claude -p calls
-// Background workers (llm-episode, llm-summary) are exempt — they're ours
+// Background workers (llm-episode, llm-summary) are exempt - they're ours
 const event = process.argv[2];
 // Events allowed to run under QWEN_MEM_HOOK_RUNNING=1 (the recursion guard at
 // the dispatch below exits everything else). EVERY spawnBackground/queue* event
-// MUST be listed here — a missing entry makes the detached worker exit(0)
+// MUST be listed here - a missing entry makes the detached worker exit(0)
 // silently, which looks identical to "worker ran and found nothing" from the
 // outside (live-probe catch, 2026-07-18: enrich-save no-oped on this line;
 // audit F6, 2026-08-14: update-check had been dead the same way, so the 24h
@@ -268,13 +270,13 @@ const BG_EVENTS = new Set([
 // Respect Claude Code plugin disable state even when legacy settings.json hooks remain.
 // install.mjs writes direct hooks into ~/.claude/settings.json, so disabling the plugin
 // in Claude UI does not automatically remove them. Exit early to make disable actually work.
-// The KEY and the predicate live in lib/plugin-key.mjs (P2-7) — install.mjs branches on the
+// The KEY and the predicate live in lib/plugin-key.mjs (P2-7) - install.mjs branches on the
 // same decision, and a key that drifts on one side leaves the user with a plugin they
 // switched off and a settings.json hook set that never noticed. Reading the file stays here:
 // install.mjs already holds a parsed settings object when it asks, this process does not.
 function pluginDisabledHere() {
   try {
-    const settingsPath = join(homedir(), '.claude', 'settings.json');
+    const settingsPath = join(claudeConfigDir(), 'settings.json');
     return isPluginExplicitlyDisabled(JSON.parse(readFileSync(settingsPath, 'utf8')));
   } catch {
     // Missing or unparseable settings.json → not disabled. Fail OPEN: a corrupt file must
@@ -285,13 +287,16 @@ function pluginDisabledHere() {
 
 if (event && pluginDisabledHere()) process.exit(0);
 if (process.env.QWEN_MEM_HOOK_RUNNING && !BG_EVENTS.has(event)) process.exit(0);
+// A worker whose data dir was removed before it started does nothing: no LLM call, no network,
+// and no write that would re-create the dir (D#265).
+if (BG_EVENTS.has(event) && workerDirGone(DB_DIR)) process.exit(0);
 
 // Crash-safe: flush episode buffer on unexpected termination to prevent data loss
 // Uses flag-based approach to avoid calling file I/O inside signal handlers,
 // which can deadlock if the signal fires during a main-thread file operation.
 let _shutdownRequested = false;
 // R10 P3-2: the salvage belongs to the INTERACTIVE hook only. It was installed for every
-// invocation, background workers included — and the seven of them (llm-episode, llm-summary,
+// invocation, background workers included - and the seven of them (llm-episode, llm-summary,
 // auto-compress, llm-optimize, auto-maintain, enrich-save, update-check) do not own the
 // live `ep-<project>.json` buffer. A `pkill node` or a machine shutdown therefore had every
 // running worker flush AND DELETE the buffer an interactive session was still appending to,
@@ -315,7 +320,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
       try {
         const ep = readEpisodeRaw();
         if (ep && ep.entries && ep.entries.length > 0) {
-          // Persist a rule-based observation synchronously — the ONLY thing that
+          // Persist a rule-based observation synchronously - the ONLY thing that
           // salvages the in-flight episode on abnormal termination (audit #6). A
           // detached llm-episode child can't be spawned from a dying process, so no
           // ep-flush-* file is written here: it would have NO consumer AND would make
@@ -337,7 +342,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
               for (const sub of planEpisodeFlush(ep)) saveEpisodeImmediate(sub, db);
               // episodeFile(), not a second spelling of `ep-<project>.json`: this is a
               // DESTRUCTIVE step on the buffer the salvage just persisted, and a path that
-              // drifts from the accessor deletes nothing while reporting success — the next
+              // drifts from the accessor deletes nothing while reporting success - the next
               // fire then salvages the same entries again. Every other flush path
               // (PostToolUse, Stop, SessionStart) already unlinks through the accessor.
               try {
@@ -373,7 +378,7 @@ if (!event) process.exit(0);
 
 // hookEventName serves two roles: it is written into the emitted receipt JSON
 // AND it gates emission via RECEIPT_EVENTS. Callers MUST pass their triggering
-// event name so both work — Stop falls outside the allowlist, so its receipt
+// event name so both work - Stop falls outside the allowlist, so its receipt
 // is skipped entirely (CC's Stop schema rejects hookSpecificOutput at the root,
 // not just on event-name mismatch). The episode still flushes to DB and
 // spawns llm-episode background enrichment; only the stdout receipt is gated.
@@ -381,14 +386,14 @@ if (!event) process.exit(0);
 // Stop rejection as event-name mismatch; v2.33.4 is the root-cause fix.
 const RECEIPT_EVENTS = new Set(['PostToolUse', 'SessionStart', 'UserPromptSubmit']);
 // Returns false when the buffer was left for a retry (no openable DB, or the flush file could
-// not be written) — adoptOrphanEpisodes puts a claimed buffer back on false.
+// not be written) - adoptOrphanEpisodes puts a claimed buffer back on false.
 function flushEpisode(episode, hookEventName = 'PostToolUse', receiverSession = null) {
   if (!episode || episode.entries.length === 0) return true;
 
   // Acquire the DB ONCE, up front, and bail before touching anything destructive when it
   // will not open. Every persistence step below is a no-op without it (saveObservation
   // returns null on a null db; the detached llm-episode worker hits the same wall), yet
-  // the `unlinkSync(episodeFile())` at the tail used to run regardless — so a DB that
+  // the `unlinkSync(episodeFile())` at the tail used to run regardless - so a DB that
   // could not be opened deleted the session's captured work while the hook exited 0 with
   // empty stdout AND empty stderr (audit B1, 2026-08-14). Returning here leaves the
   // buffer on disk for the next fire to retry; openDb() has already recorded the failure
@@ -412,14 +417,14 @@ function flushEpisode(episode, hookEventName = 'PostToolUse', receiverSession = 
 //
 // THE CAP COUNTS LINES, NOT DISTINCT PATHS, and that is the whole point. The writer
 // (`scripts/post-tool-use.sh`) appends one line per Read with no dedup, so the file grows
-// by REPEATED lines — a session re-reading the same five files forever. The first draft
+// by REPEATED lines - a session re-reading the same five files forever. The first draft
 // compared the DISTINCT set against the cap, which is the quantity that stays tiny
 // (measured on the live corpus: median 1, p95 6, max 21 carried paths), so the valve could
 // not fire on the growth mode it exists to bound. That is this repo's recurring
 // "predicate that cannot return true reports the defect as absent" shape, and the pre-tag
 // review caught it here.
 //
-// Still a backstop and not a relevance bound — the same distinction
+// Still a backstop and not a relevance bound - the same distinction
 // IMPERATIVE_POOL_BACKSTOP documents for its pool.
 const READS_CARRY_MAX_LINES = 20000;
 
@@ -429,7 +434,7 @@ const READS_CARRY_MAX_LINES = 20000;
  *
  * @param {string} readsFile
  * @returns {number} distinct paths now held; 0 when there is no reads file (the COMMON
- *   case — no Read since the last collect); -1 only when the file exists but could not be
+ *   case - no Read since the last collect); -1 only when the file exists but could not be
  *   read or the trim threw. The three-way split is the point: `episode_reads` is the ruler
  *   for this flag, and folding "nothing to hold" together with "could not look" would put
  *   the normal case and the broken case on the same value. A first draft returned -1 for
@@ -460,7 +465,7 @@ function trimReadsFile(readsFile) {
  * planEpisodeFlush's subs with lib/episode-input-filter.mjs applied (D#69). Identity when
  * the filter is off or drops nothing, so the common case still hands flushEpisodeGroup
  * the buffer object itself. Records one `episode_input_filter` metric row per flush that
- * dropped anything — the forward meter for the filter's reach.
+ * dropped anything - the forward meter for the filter's reach.
  */
 function summaryInputSubs(subs) {
   if (!episodeInputFilterEnabled()) return subs;
@@ -483,14 +488,14 @@ function flushEpisodeWithDb(db, episode, hookEventName, receiverSession = null) 
   // single-session (or all-legacy) case → flushEpisodeGroup(episode) is identical
   // to pre-grouping. Two+ interleaved sessions each get their own sub-episode.
   //
-  // D#69: mutation-probe and tool-slip entries leave each sub BEFORE anything reads it —
+  // D#69: mutation-probe and tool-slip entries leave each sub BEFORE anything reads it -
   // significance, the immediate save, and the llm-episode summarizer all see the filtered
   // episode, so a probe's intentional RED run can neither make a window "significant"
   // nor become a lesson. A sub left with no entries is not flushed at all.
   const subs = summaryInputSubs(planEpisodeFlush(episode));
 
   // D#178. The reads file used to be consumed right here, unconditionally, BEFORE
-  // anything knew whether this flush would persist an observation — and an
+  // anything knew whether this flush would persist an observation - and an
   // insignificant flush then dropped every path it had just swept up, leaving the
   // next observation that DID save with files_read = []. Measured over 1122 real
   // transcripts (benchmark/episode-flush-replay.mjs): 42.2% of the reads a flush
@@ -501,11 +506,11 @@ function flushEpisodeWithDb(db, episode, hookEventName, receiverSession = null) 
   // touched. An insignificant flush now leaves the file alone and the next
   // significant one collects the union. Ages measured on the same corpus: the reads
   // that survive attach a median 1.7 minutes and p90 10.1 minutes later than they do
-  // today, which is the whole cost — a read carried across two insignificant flushes
+  // today, which is the whole cost - a read carried across two insignificant flushes
   // lands on the edit it preceded rather than on nothing.
   //
   // ON by default since v3.83.0. `QWEN_MEM_READS_CARRY=0` restores the pre-D#178
-  // behavior byte for byte — kept as an off switch because this changes what a released
+  // behavior byte for byte - kept as an off switch because this changes what a released
   // artifact stores, and a defect here is invisible from the outside (the symptom is an
   // absent field, which reads exactly like "there was nothing to record").
   const carryReads = !['0', 'off', 'false', 'no'].includes(
@@ -514,7 +519,7 @@ function flushEpisodeWithDb(db, episode, hookEventName, receiverSession = null) 
   const willPersist = !carryReads || subs.some((s) => episodeHasSignificantContent(s));
 
   // Collect Read file paths tracked by post-tool-use.sh
-  // Use rename to atomically collect — prevents losing concurrent appends
+  // Use rename to atomically collect - prevents losing concurrent appends
   const readsPath = readsFile(episode.project || inferProject());
   const readsCollect = readsPath + `.collect-${Date.now()}`;
   let readsHeld = 0;
@@ -544,8 +549,8 @@ function flushEpisodeWithDb(db, episode, hookEventName, receiverSession = null) 
     // path or two in a session that has already read 20000 times.
     readsHeld = trimReadsFile(readsPath);
   }
-  // planEpisodeFlush now runs BEFORE the collection, so the multi-session branch — the
-  // one that builds fresh objects rather than returning [episode] by reference — copied
+  // planEpisodeFlush now runs BEFORE the collection, so the multi-session branch - the
+  // one that builds fresh objects rather than returning [episode] by reference - copied
   // whatever filesRead the buffer happened to carry, not what was just collected. The
   // single-group path is identity and unaffected; this line is what keeps the two paths
   // saying the same thing, and without it concurrent same-project sessions would lose
@@ -557,7 +562,7 @@ function flushEpisodeWithDb(db, episode, hookEventName, receiverSession = null) 
   for (const sub of subs) {
     const r = flushEpisodeGroup(sub, db);
     if (r === 'writefail') {
-      // Single-group: preserve the original early return — buffer left un-unlinked
+      // Single-group: preserve the original early return - buffer left un-unlinked
       // for a later retry, no receipt. Multi-group: skip only the failed group and
       // keep the rest. The asymmetry is safe: each group's immediate obs is persisted
       // BEFORE its flush-file write, so re-flushing the whole buffer would re-emit
@@ -574,16 +579,16 @@ function flushEpisodeWithDb(db, episode, hookEventName, receiverSession = null) 
   // D#178 instrument, and the ruler for the flag above. With QWEN_MEM_READS_CARRY
   // off, a row with `significant: false` and `readsConsumed > 0` is that many Read
   // paths collected and dropped on the floor. With it on, those rows become
-  // `readsConsumed: 0, readsHeld: N` — the same event, now recording a deferral
+  // `readsConsumed: 0, readsHeld: N` - the same event, now recording a deferral
   // instead of a loss, so one query over this sink covers both arms.
   // Emitted HERE and not in flushEpisodeGroup on purpose: planEpisodeFlush copies
   // the SAME filesRead array into every sub, so a per-group counter double-counts
   // the multi-session case, and the destroyed/kept decision is `anySignificant`,
   // which only exists at this level. `writefail` is its own arm because on the SIGNIFICANT
-  // path it keeps the episode buffer for a retry the reads file can no longer serve — it
+  // path it keeps the episode buffer for a retry the reads file can no longer serve - it
   // was already unlinked, so the retry re-collects nothing. A writefail flush is NOT
   // necessarily one whose significance said collect: `flushEpisodeGroup` writes its flush
-  // file outside the significance branch, so an insignificant flush can fail there too —
+  // file outside the significance branch, so an insignificant flush can fail there too -
   // and with the flag on that case is strictly better than before, because the reads file
   // was never touched and the retry still finds it.
   // Off unless QWEN_MEM_METRICS=1, like every other row in this sink.
@@ -602,7 +607,7 @@ function flushEpisodeWithDb(db, episode, hookEventName, receiverSession = null) 
   // Stop rejects hookSpecificOutput.
   //
   // The `[mem] episode flushed: N entries (Bash×9, …)` line that used to lead this block is
-  // gone. It was bookkeeping — the model can do nothing with it — injected on every
+  // gone. It was bookkeeping - the model can do nothing with it - injected on every
   // significant flush (7 times after the R1 fix deployed, and in the analysing session
   // itself; docs/audits/20260926-154904-session-history-analysis-r2.md §3). Only the two
   // hints below are actionable, so the block is emitted only when one of them fires.
@@ -611,13 +616,13 @@ function flushEpisodeWithDb(db, episode, hookEventName, receiverSession = null) 
       const lines = [];
       // v2.83: error→fix nudge lifted to lib/cite-back-hint.mjs::buildUnsavedBugfixHint
       // so the wording (count + "Save now" verb) stays in sync with cite-back.
-      // §9-B: TDD reds stay silent (inside the builder), and a session is nudged once — the
+      // §9-B: TDD reds stay silent (inside the builder), and a session is nudged once - the
       // claim is taken only when the hint would actually be shown.
-      // Keyed by the session that RECEIVES this receipt — the hook invocation's own — not by
+      // Keyed by the session that RECEIVES this receipt - the hook invocation's own - not by
       // whose entries the buffer holds: one project buffer can mix concurrent sessions.
       const bugfixHint = buildUnsavedBugfixHint(episode);
       if (bugfixHint && claimBugfixNudge(RUNTIME_DIR, receiverSession)) lines.push(bugfixHint);
-      // v2.81: cite-back hint — fires when this episode edits a file that
+      // v2.81: cite-back hint - fires when this episode edits a file that
       // PreToolUse:Read/Edit nudged earlier in the same session. Precision
       // signal (we know the file was warned about); orthogonal to the
       // bugfix-shape nudge above and may co-fire.
@@ -625,7 +630,7 @@ function flushEpisodeWithDb(db, episode, hookEventName, receiverSession = null) 
       if (citeBack) lines.push(citeBack);
       // Queued, not written: when this receipt flushes at SessionStart (leftover
       // episode after /clear or /compact) the startup dashboard also has something
-      // to say, and two envelopes on one stdout is not a JSON document — Claude
+      // to say, and two envelopes on one stdout is not a JSON document - Claude
       // Code's parser takes the whole thing as plain text (lib/hook-stdout.mjs).
       // The older comment here claimed a line-based parser made two objects safe
       // as long as each got its own line; the 2.1.233 bundle has no such parser.
@@ -645,17 +650,17 @@ function flushEpisodeWithDb(db, episode, hookEventName, receiverSession = null) 
 // Save one episode-shaped object: immediate rule-based observation (if
 // significant) + flush file + llm-episode enrichment spawn. Extracted from
 // flushEpisode so each CC-session slice (from planEpisodeFlush) flushes
-// independently and carries its OWN savedId into its OWN flush file — the
+// independently and carries its OWN savedId into its OWN flush file - the
 // llm-episode worker upgrades the pre-saved obs by that id. Returns
 // 'significant' | 'insignificant' | 'writefail'. QWEN_MEM_SKIP_EPISODE_LLM
 // suppresses the detached enrichment spawn (test determinism; sibling of
-// QWEN_MEM_SKIP_COMPRESS / _OPTIMIZE) — the synchronous immediate obs still lands.
+// QWEN_MEM_SKIP_COMPRESS / _OPTIMIZE) - the synchronous immediate obs still lands.
 function flushEpisodeGroup(ep, db) {
   const verdict = explainSignificance(ep);
   const isSignificant = verdict.significant;
   // Audit P2-14 instrument: moving Grep into the bash prefilter would save 85ms per Grep
   // (91.2ms handoff vs 6.1ms for the already-skipped Read), but nothing records how many
-  // episodes are kept ONLY because of their Greps — and demoting what the product
+  // episodes are kept ONLY because of their Greps - and demoting what the product
   // remembers on a deduction is how work disappears silently. This is that counter.
   // Off unless QWEN_MEM_METRICS=1, like every other row in this sink.
   recordMetric(DB_DIR, {
@@ -669,7 +674,7 @@ function flushEpisodeGroup(ep, db) {
 
   // Immediate save: rule-based observation for instant visibility; the LLM
   // background worker upgrades title/narrative/importance later. `db` is
-  // flushEpisode's handle — passed in so the caller owns open/close and the whole
+  // flushEpisode's handle - passed in so the caller owns open/close and the whole
   // flush is gated on one availability check (B1). saveEpisodeImmediate re-checks
   // significance itself, so the guard here is about the flush-file decision below.
   if (isSignificant) {
@@ -679,7 +684,7 @@ function flushEpisodeGroup(ep, db) {
 
   const flushFile = join(RUNTIME_DIR, `ep-flush-${Date.now()}-${randomUUID().slice(0, 8)}.json`);
   try {
-    writeFileSync(flushFile, JSON.stringify(ep), { mode: 0o600 }); // captured paths + scrubbed activity — owner-only (sec P3-2)
+    writeFileSync(flushFile, JSON.stringify(ep), { mode: 0o600 }); // captured paths + scrubbed activity - owner-only (sec P3-2)
   } catch {
     return 'writefail';
   }
@@ -711,7 +716,7 @@ async function handlePostToolUse() {
   try {
     hookData = JSON.parse(raw.text);
   } catch {
-    // Truncated JSON — try to salvage tool_name from the prefix
+    // Truncated JSON - try to salvage tool_name from the prefix
     if (raw.truncated) {
       debugLog('WARN', 'postToolUse', 'stdin truncated at 256KB, attempting salvage');
       const m = raw.text.match(/"tool_name"\s*:\s*"([^"]+)"/);
@@ -727,7 +732,7 @@ async function handlePostToolUse() {
   // absorbed, so the observation was dropped with nothing attributable behind it. Guard the
   // type (parity with scripts/pre-skill-bridge.js:43) and RECORD it rather than dropping
   // quietly: PostToolUse is the plugin's whole capture path, so a host field-shape change
-  // would kill every observation, and hook-errors/ is the only window into that — the same
+  // would kill every observation, and hook-errors/ is the only window into that - the same
   // blindness that let the v3.60 binding outage run for 4 days. Volume is bounded by the
   // recorder's 14-day retention and one short line per fire.
   if (typeof tool_name !== 'string') {
@@ -742,11 +747,11 @@ async function handlePostToolUse() {
 
   // Qwen Code sends its own runtime ids (`write_file`, `read_file`, `edit`,
   // `run_shell_command`) where Claude Code sent `Write`/`Read`/`Edit`/`Bash`. Everything
-  // below branches on the Claude spelling, so translate once, here — lib/tool-names.mjs
+  // below branches on the Claude spelling, so translate once, here - lib/tool-names.mjs
   // carries the mapping and the reasoning. Unknown names pass through untouched.
   const toolName = normalizeToolName(tool_name);
 
-  // D9: scripts/post-tool-use.sh records a Read itself and never gets here — except when it
+  // D9: scripts/post-tool-use.sh records a Read itself and never gets here - except when it
   // cannot spell the reads file: no host pid and a project directory with non-ASCII
   // characters, whose name needs Unicode classes bash does not have. Then it hands the Read
   // on, and it is recorded here under the same name. Owner-only, like the bash writer.
@@ -815,7 +820,7 @@ async function handlePostToolUse() {
     isSignificant:
       EDIT_TOOLS.has(tool_name) || bashSig?.isSignificant || (tool_name === 'Bash' && bashWrites.length > 0),
     bashSig: bashSig || null,
-    // CC UUID from hook stdin — lets flushEpisode split a buffer shared by
+    // CC UUID from hook stdin - lets flushEpisode split a buffer shared by
     // concurrent same-project sessions into per-session observations. Null for
     // legacy/stdin-less invocations (→ single __none__ group = old behavior).
     ccSession: hookData.session_id || null,
@@ -833,12 +838,12 @@ async function handlePostToolUse() {
   };
 
   // Tier 2 G: Error-triggered recall. Gated on isHardError (genuine failure
-  // fingerprint), NOT isError — the loose gate fired "Related memories found for
+  // fingerprint), NOT isError - the loose gate fired "Related memories found for
   // this error" on exit-0 commands whose output merely contained the word "error"
   // (G8, roadmap 2026-07-18), and was self-recursive: the hint string itself
   // contains 'error', so a later command echoing it re-triggered recall.
   // entry.isError above keeps the loose semantics on purpose (episode narrative).
-  // N2: a hard error is not always one the corpus can explain — see errorRecallSuppressed.
+  // N2: a hard error is not always one the corpus can explain - see errorRecallSuppressed.
   // PostToolUse never sees a non-zero exit (the host routes those to PostToolUseFailure),
   // so this path is exit 0 by construction.
   // `bashWrites` is passed because this call joins the buffer only after recall has run.
@@ -852,18 +857,18 @@ async function handlePostToolUse() {
 
   // D#69: a subagent's calls (the host sets `agent_id` only inside a subagent) stay out of
   // the episode buffer. benchmark/key-events-input-replay.mjs over this repo's transcripts
-  // (2026-09-26): 212 of 1471 significant windows were made ENTIRELY of subagent calls —
-  // reviewer probes in an extracted tree, fixture paths such as /repo/alpha.mjs — and 4 of
+  // (2026-09-26): 212 of 1471 significant windows were made ENTIRELY of subagent calls -
+  // reviewer probes in an extracted tree, fixture paths such as /repo/alpha.mjs - and 4 of
   // the audit's 16 WRONG events came from such windows (counted under that drop-all rule).
   // Sharing the main thread's buffer
   // also split its episodes. Error recall above still answers the subagent; only the
   // summarizer input is withheld. Opt out: QWEN_MEM_EPISODE_INPUT_FILTER=off.
   //
   // Narrowed from "every subagent call": 24 of 112 subagents in this repo's transcripts
-  // (2026-09-26) wrote files inside the project — implementer agents, whose edits ARE the
+  // (2026-09-26) wrote files inside the project - implementer agents, whose edits ARE the
   // session's work. A subagent call is kept when it edits a file under the project dir.
   // This is a trade, not a free narrowing: 3 of the audit's 4 subagent-born WRONG events
-  // (1106, 1217, 1827) involved such project edits, so their windows are kept again — the
+  // (1106, 1217, 1827) involved such project edits, so their windows are kept again - the
   // replay then drops each of their lessons at the grounding check (no quotable
   // diagnosis), so none of the 16 WRONG lessons is injected under either rule. Kept
   // entries still pass the probe filter.
@@ -974,7 +979,7 @@ function errorRecallSuppressed(toolInput, response, ccSession, exitZero, current
  * @param {string} response The failure text.
  * @param {{eventName?: string, metricEvent?: string}} [opts] Which hook event this is
  *   answering. The envelope carries exactly one hookEventName and the host rejects a
- *   mismatch, so the PostToolUseFailure path MUST pass its own — defaulting silently
+ *   mismatch, so the PostToolUseFailure path MUST pass its own - defaulting silently
  *   would emit a PostToolUse envelope from a PostToolUseFailure hook.
  */
 function triggerErrorRecall(db, toolInput, response, opts = {}) {
@@ -983,12 +988,12 @@ function triggerErrorRecall(db, toolInput, response, opts = {}) {
   try {
     const project = inferProject();
 
-    // Extract error keywords (D#136). The extractor's line filter is HARD_ERROR_RE —
-    // the very predicate isHardError above used — OR'd with the prose one, so anything
+    // Extract error keywords (D#136). The extractor's line filter is HARD_ERROR_RE -
+    // the very predicate isHardError above used - OR'd with the prose one, so anything
     // that reaches this line is also something we can read terms from. Before that,
     // the two lists diverged and npm's own output fell in the gap: `npm ERR! code
     // ENOENT` has no `error`/`fail`/`not found`, so extraction yielded nothing and the
-    // query degraded to ['npm','run','build'] — the command's topic, not the failure.
+    // query degraded to ['npm','run','build'] - the command's topic, not the failure.
     // planErrorRecall still returns null when nothing usable survives (empty output, or
     // only stop words), and then we stay silent rather than query the command's topic.
     // Selection lives in lib/error-recall-core.mjs so the offline calibration suite
@@ -1003,16 +1008,16 @@ function triggerErrorRecall(db, toolInput, response, opts = {}) {
 
     const out = formatErrorRecallHints(rows);
     if (out) {
-      // G13: this surface feeds the citation denominator but had zero metering —
+      // G13: this surface feeds the citation denominator but had zero metering -
       // the G8 gate change (isError→isHardError) could not be volume-verified
       // from metrics. Counter only; no latency (query is bundled in the hook).
       recordMetric(DB_DIR, { event: metricEvent, returned: rows.length });
-      // MED-3 (full audit 2026-07-16): go through the envelope, NOT raw stdout —
+      // MED-3 (full audit 2026-07-16): go through the envelope, NOT raw stdout -
       // a raw multi-line write corrupts a co-emitted episode-flush receipt.
       // The follow-up correction (2026-08-17): "two separate JSON lines each parse
       // independently" was false. A hard-error Bash call reaches BOTH this and
       // flushEpisode in one handlePostToolUse, and two documents make the parser
-      // fall back to plain text — which the renderer drops entirely for
+      // fall back to plain text - which the renderer drops entirely for
       // PostToolUse. Both receipts vanished. Queue; one envelope is written at exit.
       queueHookContext(eventName, out);
     }
@@ -1022,12 +1027,12 @@ function triggerErrorRecall(db, toolInput, response, opts = {}) {
 }
 
 /**
- * PostToolUseFailure — the event that carries tool calls the HOST judged failed (D#170).
+ * PostToolUseFailure - the event that carries tool calls the HOST judged failed (D#170).
  *
  * WHY A SECOND ENTRY POINT AT ALL. `PostToolUse` does not fire for a failed tool call;
  * Claude Code routes those here. Registering only `PostToolUse` therefore made this
  * plugin blind to every host-flagged failure, and the only "failures" error-recall ever
- * saw were commands that exited 0 while printing error-ish text — the classic shape
+ * saw were commands that exited 0 while printing error-ish text - the classic shape
  * being `cmd 2>&1 | tail`, where the pipe launders a failure into a success. Verified on
  * the 2.1.241 bundle (the event and its schema) and by live probe (two genuinely failing
  * Bash calls, one with a full stack frame, left zero trace in the episode buffer and the
@@ -1035,19 +1040,19 @@ function triggerErrorRecall(db, toolInput, response, opts = {}) {
  *
  * THE PAYLOAD IS NOT PostToolUse'S. There is no `tool_response`; the failure text is in
  * `error`, and `is_interrupt` marks a user cancellation. Reading `tool_response` here
- * would find undefined and silently do nothing — which is exactly how this class of
+ * would find undefined and silently do nothing - which is exactly how this class of
  * wiring bug stays invisible, so the field names are asserted in the tests.
  *
  * DELIBERATELY NARROWER THAN THE EVENT. Only `Bash` (this surface queries on a command
  * plus its output; no other tool has that shape), only when the failure came from a
- * PROGRAM rather than from the agent's own tool chain (lib/tool-refusal.mjs — 68.9% of
+ * PROGRAM rather than from the agent's own tool chain (lib/tool-refusal.mjs - 68.9% of
  * host-flagged failures on the maintainer's machine were guardrails working), and NOT
  * feeding the episode buffer. That last exclusion is scope, not oversight: episode
  * entries flow into LLM summarisation and the bugfix save-nudge, whose behaviour under a
  * sudden influx of failures has not been measured, and this change is already worth a
  * 3.5x increase in this surface's firing volume.
  *
- * NO `isHardError` GATE HERE, AND THAT IS THE POINT — stated because review found it
+ * NO `isHardError` GATE HERE, AND THAT IS THE POINT - stated because review found it
  * unwritten and it is a real semantic difference between the two entry points. On the
  * PostToolUse path the host says nothing about success, so `isHardError` has to GUESS
  * from vocabulary whether a command failed; here the host has already ruled, and
@@ -1055,7 +1060,7 @@ function triggerErrorRecall(db, toolInput, response, opts = {}) {
  * consequence: `Segmentation fault (core dumped)` and a Rust `panicked at` both score
  * `isHardError === false` (the first has no error word, the second loses on `\bpanic\b`'s
  * word boundary), so until this event they could not reach term extraction at all. They
- * can now. That is the coverage this event was wired for, not an oversight — but it does
+ * can now. That is the coverage this event was wired for, not an oversight - but it does
  * mean ERROR_NAMER_RE's `SIG…`/`panicked` alternatives went live here first.
  *
  * Off switch: QWEN_MEM_ERROR_RECALL_ON_FAILURE=off.
@@ -1083,7 +1088,7 @@ async function handlePostToolFailure() {
   //
   // A payload whose SHAPE is wrong is recorded, not just dropped. Tests pin the field
   // names against a payload we construct; they cannot see the host renaming `error` or
-  // changing `tool_name`'s type, and this whole path fails silently by design — the
+  // changing `tool_name`'s type, and this whole path fails silently by design - the
   // v3.60 binding outage ran four days on exactly that combination, and hook-errors/ was
   // the only window that would have shown it. Volume is bounded by the recorder's
   // 14-day retention and one short line per fire.
@@ -1101,7 +1106,7 @@ async function handlePostToolFailure() {
   if (error !== undefined && typeof error !== 'string') {
     recordHookError(
       'post-tool-failure:error-type',
-      new TypeError(`error is ${typeof error}, expected string — host payload shape may have changed`),
+      new TypeError(`error is ${typeof error}, expected string - host payload shape may have changed`),
       RUNTIME_DIR,
     );
     return;
@@ -1124,7 +1129,7 @@ async function handlePostToolFailure() {
   try {
     db = openDb();
     if (!db) return;
-    // Same selection, same rendering, same core as the PostToolUse path — only the event
+    // Same selection, same rendering, same core as the PostToolUse path - only the event
     // name on the envelope differs. A second copy of the query here is the twin-drift
     // defect this project keeps paying for.
     triggerErrorRecall(db, toolInput, error, {
@@ -1140,7 +1145,7 @@ async function handlePostToolFailure() {
   } finally {
     // No flushHookStdout() here: the single flush after the event switch owns writing
     // the envelope, and two flush points is how a process ends up emitting two JSON
-    // documents — the degradation that made BOTH receipts vanish in v3.68.
+    // documents - the degradation that made BOTH receipts vanish in v3.68.
     if (db)
       try {
         db.close();
@@ -1156,7 +1161,7 @@ async function handlePostToolFailure() {
 // grepping for phase comments. Audit 2026-09-05 P2-1 asked for the split
 // `handleSessionStart` already has (runSessionStartDbMutations,
 // saveHandoffAndFastSummary, buildStartupDashboardText). These four are that code,
-// moved and named — no behaviour, no ordering and no error handling changed.
+// moved and named - no behaviour, no ordering and no error handling changed.
 //
 // Each phase keeps the try/catch it had. That nesting is not incidental: a failing
 // fast-summary or citation scan must not take the rest of Stop down, while the
@@ -1166,12 +1171,12 @@ async function handlePostToolFailure() {
 /**
  * Read Claude Code's real session_id and transcript path from hook stdin.
  *
- * This is the stable CC identifier — the mem plugin's file-based getSessionId()
+ * This is the stable CC identifier - the mem plugin's file-based getSessionId()
  * collides across parallel sessions for the same project (see docs/bug.txt).
  * Both are null when stdin is unavailable; the caller falls back to the local id.
  */
 async function readStopHookInput() {
-  // This is the stable CC identifier — the mem plugin's file-based getSessionId()
+  // This is the stable CC identifier - the mem plugin's file-based getSessionId()
   // collides across parallel sessions for the same project (see docs/bug.txt).
   let ccSessionId = null;
   let transcriptPath = null;
@@ -1185,7 +1190,7 @@ async function readStopHookInput() {
       transcriptPath = hookData.transcript_path;
     }
   } catch {
-    /* stdin unavailable — fall back to local session id */
+    /* stdin unavailable - fall back to local session id */
   }
   return { ccSessionId, transcriptPath };
 }
@@ -1203,13 +1208,13 @@ function flushEpisodeAtStop(sessionId, project) {
       releaseLock();
     }
   } else {
-    // Fallback: lock contended — atomically rename episode file to claim ownership.
+    // Fallback: lock contended - atomically rename episode file to claim ownership.
     // Prevents data loss from concurrent PostToolUse writes between read and delete.
     const epFile = episodeFile();
     const claimFile = epFile + `.claim-${process.pid}-${Date.now()}`;
     // Third instance of the B1 gate (flushEpisode and the SIGTERM salvage are the other
     // two): this path already MOVED the buffer out of the way, so with no openable DB the
-    // `unlinkSync(claimFile)` below would destroy it just as surely — and the 1h orphan
+    // `unlinkSync(claimFile)` below would destroy it just as surely - and the 1h orphan
     // sweep would have eaten a restored-but-unnoticed claim file anyway. Open once, and
     // put the buffer back under its real name when the save cannot happen.
     let claimDb;
@@ -1226,7 +1231,7 @@ function flushEpisodeAtStop(sessionId, project) {
         ) {
           if (!episode.sessionId) episode.sessionId = sessionId;
           if (!episode.project) episode.project = project;
-          // Split by CC session before saving — parity with flushEpisode's non-contended path
+          // Split by CC session before saving - parity with flushEpisode's non-contended path
           // (v3.35.2). Without this, the lock-contended fallback re-merged exactly the interleaved
           // concurrent-session buffers v3.35.2 split apart, co-attributing two sessions' work into
           // one garbled observation. planEpisodeFlush returns [episode] by reference for the common
@@ -1237,7 +1242,7 @@ function flushEpisodeAtStop(sessionId, project) {
           // it, and it was not in parity: it ignored QWEN_MEM_SKIP_EPISODE_LLM, so a
           // lock-contended Stop under test spawned a real background worker; and a failed
           // flush-file write threw out of the whole loop into the outer catch, whose
-          // `finally` then deleted the claim file — abandoning the subs that had not been
+          // `finally` then deleted the claim file - abandoning the subs that had not been
           // written yet. flushEpisodeGroup returns 'writefail' and the caller skips only
           // that sub. Per-sub significance gating lives inside it too.
           for (const sub of planEpisodeFlush(episode)) {
@@ -1257,7 +1262,7 @@ function flushEpisodeAtStop(sessionId, project) {
             /* already gone */
           }
         } else {
-          // Nothing was (or could be) persisted — restore the buffer under its real name
+          // Nothing was (or could be) persisted - restore the buffer under its real name
           // so the next fire retries it. If even the rename fails, the claim file stays
           // and the 1h orphan sweep collects it, which is the pre-B1 behaviour.
           try {
@@ -1305,7 +1310,7 @@ function markSessionCompletedAndSaveHandoff(
   }
 }
 
-/** Fast summary baseline — ensures a summary exists even if the background LLM fails. */
+/** Fast summary baseline - ensures a summary exists even if the background LLM fails. */
 function writeFastSummaryBaseline(db, { sessionId, project, transcriptPath }) {
   // Stop fires once per assistant TURN and the mem session survives it (R10-P1-1), so this
   // runs on every turn of a session. The first turn with anything to say INSERTs the row
@@ -1362,21 +1367,21 @@ function writeFastSummaryBaseline(db, { sessionId, project, transcriptPath }) {
 function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptPath }) {
   // P4: scan transcript for `#NN` observation citations in assistant text
   // and bump access_count for matched rows. Closes the loop on the "cite #NN"
-  // contract — before P4 this was a one-way obligation with no feedback.
+  // contract - before P4 this was a one-way obligation with no feedback.
   //
   // QWEN_MEM_NO_CITATION_TRACK=1 disables BOTH the P4 access_count bump
-  // AND the v32 citation-decay loop nested below — anything that needs the
+  // AND the v32 citation-decay loop nested below - anything that needs the
   // transcript scan lives inside this guard. To disable just the decay
   // loop (keep access_count bumps), use MEM_DISABLE_CITATION_DECAY=1 which
   // applyCitationDecay checks separately.
   try {
     if (transcriptPath && !process.env.QWEN_MEM_NO_CITATION_TRACK) {
-      // D#152/D#177: the `subagent` face, collected ONCE, up front, and used twice —
+      // D#152/D#177: the `subagent` face, collected ONCE, up front, and used twice -
       // by the decay block below (only under QWEN_MEM_SUBAGENT_DECAY) and by its own
       // metering call at the tail. It used to be collected at the tail only, with a
       // comment saying the position was load-bearing because lib/transcript-scan.mjs
       // memoizes ONE file and reading the sidechains evicts the parent. That constraint
-      // is real but it is not "last" — it is "not BETWEEN two parent scans". Running it
+      // is real but it is not "last" - it is "not BETWEEN two parent scans". Running it
       // FIRST parses the sidechains before anything has memoized the parent, so the
       // parent is then parsed once and stays memoized for every scanner after it:
       // still one parent parse per Stop, the property the tail comment was protecting.
@@ -1393,8 +1398,8 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
         // set is every `#NN` in this session's assistant text and cannot tell a
         // citation from a mention; in this repository a CHANGELOG or audit-writing
         // session names dozens of ids in prose, and access_count > 3 promotes a row a
-        // tier via boostAccessed. The population to credit — all seven faces, and why
-        // extractAllInjected alone is the wrong five — lives in the builder.
+        // tier via boostAccessed. The population to credit - all seven faces, and why
+        // extractAllInjected alone is the wrong five - lives in the builder.
         const relevant = buildCitationRelevanceSet({
           transcriptPath,
           runtimeDir: RUNTIME_DIR,
@@ -1404,7 +1409,7 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
         });
         // sessionId is the ACCESS channel's idempotency key (R11-B-P1-1). Stop fires once
         // per assistant turn and `ids` above is a rescan of the WHOLE transcript, so
-        // without it every later turn re-credited the same citation — 7.86x on the real
+        // without it every later turn re-credited the same citation - 7.86x on the real
         // corpus, straight into boostAccessed's `access_count > 3`.
         const n = bumpCitationAccess(db, ids, project, relevant, { sessionId: ccSessionId });
         debugLog(
@@ -1421,23 +1426,23 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
       // Cheap (file still in OS cache).
       //
       // v34.x: pre-v34 this only saw pre-tool-recall injections, leaving the
-      // UPS surface (highest-volume — all decision-type FTS hits) starved.
-      // Union closed by extractAllInjected — one integration point so the
+      // UPS surface (highest-volume - all decision-type FTS hits) starved.
+      // Union closed by extractAllInjected - one integration point so the
       // contract test in tests/citation-tracker-userprompt.test.mjs covers it.
       try {
         // mainOnly: the injected denominator must use the same thread
-        // filter as citedMain (the numerator, below) — an obs injected only
+        // filter as citedMain (the numerator, below) - an obs injected only
         // inside a subagent (sidechain) would otherwise enter the denominator
         // but never the numerator and streak-demote despite being used there.
         // v45: take the per-FACE breakdown and union it, instead of asking
         // for the union directly. Same ids (extractAllInjected IS this union
-        // — see unionSurfaces), same single transcript walk, but the split
+        // - see unionSurfaces), same single transcript walk, but the split
         // survives to citation_surface_log below so "which face earns its
         // budget" becomes answerable. Before this, every face was merged
         // before anything was recorded and no lever had a target.
         const injectedBySurface = extractInjectedBySurface(transcriptPath, { mainOnly: true });
         const injected = unionSurfaces(injectedBySurface);
-        // P5 ①: cite-back signals — observations whose warned file the agent
+        // P5 ①: cite-back signals - observations whose warned file the agent
         // edited this session. Union into injected so they're resolved (they
         // were injected via pre-tool-recall) and, below, into cited so the
         // edit promotes them even without a literal #NN in text.
@@ -1450,9 +1455,9 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
         // re-renders the same fixed top-10 unconditionally, so an uncited
         // render says nothing about relevance. v3.66.0 fed them in as
         // denominator and that made the block eat its own contents.
-        // The policy used to rest on a second ground as well — "since keyObs
+        // The policy used to rest on a second ground as well - "since keyObs
         // gates on `importance >= 2`, one demotion evicts the common
-        // importance-2 row from Key Context for good" — which D#179/D#198
+        // importance-2 row from Key Context for good" - which D#179/D#198
         // retired: this loop no longer writes `importance`, so no citation
         // miss can evict anything. The first ground is untouched and is why
         // the policy stays.
@@ -1464,7 +1469,7 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
         // D#177: `sub.injected` counts toward the entry gate when the face is admitted.
         // Without this a session whose ONLY injection was a dispatched agent's prompt
         // would return here with injected.size === 0 and the face would be "in the
-        // denominator" in name only — the failure mode where a face is wired at one
+        // denominator" in name only - the failure mode where a face is wired at one
         // level and gated out at another, which is how UPS went unmetered for a whole
         // minor version.
         const subDecayOn = !['0', 'off', 'false', 'no'].includes(
@@ -1476,7 +1481,7 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
           // uncited (last_decided_session_id set), so a later turn that
           // cites correctly can't undo the verdict. Per CLAUDE.md the
           // contract is "NEXT time you produce user-facing text," so a
-          // session with zero main-thread text gets a free pass — the
+          // session with zero main-thread text gets a free pass - the
           // next Stop in the same session will re-evaluate.
           if (!hasMainThreadAssistantText(transcriptPath)) {
             debugLog(
@@ -1489,7 +1494,7 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
             for (const id of citeBackIds) citedMain.add(id);
             // D#177: admit the `subagent` face to the decay loop. It cannot ride the
             // normal path because its injection lands in a dispatched agent's PROMPT
-            // and its citation lands in that agent's OWN transcript — so its ids enter
+            // and its citation lands in that agent's OWN transcript - so its ids enter
             // the denominator AND its receiver-attributed cites enter the numerator,
             // asymmetrically, together. Feeding only the first half would mark every
             // subagent-only injection uncited by construction (that is why the face was
@@ -1503,7 +1508,7 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
             // denominator, 21.2% of them cited; 21 distinct observations behind the
             // uncited ones, FIVE at uncited_streak = 2. Four are 3->2 down-ranks (#8597,
             // #8847 with cited_count 56, #8948, #10246). At 2026-08-25 18:00Z #10716 was
-            // at importance 2 — one miss from a 2->1 eviction out of
+            // at importance 2 - one miss from a 2->1 eviction out of
             // rankImperativeCandidates' own `importance >= 2` pool, the case
             // IMPERATIVE_POOL_BACKSTOP does not cover, and the reason "down-ranks, not
             // evictions" is wrong as a blanket claim. That row has since been promoted by
@@ -1511,7 +1516,7 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
             // `#NN` from applying it), so re-check the CLASS, not the row.
             // Cross-crediting is 3 pairs of 1181 DISTINCT (session,id) across the five
             // decay faces inside subagent-bearing sessions (0.25%), or 3 of 2738 the same
-            // way corpus-wide (0.11%) — ids the main thread never cited but a subagent did.
+            // way corpus-wide (0.11%) - ids the main thread never cited but a subagent did.
             //
             // ON by default since v3.83.0; `QWEN_MEM_SUBAGENT_DECAY=0` restores the
             // metered-but-never-decaying state the face sat in from v3.77 to v3.82.
@@ -1533,11 +1538,11 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
             // subagent ids; the first draft of this change mutated `citedMain` in place
             // and the pre-tag review measured both leaks it caused:
             //   • recordCitationSurfaces (below) scored a `pretool` row the main thread
-            //     never cited as a pretool HIT — `pretool.cited_n` 0 -> 1 on a
+            //     never cited as a pretool HIT - `pretool.cited_n` 0 -> 1 on a
             //     two-observation probe. That is the caliber CLAUDE.md publishes for the
             //     funnel ("cited as #NN in the session's own MAIN-THREAD text"), so it
             //     would have made citation_surface_log and citation-live-replay.mjs
-            //     permanently different rulers — the v3.81.0 cross-agent defect, mirrored.
+            //     permanently different rulers - the v3.81.0 cross-agent defect, mirrored.
             //   • resolveEdgeAttribution gates sidechain edges on
             //     `!mainInjected.has(id) && !cited.has(id)`, so a file edge flipped MISS
             //     -> HIT (`miss_streak` 1 -> 0). The comment there defends the DENOMINATOR
@@ -1546,7 +1551,7 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
             const decayInjected = subDecayOn ? new Set([...injected, ...sub.injected]) : injected;
             const decayCited = subDecayOn ? new Set([...citedMain, ...sub.cited]) : citedMain;
             // D#60: the idempotency key must be the CC session UUID, NOT the
-            // project-scoped memory sessionId — concurrent same-project CC
+            // project-scoped memory sessionId - concurrent same-project CC
             // sessions share the latter, so the second session's decay pass
             // read "already decided" and silently undercounted decay_seen /
             // streaks / adoption denominators. Fallback keeps legacy
@@ -1562,14 +1567,14 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
             // (numerator). Idempotent (touched is 0 on re-fire) + best-effort.
             recordCitationFunnel(db, project, sessionId, r.touched, r.promoted);
             // v45: the same funnel split by injection FACE. Keyed on
-            // ccSessionId — the SAME D#60 reasoning as applyCitationDecay
+            // ccSessionId - the SAME D#60 reasoning as applyCitationDecay
             // above, and load-bearing here for a second reason: this table
             // OVERWRITES rather than accumulates, and the memory sessionId
             // is one file per PROJECT, so two concurrent CC sessions in one
             // project would share a row and the later Stop would erase the
             // earlier session's counts outright. citation_log survives the
             // shared key only because it adds deltas.
-            // keyctx rides along for VISIBILITY only — it is a separate
+            // keyctx rides along for VISIBILITY only - it is a separate
             // telemetry table, so recording it here cannot widen the decay
             // denominator the way v3.66.0's union did.
             recordCitationSurfaces(
@@ -1585,7 +1590,7 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
             // the same citedMain set. Lives inside the same text-floor gate
             // so a tool-only Stop can't lock edges as missed. Best-effort.
             // Keying on ccSessionId (NOT the rotating memory sessionId)
-            // matches the cooldown file's lifetime — a memory-session
+            // matches the cooldown file's lifetime - a memory-session
             // rotation mid-CC-session must not re-resolve old injections as
             // fresh misses. mainInjectedIds mirrors the mainOnly discipline
             // above: sidechain-only injections in the cooldown never accrue
@@ -1616,7 +1621,7 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
       // Persist cite-recall ratio for the next SessionStart to surface as
       // feedback. This block re-scans the transcript rather than threading the
       // count through `extractCitationsFromTranscript`, so the bump path stays
-      // unchanged — and since P2-8 every scanner in it shares ONE parse via
+      // unchanged - and since P2-8 every scanner in it shares ONE parse via
       // lib/transcript-scan.mjs, so "scan again" costs an array iteration, not a
       // re-read. (The old wording, "cheap; the file is already in OS cache", was
       // arguing the pre-memo case: the OS cache saved the read, never the parse,
@@ -1624,22 +1629,22 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
       try {
         const stats = computeCiteRecall(transcriptPath);
         // D#19: the RATIO GATE's own denominator, alongside the wide one. `stats` counts
-        // every `#NN`-shaped token in non-assistant text — tool_result bodies, file
-        // contents, CLI output, pasted reports — which is the right caliber for "what has
+        // every `#NN`-shaped token in non-assistant text - tool_result bodies, file
+        // contents, CLI output, pasted reports - which is the right caliber for "what has
         // the model seen" and the wrong one for "did it cite back what the hooks gave it"
         // (measured 11.2x inflation, R11-B-P2-2). Both are persisted; buildCiteRecallNudge
         // gates on this pair and falls back to the wide one for older payloads.
         //
         // Cost is an array iteration, not a parse: this block runs after the decay loop's
         // own extractInjectedBySurface on the same path, and lib/transcript-scan.mjs memoizes
-        // the parse. mainOnly mirrors the decay loop — an id injected only inside a subagent
+        // the parse. mainOnly mirrors the decay loop - an id injected only inside a subagent
         // would otherwise enter the denominator while its citation lands in another
         // transcript, scoring a miss the main thread never had a chance to avoid.
         let gate = { gateInjected: null, gateRecalled: null, gateRatio: null };
         try {
           const gateInjectedIds = unionSurfaces(extractInjectedBySurface(transcriptPath, { mainOnly: true }));
           // The nudge asks whether the agent ANSWERED what the hooks showed it, so a
-          // `#NN n/a — <reason>` still counts. Since D#98 the default directive asks for no
+          // `#NN n/a - <reason>` still counts. Since D#98 the default directive asks for no
           // reply on a lesson that did not apply, so that silence now reads as a miss here and
           // the gate fires more (projected 78/95 → up to 87/95 qualifying sessions,
           // docs/audits/20260927-d98-dismissal-baseline.md). Left as is: the gate already fired
@@ -1674,11 +1679,11 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
         } catch {}
         // R11-B-P1-2: the streak's unit is the SESSION, which is what the docblock has
         // always said. Stop fires once per assistant TURN, so incrementing here silenced
-        // the nudge inside the first session — this machine read lowStreak 58 against 26
+        // the nudge inside the first session - this machine read lowStreak 58 against 26
         // transcripts before the fix.
         // D#19: the streak advances on the SAME gate the nudge fires on, so the merged
         // stats go in. Handing it the wide triple alone would let the streak climb on a
-        // verdict the SessionStart surface never reached — two policies, one counter.
+        // verdict the SessionStart surface never reached - two policies, one counter.
         const { lowStreak, streakBase, lastStreakSession } = nextCiteStreakState(prevPayload, ccSessionId, {
           ...stats,
           ...gate,
@@ -1721,7 +1726,7 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
 
       // D#152: the `subagent` face. Recorded in its OWN
       // recordCitationSurfaces call because it carries a different `cited`
-      // set — a lesson handed to a dispatched subagent is cited in that
+      // set - a lesson handed to a dispatched subagent is cited in that
       // subagent's own transcript. Folding it into the main call would score
       // subagent injections against citedMain and report 0% by
       // construction; folding its cites INTO citedMain would credit the
@@ -1732,27 +1737,27 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
       // SINCE v3.83.0 (D#177) this is no longer metering-only: the face DOES reach
       // applyCitationDecay, through the `decayInjected` / `decayCited` copies above.
       // The sentence above about folding cites into `citedMain` still holds and is the
-      // reason those are copies — this call, `resolveEdgeAttribution` and the keyctx
+      // reason those are copies - this call, `resolveEdgeAttribution` and the keyctx
       // promotion all keep the un-widened set. `QWEN_MEM_SUBAGENT_DECAY=0` returns
       // the face to metering-only.
       //
       // The "placed LAST" note below is now historical: `collectSubagentSurface` runs
       // at the HEAD of this block (the decay loop needs its result), and `sub` here is
       // that same object rather than a second call. The parse-count property the note
-      // defends is unchanged — see the comment at the collection site.
-      // earlier, this block costs ONE extra parse of the parent — the memo
+      // defends is unchanged - see the comment at the collection site.
+      // earlier, this block costs ONE extra parse of the parent - the memo
       // re-caches on the first re-read, so it is one, not one per later
-      // scanner — and breaks the "one parse per Stop" property the block
+      // scanner - and breaks the "one parse per Stop" property the block
       // above documents. Measured by instrumenting the parse: 1 parent parse
       // at this position, 2 when relocated earlier. ~25ms on the largest
       // real transcript here (5.4MB), matching lib/transcript-scan.mjs's
       // own header figure.
-      // The text floor is re-checked rather than inherited — same reason as
+      // The text floor is re-checked rather than inherited - same reason as
       // every other face: a tool-only Stop must not bank a verdict, and it
       // must not enter the funnel's session denominator either.
       try {
         if (hasMainThreadAssistantText(transcriptPath)) {
-          // `sub` is the one collected at the top of this block — a second
+          // `sub` is the one collected at the top of this block - a second
           // collectSubagentSurface call here would re-parse every sidechain file and,
           // worse, could disagree with the set the decay loop above just scored.
           if (sub.injected.size > 0) {
@@ -1786,7 +1791,7 @@ async function handleStop() {
   // Capture session info BEFORE cleanup. All DB lookups use the mem-internal id
   // (that's what handleUserPrompt wrote into user_prompts / sdk_sessions / observations
   // via getSessionId()). `ccSessionId` is used only to tag session_handoffs rows
-  // for parallel-session scoping — it must not be used as a query key, otherwise
+  // for parallel-session scoping - it must not be used as a query key, otherwise
   // queries miss and UPDATE sdk_sessions becomes a no-op (v2.33.2 regression fix).
   const sessionId = getSessionId();
   const project = inferProject();
@@ -1819,7 +1824,7 @@ async function handleStop() {
   // the only ungated spawnBackground, which made Stop untestable end-to-end
   // without residue: the detached child outlives the parent process an e2e test
   // waits on, then recreates the sandbox tree behind the test's cleanup. Any
-  // grace period for that is a race, not a barrier — the post-tag review timed a
+  // grace period for that is a race, not a barrier - the post-tag review timed a
   // recreate at 432ms and watched a 300ms grace lose.
   //
   // D#95 made this opt-in in 34a65cd and was reverted before release: its premise ("Last
@@ -1827,21 +1832,21 @@ async function handleStop() {
   // carries Done / Not done sections (lib/summary-extractor.mjs). Without them the Stop row is
   // the first prompt + the head of the final reply (D#121, since v6.18.0; observation titles
   // before), and this worker's model summary is the only multi-field summary (Next / Lessons /
-  // Decisions) such a user gets — when observations exist for it to read.
+  // Decisions) such a user gets - when observations exist for it to read.
   if (!process.env.QWEN_MEM_SKIP_SUMMARY)
     spawnBackground('llm-summary', sessionId, project, String(stopEpoch));
 
   // The session file deliberately SURVIVES Stop (R10-P1-1). It used to be unlinked here,
   // on the model "Stop = /exit = the session is over". The host does not work that way:
   // Stop fires at the end of EVERY assistant turn, so the unlink minted a fresh mem
-  // session on the next event and cost two things at once —
+  // session on the next event and cost two things at once -
   //
   //   • `sdk_sessions` / `session_summaries` counted turns, not sessions. Measured on the
   //     maintainer's live DB 2026-09-07: 58 prompts over 16 host sessions produced 56
   //     distinct mem sessions and 56 summary rows, 0 of which carried the LLM-only fields.
   //   • handleSessionStart's mid-restart probe reads this file to learn which session just
   //     ended. With it deleted every turn the probe never fired, so the /clear handoff
-  //     branch was unreachable in production — 0 `clear` rows against 21 real sessions.
+  //     branch was unreachable in production - 0 `clear` rows against 21 real sessions.
   //
   // Lifetime is bounded by SESSION_EXPIRY_MS (12h) in getSessionId(), and every
   // SessionStart overwrites it via createSessionId(), so "one mem session per host
@@ -1850,7 +1855,7 @@ async function handleStop() {
   // QWEN_MEM_LEGACY_STOP_UNLINK=1 restores the pre-v5.4.0 unlink. It exists because the
   // measurements above are from ONE host build; a host that fires Stop once per session
   // instead of once per turn would be better served by the old shape, and a user who hits
-  // that has no other lever. It is not a supported configuration — it re-breaks the /clear
+  // that has no other lever. It is not a supported configuration - it re-breaks the /clear
   // handoff by design.
   if (process.env.QWEN_MEM_LEGACY_STOP_UNLINK === '1') {
     try {
@@ -1864,7 +1869,7 @@ async function handleStop() {
 // Build the SessionStart nudge line shown when the prior session's cite-recall
 // fell below threshold. Empty string = no surface (insufficient signal, recall
 // already healthy, or feature opted-out via env). Default threshold 0.4 against the
-// HOOK-INJECTED denominator (v6.6.0, D#19), min injected 5 — both env-overridable for
+// HOOK-INJECTED denominator (v6.6.0, D#19), min injected 5 - both env-overridable for
 // ops tuning + tests; QWEN_MEM_CITE_NUDGE_WIDE_DENOMINATOR=1 restores the wide one.
 // Thin wrapper: lib/cite-back-hint.mjs owns the logic so it stays unit-tested.
 // Passing module-level RUNTIME_DIR keeps the call site identical to pre-v2.83.1.
@@ -1873,16 +1878,16 @@ function buildCiteRecallNudge(project) {
 }
 
 // GC stale per-session runtime files older than 24h: pre-recall cooldowns AND
-// (D#120) the per-session injected-ids markers — both grow one file per session.
+// (D#120) the per-session injected-ids markers - both grow one file per session.
 // Pulled out of pre-tool-recall.js (where it ran on every Edit, costing 15-30
-// disk stats per call on long-lived projects) and consolidated here — once per
+// disk stats per call on long-lived projects) and consolidated here - once per
 // SessionStart is enough to keep RUNTIME_DIR from growing unbounded.
 const PRE_RECALL_COOLDOWN_STALE_MS = 24 * 60 * 60 * 1000;
 function gcStalePreRecallCooldowns() {
   try {
     const now = Date.now();
     for (const name of readdirSync(RUNTIME_DIR)) {
-      // D#120: the injected-ids marker is also per-session now — same growth
+      // D#120: the injected-ids marker is also per-session now - same growth
       // shape as the cooldown files, same 24h GC (dedup window is 5 min).
       const isCooldown = name.startsWith('pre-recall-cooldown-') && name.endsWith('.json');
       const isInjectedMarker =
@@ -1901,7 +1906,7 @@ function gcStalePreRecallCooldowns() {
       }
     }
   } catch {
-    /* silent — RUNTIME_DIR may not exist on first run */
+    /* silent - RUNTIME_DIR may not exist on first run */
   }
 }
 
@@ -1955,7 +1960,7 @@ function runSessionStartDbMutations(db, { sessionId, project, prevSessionId, now
 // whole-DB work that should happen once a day in total.
 function markCompressibleGateFile(project) {
   // Project names arrive already mangled by inferProject (`projects--mem`), but this is
-  // a filename, so do not trust that — one stray separator writes outside RUNTIME_DIR.
+  // a filename, so do not trust that - one stray separator writes outside RUNTIME_DIR.
   return join(RUNTIME_DIR, `last-mark-compressible-${String(project).replace(/[^A-Za-z0-9._-]/g, '-')}.json`);
 }
 
@@ -1963,8 +1968,8 @@ function markAutoCompressibleIfDue(db, project) {
   if (!project) {
     // Every production spawn passes it (spawnBackground('auto-maintain', project)); a
     // hand-run `hook.mjs auto-maintain` does not. Say so rather than skipping in
-    // silence — work vanishing without a word is this codebase's recurring shape.
-    debugLog('DEBUG', 'auto-maintain', 'no project argument — skipping auto-compress marking');
+    // silence - work vanishing without a word is this codebase's recurring shape.
+    debugLog('DEBUG', 'auto-maintain', 'no project argument - skipping auto-compress marking');
     return;
   }
   const gate = markCompressibleGateFile(project);
@@ -1990,11 +1995,11 @@ function runSessionStartAutoMaintain(db, project) {
   // The auto-compressible marking runs on its OWN per-project gate, before the global
   // one below. v3.75.0 moved this work off SessionStart onto this worker (P2-11) and,
   // by putting it inside the global `shouldMaintain` block, cut its coverage from
-  // "every project, every boot" to "one project per 24h" — RUNTIME_DIR is a single
+  // "every project, every boot" to "one project per 24h" - RUNTIME_DIR is a single
   // global directory, so whichever project wins the gate is the only one marked, and
   // with N projects in rotation N-1 never get the 7-day noise pass. The move was right;
   // the shared gate was not. Heavy work (VACUUM snapshot, purge, decay, dedup) stays on
-  // the global gate — that genuinely should run once a day, not once per project.
+  // the global gate - that genuinely should run once a day, not once per project.
   markAutoCompressibleIfDue(db, project);
 
   // Auto-maintain: cleanup + decay + boost + purge, gated to once per 24h
@@ -2008,26 +2013,26 @@ function runSessionStartAutoMaintain(db, project) {
     try {
       const STALE_AGE = Date.now() - 30 * DAY_MS;
       const OP_CAP = 500;
-      // Shared maintenance context (whole-DB, cap 500) — used by every maintain-core
+      // Shared maintenance context (whole-DB, cap 500) - used by every maintain-core
       // op below AND the MED-2 snapshot guard. injection_count>0 protection lives in
       // decayAndMarkIdle.
       const mctx = { projectFilter: '', baseParams: [], staleAge: STALE_AGE, opCap: OP_CAP };
 
       // MED-2: snapshot the DB before the irreversible purge/cleanup hard-deletes
       // below, but only when rows will actually be removed (cheap COUNT). Must run
-      // here, outside any transaction — VACUUM cannot run inside one. Best-effort:
+      // here, outside any transaction - VACUUM cannot run inside one. Best-effort:
       // snapshotDb never throws, so a backup failure cannot block auto-maintain.
       if (hardDeleteCandidateCount(db, mctx, { cleanup: true, purge: true }) > 0) {
         snapshotDb(db, { tag: 'pre-maintain' });
       }
 
-      // Purge FIRST via the SHARED purgeStale — was an inline DELETE that skipped
+      // Purge FIRST via the SHARED purgeStale - was an inline DELETE that skipped
       // recoverChildrenOf, so purging a keeper that had absorbed dups orphaned its
       // children (compressed_into dangling at a deleted id). purgeStale recovers them
       // first and caps at opCap. Schema has no marked_at_epoch, so retention anchors on
       // created_at_epoch: 30d marking gate + 7d grace = 37d.
       // The marking itself already ran at the top of this function, on its own
-      // per-project gate — it must not be conditioned on the global one (see
+      // per-project gate - it must not be conditioned on the global one (see
       // markAutoCompressibleIfDue). It still happens BEFORE the purge/decay ops below,
       // preserving the order the SessionStart transaction had relative to them.
 
@@ -2086,7 +2091,7 @@ function runSessionStartAutoMaintain(db, project) {
       // BOTH join sides must be live (audit 2026-08-14 H-1): without the
       // superseded_at filters (which the fuzzy channel below always had), a row the
       // fuzzy pass had tombstoned could come back as `a` (a.id < b.id) and tombstone
-      // the LIVE keeper `b` — both copies gone from every read path. Worse, a user
+      // the LIVE keeper `b` - both copies gone from every read path. Worse, a user
       // correction saved with supersedes=[#A] (A.superseded_by = B's NUMERIC id) has
       // the same title as A, so the pair (A, B) tombstoned the correction B itself
       // and the string 'auto-dedup' write clobbered numeric supersession chains that
@@ -2113,17 +2118,17 @@ function runSessionStartAutoMaintain(db, project) {
       }
 
       // Auto-dedup (fuzzy): catches near-identical titles that exact-match
-      // misses across larger time windows — e.g. episode-batch titles like
+      // misses across larger time windows - e.g. episode-batch titles like
       // "Modified A.mjs, B.mjs" vs "Modified B.mjs, A.mjs" written days apart.
       // MinHash pre-filter (≥0.7) makes each PAIR cheap; it does not reduce the number of
       // pairs. Said precisely because the comment here used to read "cuts the O(N²) scan",
       // which is false and reads as an algorithmic bound (audit 2026-09-02 P2-13): the
       // estimate is evaluated INSIDE the inner loop of a full nested scan in
-      // `lib/maintain-core.mjs`, so every pair is still visited — what it skips is the
+      // `lib/maintain-core.mjs`, so every pair is still visited - what it skips is the
       // expensive exact Jaccard behind it. Measured, the whole pair pass is ~0.6 ms at
       // n=500. Jaccard ≥0.95 stays
       // well clear of legit "two updates same area" pairs (those typically
-      // score 0.7–0.85, surfaced via `maintain scan` for manual review).
+      // score 0.7-0.85, surfaced via `maintain scan` for manual review).
       // Bounded by ${SCAN_LIMIT} recent rows × ${FUZZY_MAX_MERGES}-merge cap.
       if (!process.env.QWEN_MEM_SKIP_AUTO_DEDUP_FUZZY) {
         const SCAN_LIMIT = 500;
@@ -2141,7 +2146,7 @@ function runSessionStartAutoMaintain(db, project) {
           )
           .all(STALE_AGE);
         if (recent.length >= 2) {
-          // audit #8: supersede only when title AND body match — title-only (a word-SET
+          // audit #8: supersede only when title AND body match - title-only (a word-SET
           // metric) collapsed distinct observations sharing a title token-set. The
           // selection is the shared pure core in lib/maintain-core (unit-tested there).
           const rows = recent.map((r) => ({
@@ -2165,7 +2170,7 @@ function runSessionStartAutoMaintain(db, project) {
 
       // v3.76.0: the automatic path used to promote and never demote. boostAccessed ran
       // above; demotePinned was not even imported here, and it sat outside the default op
-      // set of the CLI and MCP faces too — so the only op that can reach a
+      // set of the CLI and MCP faces too - so the only op that can reach a
       // heavily-injected-but-uncited row (regular decay deliberately protects
       // injection_count>0) ran solely when a human typed `--ops demote_pinned`. Measured
       // on the maintainer's live DB before the fix: 148 rows demoted by citation decay,
@@ -2179,14 +2184,14 @@ function runSessionStartAutoMaintain(db, project) {
       // Placed AFTER fuzzy dedup, for a less obvious one, found by pre-tag review: the
       // dedup block above re-SELECTs `importance` and selectFuzzyDedupeIds keeps the
       // higher-importance member of a near-duplicate pair. Demoting first inverted that
-      // rule using a value rewritten 40 lines earlier in the same pass — the pinned row
+      // rule using a value rewritten 40 lines earlier in the same pass - the pinned row
       // lost and was tombstoned, keeping the copy WITHOUT the injection history. Dedup
       // now decides on pre-demotion importance. Nothing between boost and here reads
       // importance, so the move is free.
       //
       // Whole-DB mctx (projectFilter ''), so unlike markAutoCompressibleIfDue this needs
       // NO per-project gate: one run under the global 24h gate covers every project at
-      // once. Do not "fix" it into a per-project gate — that is the v3.75.0 regression in
+      // once. Do not "fix" it into a per-project gate - that is the v3.75.0 regression in
       // reverse.
       const demotedPinned = resolveDefaultMaintainOps().includes('demote_pinned')
         ? demotePinned(db, mctx)
@@ -2207,7 +2212,7 @@ function runSessionStartAutoMaintain(db, project) {
       //
       // Since audit P1-12 this also reclaims abandoned per-project episode buffers at 7d.
       // That one is named individually in the log: every other family it sweeps is residue
-      // or a re-derivable tracker, while `ep-<project>.json` holds unflushed observations —
+      // or a re-derivable tracker, while `ep-<project>.json` holds unflushed observations -
       // and the alternative to deleting it is worse (SessionStart flushes whatever it finds
       // with no staleness gate, so a revisit stamps months-old activity with today's date).
       try {
@@ -2230,7 +2235,7 @@ function runSessionStartAutoMaintain(db, project) {
       // stamps `consumed_at` (injectHandoffIfEarly, the UserPromptSubmit path) instead of
       // deleting the row, so nothing removes rows but this. Before that change a consume
       // did delete one row, and an 'exit'/'compact' that is never
-      // resumed (and every superseded 'clear') lingered forever — read paths filter by
+      // resumed (and every superseded 'clear') lingered forever - read paths filter by
       // expiry but nothing reaped the rows. Delete past-expiry rows with a +1d margin so a
       // still-readable handoff is never raced away. 'clear' 6h+1d, 'exit'/other 7d+1d.
       try {
@@ -2248,7 +2253,11 @@ function runSessionStartAutoMaintain(db, project) {
         debugCatch(e, 'auto-maintain-handoff-gc');
       }
 
-      // Mark maintenance as done (24h gate) — even though compression runs in background
+      // Planner statistics, the "once a day" half of SQLite's recommendation (#41). Last, so
+      // the purge/dedup above have already moved the row counts it compares. Never throws.
+      refreshPlannerStats(db);
+
+      // Mark maintenance as done (24h gate) - even though compression runs in background
       writeFileSync(maintainFile, JSON.stringify({ epoch: Date.now() }));
       // Weekly summary grouping runs in background to avoid blocking SessionStart
       if (!process.env.QWEN_MEM_SKIP_COMPRESS) spawnBackground('auto-compress');
@@ -2284,15 +2293,17 @@ function scheduleSessionStartAutoMaintain(project) {
 
 // The maintenance mutex deliberately does NOT end in `.lock`, so cleanStaleLockFiles()
 // below never sees it at all. That sweeper used to unlink every `*.lock` past
-// STALE_LOCK_MS (30s) without consulting the holder's pid — a policy written for the
-// episode lock, whose critical section is milliseconds — and a maintenance pass is seconds
+// STALE_LOCK_MS (30s) without consulting the holder's pid - a policy written for the
+// episode lock, whose critical section is milliseconds - and a maintenance pass is seconds
 // to minutes (VACUUM INTO snapshot, purge, decay, dedup over the whole DB). It now spares a
 // live holder (A20260905-R5-P1-1), but this escape stays: not being swept is a stronger
 // guarantee than being spared by a pid probe, and pids are meaningless across a shared
-// homedir. proc-lock brings its own staleness policy (age OR provably-dead pid), which is
-// the correct one here.
-// Generous upper bound on one pass; a crashed holder is normally reclaimed sooner via the
-// dead-pid check, so this only matters for a holder killed on another host.
+// homedir. proc-lock brings its own staleness policy (a provably-dead pid at once, a live one
+// only past LIVE_HOLDER_MAX_MS), which is the correct one here.
+// Since D#294 this bound applies only to a lock that records no pid, which acquireLock never
+// writes: a crashed holder is reclaimed through its dead pid, and a pid that looks alive (a
+// recycled one, or one from another host on a shared homedir) holds the lock for
+// LIVE_HOLDER_MAX_MS, 1 h, not 10 min.
 const AUTO_MAINTAIN_LOCK_STALE_MS = 10 * 60 * 1000;
 
 // Detached `auto-maintain` worker entry: opens its own DB and runs the maintenance
@@ -2304,21 +2315,21 @@ const AUTO_MAINTAIN_LOCK_STALE_MS = 10 * 60 * 1000;
 // the 24h boundary both see "due" and both spawn a worker. That breaks a documented
 // in-process invariant: decayAndMarkIdle marks BEFORE it decays precisely so an imp-2 row
 // cannot be decayed 2→1 and marked COMPRESSED_PENDING_PURGE in the same pass (MED-1, see
-// its docblock — each importance tier is supposed to buy a grace cycle). Across two
+// its docblock - each importance tier is supposed to buy a grace cycle). Across two
 // processes the ordering is gone: worker A decays 2→1, worker B's mark-idle then sees a
 // qualifying imp-1 row and hides it, 37 days from a hard delete. The same overlap
 // double-runs the cascade below it (duplicate weekly summaries from compressGroup, whose
 // UPDATE has no compressed_into guard; doubled llm-optimize spend).
 //
 // Lock at the worker entry rather than around the individual ops: the cascade spawns sit
-// inside the pass, so one gate covers the whole family. Not acquiring is a plain no-op —
+// inside the pass, so one gate covers the whole family. Not acquiring is a plain no-op -
 // a peer is already doing exactly this work.
 function handleAutoMaintain(project) {
   const release = acquireProcLock(join(RUNTIME_DIR, AUTO_MAINTAIN_LOCK), {
     staleMs: AUTO_MAINTAIN_LOCK_STALE_MS,
   });
   if (!release) {
-    debugLog('DEBUG', 'auto-maintain', 'skipped — a live peer holds the maintenance lock');
+    debugLog('DEBUG', 'auto-maintain', 'skipped - a live peer holds the maintenance lock');
     return;
   }
   try {
@@ -2342,12 +2353,12 @@ function saveHandoffAndFastSummary(
   db,
   { prevSessionId, prevProject, project, ccSessionId, episodeSnapshot, now },
 ) {
-  // Shared clear handoff reference — queried once, used by fast summary + working state
+  // Shared clear handoff reference - queried once, used by fast summary + working state
   let prevClearHandoff = null;
 
   if (prevSessionId) {
     // Save handoff for cross-session continuity (/clear or /compact).
-    // prevSessionId is the mem-internal id — use it to look up the finished session's
+    // prevSessionId is the mem-internal id - use it to look up the finished session's
     // user_prompts / observations. ccSessionId (same CC session across /clear) scopes
     // the stored row so UserPromptSubmit can read its own handoff back.
     // Legacy/test paths (no stdin) fall back to prevSessionId for both.
@@ -2367,7 +2378,7 @@ function saveHandoffAndFastSummary(
 
     // Read the just-saved handoff for the ONE downstream consumer here: the fast summary's
     // "remaining" line, below. It used to select `working_on, unfinished, key_files` and
-    // read only `unfinished` — the other two were dead, because the `### Working State`
+    // read only `unfinished` - the other two were dead, because the `### Working State`
     // block that renders them is built by hook-context.mjs from its own query, not from
     // this row. Selected columns are cheap; a reader looking for who consumes `key_files`
     // is not, and this site answered that question wrongly.
@@ -2378,10 +2389,10 @@ function saveHandoffAndFastSummary(
         .get(prevProject || project, 'clear', handoffScopeId);
     } catch {}
 
-    // Generate session summary for previous session (background Haiku — richer version).
+    // Generate session summary for previous session (background Haiku - richer version).
     // Honours QWEN_MEM_SKIP_SUMMARY like the handleStop site does. This is the SAME
     // worker, and the flag's whole purpose (see the comment at its other call site) is
-    // that llm-summary recreates a test's sandbox tree behind its cleanup — timed at
+    // that llm-summary recreates a test's sandbox tree behind its cleanup - timed at
     // 432ms there. Gating one of two call sites left the flag unable to do the one job
     // it exists for whenever this branch is reached.
     if (!process.env.QWEN_MEM_SKIP_SUMMARY) {
@@ -2436,9 +2447,9 @@ function saveHandoffAndFastSummary(
  * "Stale" has to mean ABANDONED, not merely old. Until A20260905-R5-P1-1 this swept on AGE
  * ALONE (pid was consulted only for locks YOUNGER than STALE_LOCK_MS, i.e. exactly the ones
  * it was going to keep anyway), so a lock older than 30s was unlinked no matter who held it.
- * `runtime/install.lock` — lib/proc-lock.mjs, taken by `install.mjs repair`,
- * `install.mjs rebuild-binding`, hook-update.installExtractedRelease and scripts/launch.mjs —
- * guards a critical section that routinely runs 30s–2min (npm install in staging is capped at
+ * `runtime/install.lock` - lib/proc-lock.mjs, taken by `install.mjs repair`,
+ * `install.mjs rebuild-binding`, hook-update.installExtractedRelease and scripts/launch.mjs -
+ * guards a critical section that routinely runs 30s-2min (npm install in staging is capped at
  * 60s, npm rebuild in smoke at 120s). Any parallel Claude Code window starting up during that
  * span deleted the live holder's lock; the next installer then acquired it and began renaming
  * files into the same install dir, which is the torn mixed-version install (server vN + hook
@@ -2450,7 +2461,8 @@ function saveHandoffAndFastSummary(
  *
  * Liveness of the two real lock families does not depend on this sweeper, so tightening it
  * cannot wedge either: hook-episode.acquireLock() preempts a >30s episode lock itself at
- * acquire time, and proc-lock.acquireLock() steals on age OR dead pid at 5 min.
+ * acquire time, and proc-lock.acquireLock() steals on a dead pid at once and on age only past
+ * LIVE_HOLDER_MAX_MS (D#294), the same bound as ABANDONED_LOCK_MS here.
  */
 function cleanStaleLockFiles() {
   try {
@@ -2468,7 +2480,7 @@ function cleanStaleLockFiles() {
             process.kill(info.pid, 0);
             alive = true;
           } catch (killErr) {
-            // EPERM = the process exists but belongs to another user — still a live holder.
+            // EPERM = the process exists but belongs to another user - still a live holder.
             alive = killErr.code === 'EPERM';
           }
           stale = alive ? age > ABANDONED_LOCK_MS : true;
@@ -2528,13 +2540,13 @@ function buildFallbackFastSummary(db, { project, now, prevSessionId }) {
 }
 
 async function buildStartupDashboardText(db, project) {
-  // T10c: Startup dashboard — aggregate git/tasks/plans/handoff/events into text.
+  // T10c: Startup dashboard - aggregate git/tasks/plans/handoff/events into text.
   //
   // Returns the text rather than writing it: SessionStart has three would-be
   // stdout contributors (this, the <qwen-mem-context> block, the update
   // banner) and handleSessionStart merges them into ONE envelope. Writing here
   // put a JSON document and raw prose on the same stdout, which stopped the
-  // host from parsing the envelope at all — the whole `{"suppressOutput":true,
+  // host from parsing the envelope at all - the whole `{"suppressOutput":true,
   // …}` object was delivered to the model as literal escaped text. See
   // tests/session-start-stdout-envelope.test.mjs.
   try {
@@ -2550,7 +2562,7 @@ async function buildStartupDashboardText(db, project) {
     }
     // v2.79: surface setup.sh dependency-install failure as a high-visibility
     // line at the very top of the dashboard. setup.sh writes runtime/.deps-broken
-    // (JSON: ts/reason/root/repair) on failure and removes it on success — so
+    // (JSON: ts/reason/root/repair) on failure and removes it on success - so
     // a stale flag self-heals on the next clean SessionStart. Without this
     // surface, hook degradation looks identical to "nothing happening" until
     // the user notices missing context days later.
@@ -2565,7 +2577,7 @@ async function buildStartupDashboardText(db, project) {
           detail = parsed.reason || detail;
           repair = parsed.repair || '';
         } catch {
-          /* corrupt flag — surface the fact only */
+          /* corrupt flag - surface the fact only */
         }
         const nudgeLines = [
           '⚠️ [qwen-mem-lite] Hook dependencies failed to install on the last SessionStart.',
@@ -2589,13 +2601,13 @@ async function buildStartupDashboardText(db, project) {
 /**
  * Tell the user their memory is version-skewed, on the one surface they read.
  *
- * Only fires when openDb() failed for THIS reason — hook-shared records the two version
+ * Only fires when openDb() failed for THIS reason - hook-shared records the two version
  * numbers as it catches, so nothing is re-derived and no second DB open is attempted (on a
  * skew there may be no usable binding to open with).
  *
  * Everything is dynamically imported: this is a cold path that must not cost the healthy
  * SessionStart an install-shape scan. And it goes through the queue helpers, never a bare
- * console.log — SessionStart merges three would-be stdout contributors into ONE envelope,
+ * console.log - SessionStart merges three would-be stdout contributors into ONE envelope,
  * and writing raw prose alongside it once made the host deliver the whole JSON object to
  * the model as literal text (tests/session-start-stdout-envelope.test.mjs).
  */
@@ -2613,7 +2625,7 @@ async function emitSchemaSkewNotice() {
     // every hook process Claude Code spawns, so on a machine holding BOTH a managed install
     // and a plugin cache it is the only thing that knows which one is behind. Deciding from
     // the machine's global shape printed `qwen-mem-lite self-update` beneath a line naming
-    // the plugin cache — a repair that cannot advance the tree it had just named.
+    // the plugin cache - a repair that cannot advance the tree it had just named.
     const runningRoot = process.env.CLAUDE_PLUGIN_ROOT || CODE_DIR;
     const remedy = skewMod.schemaSkewRemedy({
       managed: shape.managed,
@@ -2633,7 +2645,7 @@ async function emitSchemaSkewNotice() {
     });
     // BOTH channels, and the HUMAN one is the point. queueHookContext reaches the model;
     // lib/hook-stdout.mjs's queueHookSystemMessage is documented "for the HUMAN, not the
-    // model" and names v3.70.0 for making exactly this mistake — folding a banner into
+    // model" and names v3.70.0 for making exactly this mistake - folding a banner into
     // additionalContext "kept its content and lost its audience". A notice whose whole job is
     // to hand the user a command must not depend on the assistant volunteering it.
     // flushHookStdout merges both into one envelope, so this is additive: the model learns
@@ -2662,7 +2674,7 @@ async function emitDbUnusableNotice() {
     const mod = await import('./lib/db-unusable.mjs');
     // TWO DIFFERENT STRINGS, unlike the skew twin, and the asymmetry is the point: the
     // human channel carries the repair command, the model channel carries only the fact.
-    // See formatDbUnusableModelNotice — this family's remedy overwrites the database.
+    // See formatDbUnusableModelNotice - this family's remedy overwrites the database.
     queueHookSystemMessage(
       mod.formatDbUnusableNotice({ dbPath: DB_PATH, remedy: mod.dbUnusableRemedy(DB_PATH) }),
     );
@@ -2708,7 +2720,7 @@ function realOrResolved(p) {
 }
 function offerAdoptOnce(project) {
   if (process.env.MEM_NO_ADOPT_HINT === '1') return;
-  // /adopt at $HOME would write ~/CLAUDE.md, an ancestor of every project below it — the case
+  // /adopt at $HOME would write ~/CLAUDE.md, an ancestor of every project below it - the case
   // lib/local-steering.mjs refuses (pre-tag claims review, P3). Do not suggest it there.
   const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   // Real paths: the host passes the real one, and $HOME may be a symlink to it (delta review P3-14).
@@ -2719,7 +2731,7 @@ function offerAdoptOnce(project) {
     writeFileSync(marker, new Date().toISOString(), { mode: 0o600 });
     queueHookSystemMessage(
       'qwen-mem-lite: memory guidance for this project is injected at session start, and nothing is written to your repository. ' +
-        'Run /adopt (or `qwen-mem-lite adopt`) to put it in CLAUDE.md instead — the agent then saves lessons after fixes more reliably. ' +
+        'Run /adopt (or `qwen-mem-lite adopt`) to put it in CLAUDE.md instead - the agent then saves lessons after fixes more reliably. ' +
         'Shown once per project; `qwen-mem-lite adopt --disable` turns the guidance off for this project.',
     );
   } catch (e) {
@@ -2747,11 +2759,112 @@ function noteLocalSteeringOnce(project) {
   }
 }
 
+// D#212: with QWEN_MEM_RULES_STEERING=1, where CLAUDE.local.md would switch off the repository's
+// AGENTS.md, the block goes to .claude/rules/qwen-mem-lite.md instead. Same reasons to say so once
+// as for CLAUDE.local.md, plus why it is not that file.
+const RULES_NOTE_MARKER_PREFIX = '.rules-steering-noted-';
+function noteRulesSteeringOnce(project) {
+  if (process.env.MEM_NO_ADOPT_HINT === '1') return;
+  try {
+    const marker = join(RUNTIME_DIR, `${RULES_NOTE_MARKER_PREFIX}${project}`);
+    if (existsSync(marker)) return;
+    writeFileSync(marker, new Date().toISOString(), { mode: 0o600 });
+    queueHookSystemMessage(
+      'qwen-mem-lite: memory guidance for this project is in .claude/rules/qwen-mem-lite.md at the repository root, not in CLAUDE.local.md: Claude Code stops reading your AGENTS.md once a CLAUDE.local.md exists, and a rules file leaves it loading. Git ignores it (it is listed in .git/info/exclude), so it is not committed, but npm pack and other packagers do not read .git/info/exclude. ' +
+        'Delete it or run `qwen-mem-lite unadopt` and it is not written again; `qwen-mem-lite adopt --disable` turns the guidance off for this project. Shown once per project.',
+    );
+  } catch (e) {
+    debugCatch(e, 'session-start-rules-note');
+  }
+}
+
+// The repository's instructions are AGENTS.md, which a CLAUDE.local.md would switch off, and the
+// rules file that leaves it loading was refused too (lib/local-steering.mjs writeRulesSteering;
+// `detail` is the refusal), so the steering is injected. The /adopt offer above would not say
+// what becomes of AGENTS.md; told once per project instead, with why there is no file and the ways
+// to one that leave AGENTS.md loading - each only where it works (pre-tag claims review P1-1,
+// P2-1, adopt-cli.mjs agentsWays): the setting that reads both, unless CLAUDE.local.md is refused
+// here too, and /adopt, whose CLAUDE.md imports the AGENTS.md beside it, unless one it cannot
+// import would stop loading. It also explains a CLAUDE.local.md an earlier version wrote, and
+// announced, disappearing.
+const AGENTS_MD_NOTE_MARKER_PREFIX = '.agents-md-noted-';
+async function noteAgentsMdOnce(project, { detail, agentsMd, adoptImports, settingGivesFile }) {
+  if (process.env.MEM_NO_ADOPT_HINT === '1') return;
+  try {
+    const marker = join(RUNTIME_DIR, `${AGENTS_MD_NOTE_MARKER_PREFIX}${project}`);
+    if (existsSync(marker)) return;
+    const { RULES_MD, RULES_REFUSAL_TEXT, rulesSteeringOn } = await import('./lib/local-steering.mjs');
+    const why = RULES_REFUSAL_TEXT[detail] ?? 'it was refused';
+    writeFileSync(marker, new Date().toISOString(), { mode: 0o600 });
+    const reads = `qwen-mem-lite: Claude Code reads ${agentsMd ?? 'an AGENTS.md'} as this project's instructions and stops reading it once a CLAUDE.md or CLAUDE.local.md exists`;
+    // The rules file is opt-in (lib/local-steering.mjs rulesSteeringOn). Off, the guidance does not
+    // go there by default, and the switch is offered only where it is what is missing - with
+    // `adopt --enable` after a removal - never where the file could not be written with it on
+    // either (pre-tag opt-in review F1, F2).
+    const parts = [];
+    if (rulesSteeringOn())
+      parts.push(
+        `${reads}, so memory guidance goes to ${RULES_MD}, which leaves it loading. That file cannot be written here (${why}), so the guidance is injected at session start (a CLAUDE.local.md block an earlier version wrote here is taken out).`,
+      );
+    else {
+      parts.push(
+        `${reads}, so memory guidance is not written to CLAUDE.local.md here: it is injected at session start (a CLAUDE.local.md block an earlier version wrote here is taken out). Injected guidance does not reach subagents.`,
+      );
+      if (detail === 'off')
+        parts.push(
+          `With QWEN_MEM_RULES_STEERING=1 it goes to ${RULES_MD} instead, which leaves AGENTS.md loading.`,
+        );
+      else if (detail === 'removed')
+        parts.push(
+          `With QWEN_MEM_RULES_STEERING=1 and then \`qwen-mem-lite adopt --enable\` it goes to ${RULES_MD}, which leaves AGENTS.md loading (a local file you or unadopt removed is not written back until then).`,
+        );
+    }
+    if (settingGivesFile)
+      parts.push(
+        'With Project instructions set to claude-md-and-agents-md in /config, AGENTS.md also loads beside CLAUDE.local.md, which is then written from the next session.',
+      );
+    if (adoptImports)
+      parts.push('Or run /adopt to put the guidance in CLAUDE.md, which then imports AGENTS.md.');
+    parts.push('Shown once per project.');
+    queueHookSystemMessage(parts.join(' '));
+  } catch (e) {
+    debugCatch(e, 'session-start-agents-md-note');
+  }
+}
+
+// A CLAUDE.md an earlier version wrote, holding only the block, was switching off an AGENTS.md
+// (adopt-cli.mjs syncAgentsImports). SessionStart imports it there, which changes a file the user
+// may have committed, or names the AGENTS.md an import cannot keep loading: told once per project.
+const AGENTS_IMPORT_NOTE_MARKER_PREFIX = '.agents-import-noted-';
+function noteAgentsImportOnce(project, { imported, elsewhere }) {
+  if (process.env.MEM_NO_ADOPT_HINT === '1') return;
+  try {
+    const marker = join(RUNTIME_DIR, `${AGENTS_IMPORT_NOTE_MARKER_PREFIX}${project}`);
+    if (existsSync(marker)) return;
+    writeFileSync(marker, new Date().toISOString(), { mode: 0o600 });
+    const parts = [];
+    if (imported.length > 0)
+      parts.push(
+        `added ${imported.map((p) => `@${p}`).join(' and ')} at the top of this project's CLAUDE.md, which holds only the qwen-mem-lite block: Claude Code stops reading AGENTS.md once a CLAUDE.md exists, so it was not being loaded. It loads from the next session. ` +
+          'If CLAUDE.md is committed, commit the change too; to drop CLAUDE.md instead, run `qwen-mem-lite unadopt` (the guidance then goes to a git-ignored local file from the next session, or is injected where none can be written).',
+      );
+    if (elsewhere.length > 0) {
+      const them = elsewhere.length > 1 ? 'them' : 'it';
+      parts.push(
+        `Claude Code does not read ${elsewhere.join(', ')} while this project's CLAUDE.md exists, and an import cannot keep ${them} loading: set Project instructions to claude-md-and-agents-md in /config, or run \`qwen-mem-lite unadopt\`.`,
+      );
+    }
+    queueHookSystemMessage(`qwen-mem-lite: ${parts.join(' ')} Shown once per project.`);
+  } catch (e) {
+    debugCatch(e, 'session-start-agents-import-note');
+  }
+}
+
 /**
  * D9: a project whose id (`parent--directory`) is not all ASCII got a new one (project-utils.mjs
- * projectNameFromDir). Once per project, move what its old id holds for it — everything, when no
+ * projectNameFromDir). Once per project, move what its old id holds for it - everything, when no
  * stored path shows another directory using the old id; otherwise the rows that provably came
- * from this directory — and tell the user where the rest are. No-op when the id did not change.
+ * from this directory - and tell the user where the rest are. No-op when the id did not change.
  */
 function rekeyProjectOnce(db, project) {
   try {
@@ -2760,8 +2873,8 @@ function rekeyProjectOnce(db, project) {
     if (legacy === project) return;
     const marker = join(RUNTIME_DIR, `${PROJECT_REKEY_MARKER_PREFIX}${project}`);
     if (existsSync(marker)) return;
-    // When no stored path shows another directory using the old id, take all of it — sessions,
-    // summaries, handoffs, deferred items — not only the memories a path proves. A sibling
+    // When no stored path shows another directory using the old id, take all of it - sessions,
+    // summaries, handoffs, deferred items - not only the memories a path proves. A sibling
     // whose rows carry no path is invisible to that test (see legacyIdIsExclusive).
     const whole = legacyIdIsExclusive(db, { dir, legacy, project });
     const r = whole
@@ -2805,7 +2918,7 @@ function flushLeftoverEpisode(file, episode, ccSessionId) {
   try {
     stale = Date.now() - statSync(file).mtimeMs > STALE_EPISODE_BUFFER_AGE_MS;
   } catch {
-    /* no buffer file — nothing below runs on a null episode */
+    /* no buffer file - nothing below runs on a null episode */
   }
   if (stale) {
     debugLog(
@@ -2826,7 +2939,7 @@ function flushLeftoverEpisode(file, episode, ccSessionId) {
 
 /**
  * D14: buffers are per Claude Code process, so the buffer of a process that exited mid-turn
- * (no Stop) — or the per-project one an older version wrote — is read by nobody. Before D14
+ * (no Stop) - or the per-project one an older version wrote - is read by nobody. Before D14
  * the next session in the project flushed it here, and it still does: each is claimed by an
  * atomic rename (two SessionStarts cannot both take one), flushed under the session id it
  * carries, and removed. Skipped when this process's own buffer survived its flush above (no
@@ -2845,7 +2958,7 @@ function adoptOrphanEpisodes(ccSessionId) {
     try {
       episode = JSON.parse(readFileSync(claim, 'utf8'));
     } catch {
-      /* unreadable — dropped with the claim below, as the sweep would */
+      /* unreadable - dropped with the claim below, as the sweep would */
     }
     // Its Read paths travel with it: the flush collects this process's reads file, and the gone
     // process's would otherwise wait for the 24h sweep.
@@ -2878,7 +2991,7 @@ async function handleSessionStart() {
   // GC stale per-session cooldown files. Cheap (<5ms typical) and idempotent;
   // moved here from pre-tool-recall.js's hot path.
   gcStalePreRecallCooldowns();
-  // P2-15: the per-PROJECT half of the same problem — markers written once per
+  // P2-15: the per-PROJECT half of the same problem - markers written once per
   // project and never revisited (session-/cite-recall-/skill cooldowns). Same
   // SessionStart cadence, 30d gate, named family list (hook-shared.mjs).
   try {
@@ -2887,7 +3000,7 @@ async function handleSessionStart() {
     /* best-effort */
   }
   // D14: one session file per Claude Code process. Only that process's /clear or /compact ever
-  // reads it, so once the process is gone the file is dead weight — reap this project's now
+  // reads it, so once the process is gone the file is dead weight - reap this project's now
   // instead of letting one per launch pile up for the 30-day marker GC.
   for (const f of deadHostFiles(`session-${inferProject()}`)) {
     try {
@@ -2907,13 +3020,13 @@ async function handleSessionStart() {
   // Plugin cache self-heal: Claude Code auto-updates the marketplace plugin can
   // re-populate cache/<ver>/hooks/hooks.json, reintroducing duplicate hook
   // registration alongside install.mjs-managed settings.json entries. Silently
-  // clear — gated to avoid breaking plugin-only users.
+  // clear - gated to avoid breaking plugin-only users.
   //
   // The gate is hasLiveInstallManagedHooks, not the bare hasInstallManagedHooks: this
   // branch EMPTIES the manifest, which is a dedup only while settings.json is really the
   // other registration. A settings.json entry naming a deleted `~/.qwen-mem-lite`
   // launcher (global install removed by hand, plugin kept) satisfies the string test and
-  // fires nothing — so the self-heal read a dead registration as live and wiped the one
+  // fires nothing - so the self-heal read a dead registration as live and wiped the one
   // that worked, every SessionStart. `?? hasInstallManagedHooks` keeps a guard module
   // that predates the predicate working exactly as before.
   // Dynamic-import fallback: if plugin-cache-guard.mjs is missing (pre-2.31.2
@@ -2923,7 +3036,7 @@ async function handleSessionStart() {
     const ownsHooks = guard.hasLiveInstallManagedHooks ?? guard.hasInstallManagedHooks;
     if (ownsHooks && ownsHooks()) {
       const cleared = guard.clearPluginCacheHooks({
-        reason: 'Auto-healed by hook.mjs session-start — install.mjs-managed hooks active in settings.json',
+        reason: 'Auto-healed by hook.mjs session-start - install.mjs-managed hooks active in settings.json',
       });
       if (cleared.length > 0) {
         debugLog(
@@ -2938,12 +3051,12 @@ async function handleSessionStart() {
   }
 
   // Auto-adopt + migrate (v3.13 CLAUDE.md-steering). silentAutoAdopt is now an
-  // IDEMPOTENT per-session sync, so it runs on EVERY SessionStart — not gated by
+  // IDEMPOTENT per-session sync, so it runs on EVERY SessionStart - not gated by
   // the one-shot RUNTIME_DIR marker. That gate is deliberately gone: existing
   // users whose marker predates v3.13 must still get migrated (legacy memory-dir
   // sentinel stripped, CLAUDE.md managed block written) on their next session.
   // The sync short-circuits cheaply once a project is already on the new scheme.
-  // ANY install path — `/plugin install`, `npm install -g`, `npx`, manual — is
+  // ANY install path - `/plugin install`, `npm install -g`, `npx`, manual - is
   // consent to integration. Scope:
   //   - gated by !MEM_NO_AUTO_ADOPT (explicit global escape hatch)
   //   - per-project opt-out via `<memdir>/.mem-no-auto-adopt` sentinel (managed
@@ -2952,12 +3065,17 @@ async function handleSessionStart() {
   //   - QWEN_MEM_NO_TEMPLATE_REFRESH=1 freezes the block against drift refresh.
   // Note v2.82.0: removed MEM_QUIET_HOOKS gate. That env var suppresses stdout
   // noise; it must NOT also disable side-effect work (PostToolUse writes the
-  // DB unconditionally — auto-adopt follows the same rule). Failures are
+  // DB unconditionally - auto-adopt follows the same rule). Failures are
   // swallowed; the marker is still written for telemetry/back-compat.
   // Report §9-A: 'inject' means the project carries no managed block and nothing was written;
   // the steering text then joins this SessionStart's context (injectSteeringPart below).
   let adoptAction = null;
   let adoptWritten = null;
+  let adoptReason = null;
+  let adoptAgents = null;
+  let adoptFile = null;
+  let adoptAgentsInfo = null;
+  let adoptMoved = false;
   try {
     if (process.env.MEM_NO_AUTO_ADOPT !== '1') {
       const project = inferProject();
@@ -2966,6 +3084,19 @@ async function handleSessionStart() {
       const r = silentAutoAdopt({ cwd, markerDir: RUNTIME_DIR, markerKey: project });
       adoptAction = r.action;
       adoptWritten = r.written ?? null;
+      adoptReason = r.reason ?? null;
+      adoptAgents = r.agents ?? null;
+      adoptFile = r.file ?? null;
+      adoptMoved = r.moved === true;
+      adoptAgentsInfo =
+        r.reason === 'local-agents-md'
+          ? {
+              detail: r.detail,
+              agentsMd: r.agentsMd,
+              adoptImports: r.adoptImports,
+              settingGivesFile: r.settingGivesFile,
+            }
+          : null;
       if (r.ok) {
         debugLog('DEBUG', 'session-start-auto-adopt', `action=${r.action} project=${project}`);
       } else {
@@ -2976,7 +3107,7 @@ async function handleSessionStart() {
     debugCatch(e, 'session-start-auto-adopt');
   }
 
-  // Read CC real session_id from hook stdin — used to scope handoff rows so parallel
+  // Read CC real session_id from hook stdin - used to scope handoff rows so parallel
   // sessions for the same project don't clobber each other (see docs/bug.txt).
   // `source` (startup | clear | compact | resume) is read here too: since Stop stopped
   // deleting the session file, the file's survival no longer tells us WHY this session
@@ -2993,7 +3124,7 @@ async function handleSessionStart() {
       startSource = hookData.source;
     }
   } catch {
-    /* stdin unavailable — legacy behavior */
+    /* stdin unavailable - legacy behavior */
   }
 
   // Snapshot episode BEFORE flush for handoff extraction
@@ -3006,7 +3137,7 @@ async function handleSessionStart() {
   // auto-maintain worker scheduled further down this same function, so on the revisit that
   // matters the flush below has already happened and the sweeper finds nothing. Without this
   // gate, returning to a project abandoned months ago injects its months-old tool activity
-  // stamped with today's date — the exact harm hook-shared.mjs's threshold docblock names.
+  // stamped with today's date - the exact harm hook-shared.mjs's threshold docblock names.
   // Same constant, because it is the same question ("did this buffer outlive its session by
   // an order of magnitude?"), asked at the other end.
   if (acquireLock()) {
@@ -3023,13 +3154,13 @@ async function handleSessionStart() {
   //
   // The discriminator is the host's `source`, NOT the session file's survival. The old
   // comment here read "normal /exit deletes the file, so this only triggers for /clear,
-  // /compact, or crash recovery" — but the deleter was Stop, which fires every turn, so
+  // /compact, or crash recovery" - but the deleter was Stop, which fires every turn, so
   // the file was always gone and this branch never triggered (R10-P1-1). Now that Stop
   // keeps the file, the file is always THERE, and asking it "why did this session start"
   // would answer /clear for a plain launch too. Only the host knows.
   //
   // `startup` and `resume` mean the previous session ended on its own terms and already
-  // wrote its per-turn `exit` handoff, which UserPromptSubmit reads back — no clear
+  // wrote its per-turn `exit` handoff, which UserPromptSubmit reads back - no clear
   // snapshot is owed. A null source (no stdin: tests, legacy hosts) keeps the old
   // file-presence behavior so nothing that used to reach this branch stops reaching it.
   const isMidSessionRestart = startSource !== 'startup' && startSource !== 'resume';
@@ -3051,7 +3182,7 @@ async function handleSessionStart() {
 
   const db = openDb();
   if (!db) {
-    // A null DB used to end SessionStart in total silence. For most causes that is right —
+    // A null DB used to end SessionStart in total silence. For most causes that is right -
     // they are transient, or a repair path is already running. Forward-incompat is neither:
     // it persists until the user installs newer code, it disables every write path, and the
     // only other signal it produces is a `-32000 Connection closed` from the MCP host, which
@@ -3060,7 +3191,7 @@ async function handleSessionStart() {
     //
     // A database file that is not a database is the same shape and got the same treatment:
     // unhealable without the user, disables every path, and every OTHER surface (CLI exit 1,
-    // `status`, `doctor` with an exact repair command) already reports it — leaving the
+    // `status`, `doctor` with an exact repair command) already reports it - leaving the
     // in-session one as the only silent one.
     await emitSchemaSkewNotice();
     await emitDbUnusableNotice();
@@ -3097,12 +3228,12 @@ async function handleSessionStart() {
     // Stdout is the sole context-delivery channel, and it carries exactly ONE
     // JSON envelope. Everything SessionStart wants to say is collected here and
     // written once below: a JSON document followed by raw prose is not a JSON
-    // document, and the host then declines to parse the envelope — delivering
+    // document, and the host then declines to parse the envelope - delivering
     // `{"suppressOutput":true,…}` to the model as literal escaped text instead
     // of honouring it.
     //
     // Skip the wrapper entirely when there is no body. On a brand-new install every
-    // section is empty, and the hook still emitted `<qwen-mem-context>\n\n</...>` —
+    // section is empty, and the hook still emitted `<qwen-mem-context>\n\n</...>` -
     // a framing block that asserts a memory surface and then shows nothing, which is
     // both wasted context and an active misread ("memory exists and is empty" is a
     // reason NOT to call mem_*).
@@ -3114,20 +3245,26 @@ async function handleSessionStart() {
     if (adoptAction === 'inject') {
       const steering = await buildInjectedSteering();
       if (steering) stdoutParts.push(steering);
-      offerAdoptOnce(project);
+      if (adoptReason === 'local-agents-md') await noteAgentsMdOnce(project, adoptAgentsInfo ?? {});
+      else offerAdoptOnce(project);
     } else if (adoptAction === 'local') {
       // Claude Code read CLAUDE.local.md before this hook ran, so the session that CREATES it
       // does not load it (release-tree sandbox: first sessions had no steering, 0/4). Inject
       // the same block once; from the next session the file carries it. An update needs no
       // copy: the session already loaded the previous text.
-      if (adoptWritten === 'created') {
+      // Not when the block moved from CLAUDE.local.md: that file loaded at startup (P3-1).
+      if (adoptWritten === 'created' && !adoptMoved) {
         const steering = await buildInjectedSteering();
         if (steering) stdoutParts.push(steering);
       }
-      noteLocalSteeringOnce(project);
+      const { RULES_MD } = await import('./lib/local-steering.mjs');
+      if (adoptFile === RULES_MD) noteRulesSteeringOnce(project);
+      else noteLocalSteeringOnce(project);
+    } else if (adoptAgents) {
+      noteAgentsImportOnce(project, adoptAgents);
     }
 
-    // Auto-update banner (audit P3d): NON-BLOCKING — read from cached state
+    // Auto-update banner (audit P3d): NON-BLOCKING - read from cached state
     // (zero network) and, if the 24h check is due, refresh in a detached
     // background worker so SessionStart never blocks on a GitHub fetch (was an
     // inline `await checkForUpdate()` that could stall the session 3-6s).
@@ -3141,7 +3278,7 @@ async function handleSessionStart() {
       // USER. Folding it into additionalContext under suppressOutput:true kept its
       // content and lost its audience. Claude Code renders a command hook's top-level
       // systemMessage as its own hook_system_message, independent of the context
-      // block — see lib/hook-stdout.mjs for the bundle evidence.
+      // block - see lib/hook-stdout.mjs for the bundle evidence.
       if (banner) queueHookSystemMessage(String(banner));
       updateCheckDue = isUpdateCheckDue();
     } catch (e) {
@@ -3161,13 +3298,13 @@ async function handleSessionStart() {
     }
 
     // D#123 (review C-1): persist the Key Context ids ACTUALLY rendered above so
-    // handleUserPrompt can exclude exactly those from <memory-context> — and
+    // handleUserPrompt can exclude exactly those from <memory-context> - and
     // nothing else. Under quiet/adopted the sections don't render, the id list is
     // empty, and prompt-time injection is NOT suppressed (the old query-mirroring
     // exclude-set blanked the same-project leg on adopted projects). Written
     // unconditionally (even when empty) so a resumed session can't act on a
     // previous session's stale marker semantics; 24h GC below.
-    // D#124: the same call also bumps injection_count on the rendered rows —
+    // D#124: the same call also bumps injection_count on the rendered rows -
     // Key Context was a shown-but-uncounted surface, so its rows could never
     // reach applyCitationDecay's denominator. One recorder, both writers.
     recordKeyContextInjection(db, {
@@ -3191,7 +3328,7 @@ async function handleSessionStart() {
       // Gate on prior data OLDER THAN v2.70.0: a brand-new install never had
       // v2.69.x deferred-block semantics, so the migration notice is wrong noise.
       // "Any observations at all" still misfired for someone who installed today
-      // and saved a few memories before their first SessionStart — age is what
+      // and saved a few memories before their first SessionStart - age is what
       // actually identifies an upgrader (see lib/upgrade-banner.mjs).
       const { emitV270UpgradeBanner, hasPreV270Data } = await import('./lib/upgrade-banner.mjs');
       emitV270UpgradeBanner({
@@ -3210,7 +3347,7 @@ async function handleSessionStart() {
 // ─── PreCompact Handler ──────────────────────────────────────────────────────
 // Fires immediately before Claude Code auto-compaction begins. Re-emits the
 // memory context block on stdout so the summarizer sees it during compaction.
-// SessionStart's "compact" matcher fires AFTER compaction — by then the
+// SessionStart's "compact" matcher fires AFTER compaction - by then the
 // previous-turn injection has already been collapsed. Pure read; no DB writes.
 
 async function handlePreCompactDispatch() {
@@ -3219,7 +3356,7 @@ async function handlePreCompactDispatch() {
     const raw = await readStdin();
     hookData = JSON.parse(raw.text);
   } catch {
-    /* stdin unavailable — emit anyway with whatever we can infer */
+    /* stdin unavailable - emit anyway with whatever we can infer */
   }
 
   const db = openDb();
@@ -3238,7 +3375,7 @@ async function handlePreCompactDispatch() {
 // ─── UserPromptSubmit handler phases ────────────────────────────────────────
 //
 // Same split as the Stop handler above (audit 2026-09-05 P2-1): `handleUserPrompt` ran
-// 364 lines over four concerns — stdin, the prompt row, handoff injection and semantic
+// 364 lines over four concerns - stdin, the prompt row, handoff injection and semantic
 // memory injection. Moved and named; no behaviour, no ordering, no error handling
 // changed. None of the four blocks contained a `return`, so none of them could exit the
 // handler early, and the caller's `finally { db.close() }` still covers all of them.
@@ -3265,7 +3402,7 @@ async function readUserPromptInput() {
   const rawPrompt = hookData.prompt || hookData.user_prompt;
   if (!rawPrompt || typeof rawPrompt !== 'string') return;
 
-  // Skip internal Claude Code protocol messages — not real user input.
+  // Skip internal Claude Code protocol messages - not real user input.
   // Check on raw text BEFORE stripPrivate (the marker is a literal sentinel,
   // wrapping it in <private> would never make sense, but order matters: a
   // future <task-notification> with embedded <private> blocks should still
@@ -3274,7 +3411,7 @@ async function readUserPromptInput() {
 
   // Strip user-marked <private>...</private> blocks at the input boundary so
   // every downstream consumer (user_prompts INSERT, FTS query, continuation
-  // detection, semantic-memory injection) sees the redacted text — single
+  // detection, semantic-memory injection) sees the redacted text - single
   // source of truth for the privacy primitive.
   // Strip NUL / C0 control chars (keep \t \n \r) before any downstream use: an
   // embedded NUL terminates SQLite's C string, silently truncating the stored
@@ -3288,7 +3425,7 @@ async function readUserPromptInput() {
 /**
  * Insert the prompt row and advance the per-session counter.
  * @returns {{promptNumber: number, ccSessionId: string|null}} both are read by the
- *   injection phases below — the counter drives the handoff window, and the CC id
+ *   injection phases below - the counter drives the handoff window, and the CC id
  *   scopes every row identity that must not merge concurrent same-project sessions.
  */
 function recordUserPromptRow(db, { sessionId, project, promptText, hookData, now }) {
@@ -3312,7 +3449,7 @@ function recordUserPromptRow(db, { sessionId, project, promptText, hookData, now
 
   // Claude Code's real session_id (CC UUID) from hook stdin. Persisted on the
   // prompt row (cc_session_id) so buildAndSaveHandoff can scope working_on to ONE
-  // CC session — getSessionId() is project-scoped (no CC-UUID), so without this
+  // CC session - getSessionId() is project-scoped (no CC-UUID), so without this
   // concurrent/within-TTL same-project sessions merge each other's prompts (D#26).
   // Also scopes handoff-row injection below. Null (legacy) when stdin lacks session_id.
   const ccSessionId =
@@ -3357,7 +3494,7 @@ function injectHandoffIfEarly(db, { project, promptText, promptNumber, ccSession
         if (picked) {
           const injection = renderHandoffInjection(db, project, ccSessionId);
           if (injection) writePlainHookText(injection);
-          // Consume ONLY the row we just injected — leave other projects' exit
+          // Consume ONLY the row we just injected - leave other projects' exit
           // handoffs intact so future sessions can still resume from them.
           // Pre-v2.46 wiped every exit handoff for the project on any continuation
           // intent, which made the DB effectively forgetful: 115 completed sessions
@@ -3366,7 +3503,7 @@ function injectHandoffIfEarly(db, { project, promptText, promptNumber, ccSession
           // Consuming STAMPS the row (consumed_at) rather than deleting it: the age-based
           // GC in auto-maintain still reaps it, but until then the row that produced this
           // injection can be read back. Every pool that relied on the row being gone now
-          // filters on UNCONSUMED_HANDOFF_SQL instead — the list is in handoff-constants.
+          // filters on UNCONSUMED_HANDOFF_SQL instead - the list is in handoff-constants.
           try {
             consumeHandoff(db, picked);
           } catch {}
@@ -3384,7 +3521,7 @@ function injectHandoffIfEarly(db, { project, promptText, promptNumber, ccSession
  * Takes `ccSessionId` and NOT the mem-internal `sessionId`: every marker and row this
  * phase writes is scoped to the Claude Code session, because the internal id is
  * project-scoped and would merge concurrent same-project sessions (D#26). The split
- * made that visible — the internal id was in scope here and simply never used.
+ * made that visible - the internal id was in scope here and simply never used.
  */
 async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
   // Semantic memory injection: search past observations for the user's prompt.
@@ -3394,7 +3531,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
   if (!detectMemOverride(promptText))
     try {
       // D#123 (review C-1): the exclude-set is the Key Context ids ACTUALLY
-      // rendered at SessionStart — read from the marker handleSessionStart wrote,
+      // rendered at SessionStart - read from the marker handleSessionStart wrote,
       // not re-derived from a query. The old query-mirroring set excluded rows
       // that were never shown (quiet/adopted projects render no Key Context at
       // all), blanking the same-project <memory-context> leg outright. Missing
@@ -3404,7 +3541,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
       try {
         // `keyCtxRaw`, not `raw`: this function already binds `raw` to the stdin payload
         // ~120 lines up, and a second `raw` holding a marker FILE's contents reads as that
-        // one (audit 2026-09-02 P2-17 — the one hit in the tree worth a rename).
+        // one (audit 2026-09-02 P2-17 - the one hit in the tree worth a rename).
         const keyCtxRaw = readFileSync(
           join(RUNTIME_DIR, keyContextIdsFileName(project, ccSessionId)),
           'utf8',
@@ -3415,11 +3552,11 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
         }
         // The marker's validity is session-lifetime but gcStalePreRecallCooldowns sweeps it
         // by AGE. Stamping it on read makes that sweep mean "24h with no prompt in this
-        // session" instead of "24h since the render" — otherwise a session running past a
+        // session" instead of "24h since the render" - otherwise a session running past a
         // day loses its own exclude-set and re-injects what Key Context is still showing.
         touchKeyContextMarker({ runtimeDir: RUNTIME_DIR, project, sessionId: ccSessionId });
       } catch {
-        /* no marker — nothing was injected, exclude nothing */
+        /* no marker - nothing was injected, exclude nothing */
       }
       const pathAInjectedIds = [];
 
@@ -3433,7 +3570,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
         // P1-2); this was the third hand-typed copy of it. THE 10 s WINDOW STAYS HERE and
         // is passed in: the two writers gate on DEDUP_STALE_MS (5 min) and this reader on
         // 10 s ("same prompt cycle"), and that disagreement is a real open question
-        // (P1-2's second half — the 10 s window still accepts the PREVIOUS prompt's
+        // (P1-2's second half - the 10 s window still accepts the PREVIOUS prompt's
         // marker), not a copy-paste slip to be normalised away by the consolidation.
         // Legacy payloads without `session` keep the old time-window-only behaviour.
         const { ids, fresh } = readInjectedMarker(injectedFile, {
@@ -3441,7 +3578,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
           maxAgeMs: 10000,
         });
         if (fresh) {
-          // D#193, DELIBERATELY NOT NUMERICALISED — read this before "fixing" it.
+          // D#193, DELIBERATELY NOT NUMERICALISED - read this before "fixing" it.
           //
           // Ids arrive here as written. `user-prompt-search.js` writes plain numbers, but
           // `mergeCrossHookInjected` (pre-tool-recall.js) `.map(String)`s the whole union,
@@ -3449,19 +3586,19 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
           // Both consumers below test `new Set(excludeIds).has(r.id)` against a NUMBER out
           // of SQLite, so from that moment the exclude suppresses nothing.
           //
-          // Coercing with Number() here would make it work — and that is a real behaviour
+          // Coercing with Number() here would make it work - and that is a real behaviour
           // change, not a type repair, which is why it is not done as a drive-by.
           //
           // GET THE SIDE RIGHT. The marker is WRITTEN by `user-prompt-search.js` (the
           // `fyi` face) and `pre-tool-recall.js` (`pretool`); it is READ here, in
           // handleUserPrompt, which is the `ups` face. So the gated population is
           // `ups ∩ (fyi ∪ pretool)`. A first version of this note measured the mirror
-          // image — `fyi ∩ (pretool ∪ ups)` — and published 18.0%, the number for a
+          // image - `fyi ∩ (pretool ∪ ups)` - and published 18.0%, the number for a
           // mechanism that is not this one. The pre-tag review caught it.
           //
           // Measured 2026-09-02T12:12Z over 99 transcripts, one walk, as an UPPER bound
           // (session-level, ignoring the marker's stale window): a working exclude would
-          // drop at most 23 of 256 `ups` (session, id) pairs — 9.0% — across 14 of 71
+          // drop at most 23 of 256 `ups` (session, id) pairs - 9.0% - across 14 of 71
           // sessions, and 3 of 24 on task_imperative (12.5%). By attachments rather than
           // pairs it is 29 of 332 (8.7%).
           //
@@ -3470,13 +3607,13 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
           // `shouldSkipByDedup` (prompt-search-utils.mjs) String-normalises both sides, so
           // it functions, and it skips the whole injection at >=0.8 overlap. Turning this
           // one on adds a second, finer-grained suppressor on a face that is already
-          // suppressed, with the direction unknown — the freed slot is sometimes refilled
+          // suppressed, with the direction unknown - the freed slot is sometimes refilled
           // from the pool and sometimes just lost (`rerank-pool-replay`: 6587 of 11289
           // prompts already inject nothing) and the `ups` cite-rate is 8.1%.
           //
           // The ruler that settles it is now BUILT and sits at the bottom of this same
           // function: `lib/patha-exclude-meter.mjs`, off unless QWEN_MEM_METRICS=1. It
-          // does not persist the marker for an offline replay — reconstructing per-prompt
+          // does not persist the marker for an offline replay - reconstructing per-prompt
           // exclude sets that way needs a file that rotates after DEDUP_STALE_MS, and the
           // replay would then run against a drifted database. Both arms run at this read
           // instead. What is still missing is elapsed time, not a method. D#213.
@@ -3487,11 +3624,11 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
           }
         }
       } catch {
-        /* file may not exist — that's fine */
+        /* file may not exist - that's fine */
       }
 
       // Issue #39: a prompt with no topic by construction (continue / 继续 / ok / a slash
-      // command / git push / "why did you stop") searches nothing on this face — the shape
+      // command / git push / "why did you stop") searches nothing on this face - the shape
       // rules path A's shouldSkip has applied since v2.43, from the one shared definition.
       // HERE and not earlier: both marker reads above must still run, because
       // touchKeyContextMarker's stamp is what keeps the Key Context exclude-set alive
@@ -3501,7 +3638,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
       // continuation prompts, ran before this function and is untouched.
       if (isNoTopicShape(promptText)) return;
 
-      // Phase-2 task-imperative (EXPERIMENTAL, default OFF — QWEN_MEM_TASK_IMPERATIVE):
+      // Phase-2 task-imperative (EXPERIMENTAL, default OFF - QWEN_MEM_TASK_IMPERATIVE):
       // the single highest-value lesson relevant to THIS prompt, delivered at the prompt
       // position under an imperative template. Excluded from the <memory-context> list so it
       // is never injected twice. Channel-isolation measure (efficacy arm U, 2026-06-29):
@@ -3511,7 +3648,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
       // identifier overlap between the prompt and the lesson body/title, and over the last 400
       // real prompts that gate opened 76 times = 19.0% (CJK prompts 57/352 = 16.2%, ASCII
       // 19/48 = 39.6%). With 88% of prompts on this install in Chinese, the emitter fires
-      // roughly once every six prompts — the canary can never accumulate n, because the
+      // roughly once every six prompts - the canary can never accumulate n, because the
       // ceiling is the gate's DESIGN (precision-first symbol anchoring), not a defect.
       // Reviving the flip needs a CJK-viable anchor proven in A/B without a precision loss;
       // until then this stays experimental and off.
@@ -3521,12 +3658,12 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
       // Ordering is the whole correctness argument, so it is stated where the order is:
       // arm A's search legitimately bumps `injection_count` on every row it delivers,
       // and that column feeds `noisePenaltyClause`. Running the counterfactual AFTER it
-      // — as the first version did — lets arm A push a row across the >=4 noise gate and
+      // - as the first version did - lets arm A push a row across the >=4 noise gate and
       // then attributes the resulting difference to the repair. The pre-tag review
       // reproduced that: a marker id for a row the query never matches, where the honest
       // answer is `suppressed 0 / refilled 0`, reported `refilled: 1, setChanged: true`.
       //
-      // So arm B runs first, on the same handle, with `counterfactual: true` — it writes
+      // So arm B runs first, on the same handle, with `counterfactual: true` - it writes
       // nothing and emits no `inject` metric row, so arm A afterwards sees exactly the
       // state arm B saw. Both arms, one state, and neither one perturbs the other.
       //
@@ -3535,7 +3672,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
       // the pick changed, the delta described a system that does not exist.
       // Lazy on "the marker carried ids", NOT on the metrics env. Gating the import on
       // `QWEN_MEM_METRICS === '1'` would read cheaper still, and would put a second copy
-      // of `pathAMeterEnabled`'s own predicate here — the twin shape this meter's tests
+      // of `pathAMeterEnabled`'s own predicate here - the twin shape this meter's tests
       // exist to pin. `pathAMeterEnabled()` stays the only place that predicate lives; the
       // module still stops loading on every OTHER event, which is what P1-8 is about.
       let pathAMeterEnabled, coerceMarkerIds, recordPathAExclude;
@@ -3564,7 +3701,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
         }
       }
 
-      // Exclude only ids path-A (user-prompt-search.js) already injected — NOT the
+      // Exclude only ids path-A (user-prompt-search.js) already injected - NOT the
       // SessionStart Key Context set, which overlaps the high-value lesson pool and
       // would suppress the pick. The chosen id is excluded from the <memory-context>
       // block below instead.
@@ -3580,7 +3717,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
         lines.push('</memory-context>');
         writePlainHookText(lines.join('\n'));
       }
-      // HIGH-1 (full audit 2026-07-16): surface FTS-matched events — the canonical
+      // HIGH-1 (full audit 2026-07-16): surface FTS-matched events - the canonical
       // store for promoted bugfix/decision/lesson memories that persistHaikuSummary
       // upgrade-deletes out of observations. Without this leg they are unreachable at
       // prompt time. Separate E#-tagged block so it doesn't perturb observation
@@ -3589,7 +3726,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
       try {
         // upsFtsQuery, not the raw prompt (audit ALGO-1). lib/ups-query.mjs declares
         // itself "the ONE query-cap definition for the UserPromptSubmit event", and both
-        // OTHER legs of this same event go through it — but this leg, wired in v3.48
+        // OTHER legs of this same event go through it - but this leg, wired in v3.48
         // before that module existed, handed searchInjectableEvents the whole prompt and
         // let it call the uncapped sanitizeFtsQuery. Measured here: a 250KB CJK prompt
         // (path B's stdin cap is 256KB) costs 356ms uncapped against 5.5ms capped, all of
@@ -3609,7 +3746,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
         debugCatch(e, 'handleUserPrompt-events');
       }
       if (imperativePick) {
-        // Guard the write on a non-empty return — formatTaskImperative yields '' for a
+        // Guard the write on a non-empty return - formatTaskImperative yields '' for a
         // lesson that strips to empty (e.g. "."), which would otherwise emit a bare line.
         const imperativeLine = formatTaskImperative(imperativePick.lesson_learned, imperativePick.id);
         if (imperativeLine) writePlainHookText(imperativeLine);
@@ -3620,7 +3757,7 @@ async function injectSemanticMemory(db, { project, promptText, ccSessionId }) {
       // `process.stdout.write` so the metric append is never in front of the injection,
       // and so a throw here cannot corrupt what was already emitted.
       //
-      // `meterCoerced` being non-null is the gate — it is null unless
+      // `meterCoerced` being non-null is the gate - it is null unless
       // QWEN_MEM_METRICS=1 AND the marker carried ids, which is what keeps both the
       // counterfactual search and the second lesson selection off a stock install.
       try {
@@ -3685,7 +3822,7 @@ async function handleEnrichSave(rawId) {
   try {
     const { executeSaveEnrich } = await import('./lib/save-enrich.mjs');
     const result = await executeSaveEnrich(db, id);
-    // G13: the worker's outcome was previously discarded — "spawned but did it
+    // G13: the worker's outcome was previously discarded - "spawned but did it
     // work" was invisible (32% alias coverage with 3 indistinguishable failure
     // causes). reason 'filled-concurrently' = txn ran but a concurrent optimize/
     // update had already filled every empty field.
@@ -3750,7 +3887,7 @@ function handleAutoCompress() {
 
 // P1-9: the mechanism is shared (lib/hook-stdin.mjs); the CALIBER stays this entry point's
 // own. 256 KB because a tool response is the largest payload the host sends here, and
-// `rejectOnTimeout` because this reader's callers treat a timeout as "drop the event" — the
+// `rejectOnTimeout` because this reader's callers treat a timeout as "drop the event" - the
 // alternative, acting on a partial payload, means writing a truncated tool response into
 // memory as if it were the whole thing. The other four hook processes are advisory and
 // resolve instead; those are different decisions about different payloads, not drift.
@@ -3760,7 +3897,7 @@ function readStdin() {
     maxBytes: MAX_HOOK_STDIN_BYTES, // shared tier, utils.mjs
     rejectOnTimeout: true,
   }).catch((err) => {
-    if (err?.message === 'timeout') debugLog('WARN', 'readStdin', 'stdin timeout after 3s — event dropped');
+    if (err?.message === 'timeout') debugLog('WARN', 'readStdin', 'stdin timeout after 3s - event dropped');
     throw err;
   });
 }
@@ -3774,7 +3911,7 @@ function tryParseJson(str) {
 }
 
 // Strip ANSI escape codes and extract readable text from tool responses.
-// Bash responses come as {stdout, stderr} objects or JSON strings — extract the text content
+// Bash responses come as {stdout, stderr} objects or JSON strings - extract the text content
 // instead of producing noisy `{"stdout":"\u001b[1m..."}` in episode descriptions.
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\u001b\[[0-9;]*[a-zA-Z]/g;
@@ -3854,7 +3991,7 @@ try {
       await handleLLMOptimize();
       break;
     }
-    // Detached update refresh spawned by handleSessionStart (audit P3d) — does the
+    // Detached update refresh spawned by handleSessionStart (audit P3d) - does the
     // GitHub fetch off the SessionStart critical path, writing update-state.json so
     // the NEXT session's cached banner is fresh.
     //
@@ -3865,7 +4002,7 @@ try {
     // `allowInstall = options.allowInstall ?? !pluginMode` defaults to TRUE on a
     // direct / settings.json install, so fixing F6 would switch a ten-week-dormant
     // self-installer back on in the same release that resurrects the worker. The
-    // module default and the installer's own guards are unchanged — install.mjs
+    // module default and the installer's own guards are unchanged - install.mjs
     // still passes allowInstall:true for the explicit, user-invoked update.
     case 'update-check': {
       const { checkForUpdate } = await import('./hook-update.mjs');
@@ -3877,11 +4014,11 @@ try {
   // Log fatal errors (ungated) with structured format. ERR_DLOPEN_FAILED (an
   // unloadable native DB binding, e.g. ABI-stale after a Node upgrade) is
   // collapsed to one short, rate-limited rebuild hint instead of the raw
-  // multi-line NODE_MODULE_VERSION message on every fire — see
+  // multi-line NODE_MODULE_VERSION message on every fire - see
   // lib/native-binding-hint.mjs.
   const line = formatHookError(err, event, { runtimeDir: RUNTIME_DIR });
   if (line) console.error(line);
-  // stderr alone is invisible to `stats` self-observation — only the native-binding
+  // stderr alone is invisible to `stats` self-observation - only the native-binding
   // family was persisted, so a non-binding fatal (schema drift, bad stdin shape)
   // could kill every dispatch-routed surface while the hook-errors log read zero
   // (audit 2026-08-14 M-5; same blindness one layer up from the v3.60 outage).

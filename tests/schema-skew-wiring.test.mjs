@@ -2,7 +2,7 @@
 // file proves anything CALLS it.
 //
 // The distinction is not academic here. The v6.2.0 round produced a doctor check whose unit
-// tests all passed while nothing proved the shipped doctor reached the code — flipping the
+// tests all passed while nothing proved the shipped doctor reached the code - flipping the
 // fixed arm back to a green `ok` killed none of them, and only a post-repair mutation probe
 // found it. So each case below drives a REAL entry point in a subprocess (hook.mjs
 // session-start, cli.mjs doctor, scripts/user-prompt-search.js) against a real database, and
@@ -49,7 +49,7 @@ function skewedDataDir(version = 999) {
 
 /**
  * HOME is sandboxed for every case. Without it these assertions are graded against whatever
- * plugin cache the developer's machine happens to hold — which is not hypothetical: the
+ * plugin cache the developer's machine happens to hold - which is not hypothetical: the
  * first run of this file failed its own control because the real cache here (v5.6.0,
  * supporting v48) genuinely cannot open the repo's v49 database, so doctor was right and the
  * test was wrong. A machine-dependent control is not a control.
@@ -105,7 +105,7 @@ describe('SessionStart speaks instead of returning silently', () => {
 
   it('puts the notice on the HUMAN channel, not only the model one', () => {
     // queueHookContext reaches the model; systemMessage is what Claude Code renders to the
-    // user. The first cut used only the former — which is verbatim what lib/hook-stdout.mjs
+    // user. The first cut used only the former - which is verbatim what lib/hook-stdout.mjs
     // documents v3.70.0 for ("kept its content and lost its audience"), on a notice whose
     // entire job is handing the user a command to run.
     const dataDir = skewedDataDir();
@@ -135,7 +135,7 @@ describe('SessionStart speaks instead of returning silently', () => {
 describe('openDb keeps its contract: returns null, never throws', () => {
   it('survives a runtime dir that cannot be written', () => {
     // The first cut of the dedup called getSessionId() from inside openDb's catch. That is
-    // not a read — it MINTS and writes a session id — so an unwritable runtime dir made the
+    // not a read - it MINTS and writes a session id - so an unwritable runtime dir made the
     // catch block itself throw, and openDb() threw where every one of its 13 call sites
     // expects null. Reproduced as ENOTDIR against a `main` arm returning null. Real triggers:
     // EROFS, ENOSPC, EACCES, a relocated QWEN_MEM_DIR on a dismounted volume.
@@ -165,7 +165,7 @@ describe('the hook-error log stops repeating one persistent fault', () => {
     const dataDir = skewedDataDir();
     // Four separate processes, as production has: every hook event is its own node run,
     // which is why a per-process guard would not have stopped the 648/day flood. The four
-    // share one session because getSessionId() persists the id under the data dir — which
+    // share one session because getSessionId() persists the id under the data dir - which
     // is exactly the scope the dedup key claims.
     for (let i = 0; i < 4; i++) {
       run([join(REPO, 'hook.mjs'), 'user-prompt'], dataDir, {
@@ -180,7 +180,7 @@ describe('the hook-error log stops repeating one persistent fault', () => {
 
   it('still records once per project when two projects share one data dir', () => {
     // The first cut used ONE marker file for the whole data dir, keyed on a session id that
-    // is per PROJECT — so two projects overwrote each other's key and every fire recorded
+    // is per PROJECT - so two projects overwrote each other's key and every fire recorded
     // again. Review measured it: 8 fires across 2 projects gave 8 records where the same 8
     // fires in one project gave 1. That is the 648/day flood, unfixed for exactly the
     // multi-project machine that produced it.
@@ -203,7 +203,7 @@ describe('the hook-error log stops repeating one persistent fault', () => {
   });
 
   it('deduplicates the ups face too, which opens the DB itself', () => {
-    // scripts/user-prompt-search.js does not go through hook-shared's openDb — it calls
+    // scripts/user-prompt-search.js does not go through hook-shared's openDb - it calls
     // ensureDb() directly and logs its own `ups:db-open`. It contributed 15 of one measured
     // day's 727 lines, so leaving it out closed ~98% of the flood and called it closed.
     const dataDir = skewedDataDir();
@@ -221,7 +221,7 @@ describe('the hook-error log stops repeating one persistent fault', () => {
 describe('the CLI stops printing a repair that cannot work', () => {
   it('replaces the raw throw with the shape-aware notice', () => {
     // `recent` is the command a user reaches for right after doctor tells them something is
-    // wrong, and it used to print the raw message — which ends in `npm i -g
+    // wrong, and it used to print the raw message - which ends in `npm i -g
     // github:thenewnano/qwen-mem-lite`, inert on the plugin-cache install that actually hits
     // this.
     const dataDir = skewedDataDir();
@@ -259,7 +259,7 @@ describe('doctor reports which code home cannot open the DB', () => {
     // this fixture's sandboxed HOME the remedy resolves to kind 'unknown', which emits no
     // command at all, and an unrelated `⚠ Hook scripts: … Fix: qwen-mem-lite self-update`
     // line elsewhere in doctor satisfied the regex. Review proved it by deleting both remedy
-    // `log()` calls from install.mjs — all five cases stayed green. Anchoring to the line
+    // `log()` calls from install.mjs - all five cases stayed green. Anchoring to the line
     // that FOLLOWS the skew failure is what makes it load-bearing.
     const lines = out.split('\n');
     const idx = lines.findIndex((l) => /DB schema v999 is newer than/.test(l));
@@ -284,7 +284,7 @@ describe('doctor reports which code home cannot open the DB', () => {
     run([join(REPO, 'cli.mjs'), 'stats'], dir);
     const r = run([join(REPO, 'cli.mjs'), 'doctor'], dir);
     const out = `${r.stdout}${r.stderr}`;
-    expect(out).toMatch(/DB schema: v\d+ — readable by all/);
+    expect(out).toMatch(/DB schema: v\d+ - readable by all/);
     expect(out).not.toMatch(/is newer than/);
   });
 });
@@ -295,10 +295,10 @@ describe('doctor reports which code home cannot open the DB', () => {
 // its handshake, so the host showed `-32000 Connection closed`." SessionStart, the CLI and
 // doctor each got a shape-aware notice; the server did not, and the reason is structural
 // rather than an oversight in wiring. `scripts/launch.mjs` DOES import this module and DOES
-// format the notice — but server.mjs opens the DB while it is being imported and catches the
+// format the notice - but server.mjs opens the DB while it is being imported and catches the
 // throw itself, printing `err.message` and calling process.exit(1). The launcher's catch is
 // therefore unreachable for exactly this error, and `err.message` is schema.mjs's raw text,
-// which ends in `npm i -g github:thenewnano/qwen-mem-lite` — inert on the plugin cache that actually
+// which ends in `npm i -g github:thenewnano/qwen-mem-lite` - inert on the plugin cache that actually
 // hits this.
 //
 // BOTH entry points are driven, because they are genuinely two shapes and only one of them

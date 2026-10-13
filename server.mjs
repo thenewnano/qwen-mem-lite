@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// qwen-mem-lite MCP Server — All-in-one memory system
+// qwen-mem-lite MCP Server - All-in-one memory system
 // FTS5 search, zero LLM calls, single process
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -7,9 +7,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { truncate, typeIcon, inferProject, fmtDate, debugLog, debugCatch } from './utils.mjs';
 import { resolveProject as _resolveProjectShared } from './project-utils.mjs';
-import { ensureDbWithWalRecovery, DB_PATH, DB_DIR, CODE_DIR } from './schema.mjs';
+import { ensureDbWithWalRecovery, refreshPlannerStats, DB_PATH, DB_DIR, CODE_DIR } from './schema.mjs';
 // schema.mjs already imports this module for SCHEMA_SKEW_CODE, so it is in the graph before
-// the DB is touched — a static import here adds no cold-start cost.
+// the DB is touched - a static import here adds no cold-start cost.
 import {
   isSchemaSkewError,
   schemaSkewFromError,
@@ -79,12 +79,16 @@ import {
   formatPendingPurgeLine,
   formatHiddenLine,
 } from './cli/common.mjs';
+import { countMcpEligibleCorpus, rateSearchResults, recordSearch } from './lib/search-telemetry.mjs';
+import { recordHookError } from './lib/hook-telemetry.mjs';
+import { stripPrivate } from './lib/private-strip.mjs';
 // The partial-export warning points the caller at the CLI twin, which exports the complete
-// set by default — the invocation has to be the one that actually works on this install.
+// set by default - the invocation has to be the one that actually works on this install.
 import { CLI_INVOKE, shellWord } from './cli-path.mjs';
 import { neutralizeContextDelimiters, neutralizeSkillDelimiters, queryLabel } from './format-utils.mjs';
 import {
   memSearchSchema,
+  memSearchFeedbackSchema,
   memRecentSchema,
   memTimelineSchema,
   memGetSchema,
@@ -148,6 +152,7 @@ import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 const { version: PKG_VERSION } = require('./package.json');
+const SEARCH_TELEMETRY_ENABLED = process.env.QWEN_MEM_SEARCH_TELEMETRY === '1';
 
 // ─── Database ───────────────────────────────────────────────────────────────
 
@@ -177,7 +182,7 @@ try {
   // This branch has to live HERE rather than in scripts/launch.mjs, which already knows how
   // to format the notice. server.mjs opens the DB while it is being imported, so the throw
   // is caught by this block and `process.exit(1)` runs before the launcher's own catch can
-  // ever see it — the launcher's handler is unreachable for this one error. Re-throwing
+  // ever see it - the launcher's handler is unreachable for this one error. Re-throwing
   // instead would fix the plugin path and break the npm one, because install.mjs registers
   // `claude mcp add ... -- node <SERVER_PATH>`, launching this file with no launcher above
   // it to catch anything. Emitting from here covers both, and the launcher's copy stays as
@@ -232,7 +237,11 @@ try {
   process.exit(1);
 }
 // Server process uses longer busy_timeout for concurrent MCP requests
-db.pragma('busy_timeout = 5000');
+db.pragma(`busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
+// Planner statistics on open, as SQLite recommends for a long-lived connection (#41). The
+// short wait keeps a hook holding the write lock at session start from stalling startup;
+// a skipped round is retried by the daily auto-maintain worker.
+refreshPlannerStats(db, { busyTimeoutMs: 250 });
 
 // inferProject, typeIcon, truncate, fmtDate imported from utils.mjs
 
@@ -245,7 +254,7 @@ function resolveProject(name) {
   return _resolveProjectShared(db, name);
 }
 
-/** R10 P2-3: the WRITE variant. Exact matching only — a fuzzy guess on a write puts the
+/** R10 P2-3: the WRITE variant. Exact matching only - a fuzzy guess on a write puts the
  *  row in a project the caller never named and cannot find it under. */
 function resolveProjectForWrite(name) {
   return _resolveProjectShared(db, name, { mode: 'write' });
@@ -255,18 +264,18 @@ function resolveProjectForWrite(name) {
 //
 // Composite scoring: BM25(weights) × recency_decay × [project_boost] × [importance] × [access_bonus]
 //
-// BM25 column weights — higher weight = matches in that column score higher:
+// BM25 column weights - higher weight = matches in that column score higher:
 //   observations_fts:        title=10, subtitle=5, narrative=5, text=3, facts=3, concepts=2, lesson_learned=8
 //   session_summaries_fts:   request=5, investigated=3, learned=3, completed=3, next_steps=2, notes=1, remaining_items=1
 //
-// Recency decay — exponential half-life:
+// Recency decay - exponential half-life:
 //   factor = 1 + e^(-ln2 × age_ms / half_life_ms)
 //   At age=0: 2.0 (full boost) → at half_life: 1.5 → at ∞: 1.0
 //   0.693 = ln(2), ensures exact halving at each half-life interval
 //
 // Optional per-query modifiers:
 //   Project boost: 2× for current project matches
-//   Importance:    0.5 + 0.5 × importance (range 0.5–2.0)
+//   Importance:    0.5 + 0.5 × importance (range 0.5-2.0)
 //   Access bonus:  1 + 0.1 × ln(1 + access_count)
 
 // Session/prompt FTS scoring (SESS_BM25 + recency decay) lives in lib/search-core.mjs.
@@ -297,13 +306,13 @@ let idleCleanupRan = false;
 /**
  * Defang structural context delimiters in every text block of a tools/call result.
  *
- * A tools/call payload IS model context — unlike CLI stdout there is no human between
+ * A tools/call payload IS model context - unlike CLI stdout there is no human between
  * the DB row and the transcript. Observations are stored raw on purpose (defense lives
  * at the injection boundary, not at save), and every HOOK surface already neutralizes
  * before writing to the model (buildSessionContextLines / formatMemoryLine /
  * formatErrorRecallHints / renderHandoffFromRow / pre-tool-recall). The MCP read tools
  * were the one model-facing family left raw, so a memory carrying a forged
- * `<system-reminder>` replayed verbatim into a mem_search result — reinstating exactly
+ * `<system-reminder>` replayed verbatim into a mem_search result - reinstating exactly
  * the channel the hook-side defang closes. Applied at the single handler chokepoint so
  * a newly registered tool is covered by construction (§9 parallel-path completeness).
  *
@@ -316,7 +325,7 @@ let idleCleanupRan = false;
  * Fold CLI-flag aliases onto their canonical MCP field names.
  *
  * The schemas declare both spellings (see tool-schemas.mjs); this is where the alias
- * actually takes effect. Canonical wins when both are present — an explicit canonical
+ * actually takes effect. Canonical wins when both are present - an explicit canonical
  * value is the more specific intent, and silently letting an alias override it would
  * reintroduce the same class of surprise the aliases exist to remove.
  *
@@ -341,12 +350,12 @@ function applyArgAliases(args, pairs) {
  * @param {object} [opts]
  * @param {boolean} [opts.skillBlocks=true] Also neutralize `<skill-loaded>`. Default ON:
  *   registry rows carry third-party text (a GitHub frontmatter name, or `import --name`,
- *   which applies no charset filter), and every registry render used to interpolate it raw —
+ *   which applies no charset filter), and every registry render used to interpolate it raw -
  *   so a crafted name FORGED a whole skill block out of nothing in ordinary search/list
  *   output (audit 2026-09-05 R6 P1-2; F7 on a third face). Enumerating mem_registry found
  *   the same shape on seven branches plus the shared formatRegistryListLine, which is why
- *   this is a chokepoint default rather than seven call-site patches. `mem_use` — the one
- *   handler that must emit a REAL wrapper — turns it off explicitly and defangs its own
+ *   this is a chokepoint default rather than seven call-site patches. `mem_use` - the one
+ *   handler that must emit a REAL wrapper - turns it off explicitly and defangs its own
  *   untrusted pieces per call site instead (R6 P1-1).
  */
 function defangResult(result, { skillBlocks = true } = {}) {
@@ -366,12 +375,12 @@ function defangResult(result, { skillBlocks = true } = {}) {
  * @param {Function} fn Tool handler.
  * @param {object} [opts]
  * @param {boolean} [opts.verbatim=false] Skip the defang pass. Only for payloads that
- *   must round-trip byte-exact — `mem_export` feeds `restore`, so neutralizing it would
+ *   must round-trip byte-exact - `mem_export` feeds `restore`, so neutralizing it would
  *   silently corrupt backups of any memory that legitimately discusses these tags.
  *
  * There used to be an `emitsSkillBlock` opt-out here, for the one handler that
  * legitimately emitted a real `<skill-loaded>` wrapper: `mem_use`. It went with the skill
- * registry, so the chokepoint is now unconditional — every non-verbatim result is defanged
+ * registry, so the chokepoint is now unconditional - every non-verbatim result is defanged
  * for skill blocks. Do not reintroduce the opt-out for a handler that merely wants to emit
  * a wrapper; R6 P1-1 was exactly the shape where one exempt face carried the whole risk.
  */
@@ -385,7 +394,7 @@ function safeHandler(fn, { verbatim = false } = {}) {
     } catch (err) {
       // A damaged FTS5 index arrives here as SQLITE_CORRUPT_VTAB from the first MATCH.
       // Without this the model got SQLite's own sentence and nothing else, on a fault it
-      // could have had fixed in one command — and mem_recent / mem_recall / mem_browse
+      // could have had fixed in one command - and mem_recent / mem_recall / mem_browse
       // keep answering, so the dead end reads as "nothing matched". Both channels carry the
       // same string here, deliberately: unlike the file-level remedy this one is lossless
       // (see FTS_CORRUPTION_REMEDY in lib/db-unusable.mjs).
@@ -398,7 +407,7 @@ function safeHandler(fn, { verbatim = false } = {}) {
   };
 }
 
-// ─── Tool: mem_search — helper functions ────────────────────────────────────
+// ─── Tool: mem_search - helper functions ────────────────────────────────────
 
 // TYPE_DECAY_CASE imported from utils.mjs
 
@@ -422,9 +431,9 @@ function formatSearchOutput(
     const hint = [];
     if (isDeepSearch) {
       // Deep search runs even when the literal query sanitizes to empty, so the
-      // "query was filtered" hint below would be misleading — the LLM rewrite ran
+      // "query was filtered" hint below would be misleading - the LLM rewrite ran
       // N variants and simply found nothing (F9).
-      hint.push('No results — deep search rewrote the query into variants and still found nothing.');
+      hint.push('No results - deep search rewrote the query into variants and still found nothing.');
       hint.push(
         'This is a recall miss (the rewrite ran), not a query-syntax issue; the memory likely has no related observations.',
       );
@@ -438,7 +447,7 @@ function formatSearchOutput(
         // Bounded like the other two echo sites. This one is the worst of the three: it
         // prints the EXPANDED query, and synonym expansion makes it LARGER than the input
         // (measured 13,691 chars out for 10,329 in, 1.33x). The first pass of this fix
-        // skipped the branch on the reasoning that it "never renders the label" — true of
+        // skipped the branch on the reasoning that it "never renders the label" - true of
         // the label, false of the echo.
         if (expanded !== args.query) hint.push(`Searched as: ${queryLabel(expanded)}`);
         hint.push('Tip: check spelling, try broader terms, or use mem_stats to see available data.');
@@ -448,7 +457,7 @@ function formatSearchOutput(
   }
 
   const lines = [];
-  // "N of M" whenever the population exceeds the page — NOT gated on isCrossSource.
+  // "N of M" whenever the population exceeds the page - NOT gated on isCrossSource.
   // totalCount is the true limit/offset-invariant population (countSearchTotal), so
   // single-source searches (obs_type / type / importance filters) must surface it too.
   // The old isCrossSource gate predated countSearchTotal: back then single-source
@@ -461,21 +470,21 @@ function formatSearchOutput(
   const hasMixed = paginatedResults.some(
     (r) => r.source === 'session' || r.source === 'prompt' || r.source === 'event',
   );
-  // P2-6: empty/omitted query falls through to a "listing recent" path — label it explicitly
+  // P2-6: empty/omitted query falls through to a "listing recent" path - label it explicitly
   // so callers don't mistake BM25-less results for relevance-ranked ones.
-  const qLabel = args.query ? ` for "${queryLabel(args.query)}"` : ' (no query — listing recent)';
+  const qLabel = args.query ? ` for "${queryLabel(args.query)}"` : ' (no query - listing recent)';
   // Surface AND→OR fallback so callers (incl. Claude) know a strict multi-term
   // query actually matched only a subset of the terms. Suppressed when the caller
-  // explicitly requested OR semantics — there's no "fallback" in that path.
+  // explicitly requested OR semantics - there's no "fallback" in that path.
   const fallbackHint = orFallbackFired && !args.or ? ' (relaxed AND→OR)' : '';
   // A LISTING is never headed as matches: `Found 2 result(s) for "segfault"` over two unrelated
   // bugfixes is how the calling model read the type-list fallback (E2E round 2026-09-29).
   const what = args.obs_type ? `${args.obs_type} observation(s)` : 'row(s) matching the filters';
   const header =
     listing === 'type'
-      ? `No match for "${queryLabel(args.query)}" — the ${countLabel} most recent ${what} instead`
+      ? `No match for "${queryLabel(args.query)}" - the ${countLabel} most recent ${what} instead`
       : listing === 'dropped'
-        ? `Query "${queryLabel(args.query)}" was filtered (FTS5 keywords/special chars only) — the ${countLabel} most recent ${what} instead`
+        ? `Query "${queryLabel(args.query)}" was filtered (FTS5 keywords/special chars only) - the ${countLabel} most recent ${what} instead`
         : `Found ${countLabel} result(s)${qLabel}${fallbackHint}`;
   lines.push(
     `${header}:${hasMixed ? ' (# observation, S# session, P# prompt, E# event)' : ''}${autoLegend(paginatedResults)}\n`,
@@ -517,12 +526,38 @@ function formatSearchOutput(
 // with an optional injected llm (deepSearch dependency). The MCP tool handler
 // calls this with the module db and the default llm.
 // v3.42 F3: resolveProject now runs against the injected `db` param (not the module db), so
-// a project: arg through this seam resolves against the TEST db — real test isolation.
-export async function handleSearchForTest(db, args, { llm, rerankLlm } = {}) {
-  return runSearchPipeline(db, args, { llm, rerankLlm });
+// a project: arg through this seam resolves against the TEST db - real test isolation.
+export async function handleSearchForTest(
+  db,
+  args,
+  {
+    llm,
+    rerankLlm,
+    clientIdentity = 'test-client',
+    telemetryEnabled = false,
+    producerVersion = PKG_VERSION,
+  } = {},
+) {
+  return runSearchPipeline(db, args, {
+    llm,
+    rerankLlm,
+    clientIdentity,
+    telemetryEnabled,
+    producerVersion,
+  });
 }
 
-async function runSearchPipeline(db, args, { llm, rerankLlm } = {}) {
+async function runSearchPipeline(
+  db,
+  args,
+  {
+    llm,
+    rerankLlm,
+    clientIdentity = 'unknown-mcp-client',
+    telemetryEnabled = SEARCH_TELEMETRY_ENABLED,
+    producerVersion = PKG_VERSION,
+  } = {},
+) {
   if (args.project) args = { ...args, project: _resolveProjectShared(db, args.project) };
   // CLI-flag aliases: --source/--from/--to/--since. Folded before any read of the
   // canonical names below, so every downstream filter sees them.
@@ -548,10 +583,10 @@ async function runSearchPipeline(db, args, { llm, rerankLlm } = {}) {
   const deepMode = resolveDeepMode(args.deep, { surface: 'mcp' });
   const rerank = args.rerank === true && deepMode === 'deep';
 
-  // P2: deferred trailer — open deferred items matching the query, appended to
+  // P2: deferred trailer - open deferred items matching the query, appended to
   // the text blob AFTER (and never counted in) the main results/total. Parity
   // with CLI cmdSearch's emitDeferredTrailer; unfiltered first-page searches
-  // only. Structured fields (results/total) stay untouched — the trailer is a
+  // only. Structured fields (results/total) stay untouched - the trailer is a
   // text affordance, not a result source.
   const wantDeferredTrailer =
     !args.type && !args.obs_type && !args.branch && !args.tier && !args.importance && offset === 0;
@@ -572,7 +607,7 @@ async function runSearchPipeline(db, args, { llm, rerankLlm } = {}) {
   // Early return when query was provided but sanitized to nothing (all FTS5
   // keywords/special chars). Skipped for deep/auto (the LLM rewrite may still
   // produce variants) and for filter-only listings (date/obs_type/importance).
-  // A pure "D#92" query lands here — the trailer still reaches the item.
+  // A pure "D#92" query lands here - the trailer still reaches the item.
   if (
     args.query &&
     !ftsQuery &&
@@ -595,7 +630,7 @@ async function runSearchPipeline(db, args, { llm, rerankLlm } = {}) {
   // obs-EXCLUSIVE columns (sessions/prompts/events lack them) → force observations, else those legs
   // return UNFILTERED and leak rows that can't be scoped (the pre-fix cross-source branch/tier leak).
   // obs_type is DIFFERENT: events carry the same type vocabulary (events.event_type), so an obs_type
-  // filter maps to obs + events both — scope to those two and skip the type-less sessions/prompts
+  // filter maps to obs + events both - scope to those two and skip the type-less sessions/prompts
   // legs (D#76). importance filters obs and events (both carry it), so it rides the obsTypeScoped path.
   let effectiveType;
   let obsTypeScoped = false;
@@ -680,7 +715,7 @@ async function runSearchPipeline(db, args, { llm, rerankLlm } = {}) {
   if (r.isDeep && r.variants && output.content?.[0]?.type === 'text') {
     output.content[0].text +=
       r.variants.length > 1
-        ? `\n\n[deep search: rewrote into ${r.variants.length} variants — ${r.variants
+        ? `\n\n[deep search: rewrote into ${r.variants.length} variants - ${r.variants
             .slice(1)
             .map((v) => JSON.stringify(v))
             .join(', ')}]`
@@ -704,7 +739,7 @@ async function runSearchPipeline(db, args, { llm, rerankLlm } = {}) {
   // D#5. Same split as the deep note: an MCP client reads the tool RESULT, not stderr,
   // so a caller that pages past the candidate pool has to be told inside the payload or
   // it reads "0 results" against a total it was just handed and concludes the corpus is
-  // empty. `reachable` is r.preFinalizeCount — the pre-slice candidate count — because
+  // empty. `reachable` is r.preFinalizeCount - the pre-slice candidate count - because
   // perSourceLimit is PER SOURCE and a cross-source query fuses several of those pools.
   if (output.content?.[0]?.type === 'text') {
     const reachNote = reachabilityNote({
@@ -718,6 +753,42 @@ async function runSearchPipeline(db, args, { llm, rerankLlm } = {}) {
   }
   appendDeferredTrailer(output);
 
+  let searchId = null;
+  if (telemetryEnabled) {
+    try {
+      const corpusCounts = countMcpEligibleCorpus(db, {
+        effectiveSource: r.effectiveSource,
+        obsTypeScoped,
+        project: args.project ?? null,
+        obsType: args.obs_type ?? null,
+        importance: args.importance ?? null,
+        branch: args.branch ?? null,
+        includeNoise: args.include_noise === true,
+        epochFrom,
+        epochTo,
+        tier: args.tier ?? null,
+        currentProject: args.project || currentProject,
+      });
+      searchId = recordSearch(db, {
+        project: args.project || currentProject,
+        query: stripPrivate(args.query || ''),
+        surface: 'mcp_search',
+        searchMode: r.isDeep ? (r.escalated ? 'auto_deep' : 'deep') : 'normal',
+        corpusCounts,
+        matchedCount: r.total,
+        results: r.page,
+        pageOffset: offset,
+        client: clientIdentity,
+        producerVersion,
+      });
+      if (r.page.length > 0 && output.content?.[0]?.type === 'text') {
+        output.content[0].text += `\n\nSearch ${searchId} - call mem_search_feedback for any result you can judge (query relevance, not novelty). For retrieval-quality investigations, assess contribution separately; this tool stores relevance only.`;
+      }
+    } catch (error) {
+      recordHookError('search-telemetry:mcp_search', error, RUNTIME_DIR);
+    }
+  }
+
   // Expose structured fields for tests + the MCP content blob.
   return {
     ...output,
@@ -726,8 +797,16 @@ async function runSearchPipeline(db, args, { llm, rerankLlm } = {}) {
     escalated: r.escalated,
     variants: r.variants,
     reranked: r.reranked,
+    search_id: searchId,
   };
 }
+
+function mcpClientIdentity() {
+  const client = server.server.getClientVersion?.();
+  return client?.name ? `${client.name}${client.version ? `/${client.version}` : ''}` : 'unknown-mcp-client';
+}
+
+const issuedTelemetrySearchIds = new Set();
 
 server.registerTool(
   'mem_search',
@@ -736,10 +815,42 @@ server.registerTool(
     inputSchema: memSearchSchema,
   },
   safeHandler(async (args) => {
-    const result = await runSearchPipeline(db, args, {});
+    const result = await runSearchPipeline(db, args, { clientIdentity: mcpClientIdentity() });
+    if (result.search_id) issuedTelemetrySearchIds.add(result.search_id);
     return { content: result.content };
   }),
 );
+
+export function handleSearchFeedback(db, args, { clientIdentity = 'test-client' } = {}) {
+  return rateSearchResults(db, {
+    searchId: args.search_id,
+    relevant: args.relevant,
+    partiallyRelevant: args.partially_relevant,
+    irrelevant: args.irrelevant,
+    ratedBy: clientIdentity,
+  });
+}
+
+if (SEARCH_TELEMETRY_ENABLED) {
+  server.registerTool(
+    'mem_search_feedback',
+    {
+      description: descriptionOf('mem_search_feedback'),
+      inputSchema: memSearchFeedbackSchema,
+    },
+    safeHandler(async (args) => {
+      if (!issuedTelemetrySearchIds.has(args.search_id)) {
+        throw new Error(`Search ${args.search_id} was not issued by this server process`);
+      }
+      const count = handleSearchFeedback(db, args, { clientIdentity: mcpClientIdentity() });
+      return {
+        content: [
+          { type: 'text', text: `Recorded relevance for ${count} result(s) from search ${args.search_id}.` },
+        ],
+      };
+    }),
+  );
+}
 
 // ─── Tool: mem_recent ────────────────────────────────────────────────────────
 
@@ -759,7 +870,7 @@ async function runRecent(db, args) {
 
   // date_since: relative lower bound on created_at (CLI `recent --since` parity).
   // Parsed here rather than in the core because the surfaces reject a bad duration
-  // in their own dialect — MCP throws, CLI fail()s.
+  // in their own dialect - MCP throws, CLI fail()s.
   let since = null;
   if (args.date_since !== undefined) {
     const d = parseDuration(args.date_since);
@@ -810,7 +921,7 @@ server.registerTool(
     let anchorId = args.anchor;
     let anchorNote = null;
 
-    // Resolve prefixed-token anchor (e.g. "P#3462" / "S#53" / "#8121") — users pasting
+    // Resolve prefixed-token anchor (e.g. "P#3462" / "S#53" / "#8121") - users pasting
     // from mem_search results expect the same routing as CLI `timeline --anchor`.
     // Resolution ladder (prompt/session → nearest obs, compressed re-anchor, bare-int
     // fallback) is shared with the CLI via lib/timeline-core.mjs. Covers bare numeric
@@ -847,7 +958,7 @@ server.registerTool(
       // A query that anchored nothing says so, as the CLI does: without it the recency window
       // read as the neighbourhood of what the caller asked about.
       const miss = args.query
-        ? `No anchor found for "${queryLabel(args.query)}" — showing the most recent observations instead.\n`
+        ? `No anchor found for "${queryLabel(args.query)}" - showing the most recent observations instead.\n`
         : '';
       const lines = [`${miss}Timeline (most recent ${rows.length}):\n`];
       for (const r of rows.reverse()) {
@@ -886,7 +997,7 @@ server.registerTool(
     inputSchema: memGetSchema,
   },
   safeHandler(async (args) => {
-    // D#N deferred tokens are peeled off BEFORE bucketing/source-forcing —
+    // D#N deferred tokens are peeled off BEFORE bucketing/source-forcing -
     // get-only read surface into deferred_work (parity with CLI cmdGet; the
     // fetch+render live in lib/deferred-work.mjs so the twins cannot drift).
     const { deferredIds, rest } = splitDeferredTokens(args.ids);
@@ -894,7 +1005,7 @@ server.registerTool(
     // coerceMixedIdTokens has already stringified + regex-validated each token.
     const { bySrc, invalid } = bucketIdTokens(rest, { explicit: args.source || null, defaultSource: 'obs' });
     if (invalid.length > 0) {
-      // Should not happen — schema regex already rejected bad tokens — but guard defensively.
+      // Should not happen - schema regex already rejected bad tokens - but guard defensively.
       return {
         content: [
           {
@@ -911,7 +1022,7 @@ server.registerTool(
     }
 
     // `fields` filter only makes sense for obs rows; session/prompt ignore it.
-    // Validate when obs is queried — throw on all-invalid, note on partial-invalid.
+    // Validate when obs is queried - throw on all-invalid, note on partial-invalid.
     let fieldsNote = '';
     let obsFieldFilter = null;
     if (args.fields?.length && bySrc.obs.length > 0) {
@@ -928,18 +1039,18 @@ server.registerTool(
       obsFieldFilter = validFields;
     }
 
-    // Per-source fetchers — each returns { rows, foundIds:Set, prefix }.
+    // Per-source fetchers - each returns { rows, foundIds:Set, prefix }.
     const sections = [];
     const foundBySource = { obs: new Set(), session: new Set(), prompt: new Set(), event: new Set() };
 
     if (bySrc.obs.length > 0) {
-      // Access-bump + fetch via the shared get-core (P2-12) — single source with CLI get.
+      // Access-bump + fetch via the shared get-core (P2-12) - single source with CLI get.
       const rows = fetchObsDetail(db, bySrc.obs);
       const renderFields = obsFieldFilter || OBS_FIELDS;
       for (const row of rows) {
         foundBySource.obs.add(row.id);
         const lines = [`── #${row.id}${autoHeaderNote(row)} ──`];
-        // Retraction first (shared with the CLI `get` via get-core) — see supersededNotice.
+        // Retraction first (shared with the CLI `get` via get-core) - see supersededNotice.
         const retracted = supersededNotice(row);
         if (retracted) lines.push(retracted);
         for (const f of renderFields) {
@@ -948,7 +1059,7 @@ server.registerTool(
           if (f === 'text' && row.narrative && typeof val === 'string' && val.startsWith(row.narrative))
             continue;
           // Shared formatter (cli/common.mjs) renders epoch-ms time fields as
-          // `<ms> (<relative>)` — parity with the CLI `get` path so an LLM reader
+          // `<ms> (<relative>)` - parity with the CLI `get` path so an LLM reader
           // gets a scannable hint instead of a bare millisecond integer.
           const display = formatObsFieldValue(f, val);
           const maxLen = f === 'narrative' ? 1000 : f === 'lesson_learned' ? 500 : f === 'text' ? 500 : 200;
@@ -962,7 +1073,7 @@ server.registerTool(
 
     if (bySrc.session.length > 0) {
       const rows = fetchSessionDetail(db, bySrc.session);
-      // SESSION_DETAIL_FIELDS (get-core, P2-12): shared full set — adds remaining_items
+      // SESSION_DETAIL_FIELDS (get-core, P2-12): shared full set - adds remaining_items
       // (searchable via FTS but previously unrendered on BOTH detail faces).
       const sessFields = SESSION_DETAIL_FIELDS;
       for (const row of rows) {
@@ -1010,7 +1121,7 @@ server.registerTool(
       }
     }
 
-    // Deferred sections — prepended below (explicit D# requests are rare; the
+    // Deferred sections - prepended below (explicit D# requests are rare; the
     // FULL untruncated detail is the point of this surface).
     let deferredSections = [];
     let deferredFound = 0;
@@ -1035,7 +1146,7 @@ server.registerTool(
       deferredIds.length > 0 &&
       bySrc.obs.length + bySrc.session.length + bySrc.prompt.length + bySrc.event.length === 0
     ) {
-      // Deferred-only request, nothing found — the source-probe below is about
+      // Deferred-only request, nothing found - the source-probe below is about
       // obs/session/prompt/event and would render an empty source list.
       return {
         content: [
@@ -1057,13 +1168,13 @@ server.registerTool(
       const allNumericIds = [...bySrc.obs, ...bySrc.session, ...bySrc.prompt, ...bySrc.event];
       const probe = probeIdSources(db, allNumericIds, queried);
       const hints = [];
-      if (probe.obs.length > 0) hints.push(`#${probe.obs.join(', #')} (obs — use source='obs' or bare #N)`);
+      if (probe.obs.length > 0) hints.push(`#${probe.obs.join(', #')} (obs - use source='obs' or bare #N)`);
       if (probe.session.length > 0)
-        hints.push(`S#${probe.session.join(', S#')} (session — use source='session' or S#N)`);
+        hints.push(`S#${probe.session.join(', S#')} (session - use source='session' or S#N)`);
       if (probe.prompt.length > 0)
-        hints.push(`P#${probe.prompt.join(', P#')} (prompt — use source='prompt' or P#N)`);
+        hints.push(`P#${probe.prompt.join(', P#')} (prompt - use source='prompt' or P#N)`);
       if (probe.event.length > 0)
-        hints.push(`E#${probe.event.join(', E#')} (event — use source='event' or E#N)`);
+        hints.push(`E#${probe.event.join(', E#')} (event - use source='event' or E#N)`);
       const hint = hints.length > 0 ? ` Try: ${hints.join('; ')}.` : '';
       const queriedList = [...queried].join(', ');
       const deferredNote =
@@ -1104,7 +1215,7 @@ server.registerTool(
     inputSchema: memDeleteSchema,
   },
   safeHandler(async (args) => {
-    // Shared preview body (lib/delete-core, P2-12) — single source with CLI delete.
+    // Shared preview body (lib/delete-core, P2-12) - single source with CLI delete.
     const { rows, lines: previewLines, missing, alsoLine } = previewDeleteRows(db, args.ids);
 
     if (rows.length === 0) {
@@ -1121,7 +1232,7 @@ server.registerTool(
     }
 
     // Full delete orchestration (snapshot + related_ids cleanup + child recovery +
-    // delete transaction) lives in lib/delete-core.mjs — single source of truth shared
+    // delete transaction) lives in lib/delete-core.mjs - single source of truth shared
     // with the CLI `delete` path (was inlined + kept in sync by parity comments).
     const result = deleteObservations(db, args.ids);
 
@@ -1145,8 +1256,8 @@ server.registerTool(
 // on a published MCP tool, and a caller that over-writes still wants its memory saved.
 //
 // Numbers: `title` at 500 is ~5× the longest form any read path renders (titles are
-// truncate()'d to 80–100 chars on display) and 5× saveObservation's own
-// content.slice(0, 100) fallback — generous headroom, still a bound. `content` (50000)
+// truncate()'d to 80-100 chars on display) and 5× saveObservation's own
+// content.slice(0, 100) fallback - generous headroom, still a bound. `content` (50000)
 // and `lesson_learned` (500) mirror the zod maxima already published in
 // tool-schemas.mjs, so the advertised contract is not narrowed; applying them here
 // converts a hard zod REJECT into graceful truncation for any caller that reaches this
@@ -1180,8 +1291,8 @@ server.registerTool(
 
     let closesIds, result;
     try {
-      // The transaction body — dedup short-circuit BEFORE the resolver, and D#195's
-      // allowStatuses — is lib/save-observation.mjs's (audit 2026-09-02 P1-6). Both faces
+      // The transaction body - dedup short-circuit BEFORE the resolver, and D#195's
+      // allowStatuses - is lib/save-observation.mjs's (audit 2026-09-02 P1-6). Both faces
       // used to write it out and each carried a "kept in sync with the other" comment.
       ({ result, closesIds } = saveWithClosures(
         db,
@@ -1196,7 +1307,7 @@ server.registerTool(
           files: args.files || [],
           lesson_learned: clampSaveText(args.lesson_learned, SAVE_TEXT_LIMITS.lesson_learned),
           supersedes: args.supersedes,
-          // Opt-in only — the near-duplicate window stays the default. CLI parity: `--force`.
+          // Opt-in only - the near-duplicate window stays the default. CLI parity: `--force`.
           force: args.force === true,
         },
         { closesTokens: args.closes_deferred, project },
@@ -1204,11 +1315,11 @@ server.registerTool(
     } catch (e) {
       if (args.closes_deferred && args.closes_deferred.length > 0) {
         // Re-throw with a clearer prefix so MCP error response names the
-        // contract failure — gate on caller intent (args.closes_deferred) since
+        // contract failure - gate on caller intent (args.closes_deferred) since
         // closesIds is closure-scoped and may not have been assigned before throw.
         throw new Error(`mem_save with closes_deferred failed: ${e.message}`, { cause: e });
       }
-      throw e; // unwrapped — preserves original message + stack
+      throw e; // unwrapped - preserves original message + stack
     }
 
     if (result.kind === 'duplicate') {
@@ -1231,7 +1342,7 @@ server.registerTool(
       surface: 'mcp',
     });
     // G1+G2: detached backfill worker (lesson for obligated types + aliases for
-    // every save) — fill-only-empty, so an agent acting on the nudge still wins.
+    // every save) - fill-only-empty, so an agent acting on the nudge still wins.
     const enrichNote =
       shouldQueueSaveEnrich(result) && queueSaveEnrich(result.id) ? ' (background enrichment queued)' : '';
     // D#201: on its own line rather than inside the success sentence.
@@ -1266,7 +1377,7 @@ server.registerTool(
       content: [
         {
           type: 'text',
-          text: `Deferred as D#${r.id} (item ${ord ?? '?'}) in project "${project}" — surfaces in next SessionStart banner.`,
+          text: `Deferred as D#${r.id} (item ${ord ?? '?'}) in project "${project}" - surfaces in next SessionStart banner.`,
         },
       ],
     };
@@ -1296,7 +1407,7 @@ server.registerTool(
     if (moreHint) lines.push(moreHint);
     const staleHint = formatDeferStaleHint(countStaleOpen(db, project));
     if (staleHint) lines.push(staleHint);
-    // Affordance for the detail field — list stays title-only by design.
+    // Affordance for the detail field - list stays title-only by design.
     lines.push(`Full detail: mem_get ids=["D#<id>"]`);
     return { content: [{ type: 'text', text: lines.join('\n') }] };
   }),
@@ -1314,11 +1425,11 @@ server.registerTool(
     if (args.project) args = { ...args, project: resolveProject(args.project) };
     const project = args.project || inferProject();
     // Resolve id (accept D#N or ordinal int) via resolveDeferredIds with a
-    // single-element array — reuses the same project + status validation.
+    // single-element array - reuses the same project + status validation.
     const [realId] = resolveDeferredIds(db, project, [args.id]);
     const r = dropDeferred(db, realId, args.reason);
     if (r.changed === 0) {
-      return { content: [{ type: 'text', text: `D#${realId} was not in 'open' status — drop is a no-op.` }] };
+      return { content: [{ type: 'text', text: `D#${realId} was not in 'open' status - drop is a no-op.` }] };
     }
     // D#195 (c): same advisory as the CLI's `defer drop`, so an agent reaching
     // this through MCP gets the same steer toward `mem_save(closes_deferred)`.
@@ -1372,7 +1483,7 @@ server.registerTool(
     const lines = [
       `Memory Statistics${args.project ? ` (project: ${args.project})` : ''}:`,
       '',
-      // Env-aware data dir — parity with CLI cmdStats (D#92 wrong-path chain).
+      // Env-aware data dir - parity with CLI cmdStats (D#92 wrong-path chain).
       `Data dir: ${DB_DIR}`,
       `Total: ${obsTotal.c} observations | ${sessTotal.c} sessions | ${promptTotal.c} prompts`,
       `Last ${days}d: ${obsRecent.c} observations | ${sessRecent.c} sessions`,
@@ -1392,10 +1503,10 @@ server.registerTool(
       `  Low-signal titles (Modified/Error/Worked on…): ${lowSignalTitle.c} (${(lowSignalRatio * 100).toFixed(1)}%)`,
       `  Compressed: ${compressedCount.c}`,
       ...(noiseRatio > 0.6 || lowSignalRatio > 0.3
-        ? ['  ⚠️ High noise ratio — consider running mem_compress / maintain']
+        ? ['  ⚠️ High noise ratio - consider running mem_compress / maintain']
         : []),
       '',
-      // Tier counts only live (uncompressed, non-superseded) observations — surface
+      // Tier counts only live (uncompressed, non-superseded) observations - surface
       // the full decomposition so live + compressed + superseded = Total adds up cleanly.
       `Tier distribution (live ${(tierMap.working ?? 0) + (tierMap.active ?? 0) + (tierMap.archive ?? 0)}, excludes ${compressedCount.c} compressed${supersededOnlyCount.c > 0 ? ` + ${supersededOnlyCount.c} superseded` : ''}):`,
       `  🔴 Working: ${tierMap.working ?? 0} | 🟡 Active: ${tierMap.active ?? 0} | 🔵 Archive: ${tierMap.archive ?? 0}`,
@@ -1450,7 +1561,7 @@ server.registerTool(
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     }
 
-    // Execute compression — one transaction over all groups (the hook transacts per group).
+    // Execute compression - one transaction over all groups (the hook transacts per group).
     let totalCompressed = 0;
     const compress = db.transaction(() => {
       for (const [key, obs] of compressableGroups) {
@@ -1562,11 +1673,11 @@ server.registerTool(
       const staleAge = Date.now() - STALE_AGE_MS;
       const mctx = { projectFilter, baseParams, staleAge, opCap: OP_CAP };
 
-      // T2-P0-A: purge_stale is the only op gated on confirm=true — cleanupBroken also
+      // T2-P0-A: purge_stale is the only op gated on confirm=true - cleanupBroken also
       // hard-deletes (broken rows only) but always ran unconfirmed on both surfaces, and
       // the pre-transaction snapshot above covers it. An unconfirmed call gets a dry-run
       // preview of the purge INSTEAD OF the purge.
-      // M-7 (audit 2026-08-14): preview-instead-of-early-return — the old
+      // M-7 (audit 2026-08-14): preview-instead-of-early-return - the old
       // `return`-on-unconfirmed skipped EVERY requested op, while the CLI twin ran the
       // non-destructive ones (cleanup/decay/boost) and previewed only the purge. Same
       // op list, two different amounts of work done, both reporting success. Aligned
@@ -1575,7 +1686,7 @@ server.registerTool(
       const purgeConfirmed = args.confirm === true;
 
       // The op ORDER, the pre-transaction snapshot and the three post-transaction ops all
-      // live in maintain-core (audit 2026-09-02 P1-5) — this face keeps only what is
+      // live in maintain-core (audit 2026-09-02 P1-5) - this face keeps only what is
       // genuinely MCP-shaped: how `merge_ids` is spelled in a warning, and what the purge
       // preview tells the caller to type next. Before the extraction this block rendered
       // `inj>=8` as a literal while the CLI twin interpolated PINNED_INJ_THRESHOLD.
@@ -1704,14 +1815,14 @@ server.registerTool(
     inputSchema: memUpdateSchema,
   },
   safeHandler(async (args) => {
-    // `obs_type` → `type`, same alias mem_save takes — see the schema comment.
+    // `obs_type` → `type`, same alias mem_save takes - see the schema comment.
     args = applyArgAliases(args, { obs_type: 'type' });
     const obs = db.prepare('SELECT id, title FROM observations WHERE id = ?').get(args.id);
     if (!obs)
       return { content: [{ type: 'text', text: `Observation #${args.id} not found` }], isError: true };
 
     // Shared mutation (lib/observation-write applyObsUpdate, P2-12): scrub + UPDATE +
-    // derived-column rebuild in one transaction — single source with CLI cmdUpdate.
+    // derived-column rebuild in one transaction - single source with CLI cmdUpdate.
     const updatedCols = applyObsUpdate(db, args.id, {
       title: args.title,
       narrative: args.narrative,
@@ -1732,7 +1843,7 @@ server.registerTool(
 // ─── Tool: mem_export ────────────────────────────────────────────────────────
 
 // In-process test seam (mirrors handleRecentForTest, #8743): threads an injected db
-// through the SAME body the registered handler runs — INCLUDING the project resolution,
+// through the SAME body the registered handler runs - INCLUDING the project resolution,
 // which uses `runExport`'s own `db` parameter. (A note here used to say the resolution ran
 // against the module db instead; it was false before this release too. Corrected while
 // rewriting the block below, since a stale note three lines above a rewrite is the one a
@@ -1744,7 +1855,7 @@ export async function handleExportForTest(db, args) {
 
 async function runExport(db, args) {
   // PARSE + VALIDATE here; the SQL predicate comes from buildExportWhere (P2-5), shared
-  // with mem-cli.mjs cmdExport. This face THROWS where the CLI prints a usage message —
+  // with mem-cli.mjs cmdExport. This face THROWS where the CLI prints a usage message -
   // T3-P1-A: surface invalid dates instead of silently dropping the filter (mirrors
   // mem_search). A dropped filter can quietly expand the export blast radius.
   let fromEpoch = null;
@@ -1762,7 +1873,7 @@ async function runExport(db, args) {
   // Same policy as the two date checks: refuse rather than silently drop a filter.
   //
   // This replaces a `_resolveProjectShared(db, x) || x` fallback that could not do what
-  // its comment claimed. `resolveProject` returns a falsy value on exactly one input —
+  // its comment claimed. `resolveProject` returns a falsy value on exactly one input -
   // a truthy NON-STRING, which it deliberately maps to null so that `true.includes('--')`
   // stops crashing every project-filtered command at the root helper. Through MCP that
   // input cannot arrive (`memExportSchema.project` is `z.string().optional()`, validated
@@ -1770,7 +1881,7 @@ async function runExport(db, args) {
   // reachable effect was to hand the non-string straight back, undoing that guard and
   // trading a wide export for a bind error. Neither is the documented behaviour, and the
   // other project-resolving sites (server.mjs:326/465, and every cmd* in mem-cli.mjs)
-  // carry no such fallback — this one was the outlier.
+  // carry no such fallback - this one was the outlier.
   if (args.project !== undefined && args.project !== null && typeof args.project !== 'string') {
     throw new Error(`Invalid project: expected a string, got ${typeof args.project}`);
   }
@@ -1783,14 +1894,14 @@ async function runExport(db, args) {
   });
   // No clamp (audit 2026-08-14 A2): `Math.min(args.limit ?? 200, 1000)` made an MCP-driven
   // backup of a >1000-row store impossible, on the tool whose own description says "USE
-  // when: Backing up memory before a migration or reinstall" — while the CLI twin exported
+  // when: Backing up memory before a migration or reinstall" - while the CLI twin exported
   // the complete matching set (mem-cli.mjs cmdExport, fixed there for the same reason). The
   // DEFAULT stays 200: an MCP result is model context, so a bare exploratory call must not
   // dump a whole store into the transcript. An explicit limit is now honoured at any size.
   const exportLimit = args.limit ?? 200;
   // T3-P2-B: probe limit+1 so we can tell "user hit their own limit with more waiting" from
   // "user got exactly what existed". Trim to exportLimit before rendering.
-  // EXPORT_COLUMNS_SQL: shared with CLI cmdExport — the full round-trippable set restore
+  // EXPORT_COLUMNS_SQL: shared with CLI cmdExport - the full round-trippable set restore
   // reads back (v3.42 HIGH-2: this handler used to carry a narrower 16-col SELECT, silently
   // dropping text/aliases/citation-signals on the advertised MCP backup→restore flow).
   const probed = db
@@ -1814,7 +1925,7 @@ async function runExport(db, args) {
   //
   // The remedy has to lead with a FILE REDIRECT (pre-tag review, 2026-08-14). Removing the
   // 1000-row ceiling took away the only bound on an MCP export's size, and the 200 default
-  // is kept precisely because an MCP result IS model context — so "re-run with
+  // is kept precisely because an MCP result IS model context - so "re-run with
   // limit: <total>", the previous first suggestion, told the caller to put the entire store
   // into one tool result (thin fixture rows measure ~612 bytes each, so a few-thousand-row
   // store is megabytes in a single message), and a bare `cli.mjs export` had the same
@@ -1825,7 +1936,7 @@ async function runExport(db, args) {
   if (moreAvailable) {
     const total = db.prepare(`SELECT COUNT(*) AS c FROM observations ${where}`).get(...params).c;
     cap =
-      `\nWARNING — PARTIAL EXPORT, NOT A COMPLETE BACKUP: capped at ${exportLimit} of ${total} matching observations; ${total - exportLimit} rows are missing from this payload and restoring it would lose them.` +
+      `\nWARNING - PARTIAL EXPORT, NOT A COMPLETE BACKUP: capped at ${exportLimit} of ${total} matching observations; ${total - exportLimit} rows are missing from this payload and restoring it would lose them.` +
       `\nFor a complete backup, write it to a FILE instead of pulling it through this conversation: \`${CLI_INVOKE} export --format jsonl > backup.jsonl\` (the CLI exports the complete set by default). Narrowing with date_from/date_to also works.` +
       `\nRaising \`limit\` here is the last resort, not the first: this result is model context, so all ${total} rows would be loaded into the transcript.`;
   }
@@ -1838,7 +1949,7 @@ server.registerTool(
     description: descriptionOf('mem_export'),
     inputSchema: memExportSchema,
   },
-  // verbatim: the export payload feeds `restore` — defanging it would silently
+  // verbatim: the export payload feeds `restore` - defanging it would silently
   // rewrite backed-up rows whose text legitimately contains these tags.
   safeHandler(async (args) => runExport(db, applyArgAliases(args, { from: 'date_from', to: 'date_to' })), {
     verbatim: true,
@@ -1886,7 +1997,7 @@ server.registerTool(
 // Handler extracted to server/fts-check.mjs (v2.41 split).
 import { handleMemFtsCheck } from './server/fts-check.mjs';
 
-import { DAY_MS } from './lib/time-constants.mjs';
+import { DAY_MS, DB_BUSY_TIMEOUT_MS } from './lib/time-constants.mjs';
 server.registerTool(
   'mem_fts_check',
   {
@@ -1911,7 +2022,7 @@ server.registerTool(
     const limit = args.limit ?? (tierFilter ? 20 : 5);
     const now = Date.now();
 
-    // Shared collection (lib/browse-core, P2-12) — single source with CLI browse.
+    // Shared collection (lib/browse-core, P2-12) - single source with CLI browse.
     const { showTiers, tierData, tierCounts, grandTotal } = collectBrowseTiers(db, {
       project,
       tierFilter,
@@ -1970,18 +2081,19 @@ server.registerTool(
 // response. Hiding the maintenance/admin tools keeps Claude Code's startup
 // context small while preserving the contract that the plugin dogfoods (see
 // the CLAUDE.md managed block + adopt-content.mjs detail doc).
-// Surface counts as of v2.70.0: 9 core (mem_search/recent/timeline/get/save/
-// recall + mem_defer/mem_defer_list/mem_defer_drop) + 11 hidden (maintenance/
-// admin/specialized) = 20 registered; tests/tool-schemas.test.mjs is the
-// authoritative count.
+// Surface definitions: 10 core + 9 hidden. mem_search_feedback is registered
+// only when search telemetry is enabled; tests/tool-schemas.test.mjs is the
+// authoritative definition count.
 //
 // Safe because:
 //   - Protocol-layer override: we replace the mcp.js default ListTools
 //     handler on the underlying Server (setRequestHandler is a Map.set).
-//   - `enabled` stays true, so `tools/call` keeps routing normally — per
+//   - `enabled` stays true, so `tools/call` keeps routing normally - per
 //     mcp.js line 106, a `disabled` tool would reject calls too.
 
 const HIDDEN_TOOL_NAMES = new Set(TOOL_DEFS.filter((t) => t.hidden === true).map((t) => t.name));
+const REGISTERED_TOOL_COUNT = TOOL_DEFS.length - (SEARCH_TELEMETRY_ENABLED ? 0 : 1);
+const LISTED_TOOL_COUNT = REGISTERED_TOOL_COUNT - HIDDEN_TOOL_NAMES.size;
 
 // Opt-out: setting QWEN_MEM_ALL_TOOLS=1 restores pre-v2.34.0 behavior where
 // every registered tool is visible in `tools/list`. Users who relied on Claude
@@ -1996,7 +2108,7 @@ if (!EXPOSE_ALL_TOOLS) {
   // a future reorder of tool registration doesn't break the override.
   const originalHandler = server.server._requestHandlers.get('tools/list');
   if (typeof originalHandler !== 'function') {
-    throw new Error('tools/list handler missing — server initialization order changed');
+    throw new Error('tools/list handler missing - server initialization order changed');
   }
   server.server.setRequestHandler(ListToolsRequestSchema, async (req, extra) => {
     const full = await originalHandler(req, extra);
@@ -2004,13 +2116,13 @@ if (!EXPOSE_ALL_TOOLS) {
   });
 }
 
-// One-time discoverability banner (stderr only — Claude Code surfaces it on
+// One-time discoverability banner (stderr only - Claude Code surfaces it on
 // session start). Skipped under MEM_QUIET_HOOKS=1 so CI / tests / hermeticity
 // harnesses stay silent.
 if (!effectiveQuiet()) {
   const status = EXPOSE_ALL_TOOLS
-    ? `all ${TOOL_DEFS.length} tools exposed via QWEN_MEM_ALL_TOOLS=1`
-    : `tools/list narrowed to ${TOOL_DEFS.length - HIDDEN_TOOL_NAMES.size} core tools (${HIDDEN_TOOL_NAMES.size} hidden but callable by exact name; unset QWEN_MEM_ALL_TOOLS to keep, set =1 to restore all)`;
+    ? `all ${REGISTERED_TOOL_COUNT} registered tools exposed via QWEN_MEM_ALL_TOOLS=1`
+    : `tools/list narrowed to ${LISTED_TOOL_COUNT} core tools (${HIDDEN_TOOL_NAMES.size} hidden but callable by exact name; unset QWEN_MEM_ALL_TOOLS to keep, set =1 to restore all)`;
   process.stderr.write(`[qwen-mem-lite v${PKG_VERSION}] ${status}\n`);
 }
 
@@ -2049,7 +2161,7 @@ const idleTimer = setInterval(() => {
       );
     if (compressed > 0) debugLog('INFO', 'idle-cleanup', `Compressed ${compressed} old observations`);
 
-    // FTS5 index optimization (outside transaction — WAL-friendly)
+    // FTS5 index optimization (outside transaction - WAL-friendly)
     db.exec("INSERT INTO observations_fts(observations_fts) VALUES('optimize')");
     debugLog('DEBUG', 'idle-cleanup', 'FTS5 optimize complete');
   } catch (e) {
@@ -2084,7 +2196,7 @@ process.on('unhandledRejection', (err) => {
 
 // ─── Runtime Dir Retention + Permissions ────────────────────────────────────
 
-/** Spawn-log retention window — same 14 days as every sibling JSONL sink. */
+/** Spawn-log retention window - same 14 days as every sibling JSONL sink. */
 export const SPAWN_LOG_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 /** Hard ceiling for pathological spawn churn inside the retention window. */
 export const SPAWN_LOG_MAX_LINES = 2000;
@@ -2093,7 +2205,7 @@ export const SPAWN_LOG_MAX_LINES = 2000;
  * Trim mcp-spawns.log to the retention window. The sibling sinks (lib/metrics,
  * lib/err-sampler, lib/hook-telemetry) shard per day and unlink old shards; this
  * sink is one flat file at a documented path, so the same 14-day window is applied
- * line-wise instead. Records without a parseable `ts` are dropped — the log is
+ * line-wise instead. Records without a parseable `ts` are dropped - the log is
  * append-only JSONL, so a malformed line is truncated telemetry, not data.
  * Only rewrites when something actually expires. Never throws.
  *
@@ -2129,7 +2241,7 @@ export function pruneSpawnLog(path, nowMs = Date.now()) {
  * Restrict the runtime dir and its files to owner-only. Directory 0700 is the
  * load-bearing part (without +x another local user cannot traverse in); the
  * per-file 0600 is defense in depth and remediates files created before this fix.
- * Subdirectories are skipped — they are created with `{mode: 0o700}` by their own
+ * Subdirectories are skipped - they are created with `{mode: 0o700}` by their own
  * sinks. Symlinks are skipped (Dirent.isFile() is false) so this never chmods
  * through to a target outside the runtime dir. Idempotent, never throws.
  *
@@ -2158,14 +2270,14 @@ export function hardenRuntimeFiles(dir) {
 
 // ─── Start Server ───────────────────────────────────────────────────────────
 
-// Spawn telemetry — appends one JSON line per process start so we can diagnose
+// Spawn telemetry - appends one JSON line per process start so we can diagnose
 // dual-registration (plugin namespace + local .mcp.json could both spawn the
 // server in one Claude Code session). Two records with close timestamps and
-// the same ppid is the smoking gun. Never throws — telemetry must not block
+// the same ppid is the smoking gun. Never throws - telemetry must not block
 // startup. Disable with MEM_DISABLE_SPAWN_LOG=1.
 //
 // File mode: `{mode: 0o600}` on appendFileSync only applies on file creation
-// (umask-default after the first append) — pre-v2.79.1 relied on it alone, so
+// (umask-default after the first append) - pre-v2.79.1 relied on it alone, so
 // the "0600" claim was misleading. hardenRuntimeFiles below sets the mode for
 // real, on every start, including logs created before this fix.
 if (process.env.MEM_DISABLE_SPAWN_LOG !== '1') {

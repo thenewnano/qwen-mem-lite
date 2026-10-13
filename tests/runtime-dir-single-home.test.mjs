@@ -2,8 +2,8 @@
 // it SPLIT it.
 //
 // Six places honoured it (the five standalone hook scripts + hook-launcher) and two did
-// not: `hook-shared.mjs` — which `hook.mjs`, `server.mjs`, `hook-context.mjs` and
-// `hook-episode.mjs` all take `RUNTIME_DIR` from — and `hook-optimize.mjs`. So a harness
+// not: `hook-shared.mjs` - which `hook.mjs`, `server.mjs`, `hook-context.mjs` and
+// `hook-episode.mjs` all take `RUNTIME_DIR` from - and `hook-optimize.mjs`. So a harness
 // that set the variable got the `fyi`/`pretool` faces writing markers into the override
 // while `ups`/`keyctx` read them from the real directory. No error, no empty directory, no
 // way to notice; `experiment/lib/arms.mjs` uses exactly this variable to keep an arm off
@@ -45,7 +45,7 @@ describe('resolveRuntimeDir', () => {
 
   it('treats empty and undefined as unset, not as a relocation to ""', () => {
     // `env || join(...)` handled this by accident; an `in`-style check would not, and a
-    // runtime dir of '' resolves to cwd — state scattered across whatever directory the
+    // runtime dir of '' resolves to cwd - state scattered across whatever directory the
     // hook happened to start in.
     expect(resolveRuntimeDir('/data', { QWEN_MEM_RUNTIME_DIR: '' })).toBe(join('/data', 'runtime'));
     expect(resolveRuntimeDir('/data', { QWEN_MEM_RUNTIME_DIR: undefined })).toBe(join('/data', 'runtime'));
@@ -92,36 +92,39 @@ describe('the rule has one home', () => {
   // `INLINE_RE` catches a module that DID hear of the variable and wrote its own copy of the
   // rule. No module has that shape except the one declared exception.
   //
-  // `CONSTRUCT_RE` catches the shape the defective modules ACTUALLY had — building the
+  // `CONSTRUCT_RE` catches the shape the defective modules ACTUALLY had - building the
   // runtime path themselves and never mentioning the variable. Invisible to INLINE_RE, which
   // is why `scripts/user-prompt-search.js` could resolve its RUNTIME_DIR and still build the
   // SHARED cross-hook marker from the data dir.
   //
   // `INVERSE_RE` catches the OTHER direction: deriving the data dir back out of the runtime
   // dir. `hook.mjs` did that seven times as `join(RUNTIME_DIR, '..')`, an identity that
-  // stopped holding the moment the override was honoured — reverting those five metric sites
+  // stopped holding the moment the override was honoured - reverting those five metric sites
   // was invisible to both sweeps above (v3.93.0 post-release review, M5).
   //
   // THE ALLOWLIST IS PER SITE, NOT PER FILE, and that is the whole point. v3.93.0 shipped a
   // whole-file allowlist; three of its six entries hold BOTH stays-put and moves-with-the-
-  // override sites, so inside those files the guard was simply off — and two live splits were
+  // override sites, so inside those files the guard was simply off - and two live splits were
   // sitting in them, one created by that release. A file-level reason cannot express "this
-  // file has both kinds". A constructing line now needs `// runtime-dir:stays-put — <reason>`
+  // file has both kinds". A constructing line now needs `// runtime-dir:stays-put - <reason>`
   // on the line itself.
   const INLINE_RE = /process\.env\.QWEN_MEM_RUNTIME_DIR\s*\|\|/;
   // `join` or `resolve`; `\s*\(`; TWO levels of nested parens in the first argument, because
   // `join(dirname(fileURLToPath(import.meta.url)), 'runtime')` is an idiom this repo uses and
   // one level cannot cross it. A JS regex cannot recurse, so this is a bounded depth, not a
-  // parser — the residual forms are named in the NOT-BINDING list of the review that found
+  // parser - the residual forms are named in the NOT-BINDING list of the review that found
   // them, and the marker-reverse-guard below is what stops the allowlist rotting instead.
   const CONSTRUCT_RE = /\b(?:join|resolve)\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*,\s*['"`]runtime['"`]/;
   // Template-literal and concatenation forms of the same construction.
   const CONSTRUCT_ALT_RE = /['"`][^'"`]*\/runtime(?:['"`/]|$)|\+\s*['"`]\/?runtime['"`]/;
   // `[\w$]*` and NOT `[A-Za-z_$][\w$]*`: the prefix is OPTIONAL. The first draft required at
   // least one character before RUNTIME_DIR, so it matched `NB_RUNTIME_DIR` and missed the bare
-  // `join(RUNTIME_DIR, '..')` — which is the exact form of all seven sites it exists to catch.
+  // `join(RUNTIME_DIR, '..')` - which is the exact form of all seven sites it exists to catch.
   const INVERSE_RE = /\b(?:join|resolve)\s*\(\s*[\w$]*RUNTIME_DIR\b\s*,\s*['"`]\.\.['"`]/;
-  const MARKER_RE = /\/\/\s*runtime-dir:stays-put\s*—\s*(\S.*)$/;
+  // The separator is '-' (invariant 6: no em-dashes in the tree; a marker written with the
+  // em-dash separator would silently stop matching, which is why the can-fire assertions
+  // below pin the exact shape).
+  const MARKER_RE = /\/\/\s*runtime-dir:stays-put\s*-\s*(\S.*)$/;
 
   const INLINE_ALLOWED = new Set(['scripts/hook-launcher.mjs']);
 
@@ -189,7 +192,7 @@ describe('the rule has one home', () => {
     }
   });
 
-  it('the sweeps can say NO — every shape that must fire, and every shape that must not', () => {
+  it('the sweeps can say NO - every shape that must fire, and every shape that must not', () => {
     // A sweep that cannot fire is indistinguishable from a clean tree.
     const fires = [
       "const d = join(DATA_DIR, 'runtime', 'marker');",
@@ -221,8 +224,8 @@ describe('the rule has one home', () => {
       expect(hit, `sweep falsely fires on: ${q}`).toBe(false);
     }
     // …and the marker must be what silences it, not the shape.
-    expect(MARKER_RE.test("const d = join(X, 'runtime'); // runtime-dir:stays-put — because")).toBe(true);
-    expect(MARKER_RE.test("const d = join(X, 'runtime'); // runtime-dir:stays-put —")).toBe(false);
+    expect(MARKER_RE.test("const d = join(X, 'runtime'); // runtime-dir:stays-put - because")).toBe(true);
+    expect(MARKER_RE.test("const d = join(X, 'runtime'); // runtime-dir:stays-put -")).toBe(false);
 
     for (const rel of INLINE_ALLOWED) {
       expect(

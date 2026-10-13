@@ -15,7 +15,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import net from 'node:net';
 import { llmProviderStatus } from '../lib/llm-provider-probe.mjs';
 
-const PROXY_ENV = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'];
+const PROXY_ENV = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'NO_PROXY', 'no_proxy'];
 
 describe('llmProviderStatus', () => {
   afterEach(() => {
@@ -101,7 +101,7 @@ describe('llmProviderStatus', () => {
   });
 
   // E2E round 2026-09-29: with no key and CLAUDE_CODE_PATH=/nonexistent/claude, doctor still
-  // printed "✓ LLM provider: claude CLI" while every background summary failed — and a failed
+  // printed "✓ LLM provider: claude CLI" while every background summary failed - and a failed
   // summary drops an episode that is not already notable. Still no network: a PATH lookup.
   it('warns when the claude CLI it would spawn does not resolve', async () => {
     vi.stubEnv('ANTHROPIC_API_KEY', '');
@@ -153,6 +153,216 @@ describe('llmProviderStatus', () => {
     await llmProviderStatus({ _probe: probe });
     expect(probe.mock.calls[0][0]).toBe('127.0.0.1');
     expect(probe.mock.calls[0][1]).toEqual({ port: 4000 });
+  });
+
+  it('probes an IPv6-literal gateway without the URL brackets net.connect cannot resolve', async () => {
+    noProxy();
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'http://[::1]:4000');
+    const probe = vi.fn(async () => ({ reachable: true }));
+    const s = await llmProviderStatus({ _probe: probe });
+    // URL.hostname keeps the brackets; net.connect read '[::1]' as a DNS name (ENOTFOUND)
+    // and doctor reported a working gateway unreachable.
+    expect(probe.mock.calls[0][0]).toBe('::1');
+    expect(probe.mock.calls[0][1]).toEqual({ port: 4000 });
+    expect(s.level).toBe('ok');
+  });
+
+  it('keeps the brackets for an IPv6 gateway behind a proxy: CONNECT names [host]:port', async () => {
+    for (const v of PROXY_ENV) vi.stubEnv(v, '');
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('OPENROUTER_API_KEY', '');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'https://[2001:db8::1]:8443');
+    vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:10808');
+    const probe = vi.fn();
+    const proxyProbe = vi.fn(async () => ({ reachable: true }));
+    await llmProviderStatus({ _probe: probe, _proxyProbe: proxyProbe });
+    expect(probe).not.toHaveBeenCalled();
+    expect(proxyProbe.mock.calls[0][1]).toBe('[2001:db8::1]');
+    expect(proxyProbe.mock.calls[0][2]).toEqual({ timeout: 4000, port: 8443 });
+  });
+
+  it('passes the gateway port to the proxy CONNECT probe, not the 443 default', async () => {
+    for (const v of PROXY_ENV) vi.stubEnv(v, '');
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('OPENROUTER_API_KEY', '');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'https://gw.example.com:8443');
+    vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:10808');
+    const probe = vi.fn();
+    const proxyProbe = vi.fn(async () => ({ reachable: true }));
+    const s = await llmProviderStatus({ _probe: probe, _proxyProbe: proxyProbe });
+    expect(probe).not.toHaveBeenCalled();
+    expect(proxyProbe.mock.calls[0][1]).toBe('gw.example.com');
+    // The bug: the tunnel defaulted to 443 while requests went to 8443.
+    expect(proxyProbe.mock.calls[0][2]).toEqual({ timeout: 4000, port: 8443 });
+    expect(s.level).toBe('ok');
+    // D#257: the line named the host without the port it probed.
+    expect(s.message).toContain('gw.example.com:8443 reachable');
+  });
+
+  // D#263: Claude Code and the Anthropic SDK take an ORIGIN and append /v1 themselves, so a base URL
+  // copied with its /v1 posts to /v1/v1/messages. Doctor printed it green.
+  it('WARNS when the base URL ends in /v1: requests would go to /v1/v1/messages', async () => {
+    for (const value of [
+      'https://gw.example.com/v1',
+      'https://gw.example.com/v1/',
+      'http://127.0.0.1:4000/anthropic/v1',
+    ]) {
+      noProxy();
+      vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+      vi.stubEnv('ANTHROPIC_BASE_URL', value);
+      const s = await llmProviderStatus({ _probe: vi.fn(async () => ({ reachable: true })) });
+      expect(s.level, value).toBe('warn');
+      expect(s.message, value).toContain('/v1/v1/messages');
+    }
+  });
+
+  it('does not warn on a path that merely starts with v1 (premise for the /v1 warning)', async () => {
+    noProxy();
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'https://gw.example.com/v1beta');
+    const s = await llmProviderStatus({ _probe: vi.fn(async () => ({ reachable: true })) });
+    expect(s.level).toBe('ok');
+  });
+
+  it('an unreachable /v1 gateway reports the unreachability, the more basic fault', async () => {
+    noProxy();
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'https://gw.example.com/v1');
+    const s = await llmProviderStatus({
+      _probe: vi.fn(async () => ({ reachable: false, error: 'ECONNREFUSED' })),
+    });
+    expect(s.level).toBe('warn');
+    expect(s.message).toContain('ECONNREFUSED');
+  });
+
+  it('probes port 80 for an http gateway without a port, and names the host alone', async () => {
+    noProxy();
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'http://localhost');
+    const probe = vi.fn(async () => ({ reachable: true }));
+    const s = await llmProviderStatus({ _probe: probe });
+    expect(probe.mock.calls[0]).toEqual(['localhost', { port: 80 }]);
+    expect(s.message).toContain('localhost reachable');
+  });
+
+  it('a plain-http loopback gateway is probed direct even with HTTPS_PROXY set, as the product sends it', async () => {
+    for (const v of PROXY_ENV) vi.stubEnv(v, '');
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('OPENROUTER_API_KEY', '');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'http://127.0.0.1:4000');
+    vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:10808');
+    const probe = vi.fn(async () => ({ reachable: true }));
+    const proxyProbe = vi.fn(async () => ({ reachable: true }));
+    const s = await llmProviderStatus({ _probe: probe, _proxyProbe: proxyProbe });
+    // haiku-client posts a plain http URL with postDirectHttp, never through the TLS tunnel.
+    expect(proxyProbe).not.toHaveBeenCalled();
+    expect(probe.mock.calls[0]).toEqual(['127.0.0.1', { port: 4000 }]);
+    expect(s.message).toContain('(direct)');
+  });
+
+  it('names the host alone when the gateway uses its scheme default port', async () => {
+    noProxy();
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'https://gw.example.com:443/anthropic');
+    const s = await llmProviderStatus({ _probe: vi.fn(async () => ({ reachable: true })) });
+    expect(s.message).toContain('gw.example.com reachable');
+  });
+
+  it('WARNS when ANTHROPIC_BASE_URL is set but unusable, instead of a green default', async () => {
+    noProxy();
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'not a url');
+    const probe = vi.fn(async () => ({ reachable: true }));
+    const s = await llmProviderStatus({ _probe: probe });
+    expect(s.level).toBe('warn');
+    expect(s.message).toMatch(/ANTHROPIC_BASE_URL/);
+    // Probing api.anthropic.com here is the false green this check exists to kill.
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('WARNS on plain http to a non-loopback gateway (the key would go unencrypted)', async () => {
+    noProxy();
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'http://gw.example.com:4000');
+    const probe = vi.fn(async () => ({ reachable: true }));
+    const s = await llmProviderStatus({ _probe: probe });
+    expect(s.level).toBe('warn');
+    expect(s.message).toMatch(/http/i);
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('treats a blank base URL as unset (trim before the default)', async () => {
+    noProxy();
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('ANTHROPIC_BASE_URL', '   ');
+    const probe = vi.fn(async () => ({ reachable: true }));
+    const s = await llmProviderStatus({ _probe: probe });
+    expect(probe.mock.calls[0][0]).toBe('api.anthropic.com');
+    expect(s.level).toBe('ok');
+  });
+
+  it('WARNS when the base URL carries a query string or fragment', async () => {
+    // Otherwise the appended /v1/messages lands inside the query, not the path.
+    noProxy();
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'https://gw.example.com/anthropic?route=x');
+    const probe = vi.fn(async () => ({ reachable: true }));
+    const s = await llmProviderStatus({ _probe: probe });
+    expect(s.level).toBe('warn');
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('WARNS on an http host that only looks loopback (127.attacker.example)', async () => {
+    noProxy();
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'http://127.attacker.example:4000');
+    const probe = vi.fn(async () => ({ reachable: true }));
+    const s = await llmProviderStatus({ _probe: probe });
+    expect(s.level).toBe('warn');
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('WARNS when the base URL carries userinfo', async () => {
+    // fetch() refuses a credentialed URL; without this the client falls back to
+    // the CLI while doctor certifies the host.
+    noProxy();
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'https://user:pass@gw.example.com');
+    const probe = vi.fn(async () => ({ reachable: true }));
+    const s = await llmProviderStatus({ _probe: probe });
+    expect(s.level).toBe('warn');
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('WARNS on a bare trailing "?" - URL.search is empty but the path is broken', async () => {
+    noProxy();
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'https://gw.example.com/anthropic?');
+    const probe = vi.fn(async () => ({ reachable: true }));
+    const s = await llmProviderStatus({ _probe: probe });
+    expect(s.level).toBe('warn');
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('WARNS on a bare trailing "#" - URL.hash is empty but the path is broken', async () => {
+    noProxy();
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'https://gw.example.com/anthropic#');
+    const probe = vi.fn(async () => ({ reachable: true }));
+    const s = await llmProviderStatus({ _probe: probe });
+    expect(s.level).toBe('warn');
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('WARNS on a non-http(s) scheme', async () => {
+    noProxy();
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'ftp://gw.example.com');
+    const probe = vi.fn(async () => ({ reachable: true }));
+    const s = await llmProviderStatus({ _probe: probe });
+    expect(s.level).toBe('warn');
+    expect(probe).not.toHaveBeenCalled();
   });
 
   it('probes openrouter.ai when only OPENROUTER_API_KEY is set', async () => {

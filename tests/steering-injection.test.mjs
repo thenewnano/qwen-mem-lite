@@ -1,11 +1,11 @@
 // Report §9-A (docs/audits/20260929-sandbox-usage-eval.md): auto-adopt no longer writes
 // CLAUDE.md + .claude/plugin_claude_mem_lite.md into every project. SessionStart carries the
 // same steering text instead, and "steering delivered" still counts as adopted for the quiet
-// gate — otherwise every project would silently turn verbose (Key Context sections, the
+// gate - otherwise every project would silently turn verbose (Key Context sections, the
 // VERBOSE MCP instructions) the moment the files stopped being written.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -13,9 +13,10 @@ import { spawnSync } from 'child_process';
 import { isAdoptedHere, effectiveQuiet } from '../lib/quiet-scope.mjs';
 import { memdirPath, disableSentinelPath } from '../memdir.mjs';
 import { buildClaudeMdBlock } from '../adopt-content.mjs';
+import { mkdtempWithoutInstructionAncestors } from './test-helpers.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
-const STEERING_HEADING = '## qwen-mem-lite — persistent memory';
+const STEERING_HEADING = '## qwen-mem-lite - persistent memory';
 
 describe('injected steering counts as adopted', () => {
   let home;
@@ -126,8 +127,8 @@ describe('SessionStart delivers the steering without touching the project', () =
 });
 
 // §9-A follow-up (user decision 2026-09-29): injected steering does not drive saves the way the
-// CLAUDE.md block does (S3 bugfix saves 0/8 injected vs 7/12 written). So the USER — not the
-// model — is offered the block once per project, on the human systemMessage channel.
+// CLAUDE.md block does (S3 bugfix saves 0/8 injected vs 7/12 written). So the USER - not the
+// model - is offered the block once per project, on the human systemMessage channel.
 describe('the one-time adopt offer', () => {
   let home;
   let cwd;
@@ -157,7 +158,7 @@ describe('the one-time adopt offer', () => {
       },
     });
     expect(r.status).toBe(0);
-    // A session with nothing to say writes nothing at all — an empty stdout is no envelope.
+    // A session with nothing to say writes nothing at all - an empty stdout is no envelope.
     return r.stdout.trim() ? JSON.parse(r.stdout.trim()) : {};
   };
 
@@ -181,5 +182,76 @@ describe('the one-time adopt offer', () => {
       `<!-- qwen-mem-lite:begin v1 -->\n${buildClaudeMdBlock()}\n<!-- qwen-mem-lite:end -->\n`,
     );
     expect(sessionStart().systemMessage).toBeUndefined();
+  });
+});
+
+// A CLAUDE.md an earlier version wrote, holding only the block, switches off the AGENTS.md beside
+// it (Claude Code 2.1.277+). SessionStart adds adopt's import to it - a change to a file the user
+// may have committed - so the user is told once, on the human channel, what changed and why.
+describe('the one-time note when SessionStart imports AGENTS.md', () => {
+  let home;
+  let cwd;
+  beforeEach(() => {
+    home = mkdtempWithoutInstructionAncestors('cml-agents-import-');
+    cwd = join(home, 'work', 'app');
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(
+      join(cwd, 'CLAUDE.md'),
+      `<!-- qwen-mem-lite:begin v1 -->\n${buildClaudeMdBlock()}\n<!-- qwen-mem-lite:end -->\n`,
+    );
+    writeFileSync(join(cwd, 'AGENTS.md'), '# Instructions for coding agents\n');
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  const sessionStart = (extraEnv = {}) => {
+    const r = spawnSync(process.execPath, [join(REPO, 'hook.mjs'), 'session-start'], {
+      cwd,
+      input: JSON.stringify({ session_id: 'agents-import-e2e', source: 'startup', cwd }),
+      encoding: 'utf8',
+      timeout: 30_000,
+      env: {
+        ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|MEM_)/.test(k))),
+        HOME: home,
+        QWEN_MEM_DIR: join(home, 'data'),
+        CLAUDE_PROJECT_DIR: cwd,
+        QWEN_MEM_SKIP_UPDATE: '1',
+        QWEN_MEM_SKIP_MAINTAIN: '1',
+        ...extraEnv,
+      },
+    });
+    expect(r.status).toBe(0);
+    return r.stdout.trim() ? JSON.parse(r.stdout.trim()) : {};
+  };
+
+  it('adds the import and tells the user, on the first session only', () => {
+    const first = sessionStart();
+    expect(readFileSync(join(cwd, 'CLAUDE.md'), 'utf8')).toMatch(
+      /^<!-- qwen-mem-lite adopt: .*-->\n@AGENTS\.md\n/,
+    );
+    expect(first.systemMessage).toMatch(/@AGENTS\.md/);
+    expect(first.systemMessage).toMatch(/next session/);
+    // Pre-tag claims review P2-3: after unadopt the next session writes a local file (here the
+    // rules file, beside AGENTS.md); injection is only where none can be written.
+    expect(first.systemMessage).toMatch(/unadopt.*git-ignored local file/);
+    expect(first.hookSpecificOutput?.additionalContext ?? '').not.toMatch(/@AGENTS\.md/);
+    expect(sessionStart().systemMessage).toBeUndefined();
+  });
+
+  // Nothing to import, so the file never changes and every session reports the same AGENTS.md:
+  // the marker alone keeps this to once.
+  it('names an AGENTS.md above the directory with the setting, once', () => {
+    rmSync(join(cwd, 'AGENTS.md'));
+    const above = join(dirname(cwd), 'AGENTS.md');
+    writeFileSync(above, '# Instructions for coding agents\n');
+    const first = sessionStart();
+    expect(first.systemMessage).toContain(above);
+    expect(first.systemMessage).toMatch(/claude-md-and-agents-md/);
+    expect(readFileSync(join(cwd, 'CLAUDE.md'), 'utf8')).not.toContain('@');
+    expect(sessionStart().systemMessage).toBeUndefined();
+  });
+
+  it('MEM_NO_ADOPT_HINT=1 silences the note, not the import', () => {
+    expect(sessionStart({ MEM_NO_ADOPT_HINT: '1' }).systemMessage).toBeUndefined();
+    expect(readFileSync(join(cwd, 'CLAUDE.md'), 'utf8')).toContain('@AGENTS.md');
   });
 });

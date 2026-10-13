@@ -31,7 +31,7 @@ export function cmdFtsCheck(db, args) {
   if (action === 'check') {
     const result = checkFTSIntegrity(db);
     if (result.healthy) {
-      out('[mem] FTS5 indexes are healthy — all integrity checks passed.');
+      out('[mem] FTS5 indexes are healthy - all integrity checks passed.');
     } else {
       out(`[mem] FTS5 issues found:`);
       for (const d of result.details) out(`  ${d}`);

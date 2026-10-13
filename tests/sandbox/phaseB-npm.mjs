@@ -1,4 +1,4 @@
-// phaseB-npm.mjs — simulate a real user installing the npm way:
+// phaseB-npm.mjs - simulate a real user installing the npm way:
 //   npm i -g github:thenewnano/qwen-mem-lite     (README "Method 2/3" + the optional shell CLI)
 //   qwen-mem-lite install
 // then exercise functionality, the real auto-update path, self-heal, and uninstall.
@@ -39,21 +39,21 @@ const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).ver
 const DATA = join(HOME, '.qwen-mem-lite');
 const SESSION = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
 
-// Every check this phase must run — see summary()'s doc. B8 lost eight checks to a stale
+// Every check this phase must run - see summary()'s doc. B8 lost eight checks to a stale
 // path behind an `if`, and the tally was the only witness.
 // 56 = 53 `check(` call sites, one of which (the CLI-subcommand loop) runs four times.
-// Derived by enumerating the call sites, NOT by copying what a run printed — the README
+// Derived by enumerating the call sites, NOT by copying what a run printed - the README
 // carried 45 for a revision that had 44, which is how a wrong tally survives.
 // 45 → 52: B9 (R10-P2-11, plugin-cache launch.mjs sync) adds seven, two of them premises
 // without which the section measures nothing and says PASS.
 // 52 → 56: B10 (R10-P2-12, install under live hook traffic) adds four, one a premise that
-// fails if the loop never overlapped the install — a stress probe that did not overlap is
+// fails if the loop never overlapped the install - a stress probe that did not overlap is
 // not a negative result, it is no result.
 const EXPECTED_CHECKS = 56;
 
 // A real user's settings.json is not empty, and "uninstall left nothing behind" is only
 // meaningful against something it MUST leave behind. The end-of-phase check used to count
-// surviving hook groups and then `return { ok: true }` — unfailable by construction, and
+// surviving hook groups and then `return { ok: true }` - unfailable by construction, and
 // counting a file that had never held a foreign hook in the first place.
 const FOREIGN_HOOK = { matcher: 'Bash', hooks: [{ type: 'command', command: 'echo other-plugin-hook' }] };
 
@@ -119,7 +119,7 @@ check('better-sqlite3 present in the global install', () =>
 // better-sqlite3 uncompiled and no postinstall hook can fix that from inside the
 // package. What must hold is that the user never meets the failure: the CLI
 // heals and re-execs on first DB use.
-check('ships lib/install-shape.mjs (doctor imports it — a missing file breaks the recovery command)', () =>
+check('ships lib/install-shape.mjs (doctor imports it - a missing file breaks the recovery command)', () =>
   existsSync(join(globalPkgDir, 'lib', 'install-shape.mjs')),
 );
 check('the CLI works on first use despite npm leaving the binding uncompiled', () => {
@@ -259,7 +259,7 @@ check('no hook mixes a JSON envelope with raw prose on one stdout', () => {
       JSON.parse(s);
       return false;
     } catch {
-      /* not one document — look closer */
+      /* not one document - look closer */
     }
     return s.split('\n').some((l) => l.trim().startsWith('{'));
   });
@@ -376,7 +376,7 @@ check('update state file written to the data dir', () => {
 });
 
 // ── 8. Self-heal in the managed form ────────────────────────────────────────
-setPhase('B8: self-heal — broken binding in the managed install');
+setPhase('B8: self-heal - broken binding in the managed install');
 
 // Break the tree the HOOKS and the registered MCP server resolve, and leave the
 // tree the CLI itself resolves healthy. This is the asymmetry doctor used to be
@@ -384,7 +384,7 @@ setPhase('B8: self-heal — broken binding in the managed install');
 const nmHost = DATA;
 // Resolved, not named. The literal `build/Release/better_sqlite3.node` this line used to
 // carry is a better-sqlite3 **12** path; 13 ships `prebuilds/<platform>.node`. So from
-// v4.0.0 the guard went red on its first check and the `if` swallowed the other EIGHT —
+// v4.0.0 the guard went red on its first check and the `if` swallowed the other EIGHT -
 // the entire self-heal-and-doctor half of the npm path, measured by nothing. The `if` is
 // gone: a tree with no addon now fails every check below, loudly.
 const bind = loadedBindingPath(nmHost);
@@ -454,7 +454,7 @@ check('the break landed on the addon the resolver loads', () => breakBinding(nmH
 setPhase('B9: install must not push HEAD launch.mjs into OLDER cache version dirs');
 
 // R10 §8: "do not touch install() without reproducing in phaseB". This section is that
-// reproduction, and it needs a shape phase B never had — a populated plugin cache. The
+// reproduction, and it needs a shape phase B never had - a populated plugin cache. The
 // managed npm install and the plugin cache coexist on any machine that tried both install
 // methods, which is the population this defect lives in.
 //
@@ -462,14 +462,14 @@ setPhase('B9: install must not push HEAD launch.mjs into OLDER cache version dir
 // copies the INSTALLER's launch.mjs + launch-preflight.mjs into each one. The comment above
 // it says "ensures MCP server loads dev code via symlink detection" (issue #15), but nothing
 // gates it on dev mode or on the version matching. So an old cached version gets HEAD's
-// entry point running against its OWN lib/ — and HEAD's launch.mjs:72-73 destructures
+// entry point running against its OWN lib/ - and HEAD's launch.mjs:72-73 destructures
 // `nativeBindingRepairHint` from ../lib/binding-probe.mjs, which v3.95.0 does not export.
 // launch.mjs:110 then throws inside a catch, and the user's repair hint disappears.
 //
 // Precondition, found by running this section before writing it off as obvious: the whole
 // block lives inside `if (existsSync(pluginDir))`, where pluginDir is the MARKETPLACE clone
 // (~/.claude/plugins/marketplaces/<key>), not the cache. A first run that built only the
-// cache measured NOTHING and reported it as "install left the old version alone" — the
+// cache measured NOTHING and reported it as "install left the old version alone" - the
 // friendly-looking answer. So the audit's "every install / repair" is narrower than it
 // reads: every install/repair ON A MACHINE THAT ALSO RAN `/plugin marketplace add`. That is
 // still the population that has a plugin cache to damage.
@@ -500,7 +500,7 @@ for (const [dir, ver] of [
   );
 }
 // v3.95.0's binding-probe: the two exports launch.mjs needed THEN, and not the third it
-// needs now. Verbatim shape, not a stand-in — the missing export IS the defect.
+// needs now. Verbatim shape, not a stand-in - the missing export IS the defect.
 writeFileSync(
   join(oldVerDir, 'lib', 'binding-probe.mjs'),
   'export function ensureBetterSqlite3Working() {}\nexport function probeBindingInFreshProcess() {}\n',
@@ -552,7 +552,7 @@ check(`no cache version dir calls an export its OWN lib does not have`, () => {
   }
   return { ok: bad.length === 0, detail: bad.join(', ') || 'every version dir self-consistent' };
 });
-check(`install still syncs the CURRENT version dir (${VERSION}) — issue #15's actual job`, () => {
+check(`install still syncs the CURRENT version dir (${VERSION}) - issue #15's actual job`, () => {
   const txt = readFileSync(join(curVerDir, 'scripts', 'launch.mjs'), 'utf8');
   return {
     ok: !txt.includes('CACHE-SENTINEL'),
@@ -573,20 +573,22 @@ check('cached hooks.json is still cleared in EVERY version dir (the other half o
 // ── 10. In-place install under live hook traffic (R10-P2-12) ────────────────
 setPhase('B10: hooks firing DURING an in-place install');
 
-// R10-P2-12, mechanism-only in the report: install() / repair overwrite ~/.qwen-mem-lite
-// file by file with no swap barrier (hook-update.mjs has one — markSwapStart/clearSwapMarker
-// at :727/:736, honoured by scripts/hook-launcher.mjs:149 — install does not), while
-// PreToolUse / PostToolUse import that same tree on every tool call. The claimed harm is a
-// mixed module graph -> ERR_MODULE_NOT_FOUND -> recordBreakage -> the next SessionStart
-// spawns repair -> again, capped only by a 6h cooldown.
+// R10-P2-12 / D#223: install() / repair overwrote ~/.qwen-mem-lite file by file, in place
+// (copyFileSync truncates, then writes) and with no swap barrier, while PreToolUse /
+// PostToolUse import that same tree on every tool call. This section went red on the weekly
+// schedule three runs in four (2026-09-14, 09-28, 10-05), each time a fire importing a truncated
+// module - `does not provide an export named ...`: `likeLiteral` / `citeFactorClause`,
+// `recordMetric`, `buildNotLowSignalSql` - on a same-version re-install. install() now copies by
+// rename and arms the launcher's swap marker around the deploy + npm install
+// (tests/install-atomic-deploy.test.mjs holds both CI-side).
 //
 // This is a race, so it gets a stress probe, not a demonstration: fire the launcher in a
 // loop for the whole duration of an install and see whether ANY fire lands in a torn tree.
-// Two premises keep the result honest — the loop must actually overlap the install, and it
+// Two premises keep the result honest - the loop must actually overlap the install, and it
 // must fire enough times to have had the chance.
 // Sizing, learned by running it: a re-install finishes in ~450ms, while one launcher fire
 // costs a bash+node cold start. The first attempt logged 0 of 400 fires inside the window
-// and reported it as a clean run — a stress probe that never overlapped is not a negative
+// and reported it as a clean run - a stress probe that never overlapped is not a negative
 // result, it is no result. Hence: four parallel loops, a warm-up barrier before the window
 // opens, and five back-to-back installs to widen it.
 const fireLog = join(SBX, 'p212-fires.txt');
@@ -597,7 +599,7 @@ const errDir = join(DATA, 'runtime', 'hook-errors');
 const errBefore = new Set(existsSync(errDir) ? readdirSync(errDir) : []);
 const errSizeBefore = [...errBefore].reduce((n, f) => n + readFileSync(join(errDir, f), 'utf8').length, 0);
 // A real PreToolUse payload, not an empty stdin. The first run fired with </dev/null and
-// every one of the 480 fires recorded a breakage — 198 KB of them — which reads exactly
+// every one of the 480 fires recorded a breakage - 198 KB of them - which reads exactly
 // like the defect and was the probe's own doing.
 const firePayload = JSON.stringify({
   session_id: SESSION,

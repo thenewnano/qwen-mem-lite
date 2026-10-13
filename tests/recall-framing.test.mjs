@@ -27,10 +27,17 @@ describe('recallFramingArm', () => {
     expect(factual).toBeLessThan(N / 2 + 150);
   });
 
-  it('defaults to ab when the variable is unset', () => {
+  // D#104 closed the A/B: with the variable unset every session gets legacy, and `ab` is opt-in.
+  it('defaults to legacy for every session when the variable is unset', () => {
     const arms = new Set();
     for (let i = 0; i < 50; i++) arms.add(recallFramingArm(`s${i}`, {}));
-    expect(arms).toEqual(new Set(['legacy', 'factual']));
+    expect(arms).toEqual(new Set(['legacy']));
+  });
+
+  it('an unrecognised value falls back to legacy, not to the split', () => {
+    const arms = new Set();
+    for (let i = 0; i < 50; i++) arms.add(recallFramingArm(`s${i}`, { QWEN_MEM_RECALL_FRAMING: 'abx' }));
+    expect(arms).toEqual(new Set(['legacy']));
   });
 
   it('honours the legacy / factual overrides for every session', () => {
@@ -40,29 +47,29 @@ describe('recallFramingArm', () => {
     }
   });
 
-  it('a block with no session id gets legacy — its arm could not be attributed', () => {
+  it('a block with no session id gets legacy - its arm could not be attributed', () => {
     expect(recallFramingArm(null, AB)).toBe('legacy');
     expect(recallFramingArm('', AB)).toBe('legacy');
   });
 });
 
-describe('recallFramingLine — the two wordings', () => {
+describe('recallFramingLine - the two wordings', () => {
   const legacy = { QWEN_MEM_RECALL_FRAMING: 'legacy' };
   const factual = { QWEN_MEM_RECALL_FRAMING: 'factual' };
 
   it('legacy is byte-identical to the pre-A/B line', () => {
     expect(recallFramingLine('PreToolUse', { sessionId: 's', fname: 'x.mjs', env: legacy })).toBe(
-      '[mem] PreToolUse recall — system-injected context, continue your planned action:',
+      '[mem] PreToolUse recall - system-injected context, continue your planned action:',
     );
     expect(recallFramingLine('PostToolUse', { env: legacy })).toBe(
-      '[mem] PostToolUse recall — system-injected context, continue your planned action:',
+      '[mem] PostToolUse recall - system-injected context, continue your planned action:',
     );
   });
 
   it('factual states its source and that the call continues, with no system claim or command', () => {
     const line = recallFramingLine('PreToolUse', { sessionId: 's', fname: 'utils.mjs', env: factual });
     expect(line).toBe(
-      '[mem] PreToolUse recall — notes recorded by qwen-mem-lite about utils.mjs; the tool call proceeds as planned:',
+      '[mem] PreToolUse recall - notes recorded by qwen-mem-lite about utils.mjs; the tool call proceeds as planned:',
     );
     expect(line).not.toMatch(/system/i);
     expect(line).not.toMatch(/\bcontinue your\b/i);
@@ -83,7 +90,7 @@ describe('recallFramingLine — the two wordings', () => {
   });
 });
 
-describe('pretoolFramingOf — the A/B ruler reads the arm from the transcript', () => {
+describe('pretoolFramingOf - the A/B ruler reads the arm from the transcript', () => {
   let tmp;
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), 'framing-'));
@@ -120,7 +127,7 @@ describe('pretoolFramingOf — the A/B ruler reads the arm from the transcript',
     expect(pretoolFramingOf(write([{ type: 'user', message: { content: 'hi' } }]))).toBeNull();
   });
 
-  it('only PreToolUse recall attachments count — the same text from another hook does not', () => {
+  it('only PreToolUse recall attachments count - the same text from another hook does not', () => {
     const other = 'node ${CLAUDE_PLUGIN_ROOT}/scripts/hook-launcher.mjs scripts/user-prompt-search.js';
     expect(pretoolFramingOf(write([attachment(other, line('factual'))]))).toBeNull();
   });

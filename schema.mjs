@@ -13,21 +13,23 @@ import { OBS_FTS_COLUMNS, debugCatch } from './utils.mjs';
 import { SCHEMA_SKEW_CODE } from './lib/schema-skew.mjs';
 import { isFtsCorruptionError } from './lib/db-unusable.mjs';
 
-// The three location constants now live in lib/data-paths.mjs — a leaf module with no
-// package imports — and are re-exported here so every existing importer is unchanged.
+// The three location constants now live in lib/data-paths.mjs - a leaf module with no
+// package imports - and are re-exported here so every existing importer is unchanged.
 // This file statically imports better-sqlite3, so holding a path constant here made the
 // native driver a load-time dependency of anything that wanted one; that is what put the
 // Ed25519-verified repair path out of reach on a tree with no node_modules. Imported AND
 // re-exported (not `export … from`) because schema.mjs uses DB_DIR / DB_PATH itself.
 // See lib/data-paths.mjs and tests/repair-path-no-native-dep.test.mjs.
 import { DB_DIR, DB_PATH, CODE_DIR } from './lib/data-paths.mjs';
+import { DB_BUSY_TIMEOUT_MS } from './lib/time-constants.mjs';
+import { workerDirGone } from './lib/worker-data-dir.mjs';
 export { DB_DIR, DB_PATH, CODE_DIR };
 
 // Increment when schema changes (tables, columns, indexes, FTS, migrations)
 //
 // v27 (v2.41): observations_au / session_summaries_au / user_prompts_au
 // triggers scoped to FTS-indexed columns via `AFTER UPDATE OF <cols>`. Before
-// v27 the _au triggers fired on ANY row UPDATE — access_count / injection_count
+// v27 the _au triggers fired on ANY row UPDATE - access_count / injection_count
 // / last_accessed_at bumps (#8100 separation notwithstanding) caused wasted
 // FTS delete+reinsert cycles and amplified SQLITE_CORRUPT_VTAB blast radius
 // (project_non_obvious.md). Migration drops the old triggers once and lets
@@ -40,34 +42,34 @@ export { DB_DIR, DB_PATH, CODE_DIR };
 //
 // v29 (v2.57.x): (1) sdk_sessions_id_invariant trigger guarding the v2.33.1
 // mix pattern (memory_session_id and content_session_id must not be the same
-// non-null value — they're different ID schemes). (2) lesson_retry_stats
+// non-null value - they're different ID schemes). (2) lesson_retry_stats
 // aggregate table tracking how often hook-llm.mjs retry path actually
 // recovers a lesson (vs being a wasted Haiku call). Both purely additive.
 //
-// v30 (v2.57.x patch): trigger body fix — UUID-shape gate so test fixtures
+// v30 (v2.57.x patch): trigger body fix - UUID-shape gate so test fixtures
 // using short literal IDs ('sess-1') don't trigger. Initial v29 trigger
 // fired on any equal non-null pair, breaking 60+ test scaffolds that write
 // the same literal to both columns by helper convention. v30 forces
 // DROP+CREATE so DBs that picked up the strict v29 trigger get the UUID-
 // gated body. Required because `CREATE TRIGGER IF NOT EXISTS` is a no-op
 // when the trigger already exists, even with a different body.
-// v31 (v2.70.0): deferred_work table — first-class carry-forward surface.
+// v31 (v2.70.0): deferred_work table - first-class carry-forward surface.
 // Decoupled from observations: different decay semantics (no time decay; older
 // items rank HIGHER as tech debt accumulates), different lifecycle (mutable
 // status open→done|dropped vs immutable obs). Closure tied to obs via
 // closed_by_obs_id FK with ON DELETE SET NULL (audit trail preserved).
-// v32 (v2.73.2): citation-decay columns on observations — uncited_streak,
+// v32 (v2.73.2): citation-decay columns on observations - uncited_streak,
 // cited_count, last_decided_session_id. Stop hook resolves injected obs as
 // cited|uncited; they feed citeFactorClause's bounded rank multiplier. (As shipped,
 // 3 consecutive uncited → importance -1 and 1 cited → +1; D#179/D#198 removed both
-// importance writes — the 3-session rollover now only resets the streak and stamps
+// importance writes - the 3-session rollover now only resets the streak and stamps
 // demoted_at.) last_decided_session_id makes Stop idempotent across multi-fire.
-// v35 (v2.87.0): no DDL — version bumped only to force one full migration pass on
+// v35 (v2.87.0): no DDL - version bumped only to force one full migration pass on
 // existing DBs, which runs the one-shot observation_files orphan cleanup (and
 // re-runs the v28 observation_vectors cleanup) to clear the backlog leaked while
 // the warm-start fast-path left foreign_keys OFF. LATEST_MIGRATION_COLUMN is
-// unchanged (no new column) — decay_seen_count still exists at v35.
-// v36 (v2.89.0): no DDL — narrows events_fts_au to `AFTER UPDATE OF title, body`.
+// unchanged (no new column) - decay_seen_count still exists at v35.
+// v36 (v2.89.0): no DDL - narrows events_fts_au to `AFTER UPDATE OF title, body`.
 // The events FTS triggers (v2.31) were hand-written inline and inherited the
 // pre-v27 broad `AFTER UPDATE ON events` form, so every importance / accessed_count
 // / citation-decay bump thrashed events_fts (delete+reinsert) and reintroduced the
@@ -76,15 +78,15 @@ export { DB_DIR, DB_PATH, CODE_DIR };
 // legacy trigger on existing DBs. LATEST_MIGRATION_COLUMN unchanged (no new column).
 // v37 (D#26): adds user_prompts.cc_session_id (additive, nullable). LATEST_MIGRATION_COLUMN
 // MOVES to it so the half-migrated-DB self-heal fast-path covers the new column.
-// v38 (R1): citation_log table — per-session invocation→cite funnel telemetry. One
+// v38 (R1): citation_log table - per-session invocation→cite funnel telemetry. One
 // accumulating row per resolved session (injected_n / cited_n), written by
 // recordCitationFunnel from applyCitationDecay's touched/promoted at Stop. Turns the
 // per-obs cite counters (lifetime-cumulative) into a trendable per-session series so
 // `citation-stats` can answer "is memory invocation effectiveness rising or falling".
 // New TABLE (not a column) reached via CORE_SCHEMA's CREATE TABLE IF NOT EXISTS on the
-// forced migration pass; LATEST_MIGRATION_COLUMN unchanged (no new column) — same
+// forced migration pass; LATEST_MIGRATION_COLUMN unchanged (no new column) - same
 // pattern as v35/v36.
-// v39 (audit P1-5): migration_cleanups table — a sentinel registry that makes the
+// v39 (audit P1-5): migration_cleanups table - a sentinel registry that makes the
 // one-shot DATA cleanups (orphan deletes, project-name normalization) RETRYABLE.
 // They previously ran inside the version-gated migration body and were swallowed
 // on failure AFTER the version stamp committed, so a failed cleanup could never
@@ -92,40 +94,40 @@ export { DB_DIR, DB_PATH, CODE_DIR };
 // runDeferredCleanups() on every ensureDb, each gated by a done-marker row: a
 // failure leaves the marker unset and retries on the next open. New TABLE via
 // CORE_SCHEMA on the forced pass; LATEST_MIGRATION_COLUMN unchanged (no new
-// column) — same pattern as v35/v36/v38.
+// column) - same pattern as v35/v36/v38.
 // v40 (round-5 audit HIGH): forces one migration pass so the now column-aware ensureFTS
 // widens any STALE FTS table on existing DBs. Early-adopter stores created before a column
 // was added to an FTS list (session_summaries_fts predates `remaining_items`, v2.2.0) carried
-// a narrow FTS table forever — the old ensureFTS only created a table when absent, never
-// widened it — while its triggers were rebuilt with the current wider column list, so every
+// a narrow FTS table forever - the old ensureFTS only created a table when absent, never
+// widened it - while its triggers were rebuilt with the current wider column list, so every
 // session_summaries UPDATE threw "no column named remaining_items" and was silently swallowed
 // (Haiku summary enrichment lost every session). Pure index reheal (no data migration, no
 // column drop); idempotent. New behavior via the forced pass; LATEST_MIGRATION_COLUMN
-// unchanged (no new column) — same pattern as v35/v36/v38/v39.
+// unchanged (no new column) - same pattern as v35/v36/v38/v39.
 // v41 (cross-turn late-citation): adds observations.last_cited_session_id (additive,
-// nullable) — the promote idempotency key, split from last_decided_session_id so a
+// nullable) - the promote idempotency key, split from last_decided_session_id so a
 // citation landing in a LATER turn of the same session can still upgrade a
 // previously-uncited obs (see applyCitationDecay). REAL new column, so unlike v38-v40
 // this DOES advance LATEST_MIGRATION_COLUMN (→ observations.last_cited_session_id);
 // existing DBs reach the ALTER because version 40 != 41 falls through the fast-path.
 // v42 (events_fts self-heal): events_fts was the one FTS table outside ensureFTS's
-// column-aware recreation (its DDL is non-standard — UNINDEXED cols + custom tokenizer +
-// events_fts_* trigger names — so it can't use the generic ensureFTS). Adds a dedicated
+// column-aware recreation (its DDL is non-standard - UNINDEXED cols + custom tokenizer +
+// events_fts_* trigger names - so it can't use the generic ensureFTS). Adds a dedicated
 // ensureEventsFTS run in the migration body so a future events column addition self-heals
 // instead of leaving a stale narrow index whose (wider) triggers throw "no column" and
-// silently drop event writes. NO new column, so LATEST_MIGRATION_COLUMN is unchanged — the
+// silently drop event writes. NO new column, so LATEST_MIGRATION_COLUMN is unchanged - the
 // forced pass alone carries it (same pattern as v35/v36/v38/v39/v40); existing DBs run it
 // because version 41 != 42 falls through the fast-path.
 // v43 (D#78 edge attribution): adds 4 columns to observation_files so each
-// (obs, file) trigger edge carries its own injection/citation record —
+// (obs, file) trigger edge carries its own injection/citation record -
 // inject_count, miss_streak, last_resolved_session_id, last_cited_session_id.
 // Per-EDGE policy, deliberately separate from the per-obs decay counters on
-// observations (#8641: the two encode different policies — an edge that stops
+// observations (#8641: the two encode different policies - an edge that stops
 // firing must not bury the lesson on other surfaces). The ALTERs live NEXT TO
-// the observation_files CREATE (initSchema body), NOT in MIGRATIONS[] — that
+// the observation_files CREATE (initSchema body), NOT in MIGRATIONS[] - that
 // array runs before the table exists on fresh DBs.
 // v44 (D#78 P3 scope label): observations.scope (file|module|project|
-// environment, NULL for legacy/manual rows) — where a lesson APPLIES,
+// environment, NULL for legacy/manual rows) - where a lesson APPLIES,
 // decoupled from which files the episode touched. SEPARATE version from v43
 // on purpose: dev-mode hooks migrate the live DB between working-tree edits,
 // and a two-table batch under ONE version left a real DB at "43 with edge
@@ -133,7 +135,7 @@ export { DB_DIR, DB_PATH, CODE_DIR };
 // 2026-07-14 on this machine's own DB). One version per migration batch keeps
 // the version number itself the detector. LATEST_MIGRATION_COLUMN advances to
 // observations.scope.
-// v45 (per-surface funnel): citation_surface_log — the same invocation→cite
+// v45 (per-surface funnel): citation_surface_log - the same invocation→cite
 // funnel as citation_log (v38) but split by INJECTION FACE. citation_log answers
 // "is effectiveness rising or falling" for a project; it cannot answer "which
 // face is burning the budget", because hook.mjs unions all four
@@ -146,7 +148,7 @@ export { DB_DIR, DB_PATH, CODE_DIR };
 // surface sum UP), while cite-back signals join citation_log's denominator
 // without belonging to any face and without the mainOnly filter (pushes the
 // aggregate UP). Neither is a partition of the other.
-// Keyed on the CC session id, NOT the memory session id — see the DDL comment.
+// Keyed on the CC session id, NOT the memory session id - see the DDL comment.
 // The column was renamed memory_session_id -> session_id BEFORE v45 ever
 // shipped (pre-tag review), so no released database carries the old shape and
 // no rename migration exists; the sentinel stays on `surface`, which is a
@@ -155,13 +157,13 @@ export { DB_DIR, DB_PATH, CODE_DIR };
 // on the forced migration pass. UNLIKE v38/v39 this DOES register a sentinel
 // (citation_surface_log.surface) in LATEST_MIGRATION_COLUMNS: a table that only
 // the forced pass can create is unreachable forever once the version row says
-// "done", which is not a hypothetical — see the note there.
+// "done", which is not a hypothetical - see the note there.
 // v47: two additive indexes (P2-11 + ALGO-7). The bump is LOAD-BEARING, not bookkeeping:
 // `initSchema`'s fast path returns before the `CREATE INDEX IF NOT EXISTS` block, so on
 // every existing install at v46 a new index there would simply never be created. Same trap
-// the FTS5 migration hit — a DDL change that is not reachable from the version the DB
+// the FTS5 migration hit - a DDL change that is not reachable from the version the DB
 // already reports is a no-op with a convincing diff.
-// v48 (R11-B-P1-1): observations.last_access_session_id — the THIRD per-row session key
+// v48 (R11-B-P1-1): observations.last_access_session_id - the THIRD per-row session key
 // on this table, and it exists for the same reason as the other two. `Stop` fires once
 // per assistant TURN and rescans the whole transcript, so `bumpCitationAccess` re-credited
 // one citation on every later turn of the same session: real-corpus replay over 51
@@ -171,31 +173,31 @@ export { DB_DIR, DB_PATH, CODE_DIR };
 // predicate reads `injection_count > access_count * 3`. Additive + nullable: legacy rows
 // read NULL and are credited exactly once more, on their next citation, then stamp.
 // The column holds the LAST crediting session, not a set, so two same-project sessions
-// interleaving their turns flip it between them — see the scope note in bumpCitationAccess.
+// interleaving their turns flip it between them - see the scope note in bumpCitationAccess.
 export const CURRENT_SCHEMA_VERSION = 49;
 
 // Sentinel columns for the LATEST migration set(s). The fast-path uses these
-// to self-heal half-migrated DBs — schema_version bumped but column ALTERs
+// to self-heal half-migrated DBs - schema_version bumped but column ALTERs
 // rolled back (observed once in dev during v2.74.0). Update the list when
 // adding a new migration batch. Plural since v44 (review D#78): v43 and v44
 // touch DIFFERENT tables, and a restore-from-old-backup can resurrect one
 // table's pre-migration shape while the version row and the other table stay
-// current — a single sentinel can't see that hole, so every recent batch
+// current - a single sentinel can't see that hole, so every recent batch
 // keeps a representative column here until it is ancient enough to retire.
 // A new TABLE needs an entry here just as much as a new COLUMN does, and v38/v39
 // not having one is a latent hole, not a precedent: CORE_SCHEMA is reached ONLY
 // on the forced pass, so if anything stamps the version without running it (a
 // half-applied dev tree, an interrupted migration, a peer on a newer build), the
 // fast-path returns forever and the table can never appear. Observed live during
-// v45 development — the version bump and the CREATE landed in two edits, a hook
+// v45 development - the version bump and the CREATE landed in two edits, a hook
 // fired between them, and the DB sat at v45 with no citation_surface_log while
 // every reader silently swallowed "no such table" as "no data yet".
 // pragma_table_info on a missing table returns zero rows (it does not throw), so
 // naming any column of the new table is a table-presence check.
 const LATEST_MIGRATION_COLUMNS = [
   // No version tag: this one ships WITHOUT a CURRENT_SCHEMA_VERSION bump on purpose (see
-  // the ALTER's note). It is listed here for exactly the reason the list exists — to force
-  // the migration pass on a DB whose version row already says "done" — and listing it is
+  // the ALTER's note). It is listed here for exactly the reason the list exists - to force
+  // the migration pass on a DB whose version row already says "done" - and listing it is
   // what makes the ALTER reachable at all. Pinned by the legacy-upgrade case in
   // tests/handoff-consume.test.mjs rather than left as an assertion in a comment.
   { table: 'session_handoffs', column: 'consumed_at' },
@@ -341,9 +343,10 @@ const CORE_SCHEMA = `
     name TEXT PRIMARY KEY,
     done_at_epoch INTEGER NOT NULL
   );
+
 `;
 
-// Column migrations (idempotent — only swallow "duplicate column" errors)
+// Column migrations (idempotent - only swallow "duplicate column" errors)
 const MIGRATIONS = [
   'ALTER TABLE observations ADD COLUMN importance INTEGER DEFAULT 1',
   "ALTER TABLE observations ADD COLUMN related_ids TEXT DEFAULT '[]'",
@@ -362,7 +365,7 @@ const MIGRATIONS = [
   'ALTER TABLE observations ADD COLUMN optimized_at INTEGER DEFAULT NULL',
   // v26 (P0 injection-noise): per-obs injection tracking for noise-ratio
   // penalty. injection_count bumps only on UserPromptSubmit / hook-memory
-  // auto-injection (not on explicit recall/get/timeline — those keep bumping
+  // auto-injection (not on explicit recall/get/timeline - those keep bumping
   // access_count). Pair with access_count to compute noise ratio: high
   // injection_count + low access_count = low-signal, deprioritize.
   'ALTER TABLE observations ADD COLUMN injection_count INTEGER NOT NULL DEFAULT 0',
@@ -384,14 +387,14 @@ const MIGRATIONS = [
   'ALTER TABLE observations ADD COLUMN demoted_at INTEGER DEFAULT NULL',
   // v34 (citation-decay denominator fix): per-obs counter of decay-loop
   // resolutions (cited + uncited paths). Used by citation-stats as the
-  // denominator for "cite rate" — bumped only by applyCitationDecay, so it
+  // denominator for "cite rate" - bumped only by applyCitationDecay, so it
   // doesn't get polluted by UserPromptSubmit / hook-memory injections that
   // share the unrelated injection_count column. Same-source numerator
   // (cited_count) + same-source denominator = meaningful ratio.
   'ALTER TABLE observations ADD COLUMN decay_seen_count INTEGER NOT NULL DEFAULT 0',
-  // v37 (D#26 — parallel-session handoff content scoping): the Claude-Code session
+  // v37 (D#26 - parallel-session handoff content scoping): the Claude-Code session
   // UUID per user prompt. handleUserPrompt writes hookData.session_id here so
-  // buildAndSaveHandoff can scope working_on to ONE CC session — concurrent (and
+  // buildAndSaveHandoff can scope working_on to ONE CC session - concurrent (and
   // within-12h-TTL sequential) same-project sessions previously merged each other's
   // prompts because getSessionId() is project-scoped (no CC-UUID component). Nullable:
   // legacy rows + non-CC/no-stdin invocations read back NULL and the handoff falls
@@ -405,7 +408,7 @@ const MIGRATIONS = [
   // legacy rows read NULL and behave exactly as before until their first same-session
   // late cite.
   'ALTER TABLE observations ADD COLUMN last_cited_session_id TEXT DEFAULT NULL',
-  // v44 (D#78 P3): lesson applicability scope — file | module | project |
+  // v44 (D#78 P3): lesson applicability scope - file | module | project |
   // environment, validated by lib/observation-write normalizeScope; NULL for
   // legacy rows / manual saves / events. QWEN_MEM_SCOPE_FILTER=1 (opt-in)
   // makes pre-tool-recall skip environment-scoped rows on file-triggered
@@ -416,24 +419,24 @@ const MIGRATIONS = [
   // question the "stop injecting a long-uncited memory" gate needs: measured
   // 2026-08-22, a candidate gate of `decay_seen >= 20 AND cited_count = 0` matched
   // 631 rows, while 331 of the 510 rows that HAVE been cited also carry a lifetime
-  // decay_seen >= 20 — whether those crossed 20 before or after their first citation
+  // decay_seen >= 20 - whether those crossed 20 before or after their first citation
   // is unrecoverable from cumulative counters, so the gate's false-kill rate is not
   // computable. This column makes it computable going forward.
   //
   // NULLABLE ON PURPOSE, and NULL is not 0: NULL means "never cited", 1 means "cited
   // on its very first decay resolution". A DEFAULT 0 would merge those two states and
-  // destroy the distinction the column exists to record. Legacy rows stay NULL — they
+  // destroy the distinction the column exists to record. Legacy rows stay NULL - they
   // are not evidence of anything and must not be read as first-cite-at-0.
   'ALTER TABLE observations ADD COLUMN decay_seen_at_first_cite INTEGER DEFAULT NULL',
   // v48 (R11-B-P1-1): the access-channel idempotency key. Sibling of
   // last_decided_session_id (v40, uncited/streak arm) and last_cited_session_id (v41,
-  // promote arm) — three channels fire out of one Stop hook, each needs its own key
+  // promote arm) - three channels fire out of one Stop hook, each needs its own key
   // because they resolve different id sets: decay reads mainOnly, access reads the whole
   // transcript including sidechains, and the decay pair is additionally gated on
   // hasMainThreadAssistantText, so a session can credit access while decay never runs.
   // Sharing a key would make one channel silence the other.
   'ALTER TABLE observations ADD COLUMN last_access_session_id TEXT DEFAULT NULL',
-  // v49 (Phase-2): drop the TF-IDF vector arm's two tables. Measured before removing —
+  // v49 (Phase-2): drop the TF-IDF vector arm's two tables. Measured before removing -
   // the arm is net-negative on both benchmark fixtures, including the vocabulary-mismatch
   // suite that is its only reason to exist, and holds 0 rows on the real corpus. See
   // tests/vector-arm-removed.test.mjs.
@@ -447,7 +450,7 @@ const MIGRATIONS = [
   // No LATEST_MIGRATION_COLUMNS sentinel is added, and that is deliberate rather than an
   // oversight: that mechanism is a column-PRESENCE probe and cannot express an absence.
   // The hole it would guard is "version says 49 but the tables are still here", whose
-  // consequence is two dead tables nothing reads or writes — no data loss, no wrong
+  // consequence is two dead tables nothing reads or writes - no data loss, no wrong
   // answer, reclaimed on any later VACUUM.
   'DROP TABLE IF EXISTS observation_vectors',
   'DROP TABLE IF EXISTS vocab_state',
@@ -455,7 +458,7 @@ const MIGRATIONS = [
 
 /**
  * Apply full schema (tables, migrations, indexes, FTS5) to an opened DB instance.
- * Single source of truth for all schema setup — used by ensureDb() and tests.
+ * Single source of truth for all schema setup - used by ensureDb() and tests.
  * The DB should have foreign_keys OFF before calling (enabled after dedup migration).
  */
 export function initSchema(db) {
@@ -463,13 +466,13 @@ export function initSchema(db) {
   // Forward-incompat guard: if persisted version is NEWER than this build's
   // CURRENT_SCHEMA_VERSION, a newer qwen-mem-lite wrote it; the current
   // (older) binary would silently re-apply old migrations over a newer layout.
-  // Throw loudly instead — `qwen-mem-lite doctor` / reinstall is the path.
+  // Throw loudly instead - `qwen-mem-lite doctor` / reinstall is the path.
   try {
     const row = db.prepare('SELECT version FROM schema_version LIMIT 1').get();
     if (row && typeof row.version === 'number') {
       // Self-heal: version-row says CURRENT but latest migration column may be
       // absent (rolled back / never applied). Fall through to migration apply
-      // when the sentinel is missing — duplicates are caught in the loop.
+      // when the sentinel is missing - duplicates are caught in the loop.
       if (row.version === CURRENT_SCHEMA_VERSION && hasLatestMigrationColumn(db)) {
         // Warm-start post-condition: ensureDb() opened this handle with
         // foreign_keys=OFF (early migrations require cascade disabled). The full
@@ -485,7 +488,7 @@ export function initSchema(db) {
         // tests/wal-recovery.test.mjs both match on it, and older builds throw exactly
         // this), so it is unchanged. The FIELDS are additive: every consumer downstream
         // used to re-derive these numbers by regexing the sentence, and the `npm i -g`
-        // remedy baked into it is inert for a plugin-cache install — which is the shape
+        // remedy baked into it is inert for a plugin-cache install - which is the shape
         // that actually hits this. lib/schema-skew.mjs turns the fields into a
         // shape-correct repair; see its header for the 2026-09-08 measurement.
         const err = new Error(
@@ -499,16 +502,16 @@ export function initSchema(db) {
       }
     }
   } catch (e) {
-    // schema_version table absent = first init — proceed to create it.
+    // schema_version table absent = first init - proceed to create it.
     // Real forward-incompat throw above must propagate.
     if (e.message?.startsWith('DB schema is v')) throw e;
   }
 
   // Concurrent-init guard: serialize schema setup against peer processes via
-  // BEGIN IMMEDIATE (busy_timeout=3000 from ensureDb makes peers wait). Required
+  // BEGIN IMMEDIATE (the busy_timeout ensureDb sets makes peers wait). Required
   // because the sdk_sessions_id_mix_check_{ai,au} migration uses DROP+CREATE
   // without IF NOT EXISTS to update the trigger body, which races at cold-start.
-  // Re-check schema_version under the lock — a peer may have completed init
+  // Re-check schema_version under the lock - a peer may have completed init
   // while we were blocked. Connection close auto-rollbacks if body throws.
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -522,7 +525,7 @@ export function initSchema(db) {
       return db;
     }
   } catch {
-    /* table absent — proceed */
+    /* table absent - proceed */
   }
 
   // Create core tables
@@ -574,10 +577,10 @@ export function initSchema(db) {
       rebuild();
     }
   } catch {
-    /* non-critical — next open retries */
+    /* non-critical - next open retries */
   }
 
-  // v25 (T10d): commit-anchored continuation — store HEAD sha at handoff time
+  // v25 (T10d): commit-anchored continuation - store HEAD sha at handoff time
   // so detectContinuationIntent can auto-confirm continuation when the working
   // tree hasn't moved since /exit or /clear. Runs AFTER the PK-widen rebuild
   // above so the new column is not clobbered by the DROP+CREATE path.
@@ -598,13 +601,13 @@ export function initSchema(db) {
     // code home out of this DB permanently, and nothing here needs that: the forced-migration
     // probe below (LATEST_MIGRATION_COLUMNS) already makes this ALTER reachable on a DB whose
     // version row says 49/done, which is the whole reason that list exists. An older build
-    // opening this DB keeps working — it simply deletes handoffs the way it always did.
+    // opening this DB keeps working - it simply deletes handoffs the way it always did.
     if (!handoffCols.includes('consumed_at')) {
       db.exec(`ALTER TABLE session_handoffs ADD COLUMN consumed_at INTEGER DEFAULT NULL`);
     }
     // Tree state at handoff time. `git_sha_at_handoff` has been captured since v25 but was
     // never rendered into the injection, and the sha alone does not answer the question a
-    // resuming session actually asks first ("which branch, and is the tree dirty?") — so the
+    // resuming session actually asks first ("which branch, and is the tree dirty?") - so the
     // other two fields of the readGitState call that was already being made are stored too.
     if (!handoffCols.includes('git_branch')) {
       db.exec(`ALTER TABLE session_handoffs ADD COLUMN git_branch TEXT DEFAULT NULL`);
@@ -614,19 +617,19 @@ export function initSchema(db) {
     }
     // The remaining work a paused note spells out (lib/paused-reader.mjs). Kept out of
     // `unfinished`, which renders as "Recent activity" and mixes in-flight edits with
-    // surfaced errors — calling a hand-written remaining-work list "recent activity" would
+    // surfaced errors - calling a hand-written remaining-work list "recent activity" would
     // mislabel the one field in this row that a human actually wrote.
     if (!handoffCols.includes('next_steps')) {
       db.exec(`ALTER TABLE session_handoffs ADD COLUMN next_steps TEXT DEFAULT NULL`);
     }
   } catch {
-    /* non-critical — migration retries on next open */
+    /* non-critical - migration retries on next open */
   }
 
   // D10 (2026-09-29): when a PERSON last set this row's importance (update --importance /
   // mem_update). The passes that promote on access (search-scoring autoBoostIfNeeded,
   // maintain boostAccessed) skip a row carrying it, so `importance 1` from a user is not
-  // undone by the next read. Additive + nullable, no CURRENT_SCHEMA_VERSION bump — the
+  // undone by the next read. Additive + nullable, no CURRENT_SCHEMA_VERSION bump - the
   // consumed_at reasoning above: an older build opening this DB just ignores the column.
   try {
     const obsCols = db
@@ -643,7 +646,7 @@ export function initSchema(db) {
       db.exec(`ALTER TABLE observations ADD COLUMN hidden_at INTEGER DEFAULT NULL`);
     }
   } catch {
-    /* non-critical — migration retries on next open */
+    /* non-critical - migration retries on next open */
   }
 
   // Dedup migration: ensure memory_session_id is unique, then enable FK
@@ -736,12 +739,12 @@ export function initSchema(db) {
       obsFtsRecreated = true;
     }
   } catch {
-    /* non-critical — ensureFTS will create if missing */
+    /* non-critical - ensureFTS will create if missing */
   }
 
   // v27 migration: drop legacy _au triggers that fire on ANY row UPDATE so
   // ensureFTS reinstates them with `AFTER UPDATE OF <fts_cols>`. Trigger fires
-  // only when FTS-indexed columns change after this migration — access_count
+  // only when FTS-indexed columns change after this migration - access_count
   // / injection_count / last_accessed_at bumps no longer thrash the FTS index.
   // Conditional per #7647: only drop when the stored DDL lacks the scoped
   // `UPDATE OF` clause (handles re-run + fresh-DB cases).
@@ -756,7 +759,7 @@ export function initSchema(db) {
         db.exec(`DROP TRIGGER IF EXISTS ${tbl}_au`);
       }
     } catch {
-      /* non-critical — ensureFTS will recreate */
+      /* non-critical - ensureFTS will recreate */
     }
   }
 
@@ -774,8 +777,8 @@ export function initSchema(db) {
   ensureFTS(db, 'user_prompts_fts', 'user_prompts', ['prompt_text']);
 
   // Rebuild FTS5 if we just recreated it above (the new index is empty and must be
-  // populated from the content table). The old emptiness probe — `SELECT COUNT(*) FROM
-  // observations_fts` — was DEAD: for an external-content FTS5 table, COUNT reads the
+  // populated from the content table). The old emptiness probe - `SELECT COUNT(*) FROM
+  // observations_fts` - was DEAD: for an external-content FTS5 table, COUNT reads the
   // CONTENT table (observations), not the index, so `ftsCount === 0` was only ever true
   // on an empty DB (where needsRebuild>0 is false). The rebuild therefore never fired and
   // full-text search silently returned 0 rows after the column-mismatch migration. Gate
@@ -804,13 +807,13 @@ export function initSchema(db) {
       db.exec(`DROP TRIGGER IF EXISTS events_fts_au`);
     }
   } catch {
-    /* non-critical — recreated below */
+    /* non-critical - recreated below */
   }
 
   // ─── v2.31 T6: events table + FTS5 (activity namespace) ───────────────────
   // Independent namespace for bugfix/lesson/bug/discovery/refactor/feature/
   // observation/decision types. Isolated from observations to avoid polluting
-  // memdir semantics. Additive-only migration — safe to re-run.
+  // memdir semantics. Additive-only migration - safe to re-run.
   db.exec(`
     CREATE TABLE IF NOT EXISTS events (
       id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -862,7 +865,7 @@ export function initSchema(db) {
   `);
 
   // v42: column-aware self-heal for events_fts (the one FTS table the generic ensureFTS can't
-  // manage — UNINDEXED cols + custom tokenizer + events_fts_* triggers). The CREATE ... IF NOT
+  // manage - UNINDEXED cols + custom tokenizer + events_fts_* triggers). The CREATE ... IF NOT
   // EXISTS above never widens a drifted (older, narrower) events_fts; this drops+recreates it on
   // column drift and repopulates. No-op on a healthy DB.
   ensureEventsFTS(db);
@@ -881,7 +884,7 @@ export function initSchema(db) {
   `);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_obsfiles_filename ON observation_files(filename)`);
   // v43 (D#78): per-edge attribution columns for DBs whose observation_files
-  // predates them — CREATE IF NOT EXISTS above is a no-op on those (gotcha #1),
+  // predates them - CREATE IF NOT EXISTS above is a no-op on those (gotcha #1),
   // so each column gets its own idempotent ALTER (swallow duplicate-column only,
   // same discipline as MIGRATIONS[]). Fresh DBs hit the duplicate branch.
   for (const sql of [
@@ -904,20 +907,20 @@ export function initSchema(db) {
   // observation_files orphan cleanup moved to runDeferredCleanups() (audit P1-5):
   // it now runs retryably outside the version fast-path. See DEFERRED_CLEANUPS.
 
-  // Project-name normalization moved to runDeferredCleanups() (audit P1-5) — it
+  // Project-name normalization moved to runDeferredCleanups() (audit P1-5) - it
   // now retries on a later open if it fails, instead of being lost behind the
   // version fast-path. See DEFERRED_CLEANUPS.
 
   // ─── v29 (v2.57.x): session-id mix invariant + lesson-retry stats ─────────
   //
-  // (B1) sdk_sessions_id_mix_check trigger — guards the v2.33.1 bug pattern
+  // (B1) sdk_sessions_id_mix_check trigger - guards the v2.33.1 bug pattern
   // where memory_session_id and content_session_id were silently the same
   // value because a caller passed the wrong ID type. The two columns hold
   // *different* ID schemes (mem-internal `hook-<project>-<hash>` vs Claude
   // Code UUID); they should never be equal non-null in production.
   //
   // Trigger fires only when both values look like CC UUIDs (length 36 +
-  // hyphenated 8-4-4-4-12 LIKE pattern). This is the v2.33.1 fingerprint —
+  // hyphenated 8-4-4-4-12 LIKE pattern). This is the v2.33.1 fingerprint -
   // a CC UUID accidentally written into BOTH columns. Test fixtures use
   // short literal strings ('sess-1') for which neither column holds a UUID,
   // so the trigger correctly bypasses them; the audit function below reports
@@ -925,7 +928,7 @@ export function initSchema(db) {
   //
   // DROP+CREATE pattern (not IF NOT EXISTS) so v29 DBs that captured the
   // initial strict trigger body get the UUID-gated v30 body on next init.
-  // Cheap — triggers are metadata-only DDL; this runs once per schema
+  // Cheap - triggers are metadata-only DDL; this runs once per schema
   // version bump (gated by the fast-path schema_version check above).
   db.exec(`
     DROP TRIGGER IF EXISTS sdk_sessions_id_mix_check_ai;
@@ -950,11 +953,11 @@ export function initSchema(db) {
       END;
   `);
 
-  // (B2) lesson_retry_stats — daily aggregate of hook-llm.mjs retry path
+  // (B2) lesson_retry_stats - daily aggregate of hook-llm.mjs retry path
   // outcomes. attempts = times the bugfix/decision retry prompt was issued;
   // recovered = times the retry actually returned a non-low-signal lesson.
   // Used by `qwen-mem-lite stats --retry` to answer "is the extra Haiku
-  // call paying off?" — if recovered/attempts < 0.1 over a long window,
+  // call paying off?" - if recovered/attempts < 0.1 over a long window,
   // delete the retry path and save one LLM call per bugfix/decision.
   db.exec(`
     CREATE TABLE IF NOT EXISTS lesson_retry_stats (
@@ -964,7 +967,7 @@ export function initSchema(db) {
     )
   `);
 
-  // ─── v31 (v2.70.0): deferred_work — carry-forward TODOs ─────────────────────
+  // ─── v31 (v2.70.0): deferred_work - carry-forward TODOs ─────────────────────
   // Independent table because decay semantics are inverted (older = higher
   // priority signal) and lifecycle is mutable (status flips). Project-scoped
   // queries; no FTS5 (per-project N expected ≪ 100). Idempotent migration.
@@ -1013,9 +1016,9 @@ export function initSchema(db) {
 //
 // Returns shape: {
 //   id_mix_uuid_shape:  rows where both columns hold the same UUID-shaped value
-//                       (the v2.33.1 production fingerprint — alarming),
+//                       (the v2.33.1 production fingerprint - alarming),
 //   id_mix_other:       rows where both columns equal but NOT UUID-shaped
-//                       (typically test-fixture scaffold convention — informational),
+//                       (typically test-fixture scaffold convention - informational),
 //   missing_mem_id:     sdk_sessions rows where memory_session_id IS NULL after grace,
 //   orphan_obs:         observations.memory_session_id values not in sdk_sessions,
 //   healthy:            true when id_mix_uuid_shape + missing_mem_id + orphan_obs == 0;
@@ -1031,7 +1034,7 @@ export function initSchema(db) {
 // metric while still surfacing the broader count for diagnostic transparency.
 export function auditSessionConsistency(db, { graceMinutes = 5 } = {}) {
   const cutoff = Date.now() - graceMinutes * 60_000;
-  // UUID-shape gate mirrors the v30 trigger — same length=36 + LIKE pattern.
+  // UUID-shape gate mirrors the v30 trigger - same length=36 + LIKE pattern.
   const UUID_LIKE = '________-____-____-____-____________';
   const idMixUuidShape = db
     .prepare(
@@ -1078,7 +1081,7 @@ export function auditSessionConsistency(db, { graceMinutes = 5 } = {}) {
   // COALESCE(importance,1)=1 and queues the row for purge, runIdleCleanup reads a bare
   // `importance <= 1` which is NULL and skips it. lib/observation-write.mjs now coerces
   // nullish to 1 on both write cores, so no NEW row can be in that state; this counts the
-  // ones that got in another way — an old version, a hand-edited DB, a restored dump.
+  // ones that got in another way - an old version, a hand-edited DB, a restored dump.
   // Reported here rather than in its own command because `orphan_obs` above establishes
   // that this audit already covers observation-level integrity, not only sessions.
   const obsImportanceNull = db
@@ -1097,7 +1100,7 @@ export function auditSessionConsistency(db, { graceMinutes = 5 } = {}) {
 // ─── Deferred one-shot cleanups (retryable) ─────────────────────────────────
 // Idempotent DATA cleanups that must survive a transient failure. They run on
 // EVERY ensureDb (after initSchema), each gated by a row in migration_cleanups:
-// a cleanup that throws leaves its marker unset and retries on the next open —
+// a cleanup that throws leaves its marker unset and retries on the next open -
 // unlike the old version-gated body, where a swallowed failure committed
 // alongside the version stamp and the fast-path then skipped it forever (P1-5).
 const DEFERRED_CLEANUPS = [
@@ -1111,7 +1114,7 @@ const DEFERRED_CLEANUPS = [
   },
   {
     // Backfill the junction from the files_modified JSON column. This ran inside initSchema
-    // for a long time, gated on `COUNT(*) FROM observation_files === 0` — which answers "has
+    // for a long time, gated on `COUNT(*) FROM observation_files === 0` - which answers "has
     // this store ever written an edge", not "has this backfill run". One real `mem_save`
     // falsifies it forever, so every observation imported before v6.7.2 (the release that
     // taught import-jsonl to write edges at all) stayed permanently unreachable by file, and
@@ -1121,12 +1124,12 @@ const DEFERRED_CLEANUPS = [
     //
     // Deliberately NOT a schema-version bump. A bump locks every older code home out of the
     // database permanently (see lib/schema-skew.mjs), and on a plugin install that is
-    // reached routinely — far too much to charge for a derived table.
+    // reached routinely - far too much to charge for a derived table.
     //
     // One-shot by design: every live path that stores an observation routes its edges
     // through the single junction writer (`insertObservationFiles`, lib/observation-write),
     // so rows arriving after this pass need nothing from it. An earlier draft of this line
-    // said "the import and save paths both" — there are more than two entry points reaching
+    // said "the import and save paths both" - there are more than two entry points reaching
     // that one writer (save, episode flush, insight promotion, restore, import), and the
     // claim that matters is the single writer, not the count of callers.
     // `NOT EXISTS` keeps the scan to the rows that are actually missing an edge, which is
@@ -1150,7 +1153,7 @@ const DEFERRED_CLEANUPS = [
           try {
             files = JSON.parse(row.files_modified);
           } catch {
-            // One unparseable row must not cost every row after it its edges — the whole
+            // One unparseable row must not cost every row after it its edges - the whole
             // pass is marked done afterwards, so "skipped" here means "never backfilled".
             continue;
           }
@@ -1183,14 +1186,14 @@ const DEFERRED_CLEANUPS = [
       // R10 P1-3: ONE transaction per short name, not one for the whole scan. Three of the
       // eight tables below have a PRIMARY KEY containing `project`, so a single collision
       // used to roll back every OTHER project's rename too, leave the sentinel unwritten,
-      // and replay the whole SELECT DISTINCT + N updates on every subsequent DB open —
+      // and replay the whole SELECT DISTINCT + N updates on every subsequent DB open -
       // i.e. on every hook event, forever, never converging.
       const renameOne = db.transaction((shortName, canonicalName) => {
         // Rename the short project to canonical on EVERY project-scoped table.
         // Originally only the first three were rewritten, so a short-named
         // project's deferred TODOs (deferred_work), activity (events), citation
         // history (citation_log + v45 citation_surface_log), and /clear-/exit
-        // handoffs (session_handoffs) were stranded on the old name — invisible to
+        // handoffs (session_handoffs) were stranded on the old name - invisible to
         // every project-scoped query after normalization. All eight carry a
         // `project` column (verified).
         for (const table of [
@@ -1206,7 +1209,7 @@ const DEFERRED_CLEANUPS = [
           // R10 P1-3: OR IGNORE. session_handoffs (project,type,session_id),
           // citation_log (project,memory_session_id) and citation_surface_log
           // (project,session_id,surface) collide whenever the SAME session was recorded
-          // under both names — which is exactly what an in-session plugin upgrade
+          // under both names - which is exactly what an in-session plugin upgrade
           // produces. Skipping the colliding row keeps the canonical one, which is the
           // newer and more complete of the two; the alternative was a permanent stall.
           db.prepare(`UPDATE OR IGNORE ${table} SET project = ? WHERE project = ?`).run(
@@ -1218,12 +1221,12 @@ const DEFERRED_CLEANUPS = [
       for (const { project: shortName } of shortProjects) {
         // R10 P1-2: EXACT canonical-suffix match only. There used to be a fallback that
         // took any >=5-char token of the short name and substring-matched it against every
-        // canonical project — so `workspace`, the ordinary name for a devcontainer whose
+        // canonical project - so `workspace`, the ordinary name for a devcontainer whose
         // cwd is the filesystem root `/workspace`, was absorbed into an unrelated
         // `workspaces--repo` across all eight tables. project-utils.mjs:109-120 already
         // treats a root-directory short name as legitimate; this cleanup did not, there is
         // no snapshot on this path, and the sentinel means it never runs again. A legacy
-        // name that only a token match could resolve is still readable — resolveProject
+        // name that only a token match could resolve is still readable - resolveProject
         // step 3 does that substring match at READ time, where a wrong guess costs a query
         // rather than the row's identity.
         const canonical = db
@@ -1248,7 +1251,7 @@ const DEFERRED_CLEANUPS = [
  * Run registered one-shot data cleanups that haven't completed yet. Each is
  * gated by a row in migration_cleanups, so a transient failure retries on the
  * next open instead of being silently lost behind the schema-version fast-path
- * (audit P1-5). Best-effort: never throws — callers open the DB regardless.
+ * (audit P1-5). Best-effort: never throws - callers open the DB regardless.
  */
 export function runDeferredCleanups(db) {
   let done;
@@ -1260,7 +1263,7 @@ export function runDeferredCleanups(db) {
         .map((r) => r.name),
     );
   } catch {
-    return; // table not present yet (pre-migration open) — nothing to do
+    return; // table not present yet (pre-migration open) - nothing to do
   }
   const mark = db.prepare('INSERT OR IGNORE INTO migration_cleanups (name, done_at_epoch) VALUES (?, ?)');
   for (const { name, run } of DEFERRED_CLEANUPS) {
@@ -1281,6 +1284,13 @@ export function runDeferredCleanups(db) {
  * Returns an opened Database instance with WAL + busy_timeout configured.
  */
 export function ensureDb() {
+  // A background worker outliving its data dir must not re-create it (D#265): whoever removed
+  // the dir meant it. Before the legacy-dir migration below, which would move one into place.
+  if (workerDirGone(DB_DIR)) {
+    throw Object.assign(new Error(`data dir ${DB_DIR} was removed while a background worker ran`), {
+      code: 'QWEN_MEM_DATA_DIR_GONE',
+    });
+  }
   // Auto-migrate unhidden dir (~/claude-mem-lite/ → ~/.qwen-mem-lite/). The source keeps
   // its pre-v0.5 name: that is the layout the old product shipped, not the current identity.
   // Check DB_PATH (not DB_DIR) because hook-shared.mjs module-level init may create DB_DIR early
@@ -1315,10 +1325,10 @@ export function ensureDb() {
     chmodSync(DB_PATH, 0o600);
   } catch {}
   db.pragma('journal_mode = WAL');
-  // 5000ms matches the MCP server (server.mjs) — 3000ms wasn't enough under realistic
+  // 5000ms matches the MCP server (server.mjs) - 3000ms wasn't enough under realistic
   // concurrency (parallel CLI saves + a long-running FTS rebuild can push individual
   // transactions past 3s, triggering SQLITE_BUSY on the third caller).
-  db.pragma('busy_timeout = 5000');
+  db.pragma(`busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = OFF'); // Enabled after dedup migration
 
@@ -1326,7 +1336,7 @@ export function ensureDb() {
     const ready = initSchema(db);
     // P1-5: sentinel-gated data cleanups must run on EVERY open (schema.mjs:766).
     // They were extracted out of initSchema into runDeferredCleanups but never
-    // wired into a production opener — without this call they ran nowhere but
+    // wired into a production opener - without this call they ran nowhere but
     // tests, silently halting orphan/normalize hygiene. Best-effort: never throws.
     runDeferredCleanups(ready);
     return ready;
@@ -1339,14 +1349,64 @@ export function ensureDb() {
 }
 
 /**
+ * Give the query planner statistics (sqlite_stat1/4) the way SQLite's docs recommend:
+ * `PRAGMA optimize=0x10002` analyzes only tables whose indexes have no statistics yet or
+ * whose row count moved 10-fold since their last ANALYZE, and costs ~0.1 ms when there is
+ * nothing to do. The mask leaves out 0x10 (the temporary analysis_limit), so a pass that does
+ * run is a full ANALYZE of those tables, stat4 included: 17 ms at 44k observations and 103 ms
+ * at 400k (2026-10-07, synthetic stores). With 0x10 set, stat4 came back empty.
+ *
+ * Nothing ran ANALYZE before #41, so no database had statistics. Without them the planner
+ * drives `observations_fts JOIN observations` from idx_obs_project_live and evaluates the
+ * FTS5 MATCH once per candidate row: 9.4 s for one hook search on a 44k-row project, 13 ms
+ * once analyzed (2026-10-07, tree 7cffde0, a synthetic corpus whose generator is not in the
+ * repo; tests/planner-stats.test.mjs pins the plan flip, not the timing).
+ *
+ * Called where the docs put it: when a long-lived connection opens (server.mjs), once a day
+ * (the auto-maintain worker) and after a bulk load (import-jsonl). Not on hook opens: an
+ * empty table writes no stat row, so on a database with empty tables every call runs
+ * ANALYZE on them again, and the hot path should not pay for that.
+ *
+ * Never throws. A read-only handle, or a writer still holding the lock after
+ * `busyTimeoutMs`, skips this round and returns false; the next caller retries. The override
+ * is for callers on a latency path, and the connection's own timeout is put back after.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {{ busyTimeoutMs?: number }} [opts]
+ * @returns {boolean} whether the pragma ran
+ */
+export function refreshPlannerStats(db, { busyTimeoutMs } = {}) {
+  let prior;
+  try {
+    if (busyTimeoutMs !== undefined) {
+      prior = db.pragma('busy_timeout', { simple: true });
+      db.pragma(`busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))}`);
+    }
+    db.pragma('optimize=0x10002');
+    return true;
+  } catch (e) {
+    debugCatch(e, 'refresh-planner-stats');
+    return false;
+  } finally {
+    if (prior !== undefined) {
+      try {
+        db.pragma(`busy_timeout = ${Number.isInteger(prior) ? prior : DB_BUSY_TIMEOUT_MS}`);
+      } catch {
+        /* the connection is unusable anyway; its next statement reports why */
+      }
+    }
+  }
+}
+
+/**
  * Whether an open/init error carries a genuine corruption signature. WAL-delete
  * recovery is ONLY safe for these: on a transient error (SQLITE_BUSY) or the
  * forward-version guard throw, deleting the WAL would discard committed-but-
- * uncheckpointed transactions — silent data loss.
+ * uncheckpointed transactions - silent data loss.
  */
 export function isDbCorruptionError(err) {
   // R10 P3-9: SQLITE_CORRUPT_VTAB is EXCLUDED. It means a damaged FTS5 index over an
-  // otherwise healthy file, and both halves of the WAL remedy are wrong for it — deleting
+  // otherwise healthy file, and both halves of the WAL remedy are wrong for it - deleting
   // the WAL discards committed-but-uncheckpointed transactions (the reason this predicate
   // exists at all, per the docblock above), and it cannot repair an index that lives in the
   // main database file. isFtsCorruptionError below routes it to rebuildFTS instead.
@@ -1405,7 +1465,7 @@ export function ensureDbWithWalRecovery({ warn, info } = {}) {
         try {
           retryErr.ftsRebuildAttempted = true;
         } catch {
-          /* frozen error — fine */
+          /* frozen error - fine */
         }
         throw retryErr;
       }
@@ -1430,7 +1490,7 @@ export function ensureDbWithWalRecovery({ warn, info } = {}) {
       try {
         retryErr.walRecoveryAttempted = true;
       } catch {
-        /* frozen error — fine */
+        /* frozen error - fine */
       }
       throw retryErr;
     }
@@ -1443,7 +1503,7 @@ export function ensureDbWithWalRecovery({ warn, info } = {}) {
  */
 /**
  * Rebuild all FTS5 indexes. Use after suspected index corruption (e.g. crash mid-trigger).
- * Safe to call at any time — rebuilds are idempotent.
+ * Safe to call at any time - rebuilds are idempotent.
  * @param {Database} db Opened database instance
  * @returns {{rebuilt: string[], errors: string[]}} Results per FTS table
  */
@@ -1497,7 +1557,7 @@ export function checkFTSIntegrity(db) {
       }
       // rank = 1: all four tables are EXTERNAL-content, and FTS5 compares the index with
       // its content table only when asked to. Without it an index gone stale behind its
-      // content — what `fts-check` exists for — passed. Measured on a 5.3k-event DB copy:
+      // content - what `fts-check` exists for - passed. Measured on a 5.3k-event DB copy:
       // 46 ms for all four tables vs 28 ms without (2026-09-29).
       db.exec(`INSERT INTO ${fts}(${fts}, rank) VALUES('integrity-check', 1)`);
       details.push(`${fts}: ok`);
@@ -1562,7 +1622,7 @@ export function ensureFTS(db, ftsName, tableName, columns) {
   // Triggers created / recreated independently of FTS table existence so that
   // schema migrations (e.g. v27 scope-to-FTS-columns) can drop the old _au
   // trigger and this function reinstates it with the current template on the
-  // next ensureDb(). Per #7647: keep rebuild conditional — IF NOT EXISTS gates
+  // next ensureDb(). Per #7647: keep rebuild conditional - IF NOT EXISTS gates
   // writes when the current definition already matches.
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS ${tableName}_ai AFTER INSERT ON ${tableName} BEGIN
@@ -1573,7 +1633,7 @@ export function ensureFTS(db, ftsName, tableName, columns) {
       INSERT INTO ${ftsName}(${ftsName}, rowid, ${colList}) VALUES('delete', old.id, ${oldVals});
     END;
 
-    -- v27: AFTER UPDATE OF <fts_cols> — trigger fires only when an FTS-indexed
+    -- v27: AFTER UPDATE OF <fts_cols> - trigger fires only when an FTS-indexed
     -- column changes. Prevents access_count / injection_count / last_accessed_at
     -- UPDATEs from firing wasteful FTS delete+reinsert (project_non_obvious.md).
     CREATE TRIGGER IF NOT EXISTS ${tableName}_au AFTER UPDATE OF ${colList} ON ${tableName} BEGIN
@@ -1583,7 +1643,7 @@ export function ensureFTS(db, ftsName, tableName, columns) {
   `);
 
   // Repopulate a freshly (re)created external-content FTS index from its content table.
-  // An empty index otherwise returns 0 rows until each row is next written — and unlike
+  // An empty index otherwise returns 0 rows until each row is next written - and unlike
   // observations_fts (rebuilt via the obsFtsRecreated flag in ensureDb), session_summaries_fts
   // and user_prompts_fts have no other rebuild path, so a widened table must repopulate here.
   if (recreated) {
@@ -1591,18 +1651,18 @@ export function ensureFTS(db, ftsName, tableName, columns) {
       const cnt = db.prepare(`SELECT COUNT(*) AS c FROM ${tableName}`).get();
       if (cnt.c > 0) db.exec(`INSERT INTO ${ftsName}(${ftsName}) VALUES('rebuild')`);
     } catch {
-      /* non-critical — index repopulates lazily on next write */
+      /* non-critical - index repopulates lazily on next write */
     }
   }
 }
 
-// Column-aware self-heal for events_fts — the events table's FTS index. events_fts is NOT
+// Column-aware self-heal for events_fts - the events table's FTS index. events_fts is NOT
 // managed by the generic ensureFTS() above because its DDL is non-standard: event_type and
 // project are UNINDEXED, it uses a custom unicode61 tokenizer with '_-' tokenchars, and its
 // triggers are named events_fts_* (not events_*). Routing it through ensureFTS would recreate
 // it WITHOUT the UNINDEXED cols / tokenizer AND install a SECOND, differently-named trigger set
 // (events_*) that double-writes the index. This dedicated guard mirrors ensureFTS's drift
-// detection while preserving the exact events_fts DDL (schema.mjs events block) — closing the
+// detection while preserving the exact events_fts DDL (schema.mjs events block) - closing the
 // F8/P2-4 gap: events_fts was the one FTS table outside self-heal, so a future events column
 // addition would leave a stale narrow index whose (wider) triggers throw "no column" and
 // silently drop event writes. Idempotent: a no-op once the column set matches.
@@ -1642,7 +1702,7 @@ export function ensureEventsFTS(db) {
   }
   // Triggers reinstated from the canonical template (INSERT all 4 columns; AFTER UPDATE OF the
   // two INDEXED columns only, so non-indexed bumps don't thrash the index). IF NOT EXISTS so an
-  // unchanged definition is a no-op — byte-identical to the events block in initSchema.
+  // unchanged definition is a no-op - byte-identical to the events block in initSchema.
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS events_fts_ai AFTER INSERT ON events BEGIN
       INSERT INTO events_fts(rowid, title, body, event_type, project)
@@ -1664,7 +1724,7 @@ export function ensureEventsFTS(db) {
       const cnt = db.prepare(`SELECT COUNT(*) AS c FROM events`).get();
       if (cnt.c > 0) db.exec(`INSERT INTO events_fts(events_fts) VALUES('rebuild')`);
     } catch {
-      /* non-critical — index repopulates lazily on next write */
+      /* non-critical - index repopulates lazily on next write */
     }
   }
 }

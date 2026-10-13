@@ -1,19 +1,19 @@
 // Feature sweep: every registered MCP tool of server.mjs, driven over the REAL
 // JSON-RPC stdio transport (server spawned as a subprocess, MCP SDK client on the
-// other end) — no handler is imported and called directly.
+// other end) - no handler is imported and called directly.
 //
 // WHY THIS FILE EXISTS (it does not duplicate the four MCP tests already here):
-//   tests/mcp-tools-snapshot.test.mjs  — declaration-level: the `tools` array's
+//   tests/mcp-tools-snapshot.test.mjs  - declaration-level: the `tools` array's
 //     core/hidden split, descriptions, CLI-parity of the doc lines. Never spawns.
-//   tests/mcp-protocol.test.mjs        — protocol-level regression museum: the
+//   tests/mcp-protocol.test.mjs        - protocol-level regression museum: the
 //     specific bugs that shipped (purge without confirm, sort=time no-op, single-
-//     source totals, pagination double-offset, update validation parity). Ten of
-//     the twenty tools are never called there.
-//   tests/server-defer.test.mjs        — schema/handler-shape unit tests for the
+//     source totals, pagination double-offset, update validation parity). Some
+//     tools are never called there.
+//   tests/server-defer.test.mjs        - schema/handler-shape unit tests for the
 //     defer family, plus a CLI proxy for the closes_deferred transaction.
-//   tests/mcp-export-parity-r5.test.mjs— one tool (mem_export) via an in-process seam.
+//   tests/mcp-export-parity-r5.test.mjs- one tool (mem_export) via an in-process seam.
 // None of them answers "does EVERY registered tool still answer a real tools/call
-// with its documented payload?" — the question that catches a registration,
+// with its documented payload?" - the question that catches a registration,
 // transport or schema break in a tool nobody exercised this release. That is this
 // file's only job: one case per tool, named after the tool, so a failure names the
 // surface immediately.
@@ -26,7 +26,7 @@
 //   2. cwd → a sandbox dir, and CLAUDE_PROJECT_DIR + PWD are DELETED from the child
 //      env (the runner's PWD is this repo). project-utils.mjs:18 resolves
 //      CLAUDE_PROJECT_DIR || PWD || process.cwd(), so with both vars gone the server's
-//      project name is derived from its cwd ALONE — which is what makes the
+//      project name is derived from its cwd ALONE - which is what makes the
 //      `Recent observations (work--mcpsweep)` assertion in the mem_recent case a real
 //      pin on the spawned server's cwd. (Setting the two vars instead would leave that
 //      assertion green even if the cwd option were dropped and the server ran here.)
@@ -54,10 +54,10 @@ import { tools as DECLARED_TOOLS } from '../tool-schemas.mjs';
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SERVER_PATH = join(REPO, 'server.mjs');
 
-// The 9 tools `tools/list` promises. Pinned as a literal ON PURPOSE: comparing the
+// The default tools `tools/list` promises. Pinned as a literal ON PURPOSE: comparing the
 // wire response against tool-schemas' own `hidden` flags would pass right through a
 // flag flip (both sides move together). This literal is what makes a tool silently
-// appearing in — or vanishing from — every agent's startup context a test failure.
+// appearing in - or vanishing from - every agent's startup context a test failure.
 const PUBLIC_TOOLS = [
   'mem_search',
   'mem_recent',
@@ -69,7 +69,7 @@ const PUBLIC_TOOLS = [
   'mem_defer_list',
   'mem_defer_drop',
 ];
-// The 11 hidden-but-callable tools: absent from tools/call-time discovery, still
+// The 9 hidden-but-callable tools: absent from tools/call-time discovery, still
 // routable by exact name (Claude Code agents reach them via the CLI).
 const HIDDEN_TOOLS = [
   'mem_delete',
@@ -99,7 +99,7 @@ let ROOT, DATA_DIR, WORK_DIR, client, transport;
 // inferProject() derives "<parent>--<dir>" from the project dir; WORK_DIR is
 // <sandbox>/work/mcpsweep, so this is deterministic. With CLAUDE_PROJECT_DIR and PWD
 // removed from the child env (see isolation contract #2), the server can only reach
-// this name through its own process.cwd() — so the mem_recent assertion is the proof
+// this name through its own process.cwd() - so the mem_recent assertion is the proof
 // that it really ran with the sandbox cwd.
 const PROJECT = 'work--mcpsweep';
 
@@ -178,6 +178,7 @@ beforeAll(async () => {
     ANTHROPIC_API_KEY: '',
     OPENROUTER_API_KEY: '',
     QWEN_MEM_AUTO_DEEP: '0',
+    QWEN_MEM_SEARCH_TELEMETRY: '0',
     QWEN_MEM_SKIP_SAVE_ENRICH: '1',
     QWEN_MEM_SKIP_REPOS: '1',
     MEM_QUIET_HOOKS: '1',
@@ -201,7 +202,7 @@ beforeAll(async () => {
   client = new Client({ name: 'mem-featsweep-client', version: '0.0.0' });
   await client.connect(transport);
 
-  // Three distinct seeds in PROJECT — distinct wording matters, saveObservation dedups
+  // Three distinct seeds in PROJECT - distinct wording matters, saveObservation dedups
   // near-identical text inside a 5-minute window. Saved sequentially so their epochs are
   // strictly increasing (mem_recent / mem_timeline assert on that order).
   SEED_BUGFIX_ID = await save({
@@ -251,7 +252,7 @@ afterAll(async () => {
 // ─── Surface guards ─────────────────────────────────────────────────────────
 
 describe('MCP feature sweep: registered surface', () => {
-  it('tools/list returns exactly the 9 public tools, and no hidden one', async () => {
+  it('tools/list returns exactly the 9 default public tools, and no hidden one', async () => {
     const { tools: listed } = await client.listTools();
     const names = listed.map((t) => t.name).sort();
     // Exact set BOTH ways: a missing tool and an extra tool are equally a failure.
@@ -261,7 +262,7 @@ describe('MCP feature sweep: registered surface', () => {
     // registration/filter break (declared public, missing on the wire) that the literal
     // above cannot distinguish from an intentional list change.
     expect(names).toEqual(
-      DECLARED_TOOLS.filter((t) => !t.hidden)
+      DECLARED_TOOLS.filter((t) => !t.hidden && t.name !== 'mem_search_feedback')
         .map((t) => t.name)
         .sort(),
     );
@@ -270,7 +271,9 @@ describe('MCP feature sweep: registered surface', () => {
   it('every tool tool-schemas registers has a sweep case (coverage guard)', () => {
     // SWEPT_TOOLS is the set of cases actually registered with vitest, so a tool added to
     // tool-schemas without a case fails here and cannot be silenced by editing a literal.
-    const declared = DECLARED_TOOLS.map((t) => t.name).sort();
+    const declared = DECLARED_TOOLS.filter((t) => t.name !== 'mem_search_feedback')
+      .map((t) => t.name)
+      .sort();
     expect(declared).toEqual([...SWEPT_TOOLS].sort());
     expect(declared).toEqual([...PUBLIC_TOOLS, ...HIDDEN_TOOLS].sort());
     expect(declared).toHaveLength(18);
@@ -286,7 +289,7 @@ describe('MCP feature sweep: public tools', () => {
     expect(ids).toContain(SEED_BUGFIX_ID);
     expect(ids).toContain(SEED_DECISION_ID);
 
-    // obs_type must actually narrow — a dropped filter shows the bugfix row too.
+    // obs_type must actually narrow - a dropped filter shows the bugfix row too.
     const narrowed = await call('mem_search', { query: 'widget', project: PROJECT, obs_type: 'decision' });
     const narrowedIds = [...narrowed.matchAll(/^#(\d+) /gm)].map((m) => Number(m[1]));
     expect(narrowedIds).toEqual([SEED_DECISION_ID]);
@@ -294,7 +297,7 @@ describe('MCP feature sweep: public tools', () => {
 
   itTool('mem_recent', async () => {
     const text = await call('mem_recent', { limit: 2 });
-    // Header names the project inferred from the SERVER's cwd — the proof that the
+    // Header names the project inferred from the SERVER's cwd - the proof that the
     // subprocess really ran inside the sandbox and not in this repo.
     expect(text).toContain(`Recent observations (${PROJECT}):`);
     const ids = [...text.matchAll(/^#(\d+) /gm)].map((m) => Number(m[1]));
@@ -316,7 +319,7 @@ describe('MCP feature sweep: public tools', () => {
     expect(text).toContain(`── #${SEED_BUGFIX_ID} ──`);
     expect(text).toContain(`lesson_learned: ${SEED_LESSON}`);
     expect(text).toContain('importance: 3');
-    // `files` reaches the row, and is rendered under the `files` label — the raw
+    // `files` reaches the row, and is rendered under the `files` label - the raw
     // `files_modified` column name claimed a modification for a path the caller may only
     // have read (audit 2026-08-14 F3); tests/audit-findings-20260814.test.mjs pins the CLI
     // half of the same label, so the two `get` surfaces agree.
@@ -337,7 +340,7 @@ describe('MCP feature sweep: public tools', () => {
     });
     expect(text).toMatch(/Saved as observation #\d+ \[bugfix\] in project "mcpsweep-save"/);
     expect(text).toContain('lesson captured');
-    // Cross-check the row in the sandbox DB — the response text alone is the server
+    // Cross-check the row in the sandbox DB - the response text alone is the server
     // quoting its own input back.
     const id = savedId(text);
     const row = withDb((db) =>
@@ -430,7 +433,7 @@ describe('MCP feature sweep: public tools', () => {
     const paged = await call('mem_defer_list', { project: P, limit: 1 });
     expect(paged).toContain('Split the retry helper out of transport');
     expect(paged).not.toContain('Document the backoff ceiling');
-    expect(paged).toContain('1 more open item not shown — pass a larger limit (max 50)');
+    expect(paged).toContain('1 more open item not shown - pass a larger limit (max 50)');
 
     // At the largest page the reader cannot raise the limit, so the line must not tell them
     // to (D#115 P3-7). Seeded straight into the DB: 51 tool calls would be the slow part.
@@ -440,7 +443,7 @@ describe('MCP feature sweep: public tools', () => {
     });
     const full = await call('mem_defer_list', { project: PMAX, limit: 50 });
     expect(full.match(/max page item \d+/g), 'premise: the page holds 50 rows').toHaveLength(50);
-    expect(full).toContain('1 more open item not shown — this is already the largest page (50)');
+    expect(full).toContain('1 more open item not shown - this is already the largest page (50)');
     expect(full).not.toContain('pass a larger limit');
   });
 
@@ -655,12 +658,12 @@ describe('MCP feature sweep: hidden tools', () => {
       const normalizeLine = preview.match(/^\s*Normalize: (?:(\d+) unique concepts|gate closed .*)$/m);
       expect(normalizeLine, `no parseable Normalize line in:\n${preview}`).toBeTruthy();
       const normalizeUnits = Number(normalizeLine[1] || 0) > 0 ? 1 : 0;
-      // The headline total is the sum of the four task figures — a Total computed over a
+      // The headline total is the sum of the four task figures - a Total computed over a
       // different scope (e.g. one leg ignoring `project`) fails here.
       expect(num(/^\s*Total: (\d+) items$/m)).toBe(reenrich + normalizeUnits + clusterMerge + smartCompress);
       expect(reenrich).toBeGreaterThan(0);
 
-      // The run arm must DEGRADE — candidates picked up, every Haiku call refused because
+      // The run arm must DEGRADE - candidates picked up, every Haiku call refused because
       // CLAUDE_CODE_PATH points nowhere. "0 processed, 0 skipped" (an empty work queue, or
       // a task that never ran at all) is a failure, not a pass.
       const run = await call('mem_optimize', {
@@ -687,7 +690,7 @@ describe('MCP feature sweep: hidden tools', () => {
     'mem_fts_check',
     async () => {
       expect(await call('mem_fts_check', { action: 'check' })).toBe(
-        'FTS5 indexes are healthy — all integrity checks passed.',
+        'FTS5 indexes are healthy - all integrity checks passed.',
       );
 
       const rebuilt = await call('mem_fts_check', { action: 'rebuild' });
@@ -695,7 +698,7 @@ describe('MCP feature sweep: hidden tools', () => {
         expect(rebuilt).toContain(table);
       }
       expect(rebuilt).not.toContain('Errors:');
-      // The rebuilt index must still answer — a rebuild that empties it would pass on the
+      // The rebuilt index must still answer - a rebuild that empties it would pass on the
       // message alone.
       expect(await call('mem_search', { query: 'widget', project: PROJECT })).toContain(`#${SEED_BUGFIX_ID}`);
     },

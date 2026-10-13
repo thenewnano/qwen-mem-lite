@@ -91,7 +91,8 @@ describe('haiku-client.mjs', () => {
     // Proxy vars in the dev/CI shell would route the OpenRouter path through the
     // CONNECT tunnel (real network) instead of the mocked fetch - same #8608 trap:
     // an env-gated transport silently breaks tests that rely on the default path.
-    for (const v of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy']) vi.stubEnv(v, '');
+    for (const v of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'NO_PROXY', 'no_proxy'])
+      vi.stubEnv(v, '');
     _resetMode();
     // Module-level compat state: one case that trips the old-CLI fallback would
     // otherwise silently drop the flag from every later case's expected argv.
@@ -1002,6 +1003,7 @@ describe('haiku-client.mjs', () => {
     });
 
     it('sends the deployment name from ANTHROPIC_DEFAULT_HAIKU_MODEL as body.model', async () => {
+      vi.stubEnv('ANTHROPIC_BASE_URL', 'https://aif-example.services.ai.azure.com/anthropic');
       vi.stubEnv('ANTHROPIC_DEFAULT_HAIKU_MODEL', 'claude-haiku-4-5');
       const fetchMock = vi.fn().mockResolvedValue(okResponse());
       vi.stubGlobal('fetch', fetchMock);
@@ -1013,6 +1015,7 @@ describe('haiku-client.mjs', () => {
     });
 
     it('maps the sonnet tier through ANTHROPIC_DEFAULT_SONNET_MODEL, per tier', async () => {
+      vi.stubEnv('ANTHROPIC_BASE_URL', 'https://aif-example.services.ai.azure.com/anthropic');
       vi.stubEnv('ANTHROPIC_DEFAULT_HAIKU_MODEL', 'claude-haiku-4-5');
       vi.stubEnv('ANTHROPIC_DEFAULT_SONNET_MODEL', 'claude-sonnet-5');
       const fetchMock = vi.fn().mockResolvedValue(okResponse());
@@ -1022,6 +1025,96 @@ describe('haiku-client.mjs', () => {
 
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(body.model).toBe('claude-sonnet-5');
+    });
+
+    it('ignores the tier overrides with NO base URL - they are CLI aliases on Bedrock/Vertex', async () => {
+      // The scoping the review asked for: api.anthropic.com must not receive a
+      // provider-specific alias (404 + CLI fallback), nor a silently bigger model.
+      vi.stubEnv('ANTHROPIC_DEFAULT_HAIKU_MODEL', 'us.anthropic.claude-haiku-x');
+      vi.stubEnv('ANTHROPIC_DEFAULT_SONNET_MODEL', 'claude-opus-4-5');
+      const fetchMock = vi.fn().mockResolvedValue(okResponse());
+      vi.stubGlobal('fetch', fetchMock);
+
+      await callHaiku('test prompt');
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.model).toBe('claude-haiku-4-5-20251001');
+    });
+
+    it('skips the direct API leg when the base URL is set but unusable', async () => {
+      // configured+error must not quietly send the key to api.anthropic.com; the
+      // CLI fallback reads ANTHROPIC_BASE_URL itself.
+      vi.stubEnv('ANTHROPIC_BASE_URL', 'not a url');
+      vi.mocked(execFileSync).mockReturnValue('fallback');
+      const fetchMock = vi.fn().mockResolvedValue(okResponse());
+      vi.stubGlobal('fetch', fetchMock);
+
+      await callHaiku('test prompt');
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('posts to an http:// gateway directly - neither the TLS-only tunnel nor native fetch', async () => {
+      // The tunnel: before that fix this crashed the process, because the proxy was
+      // selected for the http target and https.request threw ERR_INVALID_PROTOCOL inside
+      // the CONNECT callback where no try/catch could see it. Native fetch: under
+      // NODE_USE_ENV_PROXY=1 it hands the cleartext key to HTTP_PROXY (D#250; the env-proxy
+      // case itself is tests/plain-http-gateway-env-proxy.test.mjs). So a real loopback
+      // server has to be the one that answers.
+      const { createServer } = await import('node:http');
+      const hits = [];
+      const gw = createServer((req, res) => {
+        hits.push({ method: req.method, url: req.url, key: req.headers['x-api-key'] });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ content: [{ text: 'gateway response' }] }));
+      });
+      await new Promise((r) => gw.listen(0, '127.0.0.1', r));
+      try {
+        vi.stubEnv('ANTHROPIC_BASE_URL', `http://127.0.0.1:${gw.address().port}`);
+        vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:10808');
+        const fetchMock = vi.fn().mockResolvedValue(okResponse());
+        vi.stubGlobal('fetch', fetchMock);
+
+        const out = await callHaiku('test prompt');
+
+        expect(out).toEqual({ text: 'gateway response' });
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(hits).toEqual([{ method: 'POST', url: '/v1/messages', key: 'sk-gateway-key' }]);
+      } finally {
+        await new Promise((r) => gw.close(r));
+      }
+    });
+
+    // D#259: the resolver accepted this value and returned it raw; `new URL(raw + '/v1/messages')`
+    // then threw on every call (the parser strips a trailing C0 only at the END of the input), so
+    // every keyed call fell back to the CLI while doctor reported the gateway usable.
+    it('reaches a loopback gateway whose base URL ends in a control character', async () => {
+      const { createServer } = await import('node:http');
+      const hits = [];
+      const gw = createServer((req, res) => {
+        hits.push({ method: req.method, url: req.url });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ content: [{ text: 'gateway response' }] }));
+      });
+      await new Promise((r) => gw.listen(0, '127.0.0.1', r));
+      try {
+        vi.stubEnv('ANTHROPIC_BASE_URL', `http://127.0.0.1:${gw.address().port}\x01`);
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse()));
+
+        expect(await callHaiku('test prompt')).toEqual({ text: 'gateway response' });
+        expect(hits).toEqual([{ method: 'POST', url: '/v1/messages' }]);
+      } finally {
+        await new Promise((r) => gw.close(r));
+      }
+    });
+
+    it('does not follow redirects on the credentialed native fetch', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(okResponse());
+      vi.stubGlobal('fetch', fetchMock);
+
+      await callHaiku('test prompt');
+
+      expect(fetchMock.mock.calls[0][1].redirect).toBe('error');
     });
 
     it('keeps the public URL and built-in model ID when the overrides are unset', async () => {
@@ -1069,11 +1162,56 @@ describe('haiku-client.mjs', () => {
       expect(JSON.parse(fetchMock.mock.calls[2][1].body).temperature).toBeUndefined();
     });
 
+    it('a pinned model that still gets the deprecation 400 sends once, not a second identical body', async () => {
+      // The retry exists to drop the field. Once the field is gone there is nothing to drop, so the
+      // same 400 must not buy a second POST of the same body (D#263 surviving mutation).
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(deprecation400())
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ content: [{ text: 'retried' }] }) })
+        .mockResolvedValue(deprecation400());
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(callHaiku('test prompt')).resolves.toEqual({ text: 'retried' });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await expect(callHaiku('test prompt')).resolves.toBeNull();
+      expect(JSON.parse(fetchMock.mock.calls[2][1].body).temperature).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
     it('does not retry a 400 that does not name temperature', async () => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: false,
         status: 400,
         text: async () => '{"type":"error","error":{"message":"max_tokens: must be >= 1"}}',
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(callHaiku('test prompt')).resolves.toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry when temperature is mentioned but not as the backticked field', async () => {
+      // The body must name the BACKTICKED field; a bare mention inside unrelated
+      // prose must not buy a retry plus a permanent body change for that model.
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: async () => '{"type":"error","error":{"message":"temperature sampling is unsupported here"}}',
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(callHaiku('test prompt')).resolves.toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry a backticked temperature field that is not a deprecation', async () => {
+      // Pins the second half of the guard: backticked name AND a deprecation
+      // word. A range error on the field must keep the single-attempt path.
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: async () => '{"type":"error","error":{"message":"`temperature`: must be between 0 and 1"}}',
       });
       vi.stubGlobal('fetch', fetchMock);
 

@@ -20,7 +20,7 @@ const MOCK_CLAUDE = resolve('scripts/mock-claude.mjs');
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
 // The afterEach below removes each sandbox and succeeds; a detached hook worker then
-// recreates the data dir under the HOME it was handed. See makeFixtureTracker's docblock —
+// recreates the data dir under the HOME it was handed. See makeFixtureTracker's docblock -
 // this file was 13 of the 30 dirs one clean suite run used to leave in /tmp.
 const fixtures = makeFixtureTracker();
 afterAll(() => fixtures.disposeAll());
@@ -69,12 +69,16 @@ function runHook(event, { stdin, env = {}, args = [] } = {}) {
     // API path can still set them via the `env` arg, which is spread last.
     ANTHROPIC_API_KEY: undefined,
     OPENROUTER_API_KEY: undefined,
-    QWEN_MEM_HOOK_RUNNING: undefined, // Don't inherit — let hooks run
+    QWEN_MEM_HOOK_RUNNING: undefined, // Don't inherit - let hooks run
     QWEN_MEM_DEBUG: '1',
     QWEN_MEM_SKIP_UPDATE: '1', // Skip auto-update network calls in tests
     QWEN_MEM_SKIP_COMPRESS: '1', // Skip auto-compress background spawn (tests call it explicitly)
     QWEN_MEM_SKIP_OPTIMIZE: '1', // Skip llm-optimize background worker in tests
     QWEN_MEM_SKIP_MAINTAIN: '1', // Skip auto-maintain background spawn (tests call it explicitly)
+    // Skip the llm-summary worker Stop spawns. It is detached, outlives runHook and recreated the
+    // sandbox behind afterEach (D#258: one mem-e2e-* dir per run, from the D#156 suite). The one
+    // test that observes the worker passes QWEN_MEM_SKIP_SUMMARY: undefined and waits for it.
+    QWEN_MEM_SKIP_SUMMARY: '1',
     ...env,
   };
 
@@ -208,7 +212,7 @@ describe('Suite 1: Full Session Lifecycle', () => {
     expect(exitCode).toBe(0);
     // This fixture's DB holds no observations/summaries, so there is no context body.
     // The hook now omits the wrapper rather than injecting an empty
-    // `<qwen-mem-context></qwen-mem-context>` pair — see
+    // `<qwen-mem-context></qwen-mem-context>` pair - see
     // tests/session-start-empty-context.test.mjs for the populated counterpart.
     expect(stdout).not.toContain('<qwen-mem-context>');
 
@@ -236,7 +240,7 @@ describe('Suite 1: Full Session Lifecycle', () => {
         old_string: 'foo',
         new_string: 'bar',
       },
-      'OK — edited file',
+      'OK - edited file',
     );
 
     const { exitCode } = runHook('post-tool-use', {
@@ -268,7 +272,7 @@ describe('Suite 1: Full Session Lifecycle', () => {
             old_string: `old${i}`,
             new_string: `new${i}`,
           },
-          'OK — edited file',
+          'OK - edited file',
         ),
         env: { HOME: tmpHome },
       });
@@ -293,7 +297,7 @@ describe('Suite 1: Full Session Lifecycle', () => {
           old_string: 'a',
           new_string: 'b',
         },
-        'OK — edited file',
+        'OK - edited file',
       ),
       env: { HOME: tmpHome },
     });
@@ -303,7 +307,7 @@ describe('Suite 1: Full Session Lifecycle', () => {
 
     // v2.33.4: CC's Stop schema forbids hookSpecificOutput entirely (only
     // PreToolUse/UserPromptSubmit/PostToolUse/SessionStart accept it). The
-    // Stop hook must NOT emit a receipt JSON — prior versions (v2.33.3) just
+    // Stop hook must NOT emit a receipt JSON - prior versions (v2.33.3) just
     // tagged hookEventName='Stop' and still triggered "Invalid input".
     if (stdout && stdout.trim()) {
       const parsed = JSON.parse(stdout.trim());
@@ -343,7 +347,7 @@ describe('Suite 1: Full Session Lifecycle', () => {
             old_string: 'old',
             new_string: 'new',
           },
-          'OK — edited file',
+          'OK - edited file',
         ),
         env: { HOME: tmpHome },
       });
@@ -363,6 +367,125 @@ describe('Suite 1: Full Session Lifecycle', () => {
 
     db.close();
   });
+
+  it('every Stop records itself as the latest, not only the first (P3-6)', () => {
+    // Stop fires per assistant turn. The UPDATE was guarded on status = 'active', so it ran on
+    // the first turn only and completed_at kept the first turn's end for the whole session.
+    // The summary worker now uses this column to tell whether a later Stop superseded it.
+    runHook('session-start', { env: { HOME: tmpHome } });
+    const sessionId = getSessionIdFromFile(tmpHome);
+    const epochOf = () => {
+      const db = openTestDb(tmpHome);
+      try {
+        return db
+          .prepare('SELECT completed_at_epoch AS e FROM sdk_sessions WHERE content_session_id = ?')
+          .get(sessionId).e;
+      } finally {
+        db.close();
+      }
+    };
+
+    runHook('stop', { env: { HOME: tmpHome } });
+    const first = epochOf();
+    runHook('stop', { env: { HOME: tmpHome } });
+    const second = epochOf();
+
+    expect(first, 'premise: the first Stop recorded one').toBeGreaterThan(0);
+    expect(second).toBeGreaterThan(first);
+  });
+
+  it('the /exit-restart fallback summary finds the exited session behind a live one with a summary', () => {
+    // buildFallbackFastSummary picks a session of this project completed in the last 2 minutes
+    // and writes a summary if it has none. Since every Stop records itself (P3-6), a parallel
+    // session still live ranks by its LATEST turn; with "has no summary" checked after
+    // `LIMIT 1`, that live session won the slot and the one that exited was never examined.
+    runHook('session-start', { stdin: JSON.stringify({ source: 'startup' }), env: { HOME: tmpHome } });
+    const db = openTestDb(tmpHome);
+    const project = db.prepare('SELECT project FROM sdk_sessions LIMIT 1').get().project;
+    const now = Date.now();
+    const addSession = (id, completedAgo) =>
+      db
+        .prepare(
+          `INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch,
+             status, completed_at, completed_at_epoch)
+           VALUES (?, ?, ?, ?, ?, 'completed', ?, ?)`,
+        )
+        .run(
+          id,
+          id,
+          project,
+          new Date(now - 60_000).toISOString(),
+          now - 60_000,
+          new Date(now - completedAgo).toISOString(),
+          now - completedAgo,
+        );
+    addSession('exited-x', 30_000);
+    addSession('live-y', 10_000);
+    db.prepare(
+      `INSERT INTO user_prompts (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+       VALUES ('exited-x', 1, 'the exited session request', ?, ?)`,
+    ).run(new Date(now - 50_000).toISOString(), now - 50_000);
+    db.prepare(
+      `INSERT INTO session_summaries (memory_session_id, project, request, created_at, created_at_epoch)
+       VALUES ('live-y', ?, 'live summary', ?, ?)`,
+    ).run(project, new Date(now - 10_000).toISOString(), now - 10_000);
+    db.close();
+
+    runHook('session-start', { stdin: JSON.stringify({ source: 'startup' }), env: { HOME: tmpHome } });
+
+    const db2 = openTestDb(tmpHome);
+    const rows = db2
+      .prepare("SELECT request FROM session_summaries WHERE memory_session_id = 'exited-x'")
+      .all();
+    db2.close();
+    expect(rows.map((r) => r.request)).toEqual(['the exited session request']);
+  });
+
+  it('the llm-summary worker Stop spawns receives the epoch Stop recorded (P3-6)', async () => {
+    // The worker drops its reply once completed_at_epoch is later than the epoch it was handed,
+    // so the two must be the SAME value: a fresh clock read for the UPDATE makes every worker
+    // superseded by its own Stop, while one for the spawn, or a missing argument, makes none
+    // ever superseded - a reply from an older turn can land last again. The session
+    // has no observation, so the real detached worker exits `no-obs` without a model call and
+    // its metric row reports what it received.
+    runHook('session-start', { env: { HOME: tmpHome } });
+    const sessionId = getSessionIdFromFile(tmpHome);
+    runHook('stop', {
+      env: {
+        HOME: tmpHome,
+        QWEN_MEM_METRICS: '1',
+        QWEN_MEM_FLUSH_TIMEOUT: '0',
+        QWEN_MEM_SKIP_SUMMARY: undefined,
+      },
+    });
+
+    const metricsDir = join(tmpHome, '.qwen-mem-lite', 'metrics');
+    const workerRow = () => {
+      if (!existsSync(metricsDir)) return null;
+      for (const f of readdirSync(metricsDir))
+        for (const line of readFileSync(join(metricsDir, f), 'utf8').split('\n'))
+          if (line.includes('"summary_worker"')) return JSON.parse(line);
+      return null;
+    };
+    // The detached child outlives runHook; wait for its row, then for the process itself, so it
+    // cannot recreate the sandbox behind afterEach.
+    const alive = () =>
+      execFileSync('ps', ['-ww', '-eo', 'args'], { encoding: 'utf8' }).includes(`llm-summary ${sessionId}`);
+    const deadline = Date.now() + 10_000;
+    while ((!workerRow() || alive()) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+
+    const db = openTestDb(tmpHome);
+    const stored = db
+      .prepare('SELECT completed_at_epoch AS e FROM sdk_sessions WHERE content_session_id = ?')
+      .get(sessionId).e;
+    db.close();
+    const row = workerRow();
+    expect(row, 'premise: the worker ran and wrote its metric row').toMatchObject({
+      outcome: 'no-obs',
+      session: sessionId,
+    });
+    expect(row.stopEpoch).toBe(stored);
+  });
 });
 
 describe('Suite 2: Episode Buffer Management', () => {
@@ -379,7 +502,7 @@ describe('Suite 2: Episode Buffer Management', () => {
             old_string: `line${i}`,
             new_string: `fixed${i}`,
           },
-          'OK — edited file',
+          'OK - edited file',
         ),
         env: { HOME: tmpHome },
       });
@@ -404,7 +527,7 @@ describe('Suite 2: Episode Buffer Management', () => {
       stdin: JSON.stringify({
         tool_name: 'Edit',
         tool_input: { file_path: '/tmp/src/tag.js', old_string: 'a', new_string: 'b' },
-        tool_response: 'OK — edited file',
+        tool_response: 'OK - edited file',
         session_id: 'cc-sess-A',
       }),
       env: { HOME: tmpHome },
@@ -420,7 +543,7 @@ describe('Suite 2: Episode Buffer Management', () => {
     // spawn so the assertion sees only the synchronous immediate observations
     // (sibling of QWEN_MEM_SKIP_COMPRESS / _OPTIMIZE). QWEN_MEM_KEEP_LOW_SIGNAL
     // stops the noise gate from dropping the trivial "Modified shared.js" change
-    // obs — orthogonal to grouping (merged→1, split→2, so toBe(2) still tests it).
+    // obs - orthogonal to grouping (merged→1, split→2, so toBe(2) still tests it).
     const env = { HOME: tmpHome, QWEN_MEM_SKIP_EPISODE_LLM: '1', QWEN_MEM_KEEP_LOW_SIGNAL: '1' };
     runHook('session-start', { env });
     // Two sessions, DIFFERENT files: the buffer's 2-entry window (phase-transition
@@ -435,7 +558,7 @@ describe('Suite 2: Episode Buffer Management', () => {
         stdin: JSON.stringify({
           tool_name: 'Edit',
           tool_input: { file_path: file, old_string: 'x', new_string: 'y' },
-          tool_response: 'OK — edited file',
+          tool_response: 'OK - edited file',
           session_id: sid,
         }),
         env,
@@ -443,7 +566,7 @@ describe('Suite 2: Episode Buffer Management', () => {
     }
     // SessionStart(clear) flushes the leftover 2-session buffer; its receipt
     // aggregates over the WHOLE episode (both sessions' entries), gated by
-    // anySignificant && RECEIPT_EVENTS — spec §4 #7.
+    // anySignificant && RECEIPT_EVENTS - spec §4 #7.
     runHook('session-start', { stdin: JSON.stringify({ source: 'clear' }), env });
     // Upstream (v6.14) dropped the bookkeeping `[mem] episode flushed` receipt; the DB
     // assertion below is the real contract for the concurrent-session flush.
@@ -468,7 +591,7 @@ describe('Suite 2: Episode Buffer Management', () => {
       stdin: JSON.stringify({
         tool_name: 'Edit',
         tool_input: { file_path: '/tmp/src/gamma.js', old_string: 'x', new_string: 'y' },
-        tool_response: 'OK — edited file',
+        tool_response: 'OK - edited file',
         session_id: 'cc-A',
       }),
       env,
@@ -495,7 +618,7 @@ describe('Suite 2: Episode Buffer Management', () => {
     // spec §5 residual (honesty pin): when both sessions edit the SAME file, the
     // two per-session immediate obs share the title "Modified same.js" and the
     // Tier-1 Jaccard dedup collapses them to one. The win over the base bug holds
-    // — the survivor is ONE session's activity, not an A+B merged narrative — but
+    // - the survivor is ONE session's activity, not an A+B merged narrative - but
     // "each session its own obs" is NOT achieved for the file-related case.
     const env = { HOME: tmpHome, QWEN_MEM_SKIP_EPISODE_LLM: '1', QWEN_MEM_KEEP_LOW_SIGNAL: '1' };
     runHook('session-start', { env });
@@ -504,7 +627,7 @@ describe('Suite 2: Episode Buffer Management', () => {
         stdin: JSON.stringify({
           tool_name: 'Edit',
           tool_input: { file_path: '/tmp/src/same.js', old_string: sid, new_string: sid + '!' },
-          tool_response: 'OK — edited file',
+          tool_response: 'OK - edited file',
           session_id: sid,
         }),
         env,
@@ -520,17 +643,51 @@ describe('Suite 2: Episode Buffer Management', () => {
   });
 
   it('a plain edit flush emits no receipt (upstream dropped the bookkeeping line)', () => {
+    // Upstream (v6.14) removed the bookkeeping `[mem] episode flushed` receipt: a plain
+    // edit flush with no actionable hint emits nothing. This pins that removal.
+    runHook('session-start', { env: { HOME: tmpHome } });
+
+    // EPISODE_BUFFER_SIZE = 10. The bufferFull check runs BEFORE the new entry is appended,
+    // so the 11th call (when the episode already holds 10) is the one that flushes.
+    const outs = [];
+    for (let i = 0; i < 11; i++) {
+      const { stdout } = runHook('post-tool-use', {
+        stdin: makeToolPayload(
+          'Edit',
+          { file_path: '/tmp/src/quiet.js', old_string: `old${i}`, new_string: `new${i}` },
+          'OK - edited file',
+        ),
+        env: { HOME: tmpHome },
+      });
+      outs.push(stdout || '');
+    }
+    // Premise: the 11th call really flushed (the buffer restarted), so silence is the rule.
+    expect(getFlushFiles(tmpHome).length).toBeGreaterThanOrEqual(1);
+    expect(outs.join('')).toBe('');
+  });
+
+  it('PostToolUse flush emits receipt JSON with correct event tag', () => {
     // v2.33.5: positive test for the PostToolUse receipt emission path.
-    // Complements the Stop-must-not-emit assertion above — if a future edit
+    // Complements the Stop-must-not-emit assertion above - if a future edit
     // over-broadens the RECEIPT_EVENTS guard and drops PostToolUse too, this
     // test fails loudly instead of silently swallowing the happy-path emission.
     runHook('session-start', { env: { HOME: tmpHome } });
 
     // EPISODE_BUFFER_SIZE = 10. The bufferFull check runs BEFORE the new
     // entry is appended, so the 11th call (when episode already holds 10)
-    // is the one that triggers flushEpisode → receipt stdout.
+    // is the one that triggers flushEpisode -> receipt stdout.
+    // Entry 0 is a failing test run so the flushed episode is error+edit and carries the
+    // unsaved-bugfix hint - the receipt's only content since the bookkeeping line went.
+    runHook('post-tool-use', {
+      stdin: makeToolPayload(
+        'Bash',
+        { command: 'npx vitest run tests/receipt.test.js' },
+        'FAIL tests/receipt.test.js\nAssertionError: expected 1 to be 2\n Tests  1 failed (1)',
+      ),
+      env: { HOME: tmpHome },
+    });
     let flushStdout = '';
-    for (let i = 0; i < 11; i++) {
+    for (let i = 1; i < 11; i++) {
       const { stdout } = runHook('post-tool-use', {
         stdin: makeToolPayload(
           'Edit',
@@ -539,27 +696,72 @@ describe('Suite 2: Episode Buffer Management', () => {
             old_string: `old${i}`,
             new_string: `new${i}`,
           },
-          'OK — edited file',
+          'OK - edited file',
         ),
         env: { HOME: tmpHome },
       });
-      if (stdout && stdout.includes('episode flushed')) flushStdout = stdout;
+      if (stdout && stdout.includes('Unsaved bugfix-shape')) flushStdout = stdout;
     }
 
-    // Upstream (v6.14) removed the bookkeeping `[mem] episode flushed` receipt: a plain
-    // edit flush with no actionable hint emits nothing. This pins that removal.
-    expect(flushStdout).toBe('');
+    // The flush-triggering call MUST produce a PostToolUse-tagged receipt.
+    expect(flushStdout).not.toBe('');
+    const parsed = JSON.parse(flushStdout.trim());
+    expect(parsed.suppressOutput).toBe(true);
+    expect(parsed.hookSpecificOutput).toBeDefined();
+    expect(parsed.hookSpecificOutput.hookEventName).toBe('PostToolUse');
+    expect(parsed.hookSpecificOutput.additionalContext).toMatch(/Unsaved bugfix-shape/);
+    expect(parsed.hookSpecificOutput.additionalContext).not.toMatch(/episode flushed/);
+  });
+
+  // §9-B (docs/audits/20260929-sandbox-usage-eval.md): the nudge repeated on every qualifying
+  // flush - 3.2 times per nudged session in real use. One session hears it once.
+  it('PostToolUse: the unsaved-bugfix nudge is said once per session', () => {
+    // Each 10-entry cycle flushes, and a flush spawns the detached llm-episode worker, which this
+    // test does not observe: it wrote into the sandbox after afterEach removed it (D#258).
+    const env = { HOME: tmpHome, QWEN_MEM_SKIP_EPISODE_LLM: '1' };
+    runHook('session-start', { env });
+    const cycle = (sessionId, tag) => {
+      const withSession = (payload) => JSON.stringify({ ...JSON.parse(payload), session_id: sessionId });
+      runHook('post-tool-use', {
+        stdin: withSession(
+          makeToolPayload(
+            'Bash',
+            { command: `npx vitest run tests/${tag}.test.js` },
+            `FAIL tests/${tag}.test.js\nAssertionError: expected 1 to be 2\n Tests  1 failed (1)`,
+          ),
+        ),
+        env,
+      });
+      let nudged = 0;
+      for (let i = 1; i < 11; i++) {
+        const { stdout } = runHook('post-tool-use', {
+          stdin: withSession(
+            makeToolPayload(
+              'Edit',
+              { file_path: `/work/app/src/${tag}.js`, old_string: `o${i}`, new_string: `n${i}` },
+              'OK - edited file',
+            ),
+          ),
+          env,
+        });
+        if (stdout && stdout.includes('Unsaved bugfix-shape')) nudged++;
+      }
+      return nudged;
+    };
+    expect(cycle('sess-once-a', 'first'), 'premise: a regression-fix flush nudges').toBe(1);
+    expect(cycle('sess-once-a', 'second'), 'the same session is not nudged again').toBe(0);
+    expect(cycle('sess-once-b', 'third'), 'another session is').toBe(1);
   });
 
   it('SessionStart flush receipt + dashboard arrive as ONE envelope', () => {
     // History, in two corrections. First: flushEpisode wrote its receipt with no
     // trailing newline and the dashboard wrote a second object right after, landing as
     // `}{`. The fix added the newline, on the belief that Claude Code parsed stdout
-    // line by line. v3.70.0 disproved that belief — 2.1.234's parser JSON.parses the
+    // line by line. v3.70.0 disproved that belief - 2.1.234's parser JSON.parses the
     // WHOLE trimmed stdout and falls back to plain text on throw, so TWO envelopes on
     // two lines were never both delivered either; for SessionStart the raw JSON went
     // to the model as literal text. This assertion used to check only the `}{` shape
-    // and per-line parseability, which the two-envelope state satisfies — it passed
+    // and per-line parseability, which the two-envelope state satisfies - it passed
     // against the pre-v3.70 code (pre-tag review, test-effectiveness SHOULD-FIX-1).
     // Now it pins the real contract: exactly one document, carrying both surfaces.
     runHook('session-start', { env: { HOME: tmpHome } });
@@ -573,7 +775,7 @@ describe('Suite 2: Episode Buffer Management', () => {
             old_string: `o${i}`,
             new_string: `n${i}`,
           },
-          'OK — edited file',
+          'OK - edited file',
         ),
         env: { HOME: tmpHome },
       });
@@ -585,7 +787,7 @@ describe('Suite 2: Episode Buffer Management', () => {
     });
     expect(stdout.trim(), 'the leftover episode + dashboard produced no output at all').not.toBe('');
     expect(stdout).not.toContain('}{');
-    // The whole stdout — not each line — must be one JSON document.
+    // The whole stdout - not each line - must be one JSON document.
     const parsed = JSON.parse(stdout.trim());
     expect(parsed.suppressOutput).toBe(true);
     expect(parsed.hookSpecificOutput.hookEventName).toBe('SessionStart');
@@ -632,7 +834,7 @@ describe('Suite 2: Episode Buffer Management', () => {
           old_string: 'a',
           new_string: 'b',
         },
-        'OK — edited file',
+        'OK - edited file',
       ),
       env: { HOME: tmpHome },
     });
@@ -671,7 +873,7 @@ describe('Suite 2: Episode Buffer Management', () => {
           old_string: 'x',
           new_string: 'y',
         },
-        'OK — edited file',
+        'OK - edited file',
       ),
       env: { HOME: tmpHome },
     });
@@ -700,7 +902,7 @@ describe('Suite 2: Episode Buffer Management', () => {
             old_string: `a${i}`,
             new_string: `b${i}`,
           },
-          'OK — edited file',
+          'OK - edited file',
         ),
         env: { HOME: tmpHome },
       });
@@ -715,7 +917,7 @@ describe('Suite 2: Episode Buffer Management', () => {
           old_string: 'x',
           new_string: 'y',
         },
-        'OK — edited file',
+        'OK - edited file',
       ),
       env: { HOME: tmpHome },
     });
@@ -757,7 +959,7 @@ describe('Suite 3: LLM Episode Processing', { retry: 2 }, () => {
       }),
     );
 
-    // Run llm-episode — it reads the flush file, calls mock LLM, saves observation
+    // Run llm-episode - it reads the flush file, calls mock LLM, saves observation
     const { exitCode } = runHook('llm-episode', {
       env: { HOME: tmpHome, QWEN_MEM_NO_DELAY: '1' },
       args: [flushFile],
@@ -813,7 +1015,7 @@ describe('Suite 3: LLM Episode Processing', { retry: 2 }, () => {
     });
     expect(exitCode).toBe(0);
 
-    // P0 drops the low-signal fallback — 0 obs for pure-Edit noise episodes.
+    // P0 drops the low-signal fallback - 0 obs for pure-Edit noise episodes.
     const db = openTestDb(tmpHome);
     const obs = db.prepare('SELECT * FROM observations WHERE memory_session_id = ?').all(sessionId);
     db.close();
@@ -888,7 +1090,7 @@ describe('Suite 3: LLM Episode Processing', { retry: 2 }, () => {
     );
     db.close();
 
-    // Second observation via llm-episode — overlapping file (shared.js)
+    // Second observation via llm-episode - overlapping file (shared.js)
     const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
     const flush2 = join(runtimeDir, `ep-flush-${Date.now()}-r2.json`);
     writeFileSync(
@@ -1128,7 +1330,7 @@ describe('Suite 6: Error Recall', () => {
     `,
     ).run(sessionId, now.toISOString(), now.getTime());
     // Low-signal "Modified %" obs that ALSO matches the FTS keywords (econnrefused
-    // in text) — must be gated OUT of error-recall by notLowSignalTitleClause.
+    // in text) - must be gated OUT of error-recall by notLowSignalTitleClause.
     db.prepare(
       `
       INSERT INTO observations (memory_session_id, project, text, type, title, subtitle, narrative, concepts, facts, files_read, files_modified, importance, created_at, created_at_epoch)
@@ -1151,7 +1353,7 @@ describe('Suite 6: Error Recall', () => {
 
     expect(stdout).toContain('[qwen-mem-lite] Related memories found for this error');
 
-    // G13: each fired error-recall injection must be metered — the G8 gate change
+    // G13: each fired error-recall injection must be metered - the G8 gate change
     // (isError→isHardError) had no post-fix volume signal in metrics before this.
     const erRows = readMetricRows(tmpHome).filter((r) => r.event === 'error_recall');
     expect(erRows.length).toBe(1);
@@ -1177,7 +1379,7 @@ describe('Suite 6: Error Recall', () => {
   });
 
   it('soft error text in successful command output does NOT trigger recall (hard gate)', () => {
-    // G8 (roadmap 2026-07-18): the recall gate was bashSig?.isError — any "error"
+    // G8 (roadmap 2026-07-18): the recall gate was bashSig?.isError - any "error"
     // wording in a non-search command's output fired "Related memories found for
     // this error" on exit-0 commands (live: 5+ false fires in one session, and
     // self-recursive since the hint itself contains 'error'). The gate must be
@@ -1186,7 +1388,7 @@ describe('Suite 6: Error Recall', () => {
     runHook('session-start', { env: { HOME: tmpHome } });
     const sessionId = getSessionIdFromFile(tmpHome);
 
-    // Seed an obs that MATCHES the output keywords — so absence of the hint below
+    // Seed an obs that MATCHES the output keywords - so absence of the hint below
     // proves the gate blocked recall, not that FTS found nothing.
     const db = openTestDb(tmpHome);
     const now = new Date();
@@ -1219,7 +1421,7 @@ describe('Suite 6: Error Recall', () => {
   });
 });
 
-// D#170. Claude Code does NOT fire PostToolUse for a tool call it judged failed — those
+// D#170. Claude Code does NOT fire PostToolUse for a tool call it judged failed - those
 // go to a separate `PostToolUseFailure` event. Registering only PostToolUse made this
 // plugin blind to every host-flagged failure, so the only "failures" error-recall saw
 // were commands that exited 0 while printing error-ish text.
@@ -1227,8 +1429,8 @@ describe('Suite 6: Error Recall', () => {
 // The payload is not PostToolUse's: the failure text lives in `error` (there is no
 // `tool_response`) and `is_interrupt` marks a cancellation. Reading the wrong field
 // would make this path silently do nothing, which looks exactly like the old behaviour
-// — so the field name is asserted directly rather than inferred from a passing case.
-describe('Suite 6b: PostToolUseFailure — host-flagged failures reach error-recall (D#170)', () => {
+// - so the field name is asserted directly rather than inferred from a passing case.
+describe('Suite 6b: PostToolUseFailure - host-flagged failures reach error-recall (D#170)', () => {
   const FAILURE_TEXT =
     "Error: ENOENT: no such file or directory, open '/app/package.json'\n" +
     '    at Object.openSync (node:fs:596:3)';
@@ -1268,7 +1470,7 @@ describe('Suite 6b: PostToolUseFailure — host-flagged failures reach error-rec
     expect(stdout).toContain('Run the build from the package root');
 
     // The envelope's event name is the field a copy-paste from the PostToolUse path
-    // gets wrong, and the host rejects a mismatch — so the injection would vanish while
+    // gets wrong, and the host rejects a mismatch - so the injection would vanish while
     // every other assertion here still passed.
     const parsed = stdout
       .split('\n')
@@ -1308,11 +1510,11 @@ describe('Suite 6b: PostToolUseFailure — host-flagged failures reach error-rec
   // The first version of this pair used `§8 SAFETY (immutable): denied …`, and both cases
   // were vacuous: `planErrorRecall` returns null on it (no `error`/`fail`/`not found`
   // wording, no namer), so the surface injects nothing whatever the gate does. Mutation
-  // proved it — disabling ONLY the refusal branch passed every test in the release. The
+  // proved it - disabling ONLY the refusal branch passed every test in the release. The
   // text below carries `ENOENT` and `package.json`, which the seeded memory matches, so
   // the ONLY thing keeping this quiet is the gate.
   const REFUSAL_WITH_TERMS =
-    '[claudemd] §11 memory-hint: refused — the ENOENT probe on ' +
+    '[claudemd] §11 memory-hint: refused - the ENOENT probe on ' +
     'package.json was blocked before it ran.\nError: command not executed.';
 
   it('stays silent for a tool-chain refusal', () => {
@@ -1332,13 +1534,13 @@ describe('Suite 6b: PostToolUseFailure — host-flagged failures reach error-rec
 
   it('...and the SAME text without the refusal marker DOES inject', () => {
     // The negative control the case above needs. Without it, "stays silent" could still
-    // be satisfied by text that matches nothing — which is exactly how the first version
+    // be satisfied by text that matches nothing - which is exactly how the first version
     // of this pair passed while the gate was disconnected. Strip only the `[claudemd] §11`
     // marker; every query term stays.
     seed();
     const { stdout } = runHook('post-tool-failure', {
       stdin: failurePayload({
-        error: REFUSAL_WITH_TERMS.replace('[claudemd] §11 memory-hint: refused — the', 'The'),
+        error: REFUSAL_WITH_TERMS.replace('[claudemd] §11 memory-hint: refused - the', 'The'),
         tool_input: { command: 'node scripts/build.mjs' },
       }),
       env: { HOME: tmpHome, QWEN_MEM_METRICS: '1' },
@@ -1364,7 +1566,7 @@ describe('Suite 6b: PostToolUseFailure — host-flagged failures reach error-rec
     //
     // The input DELIBERATELY carries a `command`. A first version of this case sent an
     // Edit payload with only `file_path`, which the downstream "no command string"
-    // guard rejected — so deleting the tool_name check entirely left the case green and
+    // guard rejected - so deleting the tool_name check entirely left the case green and
     // the guard it names untested. Mutation caught that; the payload below is the
     // difference between asserting a necessary condition and asserting this one.
     seed();
@@ -1385,7 +1587,7 @@ describe('Suite 6b: PostToolUseFailure — host-flagged failures reach error-rec
     //
     // It is not merely defensive. Without it the payload still reaches selectErrorRecall
     // with `cmd: undefined`, planErrorRecall extracts terms from the error text alone,
-    // and the surface injects — attributing a recall to a command it never saw.
+    // and the surface injects - attributing a recall to a command it never saw.
     seed();
     for (const toolInput of [{}, { command: '' }, { command: 42 }, { file_path: '/app/x.mjs' }]) {
       const { stdout } = runHook('post-tool-failure', {
@@ -1423,7 +1625,7 @@ describe('Suite 7: Secret Scrubbing E2E', () => {
       {
         command: 'curl -u admin:password=secret123 http://api.example.com/deploy',
       },
-      'HTTP 200 OK deployed successfully — this is a longer response for the length check',
+      'HTTP 200 OK deployed successfully - this is a longer response for the length check',
     );
 
     runHook('post-tool-use', {
@@ -1595,7 +1797,7 @@ describe('Suite 8a: Additional E2E', () => {
     ).run('old-sess', 'old-sess', new Date(oldEpoch).toISOString(), oldEpoch);
     db.close();
 
-    // Start a new session — should mark old one as expired
+    // Start a new session - should mark old one as expired
     runHook('session-start', { env: { HOME: tmpHome } });
 
     const db2 = openTestDb(tmpHome);
@@ -1719,9 +1921,9 @@ describe('Suite 8a: Additional E2E', () => {
     `,
     ).run(sessId, new Date(hundredDaysAgo).toISOString(), hundredDaysAgo);
 
-    // Old imp=0 observation (citation-decay floor / LLM low-signal filter) — STRICTLY lower
+    // Old imp=0 observation (citation-decay floor / LLM low-signal filter) - STRICTLY lower
     // value than imp=1, so it MUST be GC-eligible too. Pre-fix the auto-compress predicate was
-    // `importance = 1` (exact) and imp=0 rows were immortal — ~40% of a mature DB. (audit imp=0)
+    // `importance = 1` (exact) and imp=0 rows were immortal - ~40% of a mature DB. (audit imp=0)
     db.prepare(
       `
       INSERT INTO observations (memory_session_id, project, text, type, title, subtitle, narrative, concepts, facts, files_read, files_modified, importance, created_at, created_at_epoch)
@@ -1743,7 +1945,7 @@ describe('Suite 8a: Additional E2E', () => {
     // P2-11: auto-compress marking moved off the SessionStart transaction onto the 24h
     // auto-maintain cadence, so it is driven explicitly here (SKIP_MAINTAIN is set in this
     // harness, so the background spawn never races the read below). The project scope is
-    // argv[3] — the same scope the SessionStart transaction always applied.
+    // argv[3] - the same scope the SessionStart transaction always applied.
     runHook('session-start', { env: { HOME: tmpHome } });
     runHook('auto-maintain', { env: { HOME: tmpHome }, args: ['parent--testproj'] });
 
@@ -1962,7 +2164,7 @@ describe('Suite 8: Session-start context delivery', () => {
 
     const run = runHook('session-start', {
       // MEM_NO_AUTO_ADOPT isolates the context-delivery invariant from the v3.13
-      // managed-block write — this test asserts CLAUDE.md is byte-untouched.
+      // managed-block write - this test asserts CLAUDE.md is byte-untouched.
       env: { HOME: tmpHome, CLAUDE_PROJECT_DIR: projDir, MEM_NO_AUTO_ADOPT: '1' },
     });
 
@@ -1973,7 +2175,7 @@ describe('Suite 8: Session-start context delivery', () => {
     expect(run.stdout).toContain('Fix auth bug');
     expect(run.stdout).toContain('Fixed token refresh');
 
-    // CLAUDE.md is untouched — no context block, original content preserved byte-for-byte
+    // CLAUDE.md is untouched - no context block, original content preserved byte-for-byte
     const claudeMd = readFileSync(join(projDir, 'CLAUDE.md'), 'utf8');
     expect(claudeMd).toBe(original);
     expect(claudeMd).not.toContain('<qwen-mem-context>');
@@ -2073,7 +2275,7 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
   });
 
   it('skips migration when hidden dir already has DB', () => {
-    // Both dirs exist with DBs — new dir data must NOT be overwritten
+    // Both dirs exist with DBs - new dir data must NOT be overwritten
     const home = makeTmpDir();
     const oldDir = join(home, 'claude-mem-lite');
     const newDir = join(home, '.qwen-mem-lite');
@@ -2194,7 +2396,7 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
     const projDir = join(home, 'parent', 'hiddenproj');
     mkdirSync(projDir, { recursive: true });
 
-    // Session start — creates DB + session file
+    // Session start - creates DB + session file
     const { exitCode: e1 } = runHook('session-start', {
       env: { HOME: home, CLAUDE_PROJECT_DIR: projDir },
     });
@@ -2219,7 +2421,7 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
           old_string: 'old',
           new_string: 'new',
         },
-        'OK — edited file',
+        'OK - edited file',
       ),
       env: { HOME: home, CLAUDE_PROJECT_DIR: projDir },
     });
@@ -2249,7 +2451,7 @@ describe('Suite 10: Code Review Fix Validations', () => {
     // SOURCE_FILES now lives in source-files.mjs (shared between install.mjs and
     // hook-update.mjs). tests/source-files-sync.test.mjs does the full walker
     // check; this quicker spot-check asserts the shared list has not regressed
-    // for the two most critical entry points — statically AND dynamically imported.
+    // for the two most critical entry points - statically AND dynamically imported.
     const { SOURCE_FILES } = await import('../source-files.mjs');
 
     const entryFiles = ['server.mjs', 'hook.mjs'];
@@ -2264,8 +2466,8 @@ describe('Suite 10: Code Review Fix Validations', () => {
       // Static AND dynamic specifiers. Static-only silently narrowed this walk when P1-8
       // converted six of hook.mjs's imports to `await import()`: four modules and their
       // whole subgraphs left the traversal while the comment above still said it covered
-      // the two entry points. Not a coverage LOSS at the time — source-files-sync.test.mjs
-      // walks dynamic specifiers too — but a spot-check whose stated scope is wider than
+      // the two entry points. Not a coverage LOSS at the time - source-files-sync.test.mjs
+      // walks dynamic specifiers too - but a spot-check whose stated scope is wider than
       // its regex is the shape that goes unnoticed the next time.
       const imports = [
         ...[...src.matchAll(/from\s+'\.\/([^']+\.mjs)'/g)].map((m) => m[1]),
@@ -2299,7 +2501,7 @@ describe('Suite 10: Code Review Fix Validations', () => {
     initSchema(db);
     db.close();
 
-    // New dir already has a .db file (user data — must NOT be deleted)
+    // New dir already has a .db file (user data - must NOT be deleted)
     mkdirSync(newDir, { recursive: true });
     writeFileSync(join(newDir, 'some-data.db'), 'important data');
 
@@ -2310,7 +2512,7 @@ describe('Suite 10: Code Review Fix Validations', () => {
     });
     expect(exitCode).toBe(0);
 
-    // Both dirs should still exist — migration should NOT have deleted newDir
+    // Both dirs should still exist - migration should NOT have deleted newDir
     expect(existsSync(newDir)).toBe(true);
     expect(existsSync(join(newDir, 'some-data.db'))).toBe(true);
     // Old dir should still exist (migration couldn't proceed)
@@ -2326,11 +2528,11 @@ describe('Suite 10: Code Review Fix Validations', () => {
 
 describe('Suite 11: first-run auto-adopt', () => {
   function encodedMemdir(home, cwd) {
-    // Mirrors memdir.mjs::encodeProjectPath — all non-alphanumerics → '-'
+    // Mirrors memdir.mjs::encodeProjectPath - all non-alphanumerics → '-'
     const encoded = String(cwd).replace(/[^a-zA-Z0-9]/g, '-');
     return join(home, '.claude', 'projects', encoded, 'memory');
   }
-  // Legacy memory-dir sentinel (pre-v3.13) — used only to assert migration removes it.
+  // Legacy memory-dir sentinel (pre-v3.13) - used only to assert migration removes it.
   function legacySentinelPresent(home, cwd) {
     const p = join(encodedMemdir(home, cwd), 'MEMORY.md');
     return existsSync(p) && readFileSync(p, 'utf8').includes('qwen-mem-lite:begin v1');
@@ -2341,7 +2543,7 @@ describe('Suite 11: first-run auto-adopt', () => {
     return existsSync(p) && readFileSync(p, 'utf8').includes('qwen-mem-lite:begin v1');
   }
 
-  it('CLAUDE_PLUGIN_ROOT + first run → adopts + writes marker — upstream steering: injects, no CLAUDE.md write', () => {
+  it('CLAUDE_PLUGIN_ROOT + first run → adopts + writes marker - upstream steering: injects, no CLAUDE.md write', () => {
     runHook('session-start', {
       env: {
         HOME: tmpHome,
@@ -2351,19 +2553,19 @@ describe('Suite 11: first-run auto-adopt', () => {
       },
     });
     expect(adopted(projectDir)).toBe(false);
-    // Marker key is inferProject() output — contains "testproj"
+    // Marker key is inferProject() output - contains "testproj"
     const runtimeDir = join(tmpHome, '.qwen-mem-lite', 'runtime');
     const markers = readdirSync(runtimeDir).filter((f) => f.startsWith('.auto-adopt-'));
     expect(markers.length).toBeGreaterThan(0);
   });
 
   // v2.82.1: npm/manual installs (no CLAUDE_PLUGIN_ROOT in hook env) MUST also
-  // auto-adopt. Pre-v2.82.1 this test asserted the opposite — and that
+  // auto-adopt. Pre-v2.82.1 this test asserted the opposite - and that
   // assertion was the cause of v2.33.0's auto-adopt firing zero times in
   // practice for every user installed via install.mjs (the common path).
   // Regression-locking the npm-mode case here is part of the #4948 promise to
   // catch this on the next install/upgrade.
-  it('no CLAUDE_PLUGIN_ROOT (npm/manual install) → DOES adopt — upstream steering: injects, no CLAUDE.md write', () => {
+  it('no CLAUDE_PLUGIN_ROOT (npm/manual install) → DOES adopt - upstream steering: injects, no CLAUDE.md write', () => {
     runHook('session-start', {
       env: { HOME: tmpHome, MEM_QUIET_HOOKS: undefined, MEM_NO_AUTO_ADOPT: undefined },
     });
@@ -2397,7 +2599,7 @@ describe('Suite 11: first-run auto-adopt', () => {
   // v2.82.0: MEM_QUIET_HOOKS no longer gates auto-adopt. It's a stdout
   // suppression knob, not a side-effect kill-switch (PostToolUse still
   // writes the DB under it). Auto-adopt should fire just the same.
-  it('CLAUDE_PLUGIN_ROOT + MEM_QUIET_HOOKS=1 → DOES adopt (quiet is stdout-only) — upstream steering: injects, no CLAUDE.md write', () => {
+  it('CLAUDE_PLUGIN_ROOT + MEM_QUIET_HOOKS=1 → DOES adopt (quiet is stdout-only) - upstream steering: injects, no CLAUDE.md write', () => {
     runHook('session-start', {
       env: {
         HOME: tmpHome,
@@ -2427,9 +2629,9 @@ describe('Suite 11: first-run auto-adopt', () => {
 
   // v3.13: the SessionStart sync is now IDEMPOTENT and ungated by the one-shot
   // marker (it is the migration vehicle). So removing the block by hand and
-  // re-running re-adopts — only `--disable` / MEM_NO_AUTO_ADOPT stops it. This
+  // re-running re-adopts - only `--disable` / MEM_NO_AUTO_ADOPT stops it. This
   // replaces the pre-v3.13 "marker present → skips" behavior.
-  it('block removed but marker present → next SessionStart RE-ADOPTS (sync is ungated) — upstream steering: injects, no CLAUDE.md write', () => {
+  it('block removed but marker present → next SessionStart RE-ADOPTS (sync is ungated) - upstream steering: injects, no CLAUDE.md write', () => {
     const env = {
       HOME: tmpHome,
       CLAUDE_PLUGIN_ROOT: '/tmp/fake-plugin-root',
@@ -2450,7 +2652,7 @@ describe('Suite 11: first-run auto-adopt', () => {
 
   // Full migration integration: a project carrying the legacy memory-dir
   // sentinel gets it stripped AND the CLAUDE.md block written on SessionStart.
-  it('legacy memory-dir sentinel is migrated to the CLAUDE.md block on SessionStart — upstream steering: injects, no CLAUDE.md write', () => {
+  it('legacy memory-dir sentinel is migrated to the CLAUDE.md block on SessionStart - upstream steering: injects, no CLAUDE.md write', () => {
     const memdir = encodedMemdir(tmpHome, projectDir);
     mkdirSync(memdir, { recursive: true });
     // seed a legacy v1 block + a state sidecar (so the migration proves authorship)
@@ -2551,7 +2753,7 @@ describe('Suite: G3 unpersisted-decision reminder (Stop → payload → next Ses
   // D#19 WIRING. lib/cite-back-hint.mjs has unit coverage for reading the gate* triple;
   // this is the half that proves somebody WRITES it. Without this the reader could be
   // perfect while trackCitationsAtStop never emits the keys and every payload silently
-  // falls back to the wide denominator — a fix that is proven and not connected.
+  // falls back to the wide denominator - a fix that is proven and not connected.
   it('Stop writes the hook-injected denominator beside the wide one', () => {
     runHook('session-start', { env: { HOME: tmpHome } });
     const attach = (command, stdout) => ({
@@ -2564,7 +2766,7 @@ describe('Suite: G3 unpersisted-decision reminder (Stop → payload → next Ses
         'node "/x/scripts/pre-tool-recall.js"',
         '  #101 [lesson] alpha\n  #102 [bugfix] beta\n  #103 [decision] gamma',
       ),
-      // The model cites one of them, plus a #904 that was never injected — which is
+      // The model cites one of them, plus a #904 that was never injected - which is
       // exactly the asymmetry the two denominators disagree about.
       {
         type: 'assistant',
@@ -2581,7 +2783,7 @@ describe('Suite: G3 unpersisted-decision reminder (Stop → payload → next Ses
     expect(payload.gateInjected, 'the gate denominator is the 3 hook-injected ids').toBe(3);
     expect(payload.gateRecalled, 'only #102 was both injected and cited').toBe(1);
     expect(payload.gateRatio).toBeCloseTo(1 / 3, 5);
-    // The wide triple must still be written — it answers a different question and the
+    // The wide triple must still be written - it answers a different question and the
     // gate falling back to it is the documented back-compat path.
     expect(typeof payload.injected).toBe('number');
     expect(typeof payload.ratio).toBe('number');
@@ -2592,7 +2794,7 @@ describe('Suite: G1+G2 enrich-save worker (spawned-env recursion guard)', () => 
   it('worker runs under QWEN_MEM_HOOK_RUNNING=1 (BG_EVENTS membership) and backfills', () => {
     // queueSaveEnrich spawns the worker with QWEN_MEM_HOOK_RUNNING=1 (every
     // background spawn does). hook.mjs's recursion guard exits ANY event not in
-    // BG_EVENTS under that env — the live probe caught enrich-save silently
+    // BG_EVENTS under that env - the live probe caught enrich-save silently
     // no-oping on exactly this line. This test runs the worker in the spawned
     // env; pre-fix it exits(0) before touching the row.
     runHook('session-start', { env: { HOME: tmpHome } });
@@ -2623,7 +2825,7 @@ describe('Suite: G1+G2 enrich-save worker (spawned-env recursion guard)', () => 
     expect(o.search_aliases).toContain('模拟别名');
     expect(o.optimized_at).toBeNull();
 
-    // G13: the worker's outcome must land in metrics — pre-fix handleEnrichSave
+    // G13: the worker's outcome must land in metrics - pre-fix handleEnrichSave
     // discarded executeSaveEnrich's reason and the jsonl had zero enrich rows.
     const enrichRows = readMetricRows(tmpHome).filter((r) => r.event === 'enrich_save');
     expect(enrichRows.length).toBe(1);
@@ -2635,10 +2837,10 @@ describe('Suite: G1+G2 enrich-save worker (spawned-env recursion guard)', () => 
 
 describe('Suite: D#60 concurrent-session decay idempotency (G10)', () => {
   it('two CC sessions sharing the memory session file both resolve the same obs', () => {
-    // The decay idempotency key was getSessionId() — a PROJECT-scoped file id
+    // The decay idempotency key was getSessionId() - a PROJECT-scoped file id
     // shared by concurrent same-project CC sessions. Session A resolving obs X
     // uncited stamped last_decided_session_id with the shared id, so session B's
-    // pass saw "already decided" and skipped — chronic undercount of
+    // pass saw "already decided" and skipped - chronic undercount of
     // decay_seen_count / uncited_streak / adoption denominators. The key must be
     // the CC session UUID from Stop stdin (distinct per session).
     runHook('session-start', { env: { HOME: tmpHome } });
@@ -2691,7 +2893,7 @@ describe('Suite: D#60 concurrent-session decay idempotency (G10)', () => {
       env: { HOME: tmpHome },
     });
     // Stop unlinks the session file; concurrent session B still holds the SAME
-    // memory session id — restore the file to reproduce the shared-key state.
+    // memory session id - restore the file to reproduce the shared-key state.
     writeFileSync(sessionFilePath, sessionFileRaw);
     runHook('stop', {
       stdin: JSON.stringify({ session_id: 'cc-session-B', transcript_path: mkTranscript('B') }),
@@ -2709,19 +2911,19 @@ describe('Suite: D#60 concurrent-session decay idempotency (G10)', () => {
   });
 });
 
-describe('Suite: R10-P1-1 — /clear handoff over the real host event sequence', () => {
+describe('Suite: R10-P1-1 - /clear handoff over the real host event sequence', () => {
   // Every other /clear test in this repo drives `session-start {source:'clear'}` WITHOUT a
   // preceding `stop`, and tests/handoff-simulation.test.mjs asserts on its own local
   // re-implementation of the SessionStart output rather than on the hook's. So the ONLY
-  // sequence a user can actually produce — Stop fires at the end of every assistant turn,
-  // then /clear — was untested, and the clear-handoff branch was unreachable in production:
+  // sequence a user can actually produce - Stop fires at the end of every assistant turn,
+  // then /clear - was untested, and the clear-handoff branch was unreachable in production:
   // the maintainer's live DB held 0 `clear` rows against 21 sessions.
   //
   // Host semantics, measured 2026-09-07 and not assumed: of 21 real transcripts under
   // ~/.claude/projects/<slug>/, 12 carry a `<command-name>/clear</command-name>` record,
   // and in 12/12 that record's timestamp precedes its OWN file's first record by ~0.1s
   // (delta -0.08…-0.19s). The command is issued in the old session and replayed into a NEW
-  // file under a NEW session id — i.e. the host ROTATES its session id across /clear.
+  // file under a NEW session id - i.e. the host ROTATES its session id across /clear.
   // The rotated arm below is therefore the production shape; the kept-id arm is the
   // counterfactual the audit asked for, and guards the prompt-scope fallback either way.
   const CC_A = 'cc-11111111-1111-4111-8111-111111111111';
@@ -2771,7 +2973,7 @@ describe('Suite: R10-P1-1 — /clear handoff over the real host event sequence',
   it('plain startup after a completed turn writes NO clear handoff', () => {
     // The counter-case that keeps the fix honest: making the branch reachable must not make
     // it fire on every session start. `source:'startup'` means the previous session ended
-    // normally — its per-turn `exit` handoff already carries continuity.
+    // normally - its per-turn `exit` handoff already carries continuity.
     const env = { HOME: tmpHome, QWEN_MEM_SKIP_SUMMARY: '1' };
     runHook('session-start', { stdin: JSON.stringify({ source: 'startup', session_id: CC_A }), env });
     runHook('user-prompt', { stdin: JSON.stringify({ prompt: PROMPT, session_id: CC_A }), env });
@@ -2804,7 +3006,7 @@ describe('Suite: R10-P1-1 — /clear handoff over the real host event sequence',
   });
 
   it('QWEN_MEM_LEGACY_STOP_UNLINK=1 restores the pre-v5.4.0 per-turn unlink', () => {
-    // The documented revert path for this release. It must actually revert — an escape
+    // The documented revert path for this release. It must actually revert - an escape
     // hatch nobody can observe is not an escape hatch, so this asserts the OLD symptom
     // comes back: a fresh mem session per turn, and no clear handoff.
     const env = { HOME: tmpHome, QWEN_MEM_SKIP_SUMMARY: '1', QWEN_MEM_LEGACY_STOP_UNLINK: '1' };

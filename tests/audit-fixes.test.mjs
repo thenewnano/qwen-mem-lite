@@ -224,7 +224,7 @@ describe('P0-1: CLI save --lesson persists lesson_learned', () => {
 
 // ─── P0-2..P2-7: MCP stdio tests (shared fixture) ───────────────────────────
 // Using stdio because the handlers are registered as inline arrow functions inside
-// server.mjs — not importable. Each test seeds a fresh DB under a mkdtempSync path.
+// server.mjs - not importable. Each test seeds a fresh DB under a mkdtempSync path.
 
 describe('MCP audit fixes (stdio)', () => {
   let tmp, proc;
@@ -328,7 +328,7 @@ describe('MCP audit fixes (stdio)', () => {
   });
 
   // P1-4: missing IDs surface in a trailing Note.
-  // Prefix included per #8127 refactor — bucket-aware missing hint (#N, P#N, S#N)
+  // Prefix included per #8127 refactor - bucket-aware missing hint (#N, P#N, S#N)
   // tells the caller which source returned nothing.
   it('P1-4: mem_get appends a Note for missing IDs (mirrors mem_delete)', async () => {
     await initialize(proc);
@@ -349,11 +349,11 @@ describe('MCP audit fixes (stdio)', () => {
   });
 
   // P2-6: empty query gets a distinct label so the caller knows results aren't BM25-ranked.
-  it('P2-6: mem_search with no query labels output as "no query — listing recent"', async () => {
+  it('P2-6: mem_search with no query labels output as "no query - listing recent"', async () => {
     await initialize(proc);
     const resp = await callTool('mem_search', { limit: 3 });
     const text = resp.result?.content?.[0]?.text || '';
-    expect(text).toMatch(/no query — listing recent/);
+    expect(text).toMatch(/no query - listing recent/);
   });
 
   it('P2-6: mem_search with a query preserves the `for "<query>"` label', async () => {
@@ -431,7 +431,7 @@ describe('P2-5: memTimelineSchema documents anchor/query precedence', () => {
 // ─── T2 audit fixes ──────────────────────────────────────────────────────────
 //
 //   T2-P0-A MCP  maintain purge_stale ran without a confirm gate and silently deleted rows
-//                — this is exactly how my audit wiped 421 pending-purge observations.
+//                - this is exactly how my audit wiped 421 pending-purge observations.
 //   T2-P0-B MCP  optimize schema was missing `scope` so MCP callers could not reach
 //                the wide re-enrich path that the CLI exposed as `--scope wide`.
 //   T2-P1-A MCP  maintain execute with `operations: []` silently ran only FTS optimize.
@@ -555,7 +555,7 @@ describe('MCP T2 audit fixes (stdio)', () => {
 
     const baks = readdirSync(tmp).filter((n) => n.includes('.pre-maintain-') && n.endsWith('.bak'));
     expect(baks.length).toBeGreaterThanOrEqual(1);
-    // Snapshot must be a usable copy taken BEFORE the delete — it still holds all 4
+    // Snapshot must be a usable copy taken BEFORE the delete - it still holds all 4
     // rows (3 purgeable + 1 live), proving it is a pre-image, not a post-delete copy.
     const snap = new Database(join(tmp, baks[0]), { readonly: true });
     const c = snap.prepare('SELECT COUNT(*) AS c FROM observations').get().c;
@@ -565,8 +565,8 @@ describe('MCP T2 audit fixes (stdio)', () => {
 
   // M-7 (audit 2026-08-14): the OLD unconfirmed path was an early return that skipped
   // EVERY requested op, while the CLI twin ran the non-destructive ones and previewed
-  // only the purge — same op list, different amount of work done, both "successful".
-  // FAILS IF: the early return is reintroduced — the response then carries only the
+  // only the purge - same op list, different amount of work done, both "successful".
+  // FAILS IF: the early return is reintroduced - the response then carries only the
   // preview, with no "Cleaned up"/"Decayed" lines.
   it('M-7: unconfirmed purge_stale previews the purge but still RUNS cleanup/decay (CLI parity)', async () => {
     await initialize(proc);
@@ -685,7 +685,7 @@ describe('T2 CLI fixes', () => {
   it('optimize --scope rejects unknown scope values', async () => {
     const output = await captureStdout(() => run(['optimize', '--scope', 'bogus']));
     expect(output).toMatch(/Invalid --scope/);
-    // Every accepted value must be named in the error — a scope missing from this
+    // Every accepted value must be named in the error - a scope missing from this
     // list is a scope users can't discover from the failure they actually hit.
     expect(output).toMatch(/narrow, wide, aliases, scopes/);
   });
@@ -742,7 +742,7 @@ describe('T2 CLI fixes', () => {
     // A negative --retain-days made retainCutoff a FUTURE timestamp → purged the
     // whole pending-purge backlog regardless of age. Invalid input must abort the
     // DELETE. fail() sets exitCode but does NOT throw, so the fix needs an explicit
-    // return — without it execution falls through to the purge with the bad value.
+    // return - without it execution falls through to the purge with the bad value.
     insertObs(testDb, {
       sessionId: 't2-mem',
       project: 'test--probe',
@@ -758,14 +758,14 @@ describe('T2 CLI fixes', () => {
     );
     expect(output).toContain('--retain-days must be an integer in [7, 365]');
     expect(output).not.toMatch(/Purged \d+ stale/);
-    // Row must survive — the invalid run never reached the DELETE.
+    // Row must survive - the invalid run never reached the DELETE.
     const row = testDb.prepare("SELECT id FROM observations WHERE title = 'CLI NEG RETAIN'").get();
     expect(row).toBeDefined();
   });
 
-  it('HIGH-1: decay,purge_stale runs purge BEFORE decay — a row marked THIS run is not deleted same-run', async () => {
+  it('HIGH-1: decay,purge_stale runs purge BEFORE decay - a row marked THIS run is not deleted same-run', async () => {
     // Pre-fix the CLI ran decay (which marks an old stale row pending-purge) BEFORE purge in
-    // one transaction, so the row was marked AND deleted in the same call — zero grace, and
+    // one transaction, so the row was marked AND deleted in the same call - zero grace, and
     // the pre-txn snapshot guard (counts only PRE-EXISTING pending rows) skipped the backup →
     // permanent loss of notable memories. Purge now runs first (matching the auto-maintain hook).
     insertObs(testDb, {
@@ -789,7 +789,7 @@ describe('T2 CLI fixes', () => {
     // D12: the first run HIDES it; it is queued only once it has stayed idle through the grace.
     expect(row.compressed_into).toBe(-1);
     // Age the hide past the grace (as a run a week later would find it), then: the next run
-    // queues it — and purge, running first, does not delete what it queues in the same run —
+    // queues it - and purge, running first, does not delete what it queues in the same run —
     expect(
       testDb
         .prepare("UPDATE observations SET hidden_at = ? WHERE title = 'MARKED THIS RUN'")
@@ -814,7 +814,7 @@ describe('T2 CLI fixes', () => {
     ).toBeUndefined();
   });
 
-  it('MED-2: invalid --retain-days rejects atomically — a cleanup hard-delete in the same command does NOT commit', async () => {
+  it('MED-2: invalid --retain-days rejects atomically - a cleanup hard-delete in the same command does NOT commit', async () => {
     // The retain-days range check used to live INSIDE db.transaction() with a bare `return`,
     // so cleanup/decay had already mutated and the transaction COMMITTED despite exit 1.
     insertObs(testDb, {
@@ -831,7 +831,7 @@ describe('T2 CLI fixes', () => {
       run(['maintain', 'execute', '--ops', 'cleanup,purge_stale', '--confirm', '--retain-days', '3']),
     );
     expect(output).toContain('--retain-days must be an integer in [7, 365]');
-    expect(output).not.toMatch(/Cleaned up \d+ broken/); // cleanup never ran — validated before the txn
+    expect(output).not.toMatch(/Cleaned up \d+ broken/); // cleanup never ran - validated before the txn
     const broken = testDb.prepare("SELECT id FROM observations WHERE title = '' AND narrative = ''").get();
     expect(broken).toBeDefined(); // the broken row survives (atomic reject)
   });
@@ -849,9 +849,9 @@ describe('T2 CLI fixes', () => {
 //            PIN REMOVED 2026-09 with the skill-registry subsystem itself
 //            (docs/audits/20260906-145304.md). The JSON-stdout contract it pinned is
 //            still enforced tree-wide by tests/hook-script-stdout-contract.test.mjs.
-//   T4-P2-B  handleStop inserted fast session_summaries without a dedup guard — Stop fired
+//   T4-P2-B  handleStop inserted fast session_summaries without a dedup guard - Stop fired
 //            twice produced a duplicate row. Fix: mirror handleSessionStart's `hasSummary` check.
-//   T4-P2-D  handleUserPrompt did UPDATE prompt_counter + SELECT as two statements — concurrent
+//   T4-P2-D  handleUserPrompt did UPDATE prompt_counter + SELECT as two statements - concurrent
 //            prompts could read a stale counter. Fix: UPDATE ... RETURNING prompt_counter.
 
 import { execFileSync } from 'child_process';
@@ -876,7 +876,7 @@ function initHomeDb(home) {
   return { db, dbPath };
 }
 
-// `event` may be a string or [event, ...argv] — `auto-maintain` takes the project scope
+// `event` may be a string or [event, ...argv] - `auto-maintain` takes the project scope
 // as argv[3] since the compress-marking passes moved off SessionStart (P2-11).
 function runHookCmd(event, { home, stdin = '', cwd = home }) {
   try {
@@ -920,7 +920,7 @@ describe('T4-P1-A: auto-maintain 7-day retention (hook.mjs)', () => {
     projDir = join(tmpHome, 'workspace', 't4');
     mkdirSync(projDir, { recursive: true });
     // Move the project dir up so that `inferProject()` (basename + parent) maps to "audit--t4".
-    // inferProject: parent=workspace, base=t4 → "workspace--t4" — not what we want.
+    // inferProject: parent=workspace, base=t4 → "workspace--t4" - not what we want.
     // To get "audit--t4" we need parent=audit, base=t4.
     projDir = join(tmpHome, 'audit', 't4');
     mkdirSync(projDir, { recursive: true });
@@ -1092,7 +1092,7 @@ describe('Fuzzy auto-dedup (hook auto-maintain)', () => {
       VALUES ('fuzzy-mem', 'audit--t4', '', 'change', ?, '', '', '', '', '[]', '[]', 1, NULL, 0, ?, ?)
     `);
     // Two near-duplicates with reordered tokens (Jaccard = 1.0).
-    // Ages must stay under 7 days — the SessionStart "noise-compress" pass
+    // Ages must stay under 7 days - the SessionStart "noise-compress" pass
     // (line 658+) hides any 'Modified %' title older than 7d before fuzzy
     // dedup runs, so the realistic catch window is 0–7d.
     insertObsRaw.run(
@@ -1105,7 +1105,7 @@ describe('Fuzzy auto-dedup (hook auto-maintain)', () => {
       new Date(now - 3 * DAY_MS).toISOString(),
       now - 3 * DAY_MS,
     );
-    // Control row — different content, must survive untouched
+    // Control row - different content, must survive untouched
     insertObsRaw.run('Modified hook.mjs', new Date(now - 4 * DAY_MS).toISOString(), now - 4 * DAY_MS);
     db.close();
 
@@ -1136,7 +1136,7 @@ describe('Fuzzy auto-dedup (hook auto-maintain)', () => {
 
   // E2E round 2026-09-29: the scan never selected `project` and the pure core never
   // compared it, so two checkouts of one repo (a worktree) saving the same observation had the
-  // OLDER project's row tombstoned — `recent` there read "No recent observations". The exact
+  // OLDER project's row tombstoned - `recent` there read "No recent observations". The exact
   // channel already joins on project; CLAUDE.md: cross-project ops must compare both rows'
   // projects first.
   it('never supersedes a row because ANOTHER project holds a near-copy', () => {
@@ -1242,7 +1242,7 @@ describe('T4-P2-B: handleStop fast summary dedup', () => {
   afterEach(() => {
     // D#2. Still 1 dir per run, and that is the designed outcome: removal SUCCEEDS, then
     // a detached worker of the handleStop subprocess recreates `.qwen-mem-lite/` and
-    // `.claude/` under the HOME it was handed — this now-deleted path. `audit/t4` never
+    // `.claude/` under the HOME it was handed - this now-deleted path. `audit/t4` never
     // comes back, which is how the shape is identified. lib/tmp-fixture-sweep.mjs`s `mem-` prefix (:24) + its 1h age gate (:51)
     // absorbs that class at the next run past its 1h age gate. The shared helper is used
     // anyway so a real removal failure is REPORTED, not swallowed as it was before.
@@ -1367,7 +1367,7 @@ describe('handleUserPrompt: secret scrub runs BEFORE the 10k prompt slice', () =
 
     // 9974-char pad lands the AWS key value head at ~char 9997, so slice(0,10000)
     // cuts it to a 3-char head ('AKI'). scrubSecrets's assignment regex needs a
-    // >=6-char value, so a post-slice scrub would miss the head — pre-fix the
+    // >=6-char value, so a post-slice scrub would miss the head - pre-fix the
     // partial secret persisted into prompt_text. Scrubbing the full text first fixes it.
     const pad = 'x'.repeat(9974);
     const prompt = `${pad} AWS_SECRET_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE done`;
@@ -1504,7 +1504,7 @@ describe('MCP T3 audit fixes (stdio)', () => {
     db.pragma('foreign_keys = OFF');
     initSchema(db);
     insertSession(db, { id: 't3-sess', project: 'audit--t3', memoryId: 't3-mem' });
-    // Seed 2 observations — one with branch, access_count, and a lesson to verify export completeness.
+    // Seed 2 observations - one with branch, access_count, and a lesson to verify export completeness.
     insertObs(db, {
       sessionId: 't3-mem',
       project: 'audit--t3',
@@ -1592,7 +1592,7 @@ describe('MCP T3 audit fixes (stdio)', () => {
   // T3-P2-B: cap message must not fire when the result equals the explicit limit but no more rows exist.
   it('T3-P2-B: mem_export with limit == total does NOT claim "capped"', async () => {
     await initialize(proc);
-    // The seeded DB has exactly 2 rows for audit--t3 — request limit=2 (equals total).
+    // The seeded DB has exactly 2 rows for audit--t3 - request limit=2 (equals total).
     const resp = await callTool('mem_export', { project: 'audit--t3', limit: 2 });
     const text = resp.result?.content?.[0]?.text || '';
     expect(text).toMatch(/Exported 2 observations/);
@@ -1765,7 +1765,7 @@ describe('T-anchor-prefix: mem_timeline prefix anchor parity (stdio)', () => {
 //
 // Pre-v2.56 auto-maintain (hook.mjs:711-735) and cmdMaintain decay (mem-cli.mjs:1568+)
 // only checked access_count=0 when deciding whether to decay imp or mark
-// pending-purge. injection_count is a SEPARATE counter — bumped by
+// pending-purge. injection_count is a SEPARATE counter - bumped by
 // hook-memory.mjs when the obs is auto-injected into Claude's context. An obs
 // auto-injected 8x by the hook is contextually proven valuable (Claude saw it
 // during a search-relevant prompt) even if the user never explicitly fetched
@@ -1827,7 +1827,7 @@ describe('v2.56.0 #4: injection_count protects from auto-maintain decay/mark-idl
     });
     // P2-11: the compress-marking passes moved off the SessionStart transaction onto the
     // 24h auto-maintain cadence, so the marking that used to happen inside the call above
-    // is now driven explicitly — the same shape MED-4 already established here.
+    // is now driven explicitly - the same shape MED-4 already established here.
     runHookCmd(['auto-maintain', 'audit--t4'], { home: tmpHome, cwd: projDir });
 
     const db2 = new Database(dbPath, { readonly: true });
@@ -1837,13 +1837,13 @@ describe('v2.56.0 #4: injection_count protects from auto-maintain decay/mark-idl
         .all();
       const byTitle = Object.fromEntries(rows.map((r) => [r.title, r]));
 
-      // A and C: must NOT be compressed/marked — injection_count > 0 protects
+      // A and C: must NOT be compressed/marked - injection_count > 0 protects
       expect(byTitle['A: injected x8 (must survive)'].compressed_into).toBeNull();
       expect(byTitle['C: injected x1 (must survive)'].compressed_into).toBeNull();
       // B: gets compressed (auto-compress at hook.mjs:642 catches it first with
       // COMPRESSED_AUTO=-1 since age>30d + imp=1 + injection=0; if not, the
       // auto-maintain mark-idle would catch it with PENDING_PURGE=-2). Either
-      // marker is the "removed from active corpus" signal — assert the row is
+      // marker is the "removed from active corpus" signal - assert the row is
       // no longer null, not the specific marker, since order between the two
       // gates is implementation detail.
       expect(byTitle['B: never injected (must be marked)'].compressed_into).not.toBeNull();
