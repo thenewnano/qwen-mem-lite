@@ -2,6 +2,42 @@
 
 All notable changes to qwen-mem-lite are documented in this file.
 
+## v7.2.0 - synced with upstream through v6.25.3
+
+The fork now carries everything upstream shipped between v6.21.0 and v6.25.3 (154 commits),
+merged in one pass. It is rebranded throughout (`qwen-mem-lite`, `QWEN_MEM_*`, the
+`~/.qwen-mem-lite/` store) and still runs on both hosts from one tree.
+
+What came in, by upstream's own labels:
+
+- **Auto-adopt stops writing into fresh projects** (D#212 rework) - a project that never
+  carried the steering block gets a managed block in `CLAUDE.local.md` inside a git work tree
+  (kept out of commits); where that cannot be written the text is injected per session; where
+  a new `CLAUDE.md` would switch off an `AGENTS.md` nothing is written, and
+  `QWEN_MEM_RULES_STEERING=1` redirects the block to `.claude/rules/qwen-mem-lite.md`. An
+  existing block keeps syncing in `CLAUDE.md` + `QWEN.md`; the import and sync paths handle a
+  neighbouring `AGENTS.md` and fail safe on ENOENT.
+- **Gateway support on the direct API leg** - `ANTHROPIC_BASE_URL` (no `/v1` suffix) plus
+  `ANTHROPIC_DEFAULT_{HAIKU,SONNET}_MODEL`, scoped to a configured gateway so the
+  Bedrock/Vertex aliases no longer leak to `api.anthropic.com`; plain-http loopback and
+  redirect guards; `doctor` probes the gateway and warns about a `/v1` suffix (D#250, D#253,
+  D#257, D#259, D#263, D#307).
+- **`CLAUDE_CONFIG_DIR` is followed everywhere** (installer, updates, hooks - D#269, D#284,
+  D#287, D#296, D#297), and npm / `npx` installs no longer pull the development toolchain
+  (298 packages / 541 MB -> 96 / 57 MB).
+- **Installer and update durability** - the install swap barrier, journal, replay and residue
+  classifier (D#223, D#289, D#292, D#293, R10-P2-12); update rollback and lock honesty fixes
+  (D#251, D#255, D#266, D#307); the worker guards for a vanished data directory (D#265);
+  better-sqlite3 13 self-heals after a Node upgrade.
+- **Recall and store** - recall framing defaults back to `legacy` (D#104, D#111); SQLite
+  planner statistics keep large stores from timing out (#41); opt-in MCP search telemetry
+  (`QWEN_MEM_SEARCH_TELEMETRY=1`) adds `mem_search_feedback` (#40).
+- **Release tooling** - npm-shrinkwrap is generated at release time so registry installs get
+  the locked production tree; the benchmark baseline was recaptured (2026-10-07).
+
+No schema change, no data move and no configuration change. The port's decisions and the
+fork's own deviations are recorded in `docs/upstream-ports/2026-10-13-v6.25.3-sync.md`.
+
 ## v7.1.1 - production-dependency audit fix
 
 Patches two moderate advisories in transitive production dependencies (`fast-uri`, `ip-address`)
