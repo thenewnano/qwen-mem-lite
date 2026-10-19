@@ -2,6 +2,25 @@
 
 All notable changes to qwen-mem-lite are documented in this file.
 
+## v7.2.1 - the OpenAI-compatible leg can address GPT-6 models
+
+The background-LLM transport now sends a request shape current OpenAI GPT models accept.
+Before this, pointing `OPENAI_MODEL` at any GPT-6 model (or the GPT-5 / o-series) returned
+HTTP 400 on every call and silently fell back to the `claude` CLI.
+
+- **`max_completion_tokens` for GPT models** - a model id containing `gpt` (case-insensitive
+  substring, so a namespaced id such as `openai/gpt-6-luna` matches too) sends
+  `max_completion_tokens` instead of `max_tokens`; every other model keeps `max_tokens`, so
+  local and third-party servers are unaffected. `OPENAI_MAX_TOKENS_PARAM` forces either.
+- **`reasoning_effort` defaults to `none`** - which is what keeps the deterministic
+  `temperature: 0` the JSON and dedup paths rely on. `OPENAI_REASONING_EFFORT` opts into
+  another effort (`low`/`medium`/`high`/`xhigh`/`max`), or `off`/`default` omits the field
+  for a backend that rejects it. `gpt-6-astra` and `gpt-6.1-sol` reject `none` and cannot
+  serve the deterministic extraction path.
+- **Docs** - both variables are documented in the README environment table.
+
+No schema change, no data move and no configuration change.
+
 ## v7.2.0 - synced with upstream through v6.25.3
 
 The fork now carries everything upstream shipped between v6.21.0 and v6.25.3 (154 commits),
