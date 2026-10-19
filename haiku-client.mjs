@@ -1066,6 +1066,43 @@ function openAICompatTarget(mode, tier) {
   };
 }
 
+// Current OpenAI GPT models on Chat Completions (the GPT-6 line, GPT-5, o-series)
+// moved the output-token cap to `max_completion_tokens` and reject `max_tokens`,
+// and only honour `temperature` when reasoning is off. Substring match, not
+// prefix: the family id is often namespaced (OpenRouter's `openai/gpt-6-luna`).
+function isGptFamily(model) {
+  return /gpt/i.test(model || '');
+}
+
+/**
+ * Token-count parameter name for a model. OPENAI_MAX_TOKENS_PARAM forces one
+ * (`max_tokens` | `max_completion_tokens`) when a backend needs to override the
+ * heuristic; otherwise GPT-family models get `max_completion_tokens` and every
+ * other model keeps `max_tokens` (local/third-party servers that never moved).
+ * @param {string} model
+ * @returns {'max_tokens'|'max_completion_tokens'}
+ */
+export function resolveMaxTokensParam(model) {
+  const override = (process.env.OPENAI_MAX_TOKENS_PARAM || '').trim();
+  if (override === 'max_tokens' || override === 'max_completion_tokens') return override;
+  return isGptFamily(model) ? 'max_completion_tokens' : 'max_tokens';
+}
+
+/**
+ * `reasoning_effort` value to send, or null to omit the field. Defaults to
+ * `none`: the background calls need deterministic output, and `temperature: 0`
+ * (DEFAULT_LLM_TEMPERATURE) is only honoured while reasoning is off. Opt into a
+ * different effort (low|medium|high|xhigh|max) with OPENAI_REASONING_EFFORT, or
+ * set it to `off`/`default` to omit the field entirely for a backend that
+ * rejects it.
+ * @returns {string|null}
+ */
+export function resolveReasoningEffort() {
+  const v = (process.env.OPENAI_REASONING_EFFORT || '').trim().toLowerCase();
+  if (v === 'off' || v === 'default') return null;
+  return v || 'none';
+}
+
 async function callOpenAICompatAPI(
   prompt,
   tier,
@@ -1090,7 +1127,11 @@ async function callOpenAICompatAPI(
 
     const reqHeaders = { 'Content-Type': 'application/json', ...headers };
     if (apiKey) reqHeaders.Authorization = `Bearer ${apiKey}`;
-    const reqBody = JSON.stringify({ model, max_tokens: maxTokens, temperature, messages });
+    const body = { model, temperature, messages };
+    body[resolveMaxTokensParam(model)] = maxTokens;
+    const effort = resolveReasoningEffort();
+    if (effort) body.reasoning_effort = effort;
+    const reqBody = JSON.stringify(body);
     // Native fetch ignores HTTP(S)_PROXY; when a proxy is configured, tunnel the
     // request through it - a direct fetch to the provider times out behind one.
     const proxy = httpConnectProxyFor(url);
