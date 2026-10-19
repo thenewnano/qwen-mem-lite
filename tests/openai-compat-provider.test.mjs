@@ -44,6 +44,8 @@ import {
   detectMode,
   detectModeFromEnv,
   resolveOpenAIModel,
+  resolveMaxTokensParam,
+  resolveReasoningEffort,
   callHaiku,
   _resetMode,
 } from '../haiku-client.mjs';
@@ -161,6 +163,8 @@ describe('callHaiku on the generic leg — request shape', () => {
       'OPENAI_MODEL',
       'OPENAI_MODEL_HAIKU',
       'OPENAI_MODEL_SONNET',
+      'OPENAI_MAX_TOKENS_PARAM',
+      'OPENAI_REASONING_EFFORT',
       'QWEN_MEM_LLM_PROVIDER',
     ]) {
       vi.stubEnv(v, '');
@@ -310,5 +314,125 @@ describe('callHaiku on the generic leg — request shape', () => {
     vi.mocked(execFileSync).mockReturnValue('cli answer');
 
     await expect(callHaiku('x')).resolves.toEqual({ text: 'cli answer' });
+  });
+
+  // ─── GPT-6 / reasoning-model request shape ─────────────────────────────────
+  //
+  // Current OpenAI GPT models reject `max_tokens` (they need
+  // `max_completion_tokens`) and only honour `temperature` when reasoning is
+  // off. The plugin needs a fixed temperature, so it defaults reasoning to
+  // `none` and can opt into an effort via env.
+
+  it('sends max_completion_tokens + reasoning_effort none for a GPT model, keeping temperature 0', async () => {
+    vi.stubEnv('OPENAI_API_KEY', 'sk-oai');
+    vi.stubEnv('OPENAI_MODEL', 'gpt-6-luna');
+    _resetMode();
+    const fetchMock = okFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await callHaiku('x');
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.max_completion_tokens).toBe(500);
+    expect(body.max_tokens).toBeUndefined();
+    expect(body.reasoning_effort).toBe('none');
+    expect(body.temperature).toBe(0);
+  });
+
+  it('detects gpt as a substring, not a prefix, for namespaced ids', async () => {
+    vi.stubEnv('OPENAI_BASE_URL', 'http://127.0.0.1:11434/v1');
+    vi.stubEnv('OPENAI_MODEL', 'openai/gpt-6-luna');
+    _resetMode();
+    const fetchMock = okFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await callHaiku('x');
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.max_completion_tokens).toBe(500);
+    expect(body.max_tokens).toBeUndefined();
+  });
+
+  it('keeps max_tokens for a non-GPT model, with reasoning_effort none by default', async () => {
+    vi.stubEnv('OPENAI_BASE_URL', 'http://127.0.0.1:11434/v1');
+    vi.stubEnv('OPENAI_MODEL', 'llama3.2');
+    _resetMode();
+    const fetchMock = okFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await callHaiku('x');
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.max_tokens).toBe(500);
+    expect(body.max_completion_tokens).toBeUndefined();
+    expect(body.reasoning_effort).toBe('none');
+  });
+
+  it('OPENAI_REASONING_EFFORT opts into another effort', async () => {
+    vi.stubEnv('OPENAI_API_KEY', 'sk-oai');
+    vi.stubEnv('OPENAI_MODEL', 'gpt-6-luna');
+    vi.stubEnv('OPENAI_REASONING_EFFORT', 'low');
+    _resetMode();
+    const fetchMock = okFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await callHaiku('x');
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).reasoning_effort).toBe('low');
+  });
+
+  it('OPENAI_REASONING_EFFORT=off omits the field for a backend that rejects it', async () => {
+    vi.stubEnv('OPENAI_BASE_URL', 'http://127.0.0.1:11434/v1');
+    vi.stubEnv('OPENAI_MODEL', 'llama3.2');
+    vi.stubEnv('OPENAI_REASONING_EFFORT', 'off');
+    _resetMode();
+    const fetchMock = okFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await callHaiku('x');
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).reasoning_effort).toBeUndefined();
+  });
+
+  it('OPENAI_MAX_TOKENS_PARAM forces the token parameter regardless of the model name', async () => {
+    vi.stubEnv('OPENAI_API_KEY', 'sk-oai');
+    vi.stubEnv('OPENAI_MODEL', 'gpt-6-luna');
+    vi.stubEnv('OPENAI_MAX_TOKENS_PARAM', 'max_tokens');
+    _resetMode();
+    const fetchMock = okFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await callHaiku('x');
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.max_tokens).toBe(500);
+    expect(body.max_completion_tokens).toBeUndefined();
+  });
+});
+
+describe('resolveMaxTokensParam / resolveReasoningEffort', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('resolves the token param by gpt substrings and env override', () => {
+    expect(resolveMaxTokensParam('gpt-6-luna')).toBe('max_completion_tokens');
+    expect(resolveMaxTokensParam('anthropic/claude-haiku-4.5')).toBe('max_tokens');
+    vi.stubEnv('OPENAI_MAX_TOKENS_PARAM', 'max_tokens');
+    expect(resolveMaxTokensParam('gpt-6-luna')).toBe('max_tokens');
+    vi.stubEnv('OPENAI_MAX_TOKENS_PARAM', 'bogus');
+    expect(resolveMaxTokensParam('gpt-6-luna')).toBe('max_completion_tokens');
+  });
+
+  it('defaults reasoning to none and honours overrides and the off switch', () => {
+    expect(resolveReasoningEffort()).toBe('none');
+    vi.stubEnv('OPENAI_REASONING_EFFORT', 'high');
+    expect(resolveReasoningEffort()).toBe('high');
+    vi.stubEnv('OPENAI_REASONING_EFFORT', 'off');
+    expect(resolveReasoningEffort()).toBeNull();
+    vi.stubEnv('OPENAI_REASONING_EFFORT', 'default');
+    expect(resolveReasoningEffort()).toBeNull();
+    vi.stubEnv('OPENAI_REASONING_EFFORT', '');
+    expect(resolveReasoningEffort()).toBe('none');
   });
 });
