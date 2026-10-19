@@ -141,7 +141,8 @@ imports can be deleted with a green suite — that has happened here (D#190).
 - **Releases are maintainer-only.** A version bump must touch five files together
   (`package.json`, `package-lock.json`, `plugin.json`, `marketplace.json`, and the
   Version line in `CLAUDE.md`), and pushing a `v*` tag runs the release workflow (signed GitHub release; npm publishing is gated off).
-  Please leave the version alone in a pull request.
+  Please leave the version alone in a pull request; the step-by-step runbook is
+  `RELEASING.md`.
 
 ## Reporting a bug
 
