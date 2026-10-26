@@ -110,6 +110,20 @@ describe('parseProposals — schema validation happens before anything reads the
   });
 });
 
+// E2E 2026-10-16 round 4 (data NEW-B): /verify was a seventh title writer, and an invisible
+// title passed its trim() check; a `replace` then wrote the change and reported a mismatch.
+describe('parseProposals refuses an invisible title', () => {
+  it('a title of format characters only is an error, before any write', () => {
+    for (const t of ['\u200b', '\u202e', '\u3164']) {
+      const { entries, errors } = parseProposals([
+        { id: 1, action: 'edit', verdict: 'STALE', set: { title: t }, evidence: 'x' },
+      ]);
+      expect(entries, JSON.stringify(t)).toEqual([]);
+      expect(errors.join('\n')).toMatch(/title must be a non-empty string/);
+    }
+  });
+});
+
 describe('planVerifyApply — every target is checked against the DB before a write', () => {
   let db;
   beforeEach(() => {
@@ -704,7 +718,7 @@ describe('re-review of dcc8f72 — the remaining gaps', () => {
   it('get names the cause of a /verify retirement instead of "auto-dedup or merge"', async () => {
     const { supersededNotice } = await import('../lib/get-core.mjs');
     const notice = (by) => supersededNotice({ superseded_at: 1, superseded_by: by, compressed_into: 0 });
-    expect(notice(VERIFY_RETIRED_MARKER)).toMatch(/\/verify/);
+    expect(notice(VERIFY_RETIRED_MARKER)).toMatch(/\/qwen-mem-lite:verify/);
     expect(notice('verify-undone')).toMatch(/undo/);
     expect(notice('auto-dedup')).toMatch(/auto-dedup or merge/);
   });
@@ -737,7 +751,9 @@ describe('pre-ship review of 9786874', () => {
             const w = (...a) => tx(...a);
             w.immediate = (...a) => {
               const r = tx.immediate(...a);
-              if (hook) {
+              // The outer apply's COMMIT, not a nested one: applyObsUpdate begins IMMEDIATE too
+              // (a savepoint inside the apply), and firing there wrote inside the apply.
+              if (hook && !t.inTransaction) {
                 const h = hook;
                 hook = null;
                 h();

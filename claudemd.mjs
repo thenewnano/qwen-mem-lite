@@ -137,6 +137,35 @@ function orphanSentinelCount(raw, slug) {
   });
   return total - paired;
 }
+/**
+ * The lines of `p` that open with a sentinel of this slug and that no well-formed block
+ * accounts for: a begin marker with text after it, a lost version tag, a missing partner. The
+ * block pattern cannot see them, so a write that trusts it adds a second block beside them
+ * (E2E 2026-10-16 round 2, B14). A sentinel inside a sentence is prose, not a marker (pre-ship
+ * review P2-3), and is not listed.
+ * @param {string} p absolute path of the instructions file
+ * @param {string} slug
+ * @returns {{line: number, text: string}[]} 1-based; empty for a missing or unreadable file
+ */
+export function straySentinelLines(p, slug) {
+  let raw;
+  try {
+    raw = readFileSync(p, 'utf8');
+  } catch {
+    return [];
+  }
+  const spans = [...raw.matchAll(blockRegexG(slug))].map((m) => [m.index, m.index + m[0].length]);
+  const opensLine = new RegExp(`^\\s*<!-- ${escapeRe(slug)}:(?:begin|end)\\b`);
+  const stray = [];
+  let offset = 0;
+  raw.split('\n').forEach((text, i) => {
+    const at = offset + text.indexOf('<!--');
+    if (opensLine.test(text) && !spans.some(([s, e]) => at >= s && at < e))
+      stray.push({ line: i + 1, text: text.trim() });
+    offset += text.length + 1;
+  });
+  return stray;
+}
 function blockRegex(slug) {
   return new RegExp(blockBody(escapeRe(slug)));
 }
@@ -180,6 +209,31 @@ export function holdsOnlyOwnLines(p, slug) {
   try {
     if (!existsSync(p)) return false;
     const rest = readFileSync(p, 'utf8').replace(blockRegexG(slug), '');
+    return rest.trim() === '' || isOwnImportsOnly(rest, slug);
+  } catch {
+    return false;
+  }
+}
+
+// Another plugin's managed block: the same sentinel shape under any slug (code-graph-mcp writes
+// `<!-- code-graph-mcp:begin v2 -->` … `<!-- code-graph-mcp:end -->`). The backreference pairs a
+// begin with its own slug's end, so an unpaired line of one slug never closes another's block.
+const ANY_BLOCK_RE_G =
+  /<!-- ([a-z0-9][a-z0-9._-]*):begin v\d+ -->\r?\n(?:(?!<!-- \1:(?:begin|end))[\s\S])*?\r?\n<!-- \1:end -->/g;
+
+/**
+ * Whether the instructions file at `p` holds no line a person wrote: this plugin's blocks and
+ * imports, and other plugins' managed blocks. For "did plugin text alone switch AGENTS.md off"
+ * (D#220), never for deleting the file — another plugin's block is not ours to remove, and
+ * holdsOnlyOwnLines answers that question. False for a missing file.
+ * @param {string} p absolute path
+ * @param {string} slug
+ * @returns {boolean}
+ */
+export function holdsOnlyPluginLines(p, slug) {
+  try {
+    if (!existsSync(p)) return false;
+    const rest = readFileSync(p, 'utf8').replace(blockRegexG(slug), '').replace(ANY_BLOCK_RE_G, '');
     return rest.trim() === '' || isOwnImportsOnly(rest, slug);
   } catch {
     return false;
@@ -329,24 +383,28 @@ function layoutNeedsRefresh(cwd, layout, { slug, version, block, doc }) {
 /**
  * Write (insert-or-replace) the managed block in CLAUDE.md and the detail doc
  * under .claude/, plus a state sidecar. Idempotent on the user-visible files:
- * re-running with identical inputs leaves CLAUDE.md and the detail doc byte-for-
- * byte unchanged (only the state sidecar's writtenAt updates).
+ * re-running with identical inputs leaves CLAUDE.md, the detail doc and the state
+ * sidecar byte-for-byte unchanged.
  *
  * CLAUDE.md is created if absent. Only our slug-scoped region is rewritten;
  * everything else in the file is preserved verbatim.
  *
- * @returns {{action: 'created'|'updated'|'unchanged'}} (block disposition)
+ * @returns {{action: 'created'|'updated'|'unchanged', docAction: 'created'|'updated'|'unchanged'}}
+ *   (block disposition, and the detail doc's)
  */
 export function writeManaged(cwd, args) {
   // Both layouts get the same block/doc text. The steering text is host-neutral apart from
   // its detail-doc pointer, which names the pair (adopt-content.mjs), so there is no
   // per-host variant to thread through here.
   let action = 'unchanged';
+  let docAction = 'unchanged';
   for (const layout of LAYOUTS) {
     const one = writeManagedIn(cwd, layout, args);
     if (one.action === 'created' || (one.action === 'updated' && action !== 'created')) action = one.action;
+    if (one.docAction === 'created' || (one.docAction === 'updated' && docAction !== 'created'))
+      docAction = one.docAction;
   }
-  return { action };
+  return { action, docAction };
 }
 
 function writeManagedIn(cwd, layout, { slug, version, block, doc }) {
@@ -388,19 +446,23 @@ function writeManagedIn(cwd, layout, { slug, version, block, doc }) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const existingDoc = existsSync(dp) ? readFileSync(dp, 'utf8') : null;
   if (existingDoc !== docContent) atomicWrite(dp, docContent);
+  const docAction = existingDoc === null ? 'created' : existingDoc === docContent ? 'unchanged' : 'updated';
 
-  writeState(
-    cwd,
-    slug,
-    {
-      version,
-      blockHash: sha256(block),
-      docHash: sha256(doc),
-      writtenAt: new Date().toISOString(),
-    },
-    layout,
-  );
-  return { action };
+  // Written only when what it records changed: it is committed alongside the block in a team
+  // repo, and a fresh writtenAt on every re-run of adopt left a diff each time (E2E
+  // 2026-10-16). Nothing reads writtenAt.
+  const blockHash = sha256(block);
+  const docHash = sha256(doc);
+  let prev = null;
+  try {
+    prev = JSON.parse(readFileSync(stateFilePath(cwd, slug, layout), 'utf8'));
+  } catch {
+    /* absent or unreadable: write it */
+  }
+  if (!(prev?.version === version && prev?.blockHash === blockHash && prev?.docHash === docHash)) {
+    writeState(cwd, slug, { version, blockHash, docHash, writtenAt: new Date().toISOString() }, layout);
+  }
+  return { action, docAction };
 }
 
 /**
@@ -564,7 +626,7 @@ export function hasLegacyMemdirSentinel(cwd, slug) {
 }
 
 // ─── Upstream generic API, re-applied on the fork's layout layer ─────────────
-// sdsrss/qwen-mem-lite v6.20 refactored the block codec to be path-based so a
+// thenewnano/qwen-mem-lite v6.20 refactored the block codec to be path-based so a
 // second instructions file could reuse it (CLAUDE.local.md steering). The fork
 // keeps its dual-layout writer (CLAUDE.md + QWEN.md); these are the path-based
 // entry points the upstream modules (lib/local-steering.mjs, lib/quiet-scope.mjs)

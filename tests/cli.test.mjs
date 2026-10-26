@@ -1466,7 +1466,8 @@ describe('CLI delete command', () => {
 
   it('handles invalid ID strings', async () => {
     const output = await captureStdout(() => run(['delete', 'abc']));
-    expect(output).toContain('No valid IDs');
+    // Names the token since E2E 2026-10-16 round 2 (was "No valid IDs provided").
+    expect(output).toContain('not an observation id: abc');
   });
 
   it('cleans related_ids references on delete', async () => {
@@ -2150,6 +2151,48 @@ describe('CLI maintain command', () => {
     expect(output).toContain('Usage');
   });
 
+  // D#461: /update asked the model to judge a Needs-review pair from two 40-char titles, and
+  // reading the rows with `get` counts as an access (it can lift importance 1 -> 2). The scan
+  // prints a line of each row under the pair, from a read that touches no counter.
+  it('scan shows each side of a Needs-review pair, and counts no access', async () => {
+    const add = (title, narrative, lessonLearned, importance) =>
+      Number(
+        insertObs(testDb, {
+          sessionId: 'mem-s1',
+          project: 'test--project',
+          type: 'bugfix',
+          title,
+          narrative,
+          lessonLearned,
+          importance,
+        }).lastInsertRowid,
+      );
+    const a = add(
+      'Redis pool exhaustion fixed by sizing the pool per worker',
+      'Workers shared one pool and ran it dry under load.',
+      'Size connection pools per worker process',
+      3,
+    );
+    const b = add(
+      'Redis pool exhaustion fixed by sizing the pool per process',
+      'A forked process inherited the parent pool and leaked sockets.',
+      null,
+      1,
+    );
+    const output = await captureStdout(() => run(['maintain', 'scan']));
+    const review = output.slice(output.indexOf('Needs review:'));
+    expect(output, 'premise: the pair is in the review band').toContain('Needs review:');
+    expect(review).toContain(`[${a}]`);
+    expect(review).toContain('Workers shared one pool');
+    expect(review).toContain('Size connection pools per worker');
+    expect(review).toContain('A forked process inherited');
+    // update.md step 5 says to keep the more important row of a pair; the line says which (D#497).
+    expect(review).toMatch(new RegExp(`#${a} bugfix · importance 3 · `));
+    expect(review).toMatch(new RegExp(`#${b} bugfix · importance 1 · `));
+    const counts = testDb.prepare('SELECT access_count AS n FROM observations WHERE id IN (?, ?)').all(a, b);
+    expect(counts.map((r) => r.n ?? 0)).toEqual([0, 0]);
+  });
+
   it('shows usage for invalid action', async () => {
     const output = await captureStdout(() => run(['maintain', 'invalid']));
     expect(output).toContain('Usage');
@@ -2370,6 +2413,42 @@ describe('CLI maintain command', () => {
     expect(output).toContain('Pinned-but-uncited (inj>=8, cited=0, above floor): 1');
   });
 
+  // D#449: a plugin install has no `qwen-mem-lite` on PATH, so the line the scan offers to
+  // paste has to name the CLI the way every other hint does.
+  it('scan prints the auto-merge command with a runnable CLI invocation', async () => {
+    const { CLI_INVOKE } = await import('../cli-path.mjs');
+    for (const importance of [2, 1]) {
+      insertObs(testDb, {
+        sessionId: 'mem-s1',
+        project: 'test--project',
+        type: 'discovery',
+        title: 'Same title written twice by a hook',
+        text: 'x',
+        importance,
+      });
+    }
+    const output = await captureStdout(() => run(['maintain', 'scan']));
+    expect(output).toContain(`Ready-to-use: ${CLI_INVOKE} maintain execute --ops dedup --merge-ids 1:2`);
+  });
+
+  // D#464: a scan over every project paired rows of two projects, which execute then skips
+  // ("different projects"), so the printed command held pairs it would not merge.
+  it('scan pairs duplicates within a project only', async () => {
+    for (const project of ['test--project', 'other--project']) {
+      insertObs(testDb, {
+        sessionId: 'mem-s1',
+        project,
+        type: 'discovery',
+        title: 'Same title written twice by a hook',
+        text: 'x',
+      });
+    }
+    const output = await captureStdout(() => run(['maintain', 'scan']));
+    expect(output).toContain('Total active: 2');
+    expect(output).not.toContain('--merge-ids 1:2');
+    expect(output).not.toMatch(/Needs review|Auto-mergeable/);
+  });
+
   it('execute runs dedup with --merge-ids', async () => {
     insertObs(testDb, {
       sessionId: 'mem-s1',
@@ -2427,6 +2506,14 @@ describe('CLI maintain command', () => {
     expect(output).toContain('purge_stale preview (no --confirm)');
     const row = testDb.prepare("SELECT id FROM observations WHERE title = 'Pending purge obs preview'").get();
     expect(row).toBeDefined();
+  });
+
+  // D#468: a preview of 0 rows invited a --confirm that deletes nothing.
+  it('a purge preview of 0 rows does not ask for --confirm', async () => {
+    const output = await captureStdout(() => run(['maintain', 'execute', '--ops', 'purge_stale']));
+    expect(output).toContain('Candidates (pending-purge, older than 30d): 0');
+    expect(output).toContain('Nothing to delete.');
+    expect(output).not.toContain('re-run with --confirm');
   });
 });
 
@@ -2917,7 +3004,42 @@ describe('CLI stats --quality command', () => {
     const output = await captureStdout(() => run(['stats', '--quality']));
     expect(output).toMatch(/Pending purge ≤ 10%.*currently 50\.0%/);
     expect(output).toContain('🔴');
-    expect(output).toContain('maintain execute --ops purge_stale --confirm');
+    // D#450 shape: the hint used to say `--confirm` straight away, deleting without the preview
+    // the user approves from, and named a bare `qwen-mem-lite` a plugin install lacks.
+    const { CLI_INVOKE } = await import('../cli-path.mjs');
+    // The command ends at a space, so it can be copied as printed.
+    expect(output).toContain(`preview: ${CLI_INVOKE} maintain execute --ops purge_stale (add --confirm`);
+    expect(output).not.toContain('purge_stale --confirm');
+  });
+
+  // D#467: the report counts one project, but `maintain` without --project purges every one, so
+  // following a hint printed for one project purged all of them.
+  it('the purge hint carries the --project the report was scoped to', async () => {
+    testDb.prepare("UPDATE observations SET compressed_into = 99 WHERE title = 'Modified auth.mjs'").run();
+    testDb.prepare("UPDATE observations SET compressed_into = -2 WHERE title = 'Modified server.mjs'").run();
+    const { CLI_INVOKE } = await import('../cli-path.mjs');
+    const scoped = await captureStdout(() => run(['stats', '--quality', '--project', 'test--project']));
+    expect(scoped).toContain(
+      `preview: ${CLI_INVOKE} maintain execute --ops purge_stale --project=test--project (add --confirm`,
+    );
+    const all = await captureStdout(() => run(['stats', '--quality']));
+    expect(all).toContain(`preview: ${CLI_INVOKE} maintain execute --ops purge_stale (add --confirm`);
+  });
+
+  // D#466: purge_stale never deletes an explicit save, so one queued for purge (by an earlier
+  // version) is not waiting for deletion and does not count toward the ratio.
+  it('the pending-purge ratio leaves out explicit saves', async () => {
+    insertSession(testDb, { id: 's-manual', project: 'test--project', memoryId: 'manual-x' });
+    insertObs(testDb, { sessionId: 'manual-x', project: 'test--project', title: 'An explicit save' });
+    testDb.prepare("UPDATE observations SET compressed_into = 99 WHERE title = 'Modified auth.mjs'").run();
+    testDb
+      .prepare(
+        "UPDATE observations SET compressed_into = -2 WHERE title IN ('Modified server.mjs', 'An explicit save')",
+      )
+      .run();
+    // 3 compressed; 1 of them waits for deletion → 33.3%, not 2/3.
+    const output = await captureStdout(() => run(['stats', '--quality']));
+    expect(output).toMatch(/Pending purge ≤ 10%.*currently 33\.3% \(1\/3\)/);
   });
 
   it('renders pending-purge watchdog with ✅ at low ratio', async () => {

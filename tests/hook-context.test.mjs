@@ -628,12 +628,12 @@ describe('cleanupClaudeMdLegacyBlock', () => {
 
   it('removes the legacy hint comment alongside the block', () => {
     const hint =
-      '<!-- claude-mem-lite: auto-updated context. To avoid git noise, add CLAUDE.md to .gitignore -->';
+      '<!-- qwen-mem-lite: auto-updated context. To avoid git noise, add CLAUDE.md to .gitignore -->';
     writeFileSync(testClaudeMd, `# Project\n\n${hint}\n<claude-mem-context>\nstale\n</claude-mem-context>\n`);
     cleanupClaudeMdLegacyBlock();
     const content = readFileSync(testClaudeMd, 'utf8');
     expect(content).toContain('# Project');
-    expect(content).not.toContain('claude-mem-lite: auto-updated');
+    expect(content).not.toContain('qwen-mem-lite: auto-updated');
     expect(content).not.toContain('<claude-mem-context>');
     expect(content).not.toContain('stale');
   });
@@ -707,7 +707,7 @@ describe('cleanupClaudeMdLegacyBlock', () => {
 
     // Even with no CLAUDE.md, we drop the marker — future SessionStarts skip
     // the fs call entirely. If the user later writes CLAUDE.md + re-adds the
-    // legacy block manually, `claude-mem-lite doctor --reset` (or manual
+    // legacy block manually, `qwen-mem-lite doctor --reset` (or manual
     // marker delete) is the recovery path.
     expect(existsSync(markerPath)).toBe(true);
 
@@ -1270,5 +1270,126 @@ describe('D#75: created_at_epoch ties break newest-id-first', () => {
     expect(out, 'premise: the Last Session block rendered').toMatch(/### Last Session/);
     expect(out).toContain('Request: newer tied request');
     expect(out).not.toContain('Request: older tied request');
+  });
+});
+
+// ─── Injection budget C4: the Recent table carries 5 rows ──────────────────────────────────
+//
+// On the frozen 52-session corpus (docs/audits/20261016-injection-budget-baseline.md) the
+// table cost 1.02 KB/session and its ids were cited 2 times in 498 (session, id) pairs. The
+// cap keeps the project's own picks first, newest first (here all rows are own, so the newest
+// five; the thin-project case is the describe below); the knapsack and its budget are untouched.
+// QWEN_MEM_STARTUP_RECENT_ROWS sets the cap, 0 hides the table.
+describe('buildSessionContextLines: Recent table row cap (injection budget C4)', () => {
+  let db;
+  const MINUTE = 60000; // minutes apart: the adaptive windows admit all eight
+  // Four types, two rows each: the knapsack keeps at most 3 rows of one type.
+  const TYPES = ['change', 'bugfix', 'decision', 'discovery'];
+  const saved = process.env.QWEN_MEM_STARTUP_RECENT_ROWS;
+  beforeEach(() => {
+    db = createTestDb();
+    insertSession(db, { id: 'sess-cap', project: 'test' });
+    for (let i = 0; i < 8; i++) {
+      insertObs(db, {
+        sessionId: 'sess-cap',
+        project: 'test',
+        title: `row${i} title`,
+        epochOffset: -i * MINUTE,
+        type: TYPES[i % 4],
+      });
+    }
+  });
+  afterEach(() => {
+    db.close();
+    if (saved === undefined) delete process.env.QWEN_MEM_STARTUP_RECENT_ROWS;
+    else process.env.QWEN_MEM_STARTUP_RECENT_ROWS = saved;
+  });
+  const tableRows = (out) => out.split('\n').filter((l) => l.startsWith('| #'));
+
+  it('premise: the budget picks all 8', () => {
+    expect(selectWithTokenBudget(db, 'test', 2000).observations).toHaveLength(8);
+  });
+
+  it('renders the 5 newest by default', () => {
+    delete process.env.QWEN_MEM_STARTUP_RECENT_ROWS;
+    const rows = tableRows(buildSessionContextLines(db, 'test'));
+    expect(rows).toHaveLength(5);
+    expect(rows.map((l) => l.match(/row(\d)/)[1])).toEqual(['0', '1', '2', '3', '4']);
+  });
+
+  it('QWEN_MEM_STARTUP_RECENT_ROWS raises the cap, and 0 hides the table', () => {
+    process.env.QWEN_MEM_STARTUP_RECENT_ROWS = '12';
+    expect(tableRows(buildSessionContextLines(db, 'test'))).toHaveLength(8);
+    process.env.QWEN_MEM_STARTUP_RECENT_ROWS = '0';
+    // The TABLE's heading only: `### Recent Activity` is a different section (the no-summary
+    // fallback), rendered or not by adoption state — matching it made this case pass only in an
+    // adopted cwd (pre-ship claims review).
+    expect(buildSessionContextLines(db, 'test')).not.toMatch(/### Recent \(/);
+    expect(tableRows(buildSessionContextLines(db, 'test'))).toEqual([]);
+  });
+});
+
+// Pre-ship defect review P2-1: on a thin project the table is topped up with other projects'
+// rows (withFallbackTopUp), and a newest-5 cut over that union evicted the project's OWN rows
+// (5 of 60 tables in the frozen corpus). The cap must keep the project's own rows first.
+describe('buildSessionContextLines: Recent cap keeps the project’s own rows first', () => {
+  let db;
+  const HOUR = 3600000;
+  const saved = process.env.QWEN_MEM_STARTUP_RECENT_ROWS;
+  beforeEach(() => {
+    delete process.env.QWEN_MEM_STARTUP_RECENT_ROWS;
+    db = createTestDb();
+    insertSession(db, { id: 'sess-own', project: 'test' });
+    insertSession(db, { id: 'sess-other', project: 'other--proj' });
+    insertObs(db, {
+      sessionId: 'sess-own',
+      project: 'test',
+      title: 'own row A',
+      epochOffset: -19 * HOUR,
+      importance: 2,
+      type: 'bugfix',
+    });
+    insertObs(db, {
+      sessionId: 'sess-own',
+      project: 'test',
+      title: 'own row B',
+      epochOffset: -20 * HOUR,
+      importance: 2,
+      type: 'decision',
+    });
+    for (let i = 1; i <= 5; i++) {
+      insertObs(db, {
+        sessionId: 'sess-other',
+        project: 'other--proj',
+        title: `foreign row ${i}`,
+        epochOffset: -i * HOUR,
+        importance: 2,
+        type: 'change',
+      });
+    }
+  });
+  afterEach(() => {
+    db.close();
+    if (saved === undefined) delete process.env.QWEN_MEM_STARTUP_RECENT_ROWS;
+    else process.env.QWEN_MEM_STARTUP_RECENT_ROWS = saved;
+  });
+  const rows = (out) => out.split('\n').filter((l) => l.startsWith('| #'));
+
+  it('premise: the uncapped table holds both own rows and more than 5 rows in all', () => {
+    process.env.QWEN_MEM_STARTUP_RECENT_ROWS = '100';
+    const all = rows(buildSessionContextLines(db, 'test'));
+    expect(all.length).toBeGreaterThan(5);
+    expect(all.filter((l) => l.includes('own row'))).toHaveLength(2);
+  });
+
+  it('the 5-row table keeps both own rows, topped up with the newest foreign ones, newest first', () => {
+    const shown = rows(buildSessionContextLines(db, 'test'));
+    expect(shown).toHaveLength(5);
+    expect(shown.filter((l) => l.includes('own row'))).toHaveLength(2);
+    expect(shown.filter((l) => l.includes('foreign row')).map((l) => l.match(/foreign row (\d)/)[1])).toEqual(
+      ['1', '2', '3'],
+    );
+    // display order stays chronological: the foreign rows (1–3 h old) above the own ones (19–20 h)
+    expect(shown.findIndex((l) => l.includes('own row'))).toBe(3);
   });
 });

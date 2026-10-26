@@ -68,6 +68,91 @@ export function cjkBigrams(text) {
   return [...new Set(tokens)].join(' ');
 }
 
+const HAN_CHAR = /[\u4e00-\u9fff\u3400-\u4dbf]/; // the range cjkBigrams segments
+// The widest unicode61 token: letters, numbers, private use, plus events_fts's '_-' tokenchars.
+const UNICODE61_TOKEN = /[\p{L}\p{N}\p{Co}_-]+/gu;
+// An ASCII identifier or number inside a token; '_' and '-' only between two alphanumerics.
+const ASCII_RUN = /[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?/g;
+
+/**
+ * The ASCII runs glued to CJK in `text` that no other token of `text` already carries:
+ * `修复了redis连接池泄漏` yields `redis`. unicode61 indexes that whole mixed run as ONE token and
+ * cjkBigrams only segments its CJK, so without these the row is unreachable by `redis`.
+ * Runs shorter than two characters are skipped (a lone `5` or `A` matches noise), and a run
+ * that also stands alone elsewhere in `text` is skipped because the index already holds it,
+ * which also makes appending the result idempotent.
+ *
+ * Exported though nothing in this release imports it: v6.28.x's schema.mjs does, and an update
+ * swaps this file before schema.mjs, so for that window (and after a killed swap, until a
+ * repair) the previous release's schema.mjs loads against it. Unexported, every entry point
+ * failed to load at 114 of 168 split points from v6.28.1 (scripts/swap-mixed-tree.mjs).
+ *
+ * @public
+ * @param {string} text
+ * @returns {string} space-separated runs, '' when there are none
+ */
+export function gluedAsciiRuns(text) {
+  if (!text || !HAN_CHAR.test(text)) return '';
+  const tokens = String(text).match(UNICODE61_TOKEN) || [];
+  const standalone = new Set(tokens.filter((t) => !HAN_CHAR.test(t)).map((t) => t.toLowerCase()));
+  const runs = new Map();
+  for (const tok of tokens) {
+    if (!HAN_CHAR.test(tok)) continue;
+    for (const run of tok.match(ASCII_RUN) || []) {
+      const key = run.toLowerCase();
+      if (run.length >= 2 && !standalone.has(key) && !runs.has(key)) runs.set(key, run);
+    }
+  }
+  return [...runs.values()].join(' ');
+}
+
+/**
+ * The terms a writer appends next to a row's indexed text so the index holds what the query
+ * side produces: the CJK segmentation (cjkBigrams) plus the ASCII runs glued to CJK
+ * (gluedAsciiRuns). Every writer that appended cjkBigrams appends this instead; '' for text
+ * with no CJK, so English rows are unchanged.
+ * @param {string} text
+ * @returns {string}
+ */
+export function cjkIndexTerms(text) {
+  return [cjkBigrams(text), gluedAsciiRuns(text)].filter(Boolean).join(' ');
+}
+
+/**
+ * The terms of cjkIndexTerms(text) that `text` does not already carry as a standalone token:
+ * what a row written by an older writer still needs appended to its indexed text. A re-run on
+ * the appended result returns '', so appending it is idempotent. Each distinct token is segmented
+ * once: a row's indexed `text` repeats its title and narrative, and a CJK run never spans two
+ * tokens, so the terms are the same and the work about half (423 -> 212 µs per row, 3000 rows of
+ * a synthetic 250,000-observation store, the same term set for 3000 of 3000; 2026-10-17).
+ * @param {string} text
+ * @returns {string} space-separated terms, '' when none is missing
+ */
+export function missingCjkIndexTerms(text) {
+  const distinct = [...new Set(String(text).match(UNICODE61_TOKEN) || [])];
+  const terms = cjkIndexTerms(distinct.join(' '));
+  if (!terms) return '';
+  const standalone = new Set(distinct.map((t) => t.toLowerCase()));
+  return terms
+    .split(' ')
+    .filter((t) => !standalone.has(t.toLowerCase()))
+    .join(' ');
+}
+
+/**
+ * The extra terms events_fts indexes for an event (its `search_terms` column): the index terms
+ * of title + body, i.e. what observations append to their indexed `text`. Without it an event
+ * matched a CJK query only when the query equalled a whole CJK run, because unicode61 stores a
+ * run as one token while the query side reduces CJK to words and bigrams. '' for an event with
+ * no CJK, so English events index nothing extra.
+ * @param {string|null} title
+ * @param {string|null} body
+ * @returns {string}
+ */
+export function eventSearchTerms(title, body) {
+  return cjkIndexTerms(`${title || ''} ${body || ''}`);
+}
+
 // ─── CJK Keyword Extraction ─────────────────────────────────────────────────
 
 // Extract known CJK words (from SYNONYM_MAP) out of unsegmented CJK text.

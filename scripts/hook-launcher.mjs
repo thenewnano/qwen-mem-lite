@@ -187,6 +187,37 @@ function swapInProgress() {
 
 if (swapInProgress()) process.exit(0);
 
+// The plugin switched off in Claude Code. The host does not fire a disabled plugin's own hooks,
+// but the direct settings.json hook set install.mjs writes keeps firing, and hook.mjs was the
+// only entry that checked: the recall scripts behind this launcher kept injecting memory on
+// every prompt and before every Read and Edit for a plugin the user had switched off (E2E
+// 2026-10-16). Same file, key and fail-open as lib/plugin-key.mjs isPluginExplicitlyDisabled
+// and hook.mjs pluginDisabledHere — inline per the pure-node charter above. The user, project
+// and local scopes are merged as the host merges them, highest last (lib/plugin-key.mjs
+// pluginSettingsScopes / isPluginDisabledInScopes): reading the user scope alone killed a
+// plugin a project enabled (E2E 2026-10-16 round 2).
+function pluginDisabled() {
+  const d = process.env.CLAUDE_CONFIG_DIR;
+  const configHome = d && isAbsolute(d) ? d : join(homedir(), '.claude');
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  let value;
+  for (const path of [
+    join(configHome, 'settings.json'),
+    join(projectDir, '.claude', 'settings.json'),
+    join(projectDir, '.claude', 'settings.local.json'),
+  ]) {
+    try {
+      const v = JSON.parse(readFileSync(path, 'utf8'))?.enabledPlugins?.['qwen-mem-lite@thenewnano'];
+      if (typeof v === 'boolean') value = v;
+    } catch {
+      /* missing or unparseable: sets nothing (fail open) */
+    }
+  }
+  return value === false;
+}
+
+if (pluginDisabled()) process.exit(0);
+
 async function runEntry({ bustCache = false } = {}) {
   // Mirror direct invocation: process.argv[1] is the entry, [2..] are its args.
   process.argv = [process.argv[0], entryAbs, ...rest];
@@ -528,19 +559,31 @@ if (IS_SESSION_START) {
   await trySyncDataDirFromCache();
 }
 
+// What runs once the entry is done. It runs from an 'exit' listener, not after `await
+// runEntry()`: hook.mjs ends with process.exit(0), so for the production session-start entry
+// nothing after the await ever ran — the marker-driven repair, the post-entry binding heal and
+// the post-retry clears were all dead, and a breakage recorded by a Read hook was never
+// repaired (E2E 2026-10-16 round 2, install B1). Everything it calls is synchronous, as an
+// exit listener requires; the repairs are detached spawns, created before the process ends.
+let afterEntry = null;
+if (IS_SESSION_START) process.on('exit', () => afterEntry?.());
+
 try {
-  await runEntry();
   // Our entry imported cleanly, but that is NOT the same as "the install is whole": this
   // launcher fronts five entries and the missing module may be on another one's chain. So
   // act on the recorded breakage instead of just clearing it - background repair if there is
   // one to do, clear either way. Gated to session-start so the hot path pays nothing.
   // (Was an unconditional clearBreakage(); A20260905-R5-Q2.)
-  if (IS_SESSION_START) healRecordedBreakage();
   // After the entry too: the fire that DISCOVERS the breakage is the one that
   // records it, so a pre-entry-only check would leave the whole session dead and
   // heal one session late.
-  if (IS_SESSION_START) healNativeBindingIfBroken();
+  afterEntry = () => {
+    healRecordedBreakage();
+    healNativeBindingIfBroken();
+  };
+  await runEntry();
 } catch (e) {
+  afterEntry = null;
   if (!isLocalModuleErr(e)) throw e;
   const reason = describeFailure(e);
   const healed = IS_SESSION_START ? await attemptHeal(reason) : deferHealToSessionStart(reason);
@@ -554,12 +597,15 @@ try {
     process.exit(0);
   }
   try {
-    await runEntry({ bustCache: true });
     // Fully healed: drop the cooldown so an UNRELATED later break can heal
     // immediately (#6/#9), and clear the breakage marker.
-    clearHealMarker();
-    clearBreakage();
+    afterEntry = () => {
+      clearHealMarker();
+      clearBreakage();
+    };
+    await runEntry({ bustCache: true });
   } catch (retryErr) {
+    afterEntry = null;
     recordBreakage(`retry-failed: ${retryErr.message}`);
     process.stderr.write(
       `[qwen-mem-lite] Hook still failing after self-heal: ${retryErr.message}\n` +

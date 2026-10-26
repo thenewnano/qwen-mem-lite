@@ -4,11 +4,13 @@ import { writeFileSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { createTestDb, insertSession } from './test-helpers.mjs';
-import { computeMinHash, parseJsonFromLLM } from '../utils.mjs';
+import { computeMinHash, parseJsonFromLLM, getCurrentBranch } from '../utils.mjs';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
-vi.mock('../hook-semaphore.mjs', () => ({
+vi.mock('../hook-semaphore.mjs', async (importOriginal) => ({
+  // The real budgets: handleLLMSummary derives its default flush wait from LLM_SEM_TIMEOUT.
+  ...(await importOriginal()),
   acquireLLMSlot: vi.fn(async () => true),
   releaseLLMSlot: vi.fn(),
 }));
@@ -38,6 +40,7 @@ import {
   unwrapObservationEnvelope,
   isLowSignalLesson,
   hasEnrichmentContent,
+  buildEpisodePrompt,
 } from '../hook-llm.mjs';
 import { splitEpisodeFiles } from '../utils.mjs';
 import { openDb, callLLM } from '../hook-shared.mjs';
@@ -317,6 +320,69 @@ describe('handleLLMEpisode', () => {
       } catch {}
     }
     vi.clearAllMocks();
+  });
+
+  // benchmark/haiku-model-ab.mjs measures models on buildEpisodePrompt's output as the
+  // shipped prompt, which it is only while the handler sends that same object.
+  describe('sends buildEpisodePrompt(episode)', () => {
+    const ONE = {
+      sessionId: 's',
+      project: 'p',
+      files: ['/w/a/parser.mjs'],
+      filesRead: [],
+      entries: [{ tool: 'Bash', desc: 'npx vitest run → 1 failed', isError: true, diag: ['TypeError: x'] }],
+    };
+    const MANY = {
+      sessionId: 's',
+      project: 'p',
+      files: ['/w/a/x.mjs', '/w/a/y.mjs'],
+      filesRead: [],
+      entries: [
+        { tool: 'Read', desc: 'x.mjs', files: ['/w/a/x.mjs'] },
+        { tool: 'Edit', desc: 'y.mjs: swap order', files: ['/w/a/y.mjs'], diag: ['// lock before read'] },
+        {
+          tool: 'Bash',
+          desc: 'npx vitest run → 1 failed',
+          isError: true,
+          diag: ['AssertionError: expected 1'],
+        },
+      ],
+    };
+    it.each([
+      ['one entry', ONE],
+      ['several entries', MANY],
+    ])('%s', async (_label, episode) => {
+      writeFileSync(tmpFile, JSON.stringify(episode));
+      await handleLLMEpisode();
+      expect(callLLM.mock.calls[0][0]).toEqual(buildEpisodePrompt(episode));
+      expect(callLLM.mock.calls[0][0].user).toContain('DIAGNOSIS (verbatim');
+    });
+
+    // The case above holds only the wiring: it compares the handler with buildEpisodePrompt
+    // itself, so `Error: yes` -> `YES` left every episode test green. The model A/B readings
+    // were taken on this exact text, so an edit to it must show up as a diff here (D#325);
+    // after a deliberate prompt change, refresh with `npx vitest run tests/hook-llm.test.mjs -u`.
+    it.each([
+      ['one entry', ONE, 'episode-prompt-one-entry.txt'],
+      [
+        'one entry, no error',
+        { ...ONE, entries: [{ ...ONE.entries[0], isError: false }] },
+        'episode-prompt-one-entry-ok.txt',
+      ],
+      // No DIAGNOSIS line at all: the prompt's other branch, which tells the model the lesson
+      // must be null.
+      [
+        'one entry, no diagnosis',
+        { ...ONE, entries: [{ ...ONE.entries[0], isError: false, diag: [] }] },
+        'episode-prompt-no-diagnosis.txt',
+      ],
+      ['several entries', MANY, 'episode-prompt-several-entries.txt'],
+    ])('the %s prompt text is pinned', async (_label, episode, file) => {
+      const { system, user } = buildEpisodePrompt(episode);
+      await expect(`=== system ===\n${system}\n=== user ===\n${user}\n`).toMatchFileSnapshot(
+        `./fixtures/${file}`,
+      );
+    });
   });
 
   // Sandbox usage evaluation 2026-09-29: the summarizer stored every file the episode
@@ -680,6 +746,42 @@ describe('handleLLMEpisode', () => {
     const obs = db.prepare(`SELECT importance FROM observations WHERE project = ?`).all('test-proj');
     expect(obs.length).toBe(1);
     expect(obs[0].importance).toBe(2); // rule 3 capped to 2; max(2, Haiku 1) = 2 (was 3 pre-fix)
+  });
+
+  it.each([
+    ['change', 'observations'],
+    ['bugfix', 'events'],
+  ])("D#414: the model's own 3 is stored as 2 (%s, in %s)", async (type, table) => {
+    // The episode prompt carries tool output, text whoever controls a file or a command's output
+    // wrote, and 3 is Key Context's top tier. D#376 capped re-enrich at 2; benign episodes do not
+    // need 3 either: 72 real sub-episodes from this machine's transcripts through the shipped
+    // prompt (claude -p haiku, 2026-10-17) scored 1 x42, 2 x30, 3 x0. A schema.mjs edit also makes
+    // the rule's own score 3, so neither side reaches it.
+    callLLM.mockReturnValueOnce(
+      JSON.stringify({
+        type,
+        title: 'Fixed the pool leak on the retry path',
+        narrative: 'the retry path never released the client; release in finally',
+        concepts: ['connection-pool'],
+        facts: [],
+        importance: 3,
+        lesson_learned: 'a column default change still needs a backfill plan for existing rows',
+      }),
+    );
+    const episode = {
+      sessionId: 'ep-sess',
+      project: 'test-proj',
+      files: ['schema.mjs'],
+      filesRead: [],
+      entries: [{ tool: 'Edit', desc: 'edit schema default', isError: false, files: ['schema.mjs'] }],
+    };
+    writeFileSync(tmpFile, JSON.stringify(episode));
+
+    await handleLLMEpisode();
+
+    const rows = db.prepare(`SELECT importance FROM ${table} WHERE project = ?`).all('test-proj');
+    expect(rows.length, `premise: the reply landed in ${table}`).toBe(1);
+    expect(rows[0].importance).toBe(2);
   });
 
   it('does not crash and cleans up tmp file when episode.files is missing', async () => {
@@ -2001,6 +2103,67 @@ describe('handleLLMEpisode', () => {
     expect(deleted).toBeUndefined();
     // The delete DB handle should have been closed
     expect(deleteDbProxy.close).toHaveBeenCalled();
+  });
+
+  // Pre-tag review 2026-10-16 P3-5: SessionStart hands flush files of every project to a worker
+  // that runs in ITS cwd, and the row took `git rev-parse` of that cwd, i.e. the recovering
+  // project's branch. The branch now comes from the flush file (stamped by the flushing hook).
+  describe("stores the branch its flush file names, not the worker cwd's", () => {
+    const changeReply = JSON.stringify({
+      type: 'change',
+      title: 'Guard undefined invoice lines before reduce',
+      narrative: 'Defaulted the lines array so the totals reduce never sees undefined.',
+      concepts: ['invoice'],
+      facts: [],
+      importance: 2,
+      lesson_learned: 'Default invoice lines to an empty array before reduce so totals never crash',
+    });
+    const flush = (extra) =>
+      writeFileSync(
+        tmpFile,
+        JSON.stringify({
+          sessionId: 'ep-sess',
+          project: 'other-project',
+          files: ['/w/other/invoice.js'],
+          filesRead: [],
+          entries: [{ tool: 'Edit', desc: 'invoice.js: guard undefined lines', isError: false }],
+          ...extra,
+        }),
+      );
+    const branchOfRow = () =>
+      db.prepare("SELECT branch FROM observations WHERE project = 'other-project'").all();
+
+    it('on a clean insert', async () => {
+      expect(getCurrentBranch(), 'premise: the worker cwd is on another branch').not.toBe('feat-a');
+      callLLM.mockReturnValue(changeReply);
+      flush({ branch: 'feat-a' });
+      await handleLLMEpisode();
+      expect(branchOfRow()).toEqual([{ branch: 'feat-a' }]);
+    });
+
+    it('when the pre-saved row is gone and the enrichment is saved fresh', async () => {
+      callLLM.mockReturnValue(changeReply);
+      flush({ branch: 'feat-a', savedId: 987654 });
+      await handleLLMEpisode();
+      expect(branchOfRow()).toEqual([{ branch: 'feat-a' }]);
+    });
+
+    it('as none when the work was outside a git work tree', async (ctx) => {
+      // Only says something where the worker cwd is on a branch; a detached checkout (a CI tag
+      // build) reads null either way.
+      if (getCurrentBranch() === null) ctx.skip();
+      callLLM.mockReturnValue(changeReply);
+      flush({ branch: null });
+      await handleLLMEpisode();
+      expect(branchOfRow()).toEqual([{ branch: null }]);
+    });
+
+    it('from the worker cwd for a file written before the stamp, as before', async () => {
+      callLLM.mockReturnValue(changeReply);
+      flush({});
+      await handleLLMEpisode();
+      expect(branchOfRow()).toEqual([{ branch: getCurrentBranch() }]);
+    });
   });
 });
 

@@ -54,6 +54,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { isFtsCorruptionError, FTS_CORRUPTION_REMEDY } from '../lib/db-unusable.mjs';
+import { shellWord } from '../cli-path.mjs';
 
 const REPO = dirname(fileURLToPath(new URL('../package.json', import.meta.url)));
 const CLI = join(REPO, 'cli.mjs');
@@ -146,6 +147,8 @@ describe('a damaged FTS index names its own lossless remedy at query time', () =
       expect(status, 'a damaged index must still be a failure').toBe(1);
       expect(stderr).toMatch(FTS_FAULT);
       expect(stderr, 'the user is told nothing about how to fix it').toMatch(/fts-check rebuild/);
+      // A plugin install puts no bare `qwen-mem-lite` on PATH (D#462; v6.30.0 pre-tag review).
+      expect(stderr).toContain(`${shellWord(CLI)} fts-check rebuild`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -229,6 +232,9 @@ describe('a damaged FTS index names its own lossless remedy at query time', () =
       const text = reply.result.content[0].text;
       expect(text).toMatch(FTS_FAULT);
       expect(text, 'the model is handed SQLite`s sentence and no next step').toMatch(/fts-check rebuild/);
+      // The bare `qwen-mem-lite` exists only after an optional `npm i -g` (the server's own
+      // instructions say so), so the MCP face names the CLI by its absolute path (E2E 2026-10-16).
+      expect(text).toContain(`node ${join(REPO, 'cli.mjs')} fts-check rebuild`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

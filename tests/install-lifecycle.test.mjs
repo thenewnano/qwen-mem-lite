@@ -516,7 +516,7 @@ describe('install lifecycle checks', () => {
       mkdirSync(projectDir, { recursive: true });
       mkdirSync(binDir, { recursive: true });
       mkdirSync(join(home, '.qwen-mem-lite'), { recursive: true });
-      // Real node_modules, so `install` has no npm work to do and the case stays fast.
+      // Real node_modules, so install's better-sqlite3 check finds a working binding.
       symlinkSync(resolve('node_modules'), join(home, '.qwen-mem-lite', 'node_modules'));
 
       const mcpPath = join(projectDir, '.mcp.json');
@@ -543,6 +543,13 @@ describe('install lifecycle checks', () => {
         ].join('\n'),
       );
       execFileSync('chmod', ['+x', fakeClaude]);
+      // D#439: install's dependency step runs `npm install` in the sandbox HOME, which reached
+      // the repo's own node_modules through the link above and, now and then, rebuilt
+      // better-sqlite3 with node-gyp and timed out fetching headers from nodejs.org. The
+      // dependencies are already in place, so the step has nothing to do here.
+      const fakeNpm = join(binDir, 'npm');
+      writeFileSync(fakeNpm, '#!/usr/bin/env bash\nexit 0\n');
+      execFileSync('chmod', ['+x', fakeNpm]);
 
       const output = execFileSync(process.execPath, [INSTALL_PATH, 'install'], {
         encoding: 'utf8',
@@ -925,6 +932,64 @@ describe('install lifecycle checks', () => {
       return spawnSync('bash', [SETUP_PATH], { encoding: 'utf8', env, cwd });
     }
 
+    // v6.30.1 delta review P3-4: for the default profile the fix named no config home, so a shell
+    // carrying another profile's CLAUDE_CONFIG_DIR cleaned that profile instead.
+    it("the default profile's fix command names its config home too", () => {
+      const home = profileHome();
+      try {
+        const cfg = join(home, '.claude');
+        mkdirSync(cfg, { recursive: true });
+        writeFileSync(join(cfg, 'settings.json'), legacyHooks);
+        const r = runSetup(home);
+        expect(r.status, r.stderr).toBe(0);
+        const root = join(cfg, 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', '6.24.0');
+        expect(r.stderr).toContain(`CLAUDE_CONFIG_DIR=${cfg} node ${root}/cli.mjs cleanup-hooks`);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    // D#513(2): the warning matched `.qwen-mem-lite/` as a substring, so a user's own hook kept
+    // there was listed, and the cleanup-hooks it names leaves that hook in place. It now asks the
+    // classifier cleanup-hooks uses.
+    it("a user's own hook under the data dir gets no residue warning", () => {
+      const home = profileHome();
+      try {
+        const cfg = join(home, '.claude');
+        mkdirSync(cfg, { recursive: true });
+        const own = (command) => ({ hooks: [{ type: 'command', command }] });
+        writeFileSync(
+          join(cfg, 'settings.json'),
+          JSON.stringify({
+            hooks: {
+              Stop: [own('bash ~/.qwen-mem-lite/my-backup.sh')],
+              SessionEnd: [own(`bash "${join(home, '.qwen-mem-lite', 'notify.sh')}"`)],
+            },
+          }),
+        );
+        const r = runSetup(home);
+        expect(r.status, r.stderr).toBe(0);
+        expect(r.stderr).not.toContain('Legacy direct-install hooks');
+        // Control: a stale hook of ours in the same file is still listed, and only its event.
+        writeFileSync(
+          join(cfg, 'settings.json'),
+          JSON.stringify({
+            hooks: {
+              Stop: [own('bash ~/.qwen-mem-lite/my-backup.sh')],
+              PreCompact: [own('node ~/.qwen-mem-lite/hook.mjs pre-compact')],
+            },
+          }),
+        );
+        for (const f of readdirSync(join(home, '.qwen-mem-lite', 'runtime')))
+          if (f.startsWith('.residue-warned')) rmSync(join(home, '.qwen-mem-lite', 'runtime', f));
+        const again = runSetup(home);
+        expect(again.stderr).toContain('Legacy direct-install hooks');
+        expect(again.stderr).toContain('Events with stale entries: PreCompact\n');
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
     it('a second profile gets its own MCP dedup and residue warning', () => {
       const home = profileHome();
       try {
@@ -948,6 +1013,13 @@ describe('install lifecycle checks', () => {
         expect(second.stderr, "the first profile's marker skipped this profile's warning").toContain(
           `Legacy direct-install hooks detected in ${join(cfg, 'settings.json')}`,
         );
+        // The fix keeps the plugin: cleanup-hooks, by path. `uninstall` removes the plugin too, and a
+        // plugin install puts no bare qwen-mem-lite on PATH (D#501(3)).
+        // And it names this profile's config home, which the user's shell may not carry (v6.30.1
+        // pre-tag defects review: run without it, cleanup-hooks cleaned ~/.claude).
+        const root = join(cfg, 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', '6.24.0');
+        expect(second.stderr).toContain(`CLAUDE_CONFIG_DIR=${cfg} node ${root}/cli.mjs cleanup-hooks`);
+        expect(second.stderr).not.toMatch(/\buninstall\b/);
 
         // Still one-shot per home: a second start of the same profile does neither again.
         writeFileSync(join(cfg, '.claude.json'), ours);

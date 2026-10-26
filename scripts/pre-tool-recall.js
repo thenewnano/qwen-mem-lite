@@ -29,13 +29,22 @@ import {
   toolEditPath,
 } from '../lib/file-edge-match.mjs';
 import { scrubFilePath } from '../lib/scrub-record.mjs';
-import { fileIntelFor } from '../lib/file-intel.mjs';
+import { fileIntelFor, fileIntelEnabled } from '../lib/file-intel.mjs';
 import { shouldWarnReread, buildRereadWarning, readFileMeta } from '../lib/reread-guard.mjs';
 import { recordMetric } from '../lib/metrics.mjs';
 import { presentIdents } from '../lib/lesson-idents.mjs';
 import { normalizeToolName } from '../lib/tool-names.mjs';
 import { neutralizeContextDelimiters } from '../format-utils.mjs';
 import { recallFramingLine } from '../lib/recall-framing.mjs';
+// Leaf (fs + path): the header and the full ACK directive once per thread (injection budget C1/C3).
+import {
+  ACK_DIRECTIVE,
+  ACK_DIRECTIVE_SHORT,
+  markRecallShown,
+  planRecallBlock,
+  readRecallShown,
+  recallShownPath,
+} from '../lib/recall-shown.mjs';
 // D#154: the one stdout writer. This script has THREE emit sites (Read→Edit ack,
 // repeated-read guard, lesson block) and they stay one document because each branch
 // process.exit()s before reaching the next.
@@ -158,8 +167,9 @@ const SALIENCE_BRIDGE = process.env.QWEN_MEM_SALIENCE === 'bridge';
 // would make readings before and after this change incomparable (pre-ship review P2-2).
 const VERDICT_DIRECTIVE =
   "apply each lesson to this edit or rule it out — state '#NN applied' or '#NN n/a — <reason>' in your next user-facing message.";
-const ACK_DIRECTIVE =
-  'apply each lesson to this edit or rule it out. If one changes the edit, add its bare tag (#NN) once at the end of the sentence describing that change; a lesson that did not apply needs no mention, and memory ids get no other mention in your reply.';
+// ACK_DIRECTIVE (the default) lives in lib/recall-shown.mjs with its short form: a thread gets the
+// full text once and the short one after (injection budget C3). Only the default arm shortens —
+// the other arms' text must stay the one their readings were taken with (see below).
 // v-bind salience forcing-function (#8771 audit: ack ≠ act). Instead of a cheap
 // '#NN applied / n/a' verdict, demand the model bind the lesson to the concrete
 // line it's editing and quote the satisfying edit line. Selected by
@@ -172,7 +182,7 @@ const BIND_DIRECTIVE =
 // on `bind` or `bridge`, whose per-lesson asks carry the same contradiction: both are arms
 // benchmark/efficacy-harness.mjs measures, and their text must stay the one their readings
 // were taken with.
-const VERDICT_OPT_OUT_DIRECTIVE = `${VERDICT_DIRECTIVE} QWEN_MEM_SALIENCE=verdict is set: this overrides the memory guidance in CLAUDE.md and .claude/plugin_claude_mem_lite.md that a lesson which did not apply needs no mention.`;
+const VERDICT_OPT_OUT_DIRECTIVE = `${VERDICT_DIRECTIVE} QWEN_MEM_SALIENCE=verdict is set: this overrides the memory guidance in CLAUDE.md and .claude/plugin_qwen_mem_lite.md that a lesson which did not apply needs no mention.`;
 const ACTIVE_DIRECTIVE = SALIENCE_BIND
   ? BIND_DIRECTIVE
   : process.env.QWEN_MEM_SALIENCE === 'verdict'
@@ -182,13 +192,20 @@ const ACTIVE_DIRECTIVE = SALIENCE_BIND
       : ACK_DIRECTIVE;
 const STALE_MS = 10 * 60 * 1000; // 10 minutes cleanup threshold for legacy file
 // Feature ① (file intelligence): on the first Read of a file each session, inject
-// its approximate token size + a one-line summary so the agent can decide to read
-// fully, slice, or grep. Read-only (Edit/Write already commit to the file). Default
-// ON; QWEN_MEM_FILE_INTEL=0 disables. Files below the token floor stay silent so
-// small reads carry no noise. Env names mirror schema.mjs QWEN_MEM_* convention (#8447).
-const FILE_INTEL_OFF = ['0', 'off', 'false', 'no'].includes(
-  String(process.env.QWEN_MEM_FILE_INTEL || '').toLowerCase(),
-);
+// its approximate token size + a one-line summary. Read-only (Edit/Write already commit
+// to the file). Files below the token floor stay silent. Env names mirror schema.mjs
+// QWEN_MEM_* convention (#8447).
+//
+// OPT-IN since the injection-budget change (docs/audits/20261016-injection-budget-baseline.md).
+// It was meant to let the agent "decide to read fully, slice, or grep", but PreToolUse
+// additionalContext is delivered next to the tool RESULT (Claude Code hooks reference, "Add
+// context for Claude"), so it can never change the call it rides on. On the frozen 52-session
+// corpus 89.9% of its 1,102 lines rode a call that was already a partial read (`sed -n`, grep,
+// Read with offset/limit), after a full Read the same file was sliced later in the turn LESS
+// often (34.9%, 22/63) than after a partial Bash read (69.1%), and no reply named a size (0/1,102) —
+// at 1.57 KB/session, plus the framing header of the 426 blocks it was the only content of.
+// QWEN_MEM_FILE_INTEL=1 turns it back on.
+const FILE_INTEL_ON = fileIntelEnabled();
 // P2 (D#78): edge-level decay ENFORCEMENT — opt-in (default OFF, shadow-first).
 // When on, a (obs,file) edge whose miss_streak reached K consecutive uncited
 // injections stops firing on this surface; the lesson stays reachable via
@@ -544,8 +561,37 @@ try {
   const isSessionScoped = Boolean(sessionId);
   const cooldown = readCooldown(cooldownPath);
   const now = Date.now();
+  // C1/C3 (lib/recall-shown.mjs): the framing header and the full ACK directive once per thread.
+  // Same thread key as the cooldown; null without a session, which shows both every time.
+  const shownPath = recallShownPath(RUNTIME_DIR, dedupKey);
+  // Prepends the header when this thread has not had one, fills the directive slot, and records
+  // what was shown. `body` is everything but the header; `directiveAt(text)` builds the line
+  // that carries the directive, or is null when the block has none.
+  // `name` is the file the factual framing arm names; the lesson block passes its scrubbed `fname`.
+  const emitRecallBlock = (body, directiveAt = null, name = basename(filePath)) => {
+    const shown = readRecallShown(shownPath);
+    const plan = planRecallBlock(shown, { header: true, directive: Boolean(directiveAt) });
+    const lines = [...body];
+    if (directiveAt) {
+      lines.push(
+        directiveAt(
+          plan.directive === 'short' && ACTIVE_DIRECTIVE === ACK_DIRECTIVE
+            ? ACK_DIRECTIVE_SHORT
+            : ACTIVE_DIRECTIVE,
+        ),
+      );
+    }
+    if (plan.header) lines.unshift(recallFramingLine('PreToolUse', { sessionId, fname: name }));
+    queueHookContext('PreToolUse', lines.join('\n'));
+    flushHookStdout();
+    if (plan.next.header !== shown.header || plan.next.directive !== shown.directive) {
+      markRecallShown(shownPath, plan.next);
+    }
+  };
   if (isSessionScoped) {
-    const entry = cooldown[filePath];
+    // A `compacted` entry (lib/recall-shown.mjs markCooldownCompacted) was recalled before a
+    // /compact that dropped it from context: recall the file afresh, as a first touch.
+    const entry = cooldown[filePath]?.compacted ? null : cooldown[filePath];
     if (entry) {
       // v2.98 salience: the old full-dedup meant a Read-injected lesson left the
       // actual Edit with ZERO context at the action point — the most likely spot
@@ -559,14 +605,11 @@ try {
       if (!isRead && wasReadMode && seenIds.length > 0 && !SALIENCE_LEGACY) {
         // Namespaced per table: a bare `#N` for an event id names a different memory.
         const idList = lessonIdTokens(seenIds, entry.obsIds).join(', ');
-        queueHookContext(
-          'PreToolUse',
-          [
-            recallFramingLine('PreToolUse', { sessionId, fname: basename(filePath) }),
-            `[mem] ⚠ Lessons ${idList} were shown when you Read ${basename(filePath)} — ${ACTIVE_DIRECTIVE}`,
-          ].join('\n'),
+        emitRecallBlock(
+          [],
+          (directive) =>
+            `[mem] ⚠ Lessons ${idList} were shown when you Read ${basename(filePath)} — ${directive}`,
         );
-        flushHookStdout();
         cooldown[filePath] = { ...entry, mode: 'edit' };
         writeCooldown(cooldownPath, cooldown, isSessionScoped);
       } else if (isRead && !REREAD_GUARD_OFF && typeof entry === 'object' && entry.reread) {
@@ -574,14 +617,7 @@ try {
         // nudge to reuse what's already in context. Read-only; never throws.
         const meta = readFileMeta(filePath);
         if (shouldWarnReread(entry.reread, meta ? meta.mtimeMs : null, isFullRead, REREAD_MIN_TOKENS)) {
-          queueHookContext(
-            'PreToolUse',
-            [
-              recallFramingLine('PreToolUse', { sessionId, fname: basename(filePath) }),
-              buildRereadWarning(basename(filePath), entry.reread.tokens),
-            ].join('\n'),
-          );
-          flushHookStdout();
+          emitRecallBlock([buildRereadWarning(basename(filePath), entry.reread.tokens)]);
           recordMetric(DATA_DIR, { event: 'reread_warn' }); // tier-1 firing counter (②)
         }
       }
@@ -827,10 +863,10 @@ try {
     // reliably renders across CC variants (sdscc drops plain-text stdout from PreToolUse).
     // suppressOutput:true hides it from transcript mode per CC hook docs.
     // Feature ①: file intelligence (size + summary) for the first Read of this
-    // file this session. Read-only; opt out via QWEN_MEM_FILE_INTEL=0. Never
+    // file this session. Read-only; opt-in via QWEN_MEM_FILE_INTEL=1. Never
     // throws — fileIntelFor returns null on unreadable/below-threshold files.
     let fileIntelLine = null;
-    if (isRead && !FILE_INTEL_OFF) {
+    if (isRead && FILE_INTEL_ON) {
       try {
         fileIntelLine = fileIntelFor(filePath, { minTokens: FILE_INTEL_MIN_TOKENS });
       } catch {}
@@ -863,15 +899,14 @@ try {
         via: viaBash ? 'bash' : 'tool',
       });
     }
-    const showFraming =
-      hasLessons || Boolean(fileIntelLine) || (!isRead && process.env.QWEN_MEM_PRETOOL_NUDGE === '1');
-    if (showFraming) {
-      // Framing line mirrors #7758 handoff-injection fix: without an explicit
-      // "this is context, the call continues" line, observed turn-end after Edit+reminder
-      // when the model misreads passive lesson context as a closing note. Two wordings
-      // run side by side per session — lib/recall-framing.mjs.
-      lines.push(recallFramingLine('PreToolUse', { sessionId, fname }));
-    }
+    // Framing line mirrors #7758 handoff-injection fix: without an explicit
+    // "this is context, the call continues" line, observed turn-end after Edit+reminder
+    // when the model misreads passive lesson context as a closing note. Wording:
+    // lib/recall-framing.mjs. emitRecallBlock prepends it to the FIRST block of a thread
+    // only (C1, lib/recall-shown.mjs): every later block still opens with its own `[mem]`
+    // line, and the thread has already been told what those are.
+    // The directive slot, filled by emitRecallBlock (full text once per thread, short after).
+    let directiveAt = null;
     // MED-1 (full audit 2026-07-16): defang the injection-block delimiters in
     // all DB/file-derived text before it enters additionalContext (which CC wraps
     // in <system-reminder>). Stored text is raw — a lesson/title/summary carrying
@@ -928,7 +963,7 @@ try {
           lines.push(
             `[mem] ⚠ #${bridged.id} → this edit must: ${neutralizeContextDelimiters(bridged.check)}. Confirm your new code satisfies it.`,
           );
-        else lines.push(`[mem] ⚠ Before this edit: ${ACTIVE_DIRECTIVE}`);
+        else directiveAt = (directive) => `[mem] ⚠ Before this edit: ${directive}`;
       }
     } else if (!isRead && process.env.QWEN_MEM_PRETOOL_NUDGE === '1') {
       // R-4: Edit/Write empty → short backfill reminder. OPT-IN (default off) as
@@ -942,16 +977,12 @@ try {
       //
       // Read never emitted this (passive). The cooldown write below still runs on
       // every branch, so Read→Edit dedup + cite-back lessonId tracking are intact.
-      // (Framing line already pushed above via showFraming.)
       lines.push(
         `[mem] No prior lessons for ${fname} — if you solve a non-obvious bug here, run: /lesson --file ${fname} "<root cause + fix>"`,
       );
     }
 
-    if (lines.length > 0) {
-      queueHookContext('PreToolUse', lines.join('\n'));
-      flushHookStdout();
-    }
+    if (lines.length > 0) emitRecallBlock(lines, directiveAt, fname);
     // Cooldown applies on ALL branches (including silent-Read) so subsequent
     // calls on the same file in the same session don't re-query — preserving
     // the per-filePath invariant that underpins Read→Edit dedup.

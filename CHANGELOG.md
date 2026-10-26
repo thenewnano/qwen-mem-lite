@@ -2,6 +2,28 @@
 
 All notable changes to qwen-mem-lite are documented in this file.
 
+## v7.3.0 - synced with upstream through v6.30.8
+
+This release folds in everything upstream shipped between v6.26.0 and v6.30.8 (506
+commits), with the fork identity and the dual-host behaviour kept.
+
+- **Injection budget** - the SessionStart `### Recent` table is budgeted
+  (`QWEN_MEM_STARTUP_RECENT_ROWS`, default 5) and the `💡 mem events` line is off by default
+  (`QWEN_MEM_DASHBOARD_EVENTS=1` restores it); the recall framing line and the pre-edit
+  directive are once per thread (`QWEN_MEM_RECALL_HEADER_ONCE`, `QWEN_MEM_DIRECTIVE_ONCE`);
+  file-intel is opt-in (`QWEN_MEM_FILE_INTEL=1`).
+- **Keyed LLM leg** - Claude Haiku 5.5 for the haiku tier; a keyed reply that is not a whole
+  answer falls back to `claude -p`; structured output (`jsonSchema`) reaches the direct API
+  leg.
+- **Search** - CJK text in events, lessons and facts is searchable.
+- **Slash commands** - `/bug` and `/memory` are named under the plugin namespace.
+- **Install / update** - the marketplace clone's `hooks/hooks.json` is restored rather than
+  emptied; the D#561 store move, the D#568 `~/claude-mem-lite` fix and the D#513 hook
+  ownership rule; `doctor` verifies backup snapshots; a failed open no longer writes a damaged
+  WAL frame.
+- **Dependencies** - `ip-address` 10.7.4 and `body-parser` 2.4.0.
+
+No schema change, no data move and no configuration change.
 ## v7.2.1 - the OpenAI-compatible leg can address GPT-6 models
 
 The background-LLM transport now sends a request shape current OpenAI GPT models accept.
@@ -212,6 +234,1016 @@ three pre-ship review rounds and without a re-measured Baselines row in `CLAUDE.
 still describes the v6.11.0 tree at `9c41144`, which is what it claims to describe. Neither
 absence is a claim about the code — the full suite is green — but neither ritual was performed,
 and pretending otherwise in a changelog would be worse than saying so.
+
+## v6.30.8 — doctor checks the backup snapshots before its restore command names one, and the claude-mem backup keeps its log
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.30.7`.
+
+- **doctor's restore command names a backup snapshot only after checking it** (D#558, D#577). doctor
+  restores each snapshot into a private copy in the data directory, opens the copy with this
+  version's opener in a child process, rebuilds its indexes the way the command does, and runs
+  SQLite's integrity check. The command restores the newest snapshot that passes and holds rows.
+  Every older snapshot is checked as well: each one that passes is listed before the command with
+  its observation count (and the count its own index lists, when that is higher) and gets its own
+  command after it; one the check could not run on is named with the reason. When the check could
+  not run on a snapshot newer than every one that passes, doctor gives no command and says what to
+  resolve first. doctor prints a line on stderr for each snapshot it checks, and removes the private
+  copies an interrupted check left.
+- **The restore and set-aside commands keep the broken file and its `-wal`** (D#539), as
+  `claude-mem-lite.db.corrupt-<time>` and `claude-mem-lite.db.corrupt-<time>-wal`; they used to
+  delete the `-wal` first. The restore command ends with `fts-check rebuild`.
+- **The session-start notice no longer gives a restore command**: when snapshots holding data exist,
+  it says how many and points at `doctor`, which checks which ones restore.
+- **`fts-check rebuild` and `mem_fts_check` rebuild every other index too** (REINDEX), after the FTS5
+  indexes (D#562): an ordinary index whose entries no longer match its table failed SQLite's
+  integrity check, and no command rebuilt it.
+- **install backs up an original claude-mem store across filesystems** (D#579). With the data
+  directory on another filesystem than `~/.claude-mem`, the move failed with EXDEV and install
+  printed "Legacy DB backup failed"; it now copies the files, leaves `~/.claude-mem` as it is, and
+  does not copy again once a backup is there.
+- **The claude-mem backup's log is named so SQLite reads it with the backup** (D#584):
+  `claude-mem-lite.db.legacy-backup-<time>-wal`. install named it
+  `claude-mem-lite.db-wal.legacy-backup-<time>`, and the backup opened as found read none of the rows
+  only in its log. The plugin's session start copied the database alone; it now copies the log too.
+  For a backup install made before this version, rename `claude-mem-lite.db-wal.legacy-backup-<time>`
+  to `claude-mem-lite.db.legacy-backup-<time>-wal` before opening it. A backup the session start made
+  before this version has no log; the session start left `~/.claude-mem` in place.
+- **Known limitation** (D#582): doctor's command chooses by age. When an older snapshot that passes
+  holds more observations than the newest one that passes, the command still restores the newest,
+  and the list before it says the older one holds more.
+- **Still as in 6.30.7:**
+  - With `CLAUDE_MEM_DIR` on another filesystem than `~/claude-mem-lite`, the move of a database left
+    there fails, and so does every open until the database and its `-wal` and `-shm` are moved by
+    hand (D#569, D#581).
+  - When opening the store fails twice on damage, the open deletes the `-wal` and retries, so rows
+    committed only in that log are lost (D#557). When that happened before doctor runs, the log the
+    commands above keep is an empty one.
+
+## v6.30.7 — the plugin's session start leaves a git clone at `~/claude-mem-lite` alone, and copies the claude-mem store once
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.30.6`.
+
+- **The plugin's session start no longer moves `~/claude-mem-lite` into a missing
+  `~/.claude-mem-lite`** (D#568). A git clone of this repository made in the home directory moved
+  whole, uncommitted files included. A database a version before 2.0.0 left there is still moved by
+  the first open, store files only.
+- **The plugin copies an original claude-mem store into the data directory once** (D#573), not at
+  every session start while opens keep failing: a backup it already made stops the next copy, also
+  under a data directory whose path holds glob characters such as `[`.
+- **Still as in 6.30.6:**
+  - With `CLAUDE_MEM_DIR` on another filesystem than `~/claude-mem-lite`, the move of a database left
+    there fails, and so does every open until the database and its `-wal` and `-shm` are moved by
+    hand (D#569).
+  - doctor's restore command names the newest non-empty backup snapshot without checking it
+    (D#558), and both of its commands delete the `-wal` first (D#539).
+  - When opening the store fails twice on damage, the open deletes the `-wal` and retries, so rows
+    committed only in that log are lost (D#557).
+
+## v6.30.6 — the first open no longer deletes a data directory when `~/claude-mem-lite` exists, and body-parser 2.4.0
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.30.5`.
+
+- **The first open no longer deletes the data directory when `~/claude-mem-lite` exists** (D#561).
+  When `~/claude-mem-lite` existed (the unhidden data directory of versions before the first
+  release, 2.0.0, or a git clone of this repository made in the home directory) and the database
+  file did not, the open removed the data directory if no name in it ended in `.db`, and moved
+  `~/claude-mem-lite` into its place. After the set-aside command, that removed the kept file. With
+  no `CLAUDE_MEM_DIR`, the data directory is also where a direct install keeps its code, which went
+  the same way. Now only a database left in `~/claude-mem-lite` moves, with its `-wal` and `-shm`,
+  and only into a data directory that holds no database, log, snapshot or kept copy of a
+  claude-mem-lite store. Nothing is removed, and `install` no longer renames `~/claude-mem-lite`.
+- **body-parser 2.4.0 and fast-uri 3.1.9**, lockfile only. `npm audit --omit=dev` reported
+  body-parser 2.0.0–2.3.0 (high, GHSA-27r3-jxmh-p828) and fast-uri 3.0.0–3.1.8 (moderate, four
+  advisories); both come in through `@modelcontextprotocol/sdk`.
+- **Development dependencies** (#48): vitest and @vitest/coverage-v8 5.0.5, eslint 10.13.0, knip
+  6.42.1. The published package does not install them.
+- **Known issue** (D#573): with the plugin, `CLAUDE_MEM_DIR` on another filesystem than
+  `~/claude-mem-lite`, a database left there while `~/.claude-mem-lite` exists, and an original
+  claude-mem store in `~/.claude-mem`, each session start adds another copy of that claude-mem store
+  to the data directory. 6.30.5 deleted the data directory at each open in the same case.
+- **Still as in 6.30.5:**
+  - The plugin's session-start script (`scripts/setup.sh`) moves the whole `~/claude-mem-lite` into
+    `~/.claude-mem-lite` when that directory does not exist; with `CLAUDE_MEM_DIR` set, nothing then
+    reads the database it moved (D#568).
+  - With `CLAUDE_MEM_DIR` on another filesystem than `~/claude-mem-lite`, the move fails, and so does
+    every open until the database and its `-wal` and `-shm` are moved by hand (D#569).
+  - doctor's restore command names the newest non-empty backup snapshot without checking it (D#558).
+  - When opening the store fails twice on damage, the open deletes the `-wal` and retries, so rows
+    committed only in that log are lost (D#557).
+
+## v6.30.5 — ip-address 10.7.4, and the set-aside note no longer says the file's memories are unrecoverable
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.30.4`.
+
+- **ip-address 10.7.4** (GHSA-rxp7-6hxx-x8q5, moderate). 6.30.4 shipped 10.7.2, which matches an
+  IPv6 zone identifier in quadratic time on a long crafted string. It comes in through
+  `@modelcontextprotocol/sdk`'s dependency on express-rate-limit.
+- **The set-aside note no longer says the memories in the file are not recoverable without a
+  backup** (D#554). That was not always so: a review read 200 of the 241 observations in one such
+  file once its damaged log was gone.
+- **Still as in 6.30.4** (D#553): the `✗ Database:` restore command names the newest non-empty
+  snapshot without checking it, and one taken after the damage can hold it.
+
+## v6.30.4 — a failed backup snapshot no longer leaves an empty file for the restore command to name
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.30.3`.
+
+- **A failed backup snapshot no longer leaves an empty file** (D#551). The snapshot taken before a
+  delete or maintenance can fail on a damaged database, and it left a 0-byte `.bak`, newer than
+  every real snapshot. When the database later stopped opening, the `✗ Database:` restore command
+  (doctor, and the notice at session start) named that file, and running the command emptied the
+  database. A failed snapshot now removes the file it created, and the restore command skips empty
+  snapshots that earlier versions left; doctor's set-aside note then says no non-empty snapshot
+  exists. On the 1,641 of 2,769 damaged copies of test databases that fail SQLite's integrity
+  check, one `delete --confirm` left a 0-byte `.bak` on 639 with 6.30.3 and on none with this
+  release.
+- **Still as in 6.30.3** (D#553, D#554): apart from skipping empty snapshots, the restore command
+  does not check the snapshot it names, and one taken after the damage can hold it; and when no
+  snapshot exists, the set-aside note says the memories in the file are not recoverable without a
+  backup, which is not always so.
+
+## v6.30.3 — doctor's restore and set-aside commands say to close every Claude Code session first
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.30.2`.
+
+- **doctor and the session-start notice say to close every Claude Code session before the restore
+  or set-aside command** (D#534). Both commands start by deleting the database's `-wal` and `-shm`
+  files, then copy a backup over the database file or move it aside. A session that still has the
+  database open can lose its recent writes, or write them over the restored file. The session-start
+  notice adds "this one included", since it is read inside a session.
+
+## v6.30.2 — a failed open no longer writes a damaged WAL frame into the database file
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.30.1`.
+
+- **A failed open no longer writes a damaged WAL frame into the database file** (D#506, D#438).
+  The last connection to close a WAL database copies the WAL into the database file without
+  checking it. A failed open closed its connection that way, or left it open when
+  `journal_mode = WAL` threw, and better-sqlite3 closed it when the process exited. A failed open
+  now closes while a read-only connection holds the database, so the close copies nothing. On the
+  corrupt-WAL test fixture, 6.30.1's recovery could not open the store in 20 of 20 fresh-process
+  trials; this release opens it in 20 of 20 and leaves the database file untouched. With six
+  processes recovering at once, 6.30.1 left the database file damaged in 10 of 20 runs and this
+  release in none of 40 (and none of 20 with three).
+- **A directory name is no longer enough to take a hook for ours** (D#479). `install`, `uninstall`
+  and `cleanup-hooks` deleted a hook such as `node ~/claude-mem-lite-notes/scripts/fmt.js` on the
+  directory name alone. A path there is ours only when its directory holds this package, or when it
+  names one of our entries and the file is gone. The one-time stale-hook warning setup.sh prints at
+  session start uses the same test (D#513).
+- **`optimize --run=false` previews** (D#514). It split into `--run false` and started the run,
+  LLM rewrites across every project included, and `optimize --run=false --dry-run` got past the
+  dry-run refusal the same way. `delete` and `activity delete` given `--confirm --dry-run` say to
+  run again without `--confirm` to preview, where they said they had no preview; `maintain execute
+  --dry-run` says to run `scan` in place of `execute`, which keeps your `--project`.
+- **`maintain scan` pairs duplicates within one project** (D#464). Across projects it printed
+  pairs, in the ready-to-run merge command too, that `execute` then skipped.
+- **The secret scrubber is faster on crafted inputs that read one long run of lines many times**
+  (D#511): a private-key header followed by a long run of blank, quoted or escaped lines, under a
+  chain of labelled values that holds the scrubber to its 32 passes. Output is byte-identical to
+  6.30.1's on 570,000 generated inputs. On the user-prompt hook at its 256 KiB input limit
+  (per-process CPU time as a multiple of plain text of the same size, one run), the measured
+  blank-line, quoted-line, escaped-line, closing-tag and twelve-escape-depth shapes went from
+  5.9–9.4 to 2.3–5.9. Other shapes, other escape-depth variants among them, are slower than in
+  6.30.1, by up to 21% in a review's measurements.
+- **`--project=<id>`** in the README upgrade notes and the `/verify` template, the form the CLI
+  prints (D#513): after `--project `, an id that starts with `-` reads as a flag.
+
+## v6.30.1 — cut first lines of more private-key types are erased, and the stale-hook warning no longer says to uninstall the plugin
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.30.0`.
+
+- **Secret scrubber: cut first lines of more key types** (D#504). A private key cut inside its
+  first line (`head -c 60 key.pem`) leaves one base64 line of 16-39 characters, which counted as key
+  material only when it began with one of five prefixes. Keys whose encoding begins otherwise
+  (among them secp256k1 and brainpoolP256r1 in SEC1 form, P-521, brainpoolP512r1, the 192- and
+  224-bit curves, Ed448 and X448) had that line stored. The scrubber now also reads the line's DER
+  header: a SEQUENCE holding an INTEGER 0 or 1, or a SEQUENCE and an OID, which is how an encrypted
+  key starts and also how a public key starts, so a public-key line under a PRIVATE KEY marker is
+  erased too. On the first lines of 32 keys OpenSSL 3.5.5 generated, cut to 16, 24 and 39
+  characters, 6.30.0 kept 45 of 96 and this keeps none.
+- **The stale-hook warning** that setup.sh prints when a direct install left hooks in a profile's
+  `settings.json` named `claude-mem-lite uninstall`, which also removes the MCP registration and
+  the plugin. It now prints `CLAUDE_CONFIG_DIR=<profile> node <plugin root>/cli.mjs cleanup-hooks`,
+  which removes only those hook entries from that profile.
+- **The CLI names a next step for a database it cannot use** (D#488): after SQLite's message and the
+  path it prints `Next: run <cli> doctor.` The memory-off notice says the file "cannot be used"
+  rather than "cannot be opened", which was wrong for a schema SQLite cannot read.
+- **Project instructions = `managed-only`** (D#501). That setting leaves the project's
+  `CLAUDE.md`, `CLAUDE.local.md` and rules files out at launch, so a block in one no longer quiets
+  the File Lessons and Key Context sections when auto-adopt is off and nothing is injected, and the
+  startup dashboard no longer offers `adopt` there. Where the adopt hint still shows, it no longer
+  claims a context saving and an MCP call gain.
+- **Printed commands.** Commands printed with a project id write `--project=<id>`: after
+  `--project `, an id made only of dashes (the old id of a directory whose path names were not
+  ASCII) read as flags, and the command listed every project (D#499).
+- **`maintain scan`'s Needs-review lines show each row's importance** (D#497), which `/update`'s
+  dedup step asks about.
+- For maintainers: `install --dev` links the `node_modules` that better-sqlite3 resolves from, so
+  it works in a worktree nested in the main checkout (D#489).
+
+## v6.30.0 — background `claude -p` calls drop Claude Code's auto-memory section, and a database schema SQLite cannot read says memory is off
+
+**Upgrade note: nothing to run; the schema version stays 49.** Every headless `claude -p` call
+the plugin makes (the LLM leg of users without an API key) now runs with
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. Going back is pinning `claude-mem-lite@6.29.3`.
+
+- **`claude -p` calls run without Claude Code's auto-memory section** (D#483). Each carried about
+  2.2 KB of system prompt describing a memory directory these extraction calls never use (Claude
+  Code 2.1.304: 8,964 → 6,688 bytes, read from a stub endpoint). Before the change, an A/B on the
+  CLI leg with its gate written down first (`benchmark/haiku-model-ab.mjs`, 8 items per site) read
+  usable answers 8/8, 8/8 and 7/8 with and without it; episode lessons kept read 3 against 4, within
+  that gate.
+- **CLI hints** (D#462). Usage lines, `Try:` pointers, `adopt --status`, the startup dashboard, the
+  unusable-database notices, the CLI's damaged-search-index message and `/adopt` and `/unadopt`
+  printed `claude-mem-lite <command>`, which a plugin install does not put on PATH. They print `node
+  <path>/cli.mjs <command>` now, as the MCP instructions do (`npx claude-mem-lite` where the
+  installer runs through npx).
+- **A database schema SQLite cannot read says memory is off.** A damaged `sqlite_master` row
+  ("malformed database schema") left SessionStart silent while every save and recall failed. It now
+  gets the memory-off notice on both channels, and `doctor` names the newest backup snapshot without
+  a command to run.
+- **Writers that read first wait for another writer.** The episode worker's upgrade to an event and
+  its low-yield drop, Stop's edge attribution, the daily cluster merge and smart compress, and
+  SessionStart's one-time project re-key began with a read and failed at once with `SQLITE_BUSY`
+  when another process held the write lock. They take the write lock up front now and wait for it.
+- **Maintenance output matches what runs.** `stats --quality --project X` printed a purge hint
+  without `--project`, which purges every project; it keeps the project now, and its pending-purge
+  ratio no longer counts explicit saves, which `purge_stale` never deletes (D#467, D#466). `maintain
+  scan`'s Stale and Broken counts no longer include rows execute skips (a compression keeper, an
+  empty row carrying a `superseded_by` redirect). A purge preview of 0 rows says "Nothing to
+  delete." instead of asking for `--confirm` (D#468). `get` no longer says a queued row goes at the
+  next `purge_stale` run (D#465).
+- **Search's operator note** no longer says every word must match when the search relaxed AND to OR.
+- **Adoption.** With Project instructions set to `managed-only` in the user settings, auto-adopt
+  writes no `CLAUDE.local.md` and injects the steering instead, also where a `CLAUDE.md` carries the
+  block (D#219). Auto-adopt in a session below a directory of the same repository whose `CLAUDE.md`
+  carries the block (for example `adopt` run in `packages/`) no longer writes a root
+  `CLAUDE.local.md` (D#177). A `CLAUDE.md` holding this plugin's block and another plugin's managed
+  block gets the `AGENTS.md` import, so the `AGENTS.md` beside it keeps loading (D#220). `adopt`
+  says when it rewrote the detail doc (D#470), and the detail doc no longer points at a `docs/` file
+  that does not exist (D#471).
+- **`/update`'s dedup step** (D#461). `maintain scan` prints a line for each side of a Needs-review
+  pair (type, project, date, lesson, start of the narrative), read without counting an access, and
+  `/update` judges those pairs from them rather than from two 40-character titles.
+- **Dependency.** hono, which `@modelcontextprotocol/sdk` brings in, moves from 4.13.7 to
+  4.13.13 for GHSA-5r4p-p66f-jhc7.
+- For maintainers: `haiku-model-ab.mjs` takes `cli:<effort>` arms, and `install-e2e`'s setup.sh case
+  no longer runs a real `npm install` in a checkout without `node_modules` (D#408).
+
+## v6.29.3 — the model is no longer sent to tools it cannot call, /bug and /verify name this plugin's commands, and the purge count you are asked to approve comes from the purge itself
+
+**Upgrade note: nothing to run; the schema version stays 49.** Text the model and you read
+changes; nothing the store holds does. Going back is pinning `claude-mem-lite@6.29.2`.
+
+- **The MCP text the model reads names only tools it can call** (D#448). Claude Code gives the
+  model only the tools in the tool list, and nine maintenance and admin tools are left out of it.
+  Four places still sent the model to one of them: the instructions' "Decision rules" (normally
+  sent only when the project is not adopted and auto-adopt is off) named `mem_maintain`, `mem_delete`,
+  `mem_fts_check`, `mem_browse` and `mem_export`; the `mem_timeline` and `mem_get` descriptions
+  named `mem_browse`; `mem_search`'s no-results tip named `mem_stats`; and `mem_save`'s reminder
+  to add a lesson to a bugfix or decision saved without one said to call `mem_update`. The rules
+  now give the CLI command (`maintain scan`, `fts-check check`, `browse`, `export`) and leave the
+  cleanup itself to `/claude-mem-lite:update`, which you start; the descriptions and the tip name
+  `mem_recent`; and the reminder gives `node <path>/cli.mjs update <id> --lesson "…"`. The CLI's
+  own reminder said a bare `claude-mem-lite update`, which a plugin install does not have; it
+  prints the same command.
+- **`/bug` and `/verify` are written as `/claude-mem-lite:bug` and `/claude-mem-lite:verify`**
+  (D#454). Claude Code has its own `/bug`, which opens its bug-report dialog, and its own
+  `/verify`; typed bare, those run instead. `/bug`'s heading and examples, `/verify`'s description
+  and heading, both READMEs, `claude-mem-lite help`, and the notes `get` prints on a memory
+  `/verify` retired or whose `/verify` correction was undone used the bare names. The READMEs'
+  command tables also said `/lesson` and `/bug` write to the events table; both write searchable
+  observations.
+- **The purge count you are asked to approve comes from the purge itself** (D#450). `maintain
+  scan`'s pending-purge line counted every row queued for purge (explicit saves aside) and said
+  `purge_stale` deletes them, but it deletes only the ones older than its retain window (30 days
+  unless you pass `--retain-days`). The line now also gives how many a purge at the default window
+  would delete. `/mem cleanup` asked you to approve the scan's count; it now runs the purge's
+  preview first and asks with that count, as `/update` already did, and neither asks you to approve
+  a preview of 0 rows. `stats --quality` told you to run the purge with `--confirm` straight away;
+  it now says to preview first. And the plugin's detail doc, which the steering block points the
+  model to, told it to run the purge with `--confirm` itself; it now says to preview with
+  `maintain scan` and leaves the cleanup to `/claude-mem-lite:update`, which you start. The doc
+  is rewritten at the next session start with auto-adopt on. An explicitly adopted project's copy
+  is rewritten only by a session started at the project's root, and not under
+  `CLAUDE_MEM_NO_TEMPLATE_REFRESH=1`; running `/claude-mem-lite:adopt` there rewrites it.
+- **`maintain scan` prints a dedup command that runs** (D#449). Its "Ready-to-use" line said
+  `claude-mem-lite maintain execute …`; it now gives the CLI by its path.
+- **`/adopt` describes how `CLAUDE.md` loads correctly** (D#451). It said `CLAUDE.md` loads "at
+  system-prompt authority"; Claude Code delivers it in a message after the system prompt. The
+  Chinese README's Invited Memory section, which still described the memory-dir scheme v3.13
+  replaced, now describes the `CLAUDE.md` block, as the English one does. Both READMEs and
+  `llms.txt` no longer say the block outranks MCP server instructions or that Claude Code weighs
+  `CLAUDE.md` and `MEMORY.md` equally; Claude Code's docs say neither.
+
+## v6.29.2 — /update and /mem cleanup run maintenance through the CLI, and the slash commands name /memory and /update by the plugin's namespace
+
+**Upgrade note: nothing to run; the schema version stays 49.** Only the slash-command text
+changes, but `/update` now runs where it could not before, and only you can start it (first
+item). Going back is pinning
+`claude-mem-lite@6.29.1`. The five fixes come from a prompt audit
+of the commands as 6.27.0 shipped them (2026-10-17); all five were still present in 6.29.1.
+
+- **`/claude-mem-lite:update` and `/mem cleanup` run maintenance through the CLI.** `/update`
+  told the model to call `mem_maintain` and `mem_compress`, and `/mem cleanup` to call
+  `mem_maintain`. Those tools are left out of the tool list so they do not fill every session's
+  starting context (`CLAUDE_MEM_ALL_TOOLS=1` lists them), and Claude Code hands the model only
+  listed tools, so unless that variable was set, following either command failed. Both now run
+  `node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" maintain …` via Bash, and `/update` also runs
+  `compress --execute`. A purge still asks you first, and a purge run without `--confirm` is
+  still only a preview. A `--retain-days` outside 7–365 is refused, and the model is told to say
+  so rather than use the default. `/update`'s execute step runs the default set, which adds
+  `demote_pinned` after `boost`, as the daily maintenance already does;
+  `CLAUDE_MEM_SKIP_DEMOTE_PINNED=1` leaves it out. So `/update` now changes the store, across
+  every project and without asking: it deletes broken rows (cleanup), applies decay, boost and
+  demote_pinned, merges the duplicate pairs the model picks, and compresses old low-value rows into weekly
+  summaries (the rows stay, folded; explicit saves included). It asks before the purge, with the
+  count the purge's own preview prints, and purges before its decay step queues more rows, so
+  what is deleted is what you approved. Because of all that, only you start it: its frontmatter
+  sets `disable-model-invocation: true`, so the model neither sees nor starts it on its own.
+  Routine maintenance stays with the daily worker.
+- **`/memory` and `/update` are named by the plugin's namespace.** Their text, and `/lesson`'s
+  pointer to `/memory`, said `/mem:memory` and `/mem:update`, a namespace that does not exist. A
+  plugin command's namespace is the plugin's name: `/claude-mem-lite:memory`,
+  `/claude-mem-lite:update`. The full form always works, and `/memory` on its own is a Claude
+  Code built-in.
+- **Command text the model had no use for is gone.** Release history in `/bug`, `/lesson` and
+  `/adopt` (the reason `/adopt` writes `CLAUDE.md` rather than the memory-dir `MEMORY.md` stays,
+  in the present tense), and the undefined term "sdscc" in `/lesson`, now said in plain words.
+- **`/update` reports in your language.** Its summary step was fixed to zh-CN.
+
+## v6.29.1 — a corruption error on open is retried before the WAL is deleted, the index terms older builds leave out are filled for a week, the model no longer lifts an automatic episode to importance 3
+
+**Upgrade note: nothing to run; the schema version stays 49.** One default changes: the model's
+own score no longer lifts an automatic episode to importance 3. Going back is pinning
+`claude-mem-lite@6.29.0`: it reads `migration_cleanups` and `migration_cursors` only by the names
+it knows, so the rows this release adds there are ignored.
+
+- **A corruption error on open is retried before the WAL is deleted** (D#427). On the first plain
+  `SQLITE_CORRUPT` while opening the database, `-wal` and `-shm` were deleted at once. With another
+  connection open (the MCP server keeps one for the whole session) that can discard what it
+  committed since its last checkpoint, and until it closes the two connections overwrite each
+  other's pages, while `integrity_check` still reads ok. In a probe with a second process holding
+  the store (2026-10-17, SQLite's default auto-checkpoint, 3 runs), it lost all 2,200 rows it
+  committed in two runs, and in the third 1,300 of them while the deleting connection lost 900 of
+  its 2,000. The error need not come from the file: 3 of 43 first opens by 6.28.1 of fresh copies
+  of one intact store threw one on the machine described below; the other 40 did not. The open is
+  now retried once with the files untouched, and only an error that repeats reaches the delete,
+  which is unchanged.
+- **The FTS index rebuild on open waits no longer than a hook's deadline** (D#415). An open that
+  met a damaged FTS index (`SQLITE_CORRUPT_VTAB`) rebuilt it on a connection with
+  better-sqlite3's default 5 s wait per statement, four statements, inside a hook the host kills
+  at 2 s or 5 s. With another process holding the write lock and a 1.5 s deadline: 20.1 s before,
+  1.6 s now.
+- **The CJK index terms an older build leaves out are filled by the daily maintenance, for 7
+  days** (D#413). 6.29.0's fill of the observations' index terms is marked done once, but a build
+  from before it can go on writing the same store for as long as a session started before the
+  update lives, and it writes rows without the terms of their lessons, facts and aliases, or
+  rewrites a filled row's text without them (a 6.28.x `mem_update`). On the store of the machine
+  this release was built on, 8 of the 36 rows its 6.27.0 code wrote after the fill lacked them,
+  and no later open would have added them. The daily maintenance worker now walks the store again,
+  once a day for 7 days from its first run, up to 30 s per run, appending only terms a row lacks.
+  The 7 days: that machine's sessions from 2026-09-05 to 2026-10-17, start to last activity, p50
+  0.65 h, p99 39 h, 4 of 540 past 7 days.
+- **The model's score no longer lifts an automatic episode to importance 3** (D#414). The episode
+  worker stored the model's own score, so it could reach 3, Key Context's top tier, while the
+  window it judges carries tool output: text whoever controls a file or a command's output wrote.
+  Re-enrich was capped at 2 for the same reason in 6.29.0 (D#376). Measured before the change, by
+  a rule set before the run (cap if at most 1 reply scores 3): 72 of the 2,204 sub-episodes from
+  14 days of that machine's transcripts, at even intervals in their time order, through the
+  shipped prompt with `claude -p` and the `haiku` alias (Claude Code 2.1.302), scored 1 ×42,
+  2 ×30, 3 ×0. A rule-based row, saved before the model call or when it fails, can still be 3
+  after a failing test or build command, and saves you make are unchanged.
+- **Dependencies.** zod 4.6.5 → 4.6.7. Development: acorn 8.19.0, eslint 10.12.0, knip 6.41.0,
+  prettier 3.9.10. CI: actions/setup-node 7.1.0, actions/upload-artifact 7.0.2.
+- **The FTS errors in 6.29.0's notes point at that machine** (D#424). 6.29.0 said their cause was
+  not settled. A C program linked with the SQLite that better-sqlite3 ships, with fixed inputs,
+  its random generator seeded, one thread and address randomisation off, gave 50 different wrong
+  results in 513 runs there. Every GCC `-O3` build of SQLite 3.53.x tried failed the same way
+  (better-sqlite3 13.0.3 as published and rebuilt, 12.11.1), except the one built with
+  AddressSanitizer (0 of 323); `node:sqlite` and the system SQLite did not fail. With the bursts in
+  time and crashes of unrelated programs there, the evidence points at that machine (its CPU, the
+  hypervisor or the kernel), not at claude-mem-lite, better-sqlite3 or SQLite; the runs have not
+  been repeated on another machine. Details: `docs/audits/20261017-v6.29.0-pretag-measurements.md`.
+
+## v6.29.0 — CJK in lessons and facts is searchable, the first open after an update stays inside a hook's timeout, model-written lessons on explicit saves are marked
+
+**Upgrade note: the first database opens after the update fill the observations' index terms in
+bounded batches, a lesson a model writes onto an explicit save now starts with `🤖`, and some
+commands that exited 0 now exit non-zero.** The schema version stays 49. Going back is pinning
+`claude-mem-lite@6.28.1`, after the fill has finished (checked on a copy of this machine's store
+that an earlier build of this pass had filled and this release had opened: 6.28.1's `search`, `save`, `activity search` and
+`fts-check check` exit 0, and this release then finds the row 6.28.1 saved). Before it finishes,
+going back leaves the rows it has not reached without the Latin identifiers glued to CJK under
+6.28.1: this release marks 6.28.x's own glued-run pass done on its first open, so 6.28.1 does
+not run it again.
+
+- **Index terms, filled per open.** The observations' CJK index terms (bigrams and the Latin
+  identifiers glued to CJK) are filled by a new pass, `backfill-cjk-index-terms`: newest rows
+  first, about 250 ms per database open (the budget is checked after each row, the batch write
+  comes on top), each batch committed in its own transaction that does
+  not wait for another writer, with its position in a new table, `migration_cursors`. A killed
+  open keeps what it wrote, and two processes opening at once never append the same terms twice
+  (6.28.x's one-transaction pass doubled 8334 of 8334 rows with three openers on a synthetic
+  store, per the v6.28.0 pre-tag review). It replaces 6.28.x's `backfill-glued-ascii-runs` and
+  runs again on stores that finished that one, because it also fills the CJK of lessons, facts,
+  concepts and aliases, below. A row the next `update` would move into its narrative (an empty
+  narrative over text that does not read as derived, as imports before 3.69.0 left them) is left
+  as it was. On a synthetic v6.27.0 store of 250,000 observations and 200,000 events (two thirds
+  and three quarters of them with CJK)
+  (2026-10-17, this release's code against 6.28.1, back to back; three runs each for the hook,
+  server and first opens, one run each for the fill; load average 2–11): 6.28.1's prompt hook
+  opening it first was killed at its 5 s timeout with no output in 3 of 3 runs, and an MCP server
+  started 0.5 s later answered after 12.4–12.6 s; this release's hook exited 0 in 0.77–1.10 s and
+  the server answered in 0.35–0.74 s. A plain first open took 8.8 s on 6.28.1 (one of three runs
+  threw SQLITE_CORRUPT after 0.3 s, below) and 0.94–0.97 s here. The fill then took 105 opens of about 0.5 s
+  each (6.28.1: 54 opens, the first 8.6 s for its one-transaction observations pass, then 0.26 s
+  each for events), an open after it 3 ms, and while it runs the 2 s prompt search took 561–580 ms
+  per prompt (6.28.1: 307–320 ms in two of three runs). On a copy of this machine's store (516
+  observations, most of which an earlier build of this pass had already filled; it appended to the
+  4 rows written since) the pass walked every row and finished in one open of 48–49 ms. On that
+  synthetic store, on the machine these numbers come from, writes through the FTS triggers now and
+  then failed with "database disk image is malformed" under both 6.28.1 and this release, and also
+  when the same SQL was replayed without this project's code; the cause is not settled (D#424,
+  `docs/audits/20261017-v6.29.0-pretag-measurements.md`). In three fills run as the hooks run
+  them, one process per open, the 16 batches that failed rolled back, a later open wrote them
+  again, and both FTS indexes passed `integrity-check` at the end. In 60 runs that wrote a whole
+  fill on one connection (the pass, or its SQL replayed through three bindings), 9 left the
+  observations index inconsistent with its rows (2 without raising any error); `fts-check
+  rebuild` rebuilds that index from the rows.
+- **The `🤖` lesson mark.** A lesson that save-time enrichment, or the daily re-enrich retrying
+  it, distills onto an explicit save was shown as the person's own words. It now starts with `🤖 `,
+  and `get` / `mem_get` add "🤖 lesson auto-written" to the header. A lesson you write is never
+  marked, and rewriting a marked lesson drops the mark. The index stores the mark as a token, but
+  no search can match on it: the query side drops it.
+- **Exit codes and refusals.** A flag that takes no value (the 28 in `cli/common.mjs`
+  BOOLEAN_CLI_FLAGS: `--force`, `--json`, `--confirm`, `--or`, `--dry-run`, …) no longer swallows the
+  word after it, so `save --title X --force "text"` saves "text", `search --or redis kafka`
+  searches both, `recent --json 5` prints five rows as JSON, `get --json 2` shows #2 (as text: get
+  has no JSON output) — and `delete --confirm 12`, a usage error before, now deletes #12.
+  `--json true` / `--force false` still parse as before. These now exit 1 where they exited 0,
+  with nothing written:
+  - `compress`, `maintain`, `optimize`, `delete`, `activity promote` / `delete`, `import-jsonl`,
+    `defer drop` and `fts-check rebuild` given `--dry-run` (or `--dry-run=1`, `=yes`, …) on a run
+    that writes. They never read it: `maintain execute --dry-run` ran the delete, and
+    `maintain --dry-run execute` would have started to. Preview with `maintain scan`, or without
+    `--execute` / `--run`; `restore` and `adopt` read it, and `restore` now takes `--dry-run=1` as
+    a dry run too. `--dry-run false` runs the write.
+  - `activity save`, `import-jsonl` and `restore` given a `--project` short name that is a near
+    miss of an existing project's name (two edits for a name of 8 characters or more, one for
+    4–7, an exact match below that; a full `parent--name` id is not compared), as `save` and
+    `defer add` already did.
+  - `save`, `defer add`, `activity save`, `import-jsonl`, `restore`, `mem_save` and `mem_defer`
+    given a full project id that differs from an existing one only in case.
+  - `save "…" --force --draft`: an unknown flag after a flag that takes no value is refused, not
+    taken for that flag's value.
+
+  `restore --project <short name>` that only a fuzzy match tied to an existing project now writes
+  under that exact name (as a new project, and says so); a short name that is an existing
+  project's last segment still restores into that project. `uninstall` exits 3 when the MCP
+  registration is left in `~/.claude.json` (as `install` does); `install`, `uninstall` and
+  `cleanup-hooks` exit 1 before doing anything when the config home is missing under a parent
+  they cannot write; `doctor` reports a 6.27.0-or-older plugin cache whose first npm install
+  failed as ✗ (exit 1) instead of "not installed yet". MCP tools other than `mem_save` /
+  `mem_defer` given a `project` with no rows start their answer with a note saying so.
+
+### Search
+- **CJK inside a lesson, fact, concept or alias is searchable** (the precondition of D#422). unicode61
+  stores a CJK run as one token, and hook capture, re-enrich, cluster merge, smart compress and
+  save-time enrichment's lesson appended CJK index terms for title + narrative only, so a query
+  for `泄漏` missed a model-written lesson reading `连接池泄漏的根因…` (an explicit save already
+  indexed its own lesson). On 2026-10-17, 58 of this machine's 472 live observations carried CJK
+  in those fields. Each of those writers now indexes the side fields it writes, so do weekly
+  summaries and imported tool calls, an `update` keeps a lesson's terms (the first update dropped
+  the ones an explicit save had indexed), and the pass above fills rows written before. `restore`
+  keeps an export's index text as it was.
+- The query-side split of a token that glues Latin to CJK without a dictionary word
+  (`redis连接池`), measured for this release, is not in it: it reached more targets on
+  observations and events, but lost every such hit on sessions and prompts, whose indexes carry
+  no CJK terms (D#422).
+
+### Hooks
+- **Every statement a hook runs through `ensureDb` waits at most the time left until its
+  deadline** (D#394), the first open's migration and pending cleanups included; a second statement
+  after a waited one no longer waits the whole budget again. The prompt search (2 s in
+  `hooks.json`) and the opt-in Agent injection (5 s) set deadlines too: under another writer's
+  8 s lock on a store needing its migration they were killed at 2005 ms and 5007 ms with no output,
+  and now exit 0 at 1579 ms and 3550 ms, leaving the migration to the next open. The MCP server,
+  the CLI, background workers and the PreToolUse file recall's read-only connection (1 s per
+  statement) wait as before.
+- Openers that start together fill different events (D#396): three openers released together
+  filled 12.4% more rows per round (30 rounds, sign test p 0.016; one opener alone +1.9%, not
+  significant).
+- A failed `events_fts` rebuild leaves the index it found, so the next open retries; it used to
+  commit an empty index the version check then read as migrated.
+- The summary worker stops waiting on a flush whose worker died, and when a later Stop owns its
+  session; each Stop after a worker death kept a process waiting up to 275 s (~82 MB resident,
+  per the v6.28.0 pre-tag review).
+- An unclaimed flush file (from a worker of 6.27.0 or older, still running during the update) is
+  handed on after 365 s instead of 275 s, so its episode is not saved twice.
+- A handed-on episode keeps the git branch its work was on, not the recovering session's.
+- The episode lock measures its wait on the process's own clock, and asks a recorded holder
+  whether it is still running before taking its lock on age: a clock step or a resumed machine
+  let the next hook take a running holder's lock. The cost: a crashed holder's lock whose pid is
+  reused by a long-running process is taken back after 1 h instead of 30 s.
+
+### Unattended model passes
+- **Re-enrich raises a machine-written row's importance to 2 at most** (D#376). Stored text could
+  talk the model into importance 3, the top tier of Key Context (2 of 12 replies to a hostile row
+  before the prompt guard); no benign re-enrich reply in the same A/B said 3 (0 of 40). A row
+  already at 3 keeps it.
+- **The alias and concept backfills and smart-compress send stored rows to the model as data**
+  (D#375): instructions and `MEMORY_INPUT_GUARD` in the system role, the rows in the user turn, as
+  cluster merge, re-enrich and save-time enrichment already did. Measured through `claude -p`,
+  2 repetitions per fixture (`benchmark/prompt-guard-ab.mjs`, not in the npm package): benign rows
+  parsed and complete 20/20 in both arms of each pass, smart-compress's verdict agreeing 20/20.
+  Hostile rows were steered 2/14 → 0/14 on the alias pass, 0/14 → 0/14 on the concept pass (blind
+  there) and 1/14 → 1/14 on smart-compress; none of the differences is significant (all three
+  passes, 3/42 → 1/42, Fisher p 0.62). One after-arm smart-compress run followed a row that forged
+  an end-of-data line: it hid three rows and stored the injected line as the summary's lesson. The
+  same shape got through the guarded cluster merge in 6.28; it is filed (D#416). The scope
+  backfill, whose output is one of four fixed values, still puts the row inside its prompt.
+- **Smart-compress and cluster merge proceed only on a verdict of boolean `true`**: a reply of
+  `"should_compress": "false"` (a string) hid the rows it named, `"should_merge": "false"` folded
+  them. A missing verdict refuses, as before.
+
+### CLI and MCP
+- MCP tools given a `project` with no rows say so at the top of the answer, as the CLI does.
+- A content writer's refusal suggests the nearest flag it takes (`save --file` → `--files`).
+- `mem_save(lesson_learned: "", lesson: X)` keeps X; every alias pair treats an empty canonical
+  value as not given.
+- `mem_delete`'s empty-list error no longer advises omitting the required ids.
+- The CLI deep search no longer says its rewrites found nothing when the rewrite failed.
+- `restore --project` refuses a near-miss project too, and names a new one in its summary.
+
+### Install and doctor
+- `uninstall`'s MCP lines agree with `~/.claude.json`: no removal command when nothing of ours is
+  registered, and no "removed" line when the entry is still there.
+- `cleanup-hooks` keeps a launcher of yours that runs one of our entry names (it deleted it) and
+  puts back a marketplace clone's `hooks.json` an earlier install emptied.
+- An absent config home under a parent that cannot be written is refused before anything is done
+  (it left half an install and a raw EACCES stack).
+- The "not on PATH" warning compares directories, so a symlinked `~/.local` no longer triggers it.
+- The plugin-cache self-heal recognises install-managed hooks whose paths use backslashes; it reads
+  each hook command as written, so a hook of yours that quotes a path ending in `claude-mem-lite`
+  is not taken for ours.
+- `doctor` no longer reads a 6.27.0-or-older plugin cache whose first npm install failed as "not
+  installed yet"; it reports it with the npm command that repairs it.
+
+### Index terms (review repairs)
+- The new pass marks 6.28.x's `backfill-glued-ascii-runs` done, so a 6.28.x opener of the same
+  store (a global CLI beside the plugin) does not append the glued runs a second time.
+- A connection opened under a hook's deadline gets its own wait back when the deadline is lifted.
+
+### Development
+- CI runs `scripts/swap-mixed-tree.mjs` from each of the three newest tags on every push to main
+  and every pull request, and fails if it finds none: every entry point must load at every split point of a killed update.
+  Run by hand before that job existed, the script caught a break in this release (an export the
+  previous release's `schema.mjs` imports had been made internal). It now also checks names bound
+  by assignment destructuring, `Promise.all` elements and namespace imports, static or dynamic.
+- The GitHub Release body is this version's CHANGELOG entry (`scripts/changelog-entry.awk`); a
+  test checks on every commit that package.json's version has one, and the release check fails a
+  tag without one before anything is published.
+- `benchmark/tool-text-ab.mjs` probes B1's `prefix*` case in its registered wording (P11/P12):
+  B1 does no harm there and barely changes the call — the first query was `migr*` in 10 of 10
+  base sessions and 9 of 10 B1 sessions.
+- The readings behind these notes are in `docs/audits/20261017-v6.29.0-pretag-measurements.md`.
+
+## v6.28.1 — Chinese text in events is searchable, four MCP tool descriptions corrected, install no longer empties the marketplace clone's hooks
+
+v6.28.0 was tagged but never published: its release check failed on seven tests that ran `install`
+with the GitHub runner's PATH, which has no `claude`, so the MCP registration failed and install
+exited 3 (a change of this release, below); here, with Claude Code installed, they ran the real CLI.
+Those tests now put a stub `claude` first on PATH. 6.28.1 ships the same product code, and the notes
+below are the 6.28.0 notes.
+
+**Upgrade note: the first database open after the update migrates the events index, and some
+commands that exited 0 now exit non-zero.** The `events` table gets a `search_terms` column (the
+Chinese segmentation) and `events_fts` is rebuilt with it on that open; the schema version stays 49.
+The same open adds the Latin identifiers glued to Chinese text to existing observations' index text,
+once. Existing events get their `search_terms` after that, newest first, from a partial index of the
+events still to fill: about 250 ms per database open (checked after each row it segments), in
+batches that each commit, so an open that is killed keeps what it wrote, an open under another
+writer's lock fills nothing and does not wait, and once nothing is left an open reads an empty index
+(3–4 ms). Until an event is filled, a Chinese query misses it as on 6.27.0. On this machine's store
+(6963 events, 470 observations; fresh copies) the first three opens took 295–327, 80–102 and 4 ms,
+and the file grew from 14 to 15 MB. On a CJK-heavy synthetic store of 200,000 events the first open
+takes 964 ms, a 5 s hook opening it first exits normally, the fill completes over 79 opens of about
+300 ms each (node's startup included), and the file grows from 93 to 273 MB; with 4000-character
+bodies an open takes about 290 ms. (Candidates of this release filled every event inside the
+migration, 24.4–25.5 s on that store with every 5 s hook opening it first killed with nothing
+committed, and then read the rows to fill by a scan once planner statistics had been sampled
+mid-fill, about 49 ms per open after the fill.) **Going back works**: pinning
+`claude-mem-lite@6.27.0` opens, searches and writes a store this release migrated, whether or not
+the fill had finished (checked on such copies: 6.27.0's `activity save`, `activity search` and
+`fts-check check` exit 0, and `fts-check check` reads healthy under both), and an event 6.27.0
+writes is filled the next time this release opens the store. Exit codes: `install` exits 3 when all
+but the MCP registration succeeded, where it printed "Done!" and exited 0; `repair` reads that as a
+completed resync with a warning (a 6.27.0 code home's own repair, which downloads this release,
+still reports it as "Repair failed" although the files were synced). These now exit 1 where they
+exited 0: `save`, `update`, `defer add` and `activity save` given a flag they do not take; `update`,
+`defer add` and `activity save` given a title of invisible characters only (`save` derives one from
+the content); the mutating runs (`compress`, `maintain`, `optimize`, `delete`, `activity
+promote`/`delete`) given a filter flag they do not read; `save` and `defer add` given a mistyped
+project; `delete`, `activity show`/`delete` and `--min-importance` given an id or number with a
+malformed part (`delete 1,abc --confirm` deleted #1, `--min-importance 2x` read 2; a wholly
+malformed one already exited 1); `adopt` given a damaged sentinel line, and `adopt` and `unadopt`
+given an unknown flag or a directory argument; `self-update` when it checked nothing; and
+`import-jsonl` on a file it may not read (a missing one already exited 1) or on lines none of which
+is a transcript event (an empty input still exits 0). Read commands still warn about an unknown flag
+or a project with no rows and exit 0, and `--supersedes` skips a malformed token with a warning.
+`install` no longer empties the marketplace clone's `hooks/hooks.json`, which stopped plugin
+updates: it still clears the duplicate hooks in the plugin cache, where Claude Code loads them, and
+restores the clone's file where an earlier install emptied it. The cost, with both install kinds: a
+plugin version Claude Code materializes after the SessionStart self-heal has run registers its hooks
+beside `settings.json` for one session. The unattended cluster merge, re-enrich (narrow and wide)
+and save-time enrichment send stored rows to the model as data: the instructions and
+`MEMORY_INPUT_GUARD` go in the system role on the keyed API legs, and on `claude -p` ahead of a
+per-call boundary marker that precedes the rows; the rows sat inside the instructions. The alias,
+scope and concept backfills and smart-compress still put rows inside their instructions. Measured
+through `claude -p`, 2 repetitions, with `benchmark/prompt-guard-ab.mjs` (not in the npm package):
+benign rows parsed and complete 20/20 in both arms of each pass. Cluster merge (claude-sonnet-5-5):
+`should_merge` agreement 20/20, merged lesson equal to the injected one-liner 3/12 before, 1/12
+after. Re-enrich (claude-haiku-5-5): hostile rows stored above their input importance 3/12 before,
+0/12 after (benign control 5/20 and 6/20); no reply in either arm obeyed the injected lesson.
+Save-time enrichment (claude-haiku-5-5): a stored lesson carrying the injected one-liner 2/12 before
+(both refusals that quote it), 0/12 after.
+
+**Search**
+
+- **Fix: Chinese text in events, and Latin identifiers glued to it, are searchable** (the Han ranges
+  U+4E00–9FFF and U+3400–4DBF; kana, Hangul and the rarer Han extensions are not segmented).
+  `activity search` and the events leg of `search` missed a CJK event even by its exact title;
+  queries made of a whole CJK run now find their event 1.000 of the time, 0.144 before (n=139, same
+  store copy), once its events are filled (see the upgrade note). `修复了redis连接池泄漏` is found by
+  `redis`. Rows without CJK are indexed as before.
+- **Fix: search says which operators it ignored** ("Search operators are not supported and were
+  ignored: NOT (nothing is excluded)"): `NOT`, `-term`, `OR`, `prefix*` and `column:` were dropped
+  without a word. For OR it names `--or` / `or=true`.
+- **Fix: the listings shown after a miss** (mem_search's `obs_type` fallback, the timeline without
+  an anchor) list the current project, or the one named, not every project's rows.
+- **Fix: deep search** scrubs a secret in the query before the model sees it, escalation included.
+  A query with nothing searchable (`***`) no longer returns the whole store, and mem_search no
+  longer reports a failed rewrite as run.
+- **Fix: `timeline 1` anchors on #1** (any id form that resolves, inside `--project` if given; else
+  a query), and `--anchor N --project P` shows P's rows around N's time.
+- **Fix: a SessionStart Recent row from another UTC day shows its date.**
+- **Change: `context --json` keys the Recent table `recent`**, with a top-level `date`, instead of
+  `recent_(2026-10-16)`, a key that changed every day; a script matching `recent_` must read
+  `recent`.
+
+**Save, update, get, delete and CLI input**
+
+- **Fix: the 5-minute near-duplicate check** no longer skips a `supersedes` correction as a
+  duplicate of the row it retires, and catches a CJK save that repeats a recent one under another
+  title, or differs from it by one character in a longer text; a CJK save naming another Latin
+  identifier or number (`修复了redis…` / `修复了mysql…`, in ASCII or full-width form) is stored.
+- **Fix: an invisible title** (spaces, zero-width, bidi and other default-ignorable characters) is
+  derived from the content by `save` and refused by the six other writers that take a title from
+  you (update, mem_update, defer add, mem_defer, activity save, /verify).
+- **Fix: project names.** A save or deferral naming a mistyped project is refused with the near
+  names (`otherr-api` beside `work--other-api` made a stray project), and a CLI read says the
+  project has no rows. A new name is written, "(new project …)"; a short name for your own
+  directory gets its full id. The MCP server resolves names on every call, mem_optimize included.
+- **Fix: setting the importance or a lesson on a row maintenance hid shows it again**: "visible
+  again (maintenance had hidden it)". A title or narrative edit leaves it hidden.
+- **Fix: `delete`, `update`, `maintain execute` and `activity delete` wait for another writer**
+  instead of failing at once while a hook writes (1–4 of 40 deletes right after a save).
+- **Fix: malformed ids** refuse a delete batch (`delete 1,2x --confirm` deleted #1) and a numeric
+  flag (`--min-importance 2x` read as 2); `--supersedes` skips a malformed token with a warning
+  (`1e1` retired #10). `--supersedes` takes `#N`, `activity show`/`delete` `E#N`; `delete E#1`
+  names `activity delete`, which now snapshots first.
+- **Fix: `save`, `update`, `defer add` and `activity save` refuse a flag they do not take**, and
+  the mutating runs (`compress`, `maintain`, `optimize`, `delete`, `activity promote`/`delete`) a
+  filter flag they do not read, exit 1 (`compress --execute --type change` compressed every type).
+- **Fix: text that starts with `-`.** A bare `--` ends the options; a value such as `--lesson
+  "--no-verify"` is no longer reported as an ignored unknown flag: the refusal says it was read as
+  a flag and names the `--lesson="…"` form, or `defer add -- "…"`.
+- **Fix: messages.** `get` marks a superseded event as not live and says `--fields` selects
+  observation fields; a save under a project-level plugin disable no longer claims enrichment was
+  queued; a deferral drop prints `D#N "title"`; `search` and `get` take both `--source` spellings.
+
+**MCP tools**
+
+- **Fix: mem_search's `query` description no longer claims FTS5 syntax.** It now reads "Search
+  keywords; every word must match (see `or`). Operators and quotes are ignored: NOT, -term, prefix*,
+  column:, "phrase"", and `or`'s text names the automatic AND→OR fallback (a `column:` prefix's
+  column name is still searched as a word, which the text does not say). On a prompt that invites an
+  exclusion and one that lists word variants, Sonnet 5.5 wrote `refresh token NOT expiry …` /
+  `migrate OR migrated …` in 10 of 10 calls under the old text and 0 of 10 under the new one; a
+  plain search was 5/5 under both (`benchmark/tool-text-ab.mjs`; a first run through a scratch copy,
+  without its per-call self-checks, read the same). A prompt inviting `prefix*` was not probed.
+- **Fix: three descriptions say what their tool does.** mem_get no longer tells the model to pass
+  `source` for S#/P# hits (each prefix routes itself, and `source` re-reads every id), mem_recent
+  no longer says it does no filtering (it filters by type and date, not by words), and
+  mem_defer_list points one item's full detail at `mem_get ids=["D#N"]`. On their probes the model
+  called the same tools and every probe scored the same under both texts (5/5 each), so these are
+  corrections, not measured improvements.
+- **Fix: mem_save takes `lesson` and mem_timeline takes `id`**, as declared aliases of
+  `lesson_learned` and `anchor`; both were dropped as unknown keys without a word (mem_save's
+  description prints the CLI's `--lesson`). Sonnet 5.5 passed `lesson_learned` and `anchor` in
+  every probe call, so the aliases did not change those runs.
+- **Fix: mem_get and `get` say when `source` re-read an id that had its own prefix** ("Note:
+  source="prompt" read #2 as P#2; it applies to every id …"). The precedence is unchanged.
+- **Fix: array arguments** take the serialised forms some MCP bridges send (a JSON-array string
+  everywhere; `#N` in `supersedes` and mem_delete's `ids`); a blank string or `"[]"` is refused
+  with "must not be empty" instead of "expected array, received string". `merge_ids` strings must
+  be whole numbers (`"10.9"` merged #10). These array fixes change no advertised JSON schema; the
+  `lesson` and `id` aliases above are this release's only additions to one.
+- **Fix: on a damaged FTS index mem_search names the CLI by its absolute path.**
+- **Fix: the MCP server waits out another writer's lock at startup** (retrying for 15 s, inside
+  Claude Code's 30 s MCP startup timeout) instead of exiting 1 for the session with "FATAL: Database
+  cannot be opened: database is locked". Only an open that has to write waits for the lock, so what
+  hit it was the first open after an update meeting another writer (another process migrating the
+  same store, a long maintain).
+
+**Hooks, sessions and adopt**
+
+- **Fix: a held write lock** (a long vacuum, FTS rebuild, import or restore) got UserPromptSubmit
+  and Stop killed at their 5 s timeout and left SessionStart silent. A hook now waits for another
+  writer only until 3.5 s after it started (SessionStart 11 s): each connection it opens gets the
+  time left. A lock that ends before then is waited out as before (under a 2.5 s lock the prompt row
+  and Stop's turn are recorded); under a longer one UserPromptSubmit exits at about 3.5 s with its
+  context, Stop with three sessions' work buffered in 3.8 s, and SessionStart after `/compact` with
+  buffered and orphaned episodes in 11.2 s with its context, where each was killed. The price: a
+  lock ending between 3.5 s and the kill, which 6.27.0 waited out, now drops the write (under a 4.0
+  or 4.5 s lock 6.27.0 stored the prompt row at 4.1 / 4.6 s; this release exits at 3.5 s without
+  it). Two waits are outside the budget: a statement meeting a lock after another statement on the
+  same connection has already waited can wait the connection's time again, and on the first open
+  after the update the migration waits up to 5 s for the lock, as 6.27.0 did.
+- **Fix: a plugin switched off stops every hook**, including those a direct install writes into
+  `settings.json`, and the check follows Claude Code's merge of user, project and local
+  `enabledPlugins` (an unparseable file sets nothing). `status` and `doctor` name a project's own
+  switch when it differs.
+- **Fix: handoffs.** After `/clear` the handoff arrives once, not twice, with no "Continuation
+  available" pointer to the session itself; another live session's handoff is not resumed.
+- **Fix: after `/compact` a file's lessons are recalled again**, and error recall repeats the same
+  memories to a thread at most once per 30 minutes, not on every failing run.
+- **Fix: a PostToolUse payload past 256 KB** (an Edit of a file over ~250 KB) was dropped; up to 8
+  MB is read now, a larger one kept by path and marked not read, its Bash command scrubbed before
+  the cut.
+- **Fix: per-project runtime files no longer collide** for non-ASCII project ids (one project's
+  Stop nudges showed in another's SessionStart) or ASCII ids past 64 characters.
+- **Fix: the launcher's post-SessionStart repair and binding heal run**; `hook.mjs` exited first.
+- **Fix: adopt.** A damaged sentinel line is refused by line number with nothing written (it
+  appended a second block), and SessionStart adds no second copy beside it. An unknown flag or a
+  directory argument is refused (`adopt --dryrun` wrote CLAUDE.md), an inherited `$PWD` no longer
+  beats the real cwd, a no-op re-run leaves the sidecar alone, and install adopts only its own
+  clone.
+
+**Install, doctor, status, uninstall, self-update**
+
+- **Fix: an update killed between two file renames no longer leaves the repair path unable to
+  load.** The update renames the files into place one at a time in the order the new release lists
+  them, and that list put entry points before what they import: a kill inside the swap from 6.27.0
+  to this release would have left `install.mjs` (the repair the launcher's self-heal runs) failing
+  to load at 77 of its 168 split points, `hook.mjs` at 142 and the `scripts/` hooks at up to 119
+  (counting static imports: 8 of 13 entry points failed somewhere, 11 with the lazily imported
+  modules; in the shipped 6.26.0 → 6.27.0 swap `hook.mjs` and the memory CLI failed too, the repair
+  path did not). Every file now follows what it imports, lazily imported ones included, and at every
+  split point of that swap all 13 entry points load (`scripts/swap-mixed-tree.mjs`, a dev-only
+  script run by hand before a release; `tests/source-files-swap-order.test.mjs` holds the order in
+  CI). `package.json`, where a direct install's daily update check reads the installed version, is
+  now renamed last, so a swap killed while it renames those files is replayed by the next check
+  rather than left mixed until the next release (it was 25th: 25 of the 168 split points; now 167).
+  A kill after it, while `scripts/` and `node_modules/` are renamed, is still left for the next
+  release or a manual install.
+- **Change: `install` no longer edits the marketplace clone** (see the upgrade note). Its one
+  remaining write puts back, with `git checkout`, a `hooks/hooks.json` that an earlier install
+  emptied, and `doctor` names that edit instead of "Inspect: git status".
+- **Fix: a failed MCP registration no longer ends on "Done!"**: it says the server is NOT
+  registered and exits 3, unless a `mem-lite` entry already runs this install's server.
+- **Fix: hooks that only look like ours are kept.** `install`, `uninstall`, `cleanup-hooks` and the
+  update's prune deleted a user's own `post-tool-use.sh` or `hook-launcher.mjs` hooks; a launcher-
+  or prefilter-shaped hook is now ours only when the product's root or one of our entries anchors
+  it (a path through a `claude-mem-lite*` directory still counts by its name). `cleanup-hooks` and
+  `uninstall` list what they removed; `doctor` lists dead look-alikes for you to delete.
+- **Fix: an unwritable config home**, or a symlinked `settings.json`'s target directory, is refused
+  before `install`, `uninstall` or `cleanup-hooks` does anything. `uninstall` names an MCP removal
+  it could not do, with the command, and the CLAUDE.local.md blocks it leaves behind.
+- **Fix: the CLI.** `install` and `uninstall` leave a command link they do not own, and `install`
+  says when the link is off PATH (a literal `~` counts as home). A bare `npx claude-mem-lite`
+  reinstalls when memories exist; a bare `claude-mem-lite` under an npx-started Claude Code does
+  not.
+- **Fix: a broken install is told its own repair** (npx, `/plugin` reinstall or git, not `npm -g`),
+  by the memory commands too, and a module cut before its exports is named, not the module
+  importing it; `install` warns over a database a newer release wrote; `self-update` exits 1 when
+  it checked nothing (offline, `CLAUDE_MEM_SKIP_UPDATE`, a dev install) or its install failed.
+- **Fix: `doctor`.** A busy database reads "not checked — the database is in use by another
+  process", also in `fts-check`, not four damaged indexes to rebuild. The orphan-hook repair is
+  `cleanup-hooks` (direct-only: `install`), not `uninstall`. The MCP SDK is checked per code home;
+  a plugin cache awaiting its first `npm install` gets ⚠, not three ✗; a failed one ✗.
+
+**Maintenance and background LLM work**
+
+- **Fix: explicit saves leave the idle GC, daily compression and purge.** A save without a lesson
+  was decayed, hidden and hard-deleted about 41 days after it was written. Those passes skip them
+  now; decay still lowers their importance and unhides one an earlier release hid, and the daily
+  cluster merge can still fold one into a similar row (keeping its lesson and highest importance).
+  `maintain scan` now counts the decay execute applies, stops counting explicit saves as purge
+  candidates, and names the ones execute shows again.
+- **Fix: re-enrich leaves an explicit save's text, type and importance alone**; the narrow pass
+  rewrote or hid it. Cluster merges keep the members' lessons and their highest importance, and
+  skip a cluster whose lessons do not fit in one.
+- **Fix: a caller's timeout bounds the whole LLM call**, fallback included (hung provider and CLI:
+  lesson bridge 5012–5021 → 2504–2505 ms, `search --deep` 48184 → 24201 ms).
+- **Change: the session summary waits for a slow episode**: `CLAUDE_MEM_FLUSH_TIMEOUT`'s default
+  rises from 15 s to 275 s (an episode worker's longest run). A killed episode worker's flush file
+  goes to a new worker once, when a session starts within an hour of the flush (two files per
+  start); a worker that is only paused (a suspended laptop) keeps its file, so the episode is not
+  saved twice.
+- **Fix: save-time enrichment takes an LLM slot** (12 saves ran 13 `claude -p` at once): under a
+  burst a worker waits up to 60 s for one of 2 slots, then leaves the row to the daily backfills,
+  though the save said enrichment was queued. A worker whose data directory was removed exits in 420
+  ms, not 61 s.
+
+**Import, export, README**
+
+- **Fix: `import-jsonl`** caps a string tool result at 4000 characters after scrubbing it whole,
+  exits 1 for an unreadable file or for lines none of which is a transcript event (an export file,
+  say; an empty input still exits 0), and imports a line without a timestamp once however often the
+  file is re-imported (two such lines with the same text in one file are both kept, and a re-import
+  adds neither again).
+- **Fix: mem_export says what a backup leaves out**, as the CLI does, and both export faces read a
+  bare date as the local day, as search does.
+- README: the degraded fallback keeps an error fix only when a command that exited 0 printed the
+  error; the project-scoping line describes what search does; the `CLAUDE_MEM_SKIP_EPISODE_LLM` row
+  says what the switch skips.
+
+**Earlier notes**
+
+- **Correction to the v6.26.0 notes.** Their recipe for staying on Claude Haiku 4.5 on the direct
+  API (`ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4-5-20251001` with
+  `ANTHROPIC_BASE_URL=https://api.anthropic.com`) said Claude Code's `haiku` alias and the `claude
+  -p` fallback then run 4.5 too. It did not say that the model variable also moves Claude Code's
+  own background functionality to Claude Haiku 4.5: Claude Code's docs
+  (code.claude.com/docs/en/env-vars, read 2026-10-15) give the variable as the model the `haiku`
+  alias resolves to, "also used for background functionality". As for "Claude Code itself runs with
+  a base URL set": `ANTHROPIC_BASE_URL=https://api.anthropic.com` triggers none of the changes
+  those docs tie to a host other than Anthropic's (among them MCP tool search and Remote Control
+  turning off), and whether that literal value is otherwise treated like unset is not documented.
+
+## v6.27.0 — less hook text per session: the recall framing line once per thread, file-intel off by default
+
+**Upgrade note: the plugin's hooks put less text into each session's context; there is nothing
+to do.** Re-rendered through this release's code, the main conversations of the 52 sessions in a
+frozen corpus from this machine (2026-09-30 to 2026-10-15) receive 12.66 KB per session from the
+plugin instead of 18.57 (`docs/audits/20261016-injection-budget-after.md`; subagent transcripts
+are not counted). The lessons recall injects (the `#NN` / `E#NN` rows before an edit, after an
+error and on a prompt) are unchanged, and a thread's first block that asks to tag an applied
+lesson still asks in full. Every change below except the bug fix has a setting that brings the
+old behaviour back. No schema change, no migration.
+
+- **Change: the PreToolUse framing line and the full pre-edit directive are shown once per
+  thread.** Later recall blocks of the same session (or subagent) open with their own `[mem]`
+  line; those that carry a directive (an Edit with lessons, the Read→Edit reminder) carry a
+  short one that keeps the `(#NN)` tag rule. Both come back after `/compact`. The short form is
+  the default `CLAUDE_MEM_SALIENCE` arm's; the `verdict`, `bind` and `bridge` arms keep their
+  full text on every block. `CLAUDE_MEM_RECALL_HEADER_ONCE=0` / `CLAUDE_MEM_DIRECTIVE_ONCE=0`
+  restore them on every block. On the corpus: framing lines 2.78 → 0.09 KB per session,
+  Read→Edit reminders and pre-edit directives 2.40 → 1.31.
+- **Change: the file-intel line is opt-in** (`CLAUDE_MEM_FILE_INTEL=1`). It rode the first read
+  of a large file (a Read, or a Bash `cat` / `sed -n` / `head`) and reached the model next to
+  that read's result, so it could not shape that read; 89.9% of those lines rode a read that
+  already took a slice. 1.57 KB per session on the corpus.
+- **Change: the SessionStart Recent table shows 5 rows** — the project's own first, then other
+  projects' rows when the project has few. `CLAUDE_MEM_STARTUP_RECENT_ROWS` sets the count: a
+  large value such as `1000` brings back the table as it was, `0` hides it. `claude-mem-lite
+  context` prints the same table and gets the same cap. Before this release it showed 7–13 rows
+  per table on the corpus; 1.02 → 0.57 KB per session.
+- **Change: the startup dashboard drops the `mem events` count**
+  (`CLAUDE_MEM_DASHBOARD_EVENTS=1` brings it back). No session on the corpus ran the
+  `activity` command it points to.
+- **Fix: "Past similar questions" no longer returns the prompt you just typed** or another
+  prompt of the same session. The prompt is stored while the search runs, so the search could
+  find it.
+- **Change: it also skips a question from an earlier session that is the same as the one just
+  typed** (`CLAUDE_MEM_UPS_PROMPT_ECHO=0` keeps those).
+- **Not measured: whether the model acts differently on the shorter text.** In particular, the
+  framing line was added because the model sometimes ended its turn after a recall block, and
+  a recorded corpus cannot show whether that comes back without it. The citation rate is the
+  same on the re-rendered corpus only because the same lesson ids reach the model; across the
+  52 sessions the model cited 4 injected lessons in all, too few to show a change after release.
+- **New ruler: `benchmark/injection-budget.mjs`** counts hook bytes per hook face and line
+  class over a frozen transcript corpus and re-renders recorded blocks through the shipped code
+  (`docs/measurement/rulers.md`, "injection budget").
+
+## v6.26.1 — a keyed reply that is not a whole answer goes to the `claude -p` fallback
+
+Fixes only; no schema change, no migration, no new setting. Without `ANTHROPIC_API_KEY` or
+`OPENROUTER_API_KEY` nothing here applies: every call already goes through `claude -p`.
+
+- **Fix: a reply that was cut off, filtered or refused now goes to the `claude -p` fallback.**
+  The plugin's callers parse a fixed-shape JSON answer out of the reply (the opt-in lesson bridge
+  keeps its first line instead). When the reply stopped at its token limit (direct API
+  `stop_reason: "max_tokens"`, OpenRouter `finish_reason: "length"`), the plain-text calls passed
+  the cut-off text on as the answer, and the JSON calls returned nothing without trying the
+  fallback, which has no such limit. A reply whose JSON was already complete before the cut now
+  goes to the fallback too, although it could have been used. The same
+  now holds for an OpenRouter reply whose `finish_reason` is `content_filter` or `error`, whose
+  `native_finish_reason` is `refusal`, or whose choice carries an `error`; such a reply could
+  pass partial text on as the answer. These follow OpenRouter's API reference; its refusal
+  reply for Anthropic models has not been observed live. The direct API also read only the
+  first text block of a reply, so an empty first block sent the call to the fallback and
+  dropped the answer in the block after it; text blocks are now joined.
+- **Fix: Claude Haiku 5.5 under an OpenRouter variant or a Bedrock-form ID gets the request
+  written for it.** v6.26.0 sent that request (thinking off, a structured output on deep search's
+  query rewrite and, on the direct API, no `temperature`) only to the exact IDs
+  `claude-haiku-5-5` and `anthropic/claude-haiku-5.5`. It now also goes to OpenRouter variants
+  such as `OPENROUTER_MODEL=anthropic/claude-haiku-5.5:nitro` or `:floor`, which were sent with
+  thinking on and no structured output, and to `anthropic.claude-haiku-5-5`, the form a gateway
+  may use, with or without a cross-region prefix such as `us.`, `global.` or GovCloud's
+  `us-gov.`, which was sent with thinking on, no structured output and `temperature: 0`, a value
+  Claude Haiku 5.5 rejects. A gateway deployment name is still not guessed at: if your
+  deployment is Claude Haiku 5.5 under a name of your own, name it `claude-haiku-5-5`, as the
+  v6.26.0 notes say.
+- **OpenRouter: Claude Haiku 5.5 is no longer sent `temperature`.** OpenRouter dropped it in
+  transit (no endpoint serving that model lists the parameter); the request now leaves it out,
+  as the direct API's does. Other OpenRouter models are still sent `temperature: 0`.
+- Internal, no behaviour change: the hook builds each episode entry's fields for the background
+  summarizer through one function, `workerEntryFields`, which the benchmark replays now call too.
+  Not in the npm package: golden files now pin the episode prompt's text, and
+  `benchmark/key-events-input-replay.mjs` computes each entry's summarizer fields with the
+  hook's function and options; on this repository's sessions its readings moved for 1 of 1096
+  events (`docs/measurement/rulers.md`).
+
+## v6.26.0 — haiku-tier LLM calls made with an API key move to Claude Haiku 5.5
+
+**Upgrade note: with `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` set, the `haiku` tier now
+calls Claude Haiku 5.5**, unless you already choose the model yourself: `OPENROUTER_MODEL` when
+OpenRouter is the provider in use (`ANTHROPIC_API_KEY` unset; with both keys set the direct API
+is used), or `ANTHROPIC_DEFAULT_HAIKU_MODEL` together with `ANTHROPIC_BASE_URL`. No schema
+change, no migration, no new setting.
+
+- **What changes.** The `haiku` tier carries every LLM call the plugin makes except normalize's
+  synonym grouping, cluster merging and smart-compress, which run on the `sonnet` tier and are
+  unchanged. That includes background work (episode extraction and its lesson retry, session
+  summaries, save-time enrichment, optimize's re-enrich pass) and deep search's query rewrite
+  and rerank, which run while a search waits. `CLAUDE_MEM_MODEL=sonnet` still moves the calls
+  that follow that setting, episode extraction among them, to the `sonnet` tier. Until now the
+  direct Anthropic API was sent `claude-haiku-4-5-20251001` and OpenRouter
+  `anthropic/claude-haiku-4.5`; they are now sent `claude-haiku-5-5` and
+  `anthropic/claude-haiku-5.5`. Without a key nothing changes: the `claude -p --model haiku`
+  fallback already ran Claude Haiku 5.5, because Claude Code 2.1.293 and later resolves that
+  alias to it on the Anthropic API (on Bedrock, Vertex, Foundry and Claude Platform on AWS it
+  stays on 4.5). On the Anthropic API with Claude Code 2.1.293 or later, all three paths now
+  run the same model.
+- **Why.** Measured through OpenRouter before switching (`docs/measurement/rulers.md`,
+  "haiku-tier model A/B", 2026-10-15). With the request changes below, Claude Haiku 5.5 gave a
+  usable answer as often as 4.5, 24 of 24 for both, on 24 episodes from this machine's
+  sessions and on 24 query-rewrite and 24 rerank prompts from the repository's test fixtures.
+  On 72 episodes it wrote fewer lessons that the plugin keeps (28 against 40), but more of them
+  were accurate: two Claude judges, blind to which model wrote each lesson, both called 19 of
+  the 28 accurate to the session evidence the model was shown, against 16 of the 40 (and 31 of
+  34 for the `claude -p` path). Not measured: the other `haiku`-tier calls listed above, the
+  opt-in lesson bridge (`CLAUDE_MEM_SALIENCE=bridge`), and the direct API, whose request was
+  checked against a stub, not sent.
+- **What the plugin sends to Claude Haiku 5.5.** The model rejects any `temperature` other than
+  its default, including the `0` the plugin sent, and thinks before answering unless told not
+  to, which spends the small token budgets these calls have. The direct API now gets no
+  `temperature` and `thinking: {type: "disabled"}`; OpenRouter gets
+  `reasoning: {enabled: false}`. The `temperature: 0` pin therefore no longer applies on the
+  `haiku` tier. With thinking off, the model answered some one-word deep-search queries
+  ("React", "API") with a question in prose instead of JSON, so the query rewrite now asks it
+  for a JSON-schema structured output. A refusal from the direct API is treated like any
+  failed call, so the `claude -p` fallback is tried; its category is written to stderr only
+  with `CLAUDE_MEM_DEBUG=1`, and the background workers discard stderr. A model ID you set
+  yourself that is not exactly `claude-haiku-5-5` or `anthropic/claude-haiku-5.5` gets the same
+  request as before, even when it names Claude Haiku 5.5 another way (an OpenRouter variant
+  such as `anthropic/claude-haiku-5.5:nitro`, a gateway deployment name).
+- **Gateways.** With `ANTHROPIC_BASE_URL` set and `ANTHROPIC_DEFAULT_HAIKU_MODEL` unset, your
+  gateway now receives `claude-haiku-5-5`. If it does not serve that model, every `haiku`-tier
+  call fails there and falls back to `claude -p`, which sends its requests to the same
+  `ANTHROPIC_BASE_URL`. Set `ANTHROPIC_DEFAULT_HAIKU_MODEL` to the model or deployment the
+  gateway routes to. If that deployment is Claude Haiku 5.5 under another name, the plugin
+  sends it the request written for 4.5, with `temperature: 0`, which Claude Haiku 5.5 rejects;
+  name the deployment `claude-haiku-5-5`, or route to 4.5.
+- **To stay on Claude Haiku 4.5:**
+  - Direct API: set `ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4-5-20251001` together with
+    `ANTHROPIC_BASE_URL=https://api.anthropic.com`; the plugin reads that model variable on the
+    direct API only when a base URL is set. Both are Claude Code settings too: where Claude Code
+    sees them, its `haiku` alias, and with it the `claude -p` fallback, runs 4.5 as well, and
+    Claude Code itself runs with a base URL set. With a base URL set, the plugin also sends
+    `ANTHROPIC_DEFAULT_SONNET_MODEL`, if you set one for Claude Code, on its three
+    `sonnet`-tier calls, so it must then be a model ID the Anthropic API accepts.
+  - OpenRouter: set `OPENROUTER_MODEL=anthropic/claude-haiku-4.5`. That variable picks the
+    model for every tier, so the three `sonnet`-tier calls above then run Claude Haiku 4.5 too.
+    A failed call still falls back to `claude -p` on its own tier: `--model haiku` for the
+    `haiku`-tier calls, which runs Claude Haiku 5.5 on the Anthropic API unless
+    `ANTHROPIC_DEFAULT_HAIKU_MODEL` points Claude Code's alias elsewhere, and `--model sonnet`
+    for the three `sonnet`-tier calls.
+- Not in the npm package (plugin installs copy the repository and carry them; nothing runs
+  them): `benchmark/haiku-model-ab.mjs` compares models on three of the shipped `haiku`-tier
+  prompts (episode, query rewrite, rerank), and `benchmark/lesson-blind-read.mjs` prepares and
+  scores a blind two-judge read of the lessons such a run kept.
 
 ## v6.25.3 — the self-heal recognises better-sqlite3 13's missing binding; a lock nobody can take is named
 

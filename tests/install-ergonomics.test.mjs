@@ -9,6 +9,7 @@ import { mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync, copyFileSync
 import { join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
+import { shellWord } from '../cli-path.mjs';
 import { collectOrphanHookPaths } from '../install.mjs';
 import { NATIVE_BINDING_REBUILD_CMD, NATIVE_BINDING_SOURCE_BUILD_CMD } from '../lib/binding-probe.mjs';
 
@@ -333,7 +334,9 @@ describe('collectOrphanHookPaths (v2.79)', () => {
     // ones that look like a hook path; falls back to unquoted only if none qualify.
     // NOTE: the command string below is contrived to exercise the path-extractor
     // parser, NOT realistic hook execution (real `bash -c "..." "/...sh"` passes
-    // the trailing arg as $0 to the inline script). The parser is what we test.
+    // the trailing arg as $0 to the inline script). The parser is what we test, on one of our
+    // entry names: a missing script under a qwen-mem-lite* directory that is not one of ours is
+    // the user's dead hook, not an orphan of ours (D#479).
     const settings = {
       hooks: {
         SessionStart: [
@@ -343,7 +346,7 @@ describe('collectOrphanHookPaths (v2.79)', () => {
               {
                 type: 'command',
                 command:
-                  'bash -c "qwen-mem-lite tracer; exec bash" "/tmp/nonexistent-qwen-mem-lite/scripts/wrapped.sh"',
+                  'bash -c "qwen-mem-lite tracer; exec bash" "/tmp/nonexistent-qwen-mem-lite/scripts/post-tool-use.sh"',
               },
             ],
           },
@@ -351,7 +354,7 @@ describe('collectOrphanHookPaths (v2.79)', () => {
       },
     };
     const orphans = collectOrphanHookPaths(settings);
-    expect(orphans).toEqual(['/tmp/nonexistent-qwen-mem-lite/scripts/wrapped.sh']);
+    expect(orphans).toEqual(['/tmp/nonexistent-qwen-mem-lite/scripts/post-tool-use.sh']);
     expect(orphans).not.toContain('qwen-mem-lite tracer; exec bash');
   });
 
@@ -376,6 +379,70 @@ describe('collectOrphanHookPaths (v2.79)', () => {
     };
     const orphans = collectOrphanHookPaths(settings);
     expect(orphans.filter((p) => p === '/tmp/nonexistent-qwen-mem-lite/hook.mjs')).toHaveLength(1);
+  });
+});
+
+// E2E round 2 (install B11): on a direct-only install (no plugin), the two-step repair
+// "cleanup-hooks, then install" left the install with no hooks after step 1, and doctor then said
+// only "hooks not configured" with no remedy and passed. There `install` alone is the repair: it
+// strips the dead entries and writes its own.
+describe('doctor on a direct-only install', () => {
+  function directOnlyHome(settings) {
+    const home = makeTmpDir();
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    mkdirSync(join(home, '.qwen-mem-lite', 'scripts'), { recursive: true });
+    writeFileSync(join(home, '.qwen-mem-lite', 'scripts', 'hook-launcher.mjs'), '// stub');
+    // A managed install's entry points (lib/install-shape.mjs MANAGED_ENTRY_POINTS).
+    for (const f of ['install.mjs', 'server.mjs', 'hook.mjs', 'cli.mjs', 'mem-cli.mjs'])
+      writeFileSync(join(home, '.qwen-mem-lite', f), '// stub');
+    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify(settings));
+    return home;
+  }
+  const doctor = (home) => {
+    try {
+      return execFileSync(process.execPath, [INSTALL_PATH, 'doctor'], {
+        encoding: 'utf8',
+        env: envWithoutPluginRoot({ HOME: home }),
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch (e) {
+      return (e.stdout || '') + (e.stderr || '');
+    }
+  };
+  it('names install as the one-step orphan repair', () => {
+    const home = directOnlyHome({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Skill',
+            hooks: [
+              {
+                type: 'command',
+                command: `node "${'/x'}/.qwen-mem-lite/scripts/hook-launcher.mjs" scripts/pre-skill-bridge.js`,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    try {
+      const out = doctor(home);
+      expect(out).toMatch(/Orphan hooks:/);
+      expect(out).toMatch(/Repair: node \S*\.qwen-mem-lite\/install\.mjs"? install/);
+      expect(out).not.toMatch(/cleanup-hooks/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+  it('a direct install with no hooks at all names the repair', () => {
+    const home = directOnlyHome({});
+    try {
+      const out = doctor(home);
+      expect(out).toMatch(/hooks not configured — the direct install/);
+      expect(out).toMatch(/Repair: node \S*\.qwen-mem-lite\/install\.mjs"? install/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
@@ -422,7 +489,10 @@ describe('doctor surfaces orphan hooks (v2.79)', () => {
 
       expect(output).toMatch(/Orphan hooks:.*settings\.json/);
       expect(output).toContain('/tmp/nonexistent-qwen-mem-lite-doctor/hook.mjs');
-      expect(output).toMatch(/Repair:.*install\.mjs uninstall/);
+      // cleanup-hooks, never uninstall: uninstall also removes the MCP registration and a
+      // working plugin (E2E 2026-10-16, install P1-3).
+      expect(output).toMatch(/Repair:.*install\.mjs"? cleanup-hooks/);
+      expect(output).not.toMatch(/Repair:.*uninstall/);
     } finally {
       try {
         rmSync(home, { recursive: true, force: true });
@@ -481,7 +551,7 @@ describe('status distinguishes "no symlink" from "symlink off PATH"', () => {
 
       const output = runStatus(home);
       expect(output).toContain(`installed at ${join(binDir, 'qwen-mem-lite')}`);
-      expect(output).toContain(`export PATH="${binDir}:$PATH"`);
+      expect(output).toContain(`export PATH=${shellWord(binDir)}:"$PATH"`);
       // The reinstall remedy is the WRONG answer here; its absence is the fix.
       expect(output).not.toContain('run install again to create symlink');
     } finally {

@@ -47,6 +47,7 @@ import {
 import { memdirPath, disableSentinelPath } from '../memdir.mjs';
 import { isAdoptedHere } from '../lib/quiet-scope.mjs';
 import { mkdtempWithoutInstructionAncestors } from './test-helpers.mjs';
+import { CLI_INVOKE } from '../cli-path.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SLUG = PLUGIN_SLUG;
@@ -417,8 +418,8 @@ describe('SessionStart end to end', () => {
     expect(status(app)).toBe('');
     expect(first.systemMessage).toMatch(/CLAUDE\.local\.md/);
     // The undo it names is the one that holds (a removed file stays removed).
-    expect(first.systemMessage).toMatch(
-      /Delete it or run `qwen-mem-lite unadopt` and it is not written again/,
+    expect(first.systemMessage).toContain(
+      `Delete it or run \`${CLI_INVOKE} unadopt\` and it is not written again`,
     );
     // The block points at a detail doc that exists, in the plugin's data dir, named under ~.
     const ref = /→ `([^`]+plugin_claude_mem_lite\.md)`/.exec(readFileSync(join(app, LOCAL_MD), 'utf8'))?.[1];
@@ -457,6 +458,45 @@ describe('SessionStart end to end', () => {
     expect(out.hookSpecificOutput?.additionalContext ?? '').not.toContain(HEADING);
     expect(out.systemMessage ?? '').not.toMatch(/\/adopt/);
     expect(existsSync(join(app, LOCAL_MD))).toBe(false);
+  });
+
+  // v6.30.0 pre-tag claims review P2-5: managed-only loads no project CLAUDE.md, so the CLAUDE.md
+  // /adopt writes outside git steers nothing either (D#219 covered the git work tree only).
+  it('outside git under managed-only, the steering is injected and /adopt is not offered', () => {
+    const plain = join(home, 'work', 'plain');
+    mkdirSync(plain, { recursive: true });
+    const premise = sessionStart(plain);
+    expect(premise.systemMessage ?? '', 'premise: outside git /adopt is offered').toMatch(/\/adopt/);
+    const managed = join(home, 'work', 'plain2');
+    mkdirSync(managed, { recursive: true });
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(
+      join(home, '.claude', 'settings.json'),
+      JSON.stringify({
+        pluginConfigs: { 'cc-plugin-agents-md@builtin': { options: { instructionFiles: 'managed-only' } } },
+      }),
+    );
+    const out = sessionStart(managed);
+    expect(out.hookSpecificOutput.additionalContext).toContain(HEADING);
+    expect(out.systemMessage ?? '').not.toMatch(/\/adopt/);
+  });
+
+  // Defects review P3-4: the git work tree's reason (local-managed-only) had no SessionStart case.
+  it('in a git work tree under managed-only, the steering is injected and /adopt is not offered', () => {
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(
+      join(home, '.claude', 'settings.json'),
+      JSON.stringify({
+        pluginConfigs: { 'cc-plugin-agents-md@builtin': { options: { instructionFiles: 'managed-only' } } },
+      }),
+    );
+    const out = sessionStart(app);
+    expect(out.hookSpecificOutput.additionalContext).toContain(HEADING);
+    expect(existsSync(join(app, LOCAL_MD))).toBe(false);
+    expect(out.systemMessage ?? '').not.toMatch(/\/adopt/);
+    // With the block in CLAUDE.md, which managed-only does not load either (defects review P2-2).
+    writeManaged(app, { slug: SLUG, version: V, block: buildClaudeMdBlock(), doc: getDetailDoc() });
+    expect(sessionStart(app).hookSpecificOutput?.additionalContext ?? '').toContain(HEADING);
   });
 
   it('outside git the steering is still injected', () => {
@@ -576,6 +616,46 @@ describe('pre-tag defect review: local steering edges', () => {
     return lines.join('\n');
   };
   beforeEach(() => initRepo(app()));
+
+  // D#177(2): adopt run in an intermediate directory of a monorepo, a session started below it.
+  // Claude Code loads packages/CLAUDE.md as an ancestor, and a root CLAUDE.local.md loaded the
+  // same block a second time.
+  it('a session below a directory whose CLAUDE.md carries the block writes no root CLAUDE.local.md', () => {
+    const pkgs = join(app(), 'packages');
+    const deep = join(pkgs, 'web', 'src');
+    mkdirSync(deep, { recursive: true });
+    captureLog(() => withCwd(pkgs, () => cmdAdopt([])));
+    expect(readBlock(pkgs, SLUG).body, 'premise: adopt wrote the block there').not.toBeNull();
+    expect(silentAutoAdopt({ cwd: deep })).toMatchObject({ action: 'already-adopted' });
+    expect(existsSync(join(app(), LOCAL_MD))).toBe(false);
+  });
+
+  // v6.30.0 pre-tag claims review P2-4: --status there checked only the session's directory and the
+  // root, and promised a root CLAUDE.local.md the next session does not write.
+  it('adopt --status below such a directory names the CLAUDE.md, not a file the next session skips', () => {
+    const pkgs = join(app(), 'packages');
+    const deep = join(pkgs, 'web', 'src');
+    mkdirSync(deep, { recursive: true });
+    captureLog(() => withCwd(pkgs, () => cmdAdopt([])));
+    const status = withCwd(deep, () => captureLog(() => cmdAdopt(['--status'])));
+    expect(status).toMatch(/local: +- none: CLAUDE\.md carries the block/);
+    expect(status).not.toMatch(/next session writes/);
+    // A session at the root still writes its own file, which sessions below then load too.
+    expect(silentAutoAdopt({ cwd: app() })).toMatchObject({ action: 'local' });
+    const twice = withCwd(deep, () => captureLog(() => cmdAdopt(['--status'])));
+    expect(twice).toMatch(/sessions here load it twice/);
+  });
+
+  // The quiet gate mirrors that: the session is steered by packages/CLAUDE.md even where the root
+  // has auto-adopt switched off, so it is quiet, not verbose on top of the block.
+  it('the quiet gate counts a block in a directory between the session and the root', () => {
+    const pkgs = join(app(), 'packages');
+    const deep = join(pkgs, 'web', 'src');
+    mkdirSync(deep, { recursive: true });
+    captureLog(() => withCwd(pkgs, () => cmdAdopt([])));
+    captureLog(() => withCwd(app(), () => cmdAdopt(['--disable'])));
+    expect(isAdoptedHere(deep)).toBe(true);
+  });
 
   it('a symlinked CLAUDE.local.md is not written through', () => {
     const other = join(home, 'dotfiles');
@@ -1076,6 +1156,28 @@ describe('AGENTS.md: auto-adopt does not switch it off', () => {
       JSON.stringify({ pluginConfigs: { [id]: { options: { instructionFiles } } } }),
     );
   };
+  const withCwd = (dir, fn) => {
+    const before = process.cwd();
+    process.chdir(dir);
+    process.env.CLAUDE_PROJECT_DIR = dir;
+    try {
+      return fn();
+    } finally {
+      process.chdir(before);
+      delete process.env.CLAUDE_PROJECT_DIR;
+    }
+  };
+  const captureLog = (fn) => {
+    const lines = [];
+    const orig = console.log;
+    console.log = (m) => lines.push(String(m));
+    try {
+      fn();
+    } finally {
+      console.log = orig;
+    }
+    return lines.join('\n');
+  };
   beforeEach(() => initRepo(app()));
 
   it('a repository whose AGENTS.md is its instructions gets the block in .claude/rules, no CLAUDE.local.md', () => {
@@ -1214,13 +1316,78 @@ describe('AGENTS.md: auto-adopt does not switch it off', () => {
     ['claude-md-and-agents-md', 'cc-plugin-agents-md@builtin', LOCAL_MD],
     ['claude-md-and-agents-md', 'agents-md@builtin', LOCAL_MD],
     ['claude-md', 'cc-plugin-agents-md@builtin', LOCAL_MD],
-    ['managed-only', 'cc-plugin-agents-md@builtin', LOCAL_MD],
     ['claude-md-or-agents-md', 'cc-plugin-agents-md@builtin', RULES_MD],
     ['a-value-from-a-later-version', 'cc-plugin-agents-md@builtin', RULES_MD],
   ])('instructionFiles=%s under %s in the user settings → %s', (value, id, file) => {
     agentsMd(app());
     userSettings(join(home, '.claude'), value, id);
     expect(silentAutoAdopt({ cwd: app() })).toMatchObject({ action: 'local', file });
+  });
+
+  // D#219: managed-only loads neither CLAUDE.local.md nor the rules file (code.claude.com/docs/en/
+  // memory, read 2026-10-20), so a file there steers nothing: none is written and the session
+  // injects. (This row used to expect CLAUDE.local.md.)
+  it.each([
+    ['beside an AGENTS.md', true],
+    ['with no AGENTS.md', false],
+  ])('instructionFiles=managed-only → inject and no file, %s', (_name, withAgents) => {
+    if (withAgents) agentsMd(app());
+    userSettings(join(home, '.claude'), 'managed-only');
+    expect(silentAutoAdopt({ cwd: app() })).toMatchObject({ action: 'inject', reason: 'local-managed-only' });
+    expect(existsSync(join(app(), LOCAL_MD))).toBe(false);
+    expect(existsSync(join(app(), RULES_MD))).toBe(false);
+  });
+
+  // Not removed either: the plugin would then remember a removal and not write the block back when
+  // the setting changes again.
+  it('managed-only leaves a block already in CLAUDE.local.md as it is, and says why at --status', () => {
+    expect(silentAutoAdopt({ cwd: app() })).toMatchObject({ action: 'local', file: LOCAL_MD });
+    const before = readFileSync(join(app(), LOCAL_MD), 'utf8');
+    userSettings(join(home, '.claude'), 'managed-only');
+    expect(silentAutoAdopt({ cwd: app() })).toMatchObject({ action: 'inject' });
+    expect(readFileSync(join(app(), LOCAL_MD), 'utf8')).toBe(before);
+    const status = withCwd(app(), () => captureLog(() => cmdAdopt(['--status'])));
+    expect(status).toMatch(/managed-only/);
+    expect(status).not.toMatch(/next session removes it/);
+    expect(status).not.toMatch(/undefined/);
+  });
+
+  // v6.30.0 pre-tag defects review P2-2: managed-only loads no project CLAUDE.md either, and a block
+  // there returned already-adopted, so the session had no steering at all. The file stays as it is.
+  it('managed-only where CLAUDE.md carries the block: injected, CLAUDE.md left as it is', () => {
+    captureLog(() => withCwd(app(), () => cmdAdopt([])));
+    const before = readFileSync(join(app(), 'CLAUDE.md'), 'utf8');
+    expect(before, 'premise: adopt wrote the block').toContain('qwen-mem-lite:begin');
+    userSettings(join(home, '.claude'), 'managed-only');
+    expect(silentAutoAdopt({ cwd: app() })).toMatchObject({ action: 'inject', reason: 'local-managed-only' });
+    const sub = join(app(), 'packages', 'web');
+    mkdirSync(sub, { recursive: true });
+    expect(silentAutoAdopt({ cwd: sub })).toMatchObject({ action: 'inject', reason: 'local-managed-only' });
+    expect(readFileSync(join(app(), 'CLAUDE.md'), 'utf8')).toBe(before);
+    expect(existsSync(join(app(), LOCAL_MD))).toBe(false);
+    const status = withCwd(app(), () => captureLog(() => cmdAdopt(['--status'])));
+    expect(status).toMatch(/local: .*managed-only/);
+    expect(status).not.toMatch(/- none: CLAUDE\.md carries the block/);
+    // Switched off for the project, SessionStart injects nothing, so the line promises no injection
+    // (v6.30.0 pre-tag defects review r2 F2).
+    captureLog(() => withCwd(app(), () => cmdAdopt(['--disable'])));
+    expect(silentAutoAdopt({ cwd: app() }), 'premise').toMatchObject({ action: 'disabled' });
+    const off = withCwd(app(), () => captureLog(() => cmdAdopt(['--status'])));
+    expect(off).toMatch(/local: .*managed-only/);
+    expect(off).not.toMatch(/injected/);
+  });
+
+  // A damaged begin line leaves the block's text in a CLAUDE.md that managed-only does not load.
+  it('managed-only where CLAUDE.md holds a damaged block: injected, not reported as damaged', () => {
+    captureLog(() => withCwd(app(), () => cmdAdopt([])));
+    const md = join(app(), 'CLAUDE.md');
+    writeFileSync(
+      md,
+      readFileSync(md, 'utf8').replace(/(<!-- qwen-mem-lite:begin v\d+ -->)\n/, '$1 (team note)\n'),
+    );
+    expect(silentAutoAdopt({ cwd: app() }), 'premise').toMatchObject({ action: 'damaged' });
+    userSettings(join(home, '.claude'), 'managed-only');
+    expect(silentAutoAdopt({ cwd: app() })).toMatchObject({ action: 'inject', reason: 'local-managed-only' });
   });
 
   it('the user settings are read from CLAUDE_CONFIG_DIR when it is set', () => {
@@ -1944,7 +2111,7 @@ describe('adopt --status says why there is no CLAUDE.local.md', () => {
     // CLAUDE.local.md is refused at a package root too, so the setting is not offered; the
     // AGENTS.md is at the root, so the CLAUDE.md `adopt` writes imports it.
     expect(out).not.toMatch(/claude-md-and-agents-md/);
-    expect(out).toMatch(/run `qwen-mem-lite adopt`, whose CLAUDE\.md imports AGENTS\.md/);
+    expect(out).toContain(`run \`${CLI_INVOKE} adopt\`, whose CLAUDE.md imports AGENTS.md`);
   });
 
   it('a removed block stays removed until adopt --enable', () => {
@@ -1990,8 +2157,9 @@ describe('adopt --status says why there is no CLAUDE.local.md', () => {
   it('"removed" says --enable lets the next session write it again, not that --enable writes it', () => {
     silentAutoAdopt({ cwd: app() });
     rmSync(join(app(), LOCAL_MD));
+    const cli = CLI_INVOKE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     expect(statusOut()).toMatch(
-      /✗ removed: .*after `qwen-mem-lite adopt --enable` the next session may write it again/,
+      new RegExp(`✗ removed: .*after \`${cli} adopt --enable\` the next session may write it again`),
     );
   });
 });

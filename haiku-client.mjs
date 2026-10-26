@@ -73,10 +73,50 @@ function cliSpawnCwd() {
 // ─── Model Resolution ────────────────────────────────────────────────────────
 
 // CLI name → API model ID mapping
+// haiku moved from claude-haiku-4-5-20251001 on 2026-10-15, after
+// benchmark/haiku-model-ab.mjs read usability parity on the three haiku-tier sites it
+// samples (episode, rewrite, rerank) and a blind read of the kept lessons put 5.5 ahead
+// (docs/measurement/rulers.md, "haiku-tier model A/B"). It is also what
+// `claude -p --model haiku` resolves to on the Anthropic API since Claude Code 2.1.293
+// (Bedrock, Vertex, Foundry and Claude Platform on AWS still resolve it to 4.5), so there
+// all three legs run the same model.
 const MODEL_MAP = {
-  haiku: 'claude-haiku-4-5-20251001',
+  haiku: 'claude-haiku-5-5',
   sonnet: 'claude-sonnet-4-5-20250929',
 };
+
+// Models that get the STRICT body. Claude Haiku 5.5 answers any non-default `temperature`
+// with a 400 and thinks unless told not to, so a reply can open with a thinking block, and
+// thinking spends the max_tokens these short fixed-schema extractions are sized for. The
+// keyed legs run it with thinking off: OpenRouter gets `reasoning: {enabled: false}`
+// (STRICT_BODY_SLUGS), and the direct leg sends no sampling field and thinking disabled.
+// The CLI leg does NOT: Claude Code 2.1.301 sends `thinking: {type: "adaptive"}` and effort
+// medium for `--model haiku` whether or not MAX_THINKING_TOKENS=0 is set (request bodies
+// captured at a stub base URL, 2026-10-15; D#334). Its max_tokens is Claude Code's own, so
+// nothing is cut off there. With thinking off it can answer a bare one-word query with a
+// prose question instead of JSON, so a caller's `jsonSchema` becomes a structured output on
+// these models (rewrite replays 2026-10-15: 7/72 below two variants without it, 0/72 with
+// it; docs/audits/20261015-v6.26.0-replays.md). Keyed by the ID actually sent, read through
+// strictBodyKey, so an override naming another model keeps the old body.
+const STRICT_BODY_MODELS = new Set(['claude-haiku-5-5']);
+
+/**
+ * The model's own name inside the routing decoration around it, for the STRICT_BODY_*
+ * lookups: an OpenRouter variant suffix (`anthropic/claude-haiku-5.5:nitro`, `:floor`) and
+ * the Bedrock form a gateway may take (`anthropic.claude-haiku-5-5`, with or without a
+ * cross-region prefix such as `us.`, `global.` or GovCloud's `us-gov.`). Haiku 5.5 named
+ * either way was sent the old body: thinking on, no structured output and, on the direct
+ * leg, temperature 0, which it answers with a 400 (OpenRouter drops the field in transit).
+ * A gateway deployment name says nothing about the model behind it and is not guessed at.
+ * (D#321)
+ * @param {string} id model ID or OpenRouter slug as sent
+ * @returns {string}
+ */
+function strictBodyKey(id) {
+  return String(id)
+    .replace(/:[a-z0-9-]+$/, '')
+    .replace(/^(?:[a-z]{2,6}(?:-[a-z]+)?\.)?anthropic\./, '');
+}
 
 // Claude Code's tier-alias override vars, honored on the direct-API leg too:
 // gateway deployments route on the DEPLOYMENT name (Azure Foundry rejects the
@@ -112,6 +152,9 @@ function apiModelId(tier, base = resolveAnthropicBaseUrl()) {
 // to 0 so the provider default (~1.0) doesn't inject wording variance that breaks
 // JSON parsing or defeats the wording-sensitive MinHash near-duplicate detector.
 // A call that genuinely needs sampling can pass opts.temperature to override.
+// The pin holds only where the model takes it: Claude Haiku 5.5 accepts no temperature
+// but its default (the direct leg omits the field, OpenRouter drops it, the CLI never sent
+// one), so on that model the extraction runs at its default sampling.
 const DEFAULT_LLM_TEMPERATURE = 0;
 
 /**
@@ -152,12 +195,19 @@ export function resolveModel() {
 // OpenRouter uses its own slug namespace (OpenAI-compatible API). Map the
 // project's haiku/sonnet tiers to the matching anthropic/* slugs so the quality
 // tiering is preserved when routing through OpenRouter. Slugs verified against
-// openrouter.ai (2026-06): claude-haiku-4.5 / claude-sonnet-4.5 mirror the
-// native MODEL_MAP IDs above.
+// openrouter.ai: claude-sonnet-4.5 (2026-06) and claude-haiku-5.5 (2026-10-15) mirror
+// the native MODEL_MAP IDs above.
 const OPENROUTER_MODEL_MAP = {
-  haiku: 'anthropic/claude-haiku-4.5',
+  haiku: 'anthropic/claude-haiku-5.5',
   sonnet: 'anthropic/claude-sonnet-4.5',
 };
+
+// STRICT_BODY_MODELS on OpenRouter's slug namespace. Measured 2026-10-15 on six rerank
+// prompts, three of them picked because they had failed, three calls each (300-token
+// budget): the JSON came back cut off (finish_reason "length"; the two printed spent 259 and
+// 275 tokens thinking) on 8 of 18 calls, 0 of 18 with reasoning off
+// (docs/audits/20261015-v6.26.0-replays.md). A one-line extraction did not think at all, so
+// a single easy probe reads this as fine.
 
 /**
  * Resolve the OpenRouter model slug for a given tier.
@@ -334,6 +384,32 @@ export function flattenForCLI(input) {
 // ─── Core Call ───────────────────────────────────────────────────────────────
 
 /**
+ * What the CLI fallback may spend once the keyed provider has failed: the rest of the call's
+ * deadline, or 0 when less than RETRY_MIN_BUDGET_MS is left (a spawn that cannot finish is
+ * worse than returning the failure, the same rule the CLI's own compat retry follows).
+ *
+ * A caller's `timeout` is a deadline for the WHOLE call, keyed provider and fallback together
+ * (E2E 2026-10-16 P2-6). The fallback used to get a fresh full `timeout`, so every budget was
+ * twice itself: the lesson bridge's 2.5 s ran 5.1 s against its 3 s PreToolUse hook with both
+ * legs hanging, and one deep search blocked 48 s.
+ *
+ * @param {number} deadline epoch ms the call must end by
+ * @param {string} mode the keyed provider that failed, for the log
+ * @param {string} model
+ * @returns {number} ms for the CLI, or 0 for none
+ */
+function fallbackBudget(deadline, mode, model) {
+  const left = deadline - Date.now();
+  if (left >= RETRY_MIN_BUDGET_MS) return left;
+  debugLog(
+    'WARN',
+    'haiku-client',
+    `${mode} call failed with ${Math.max(0, left)}ms left; no claude CLI fallback (${model})`,
+  );
+  return 0;
+}
+
+/**
  * Call Haiku model with a prompt. Returns parsed text or null on failure.
  * Provider priority ANTHROPIC_API_KEY → OPENROUTER_API_KEY → CLI; if the keyed
  * provider call fails (HTTP error / network throw / empty), degrades to the
@@ -343,11 +419,13 @@ export function flattenForCLI(input) {
  * @param {object} [opts] Options
  * @param {number} [opts.timeout=10000] Timeout in milliseconds
  * @param {number} [opts.maxTokens=500] Max tokens in response
+ * @param {{name: string, schema: object}|null} [opts.jsonSchema] structured output for the
+ *   models that get the strict body (STRICT_BODY_MODELS / _SLUGS); ignored elsewhere and on the CLI
  * @returns {Promise<{text: string}|null>} Response or null on failure
  */
 export async function callHaiku(
   prompt,
-  { timeout = 10000, maxTokens = 500, temperature = DEFAULT_LLM_TEMPERATURE } = {},
+  { timeout = 10000, maxTokens = 500, temperature = DEFAULT_LLM_TEMPERATURE, jsonSchema = null } = {},
 ) {
   if (!prompt) return null;
 
@@ -362,10 +440,12 @@ export async function callHaiku(
       return null;
     }
   }
+  const deadline = Date.now() + timeout;
 
   // Keyed provider (api/openrouter): attempt it, then degrade to the CLI on any
   // failure (HTTP error → null, or network/timeout throw). A region-blocked or
-  // out-of-credit key must not silently drop background summaries.
+  // out-of-credit key must not silently drop background summaries. The CLI gets what is left
+  // of `timeout`, not a fresh one (fallbackBudget).
   let primary = null;
   try {
     // callModelAPI, not a second copy of it: the two were byte-identical apart from
@@ -374,15 +454,22 @@ export async function callHaiku(
     // log label that lied under QWEN_MEM_MODEL=sonnet. Two copies of an HTTP client
     // means every proxy fix has to land twice, on the path where missing the proxy is
     // the difference between 1.4s and 13.5s.
-    primary = await callKeyedLeg(mode, prompt, resolveModel().cli, { timeout, maxTokens, temperature });
+    primary = await callKeyedLeg(mode, prompt, resolveModel().cli, {
+      timeout,
+      maxTokens,
+      temperature,
+      jsonSchema,
+    });
   } catch (e) {
     debugCatch(e, `callHaiku:${mode}`);
   }
   if (primary) return primary;
 
+  const left = fallbackBudget(deadline, mode, 'haiku');
+  if (!left) return null;
   debugLog('WARN', 'haiku-client', `${mode} call failed, falling back to claude CLI`);
   try {
-    return callHaikuCLI(prompt, { timeout });
+    return callHaikuCLI(prompt, { timeout: left });
   } catch (e) {
     debugCatch(e, 'callHaiku:cli-fallback');
     return null;
@@ -421,14 +508,15 @@ export async function callHaikuJSON(prompt, opts) {
  * Defaults also mirror callHaiku (10s / 500 tokens), not callModelJSONAsync's
  * 15s / 1000: a caller that omits opts must get the sync twin's budget.
  * @param {string|{system?:string,user:string}} prompt
- * @param {{timeout?:number,maxTokens?:number,temperature?:number}} [opts]
+ * @param {{timeout?:number,maxTokens?:number,temperature?:number,jsonSchema?:{name:string,schema:object}|null}} [opts]
+ *   jsonSchema: structured output for strict-body models (see callLLMWithModel)
  * @returns {Promise<object|null>} Parsed JSON or null
  */
 export async function callHaikuJSONAsync(
   prompt,
-  { timeout = 10000, maxTokens = 500, temperature = DEFAULT_LLM_TEMPERATURE } = {},
+  { timeout = 10000, maxTokens = 500, temperature = DEFAULT_LLM_TEMPERATURE, jsonSchema = null } = {},
 ) {
-  return callModelJSONAsync(prompt, resolveModel().cli, { timeout, maxTokens, temperature });
+  return callModelJSONAsync(prompt, resolveModel().cli, { timeout, maxTokens, temperature, jsonSchema });
 }
 
 // ─── Model-Selectable API ────────────────────────────────────────────────────
@@ -443,12 +531,14 @@ export async function callHaikuJSONAsync(
  * @param {object} [opts] Options
  * @param {number} [opts.timeout=15000] Timeout in milliseconds
  * @param {number} [opts.maxTokens=1000] Max tokens in response
+ * @param {{name: string, schema: object}|null} [opts.jsonSchema] structured output for the
+ *   models that get the strict body (STRICT_BODY_MODELS / _SLUGS); ignored elsewhere and on the CLI
  * @returns {Promise<{text: string}|null>} Response or null on failure
  */
 export async function callLLMWithModel(
   prompt,
   model = 'haiku',
-  { timeout = 15000, maxTokens = 1000, temperature = DEFAULT_LLM_TEMPERATURE } = {},
+  { timeout = 15000, maxTokens = 1000, temperature = DEFAULT_LLM_TEMPERATURE, jsonSchema = null } = {},
 ) {
   if (!prompt) return null;
   const resolvedModel = MODEL_MAP[model] ? model : 'haiku';
@@ -463,20 +553,28 @@ export async function callLLMWithModel(
       return null;
     }
   }
+  const deadline = Date.now() + timeout;
 
   // Keyed provider (api/openrouter): attempt it, then degrade to the CLI on any
   // failure so a region-blocked / out-of-credit key still produces output.
   let primary = null;
   try {
-    primary = await callKeyedLeg(mode, prompt, resolvedModel, { timeout, maxTokens, temperature });
+    primary = await callKeyedLeg(mode, prompt, resolvedModel, {
+      timeout,
+      maxTokens,
+      temperature,
+      jsonSchema,
+    });
   } catch (e) {
     debugCatch(e, `callLLMWithModel:${mode}:${resolvedModel}`);
   }
   if (primary) return primary;
 
+  const left = fallbackBudget(deadline, mode, resolvedModel);
+  if (!left) return null;
   debugLog('WARN', 'haiku-client', `${mode} call failed, falling back to claude CLI (${resolvedModel})`);
   try {
-    return callModelCLI(prompt, resolvedModel, { timeout });
+    return callModelCLI(prompt, resolvedModel, { timeout: left });
   } catch (e) {
     debugCatch(e, `callLLMWithModel:cli-fallback:${resolvedModel}`);
     return null;
@@ -496,13 +594,14 @@ export async function callLLMWithModel(
  * salvage. Only the CLI transport differs.
  * @param {string|{system?:string,user:string}} prompt
  * @param {'haiku'|'sonnet'} model
- * @param {{timeout?:number,maxTokens?:number,temperature?:number}} [opts]
+ * @param {{timeout?:number,maxTokens?:number,temperature?:number,jsonSchema?:{name:string,schema:object}|null}} [opts]
+ *   jsonSchema: structured output for strict-body models (see callLLMWithModel)
  * @returns {Promise<{text: string}|null>} Response or null on failure
  */
 export async function callLLMWithModelAsync(
   prompt,
   model = 'haiku',
-  { timeout = 15000, maxTokens = 1000, temperature = DEFAULT_LLM_TEMPERATURE } = {},
+  { timeout = 15000, maxTokens = 1000, temperature = DEFAULT_LLM_TEMPERATURE, jsonSchema = null } = {},
 ) {
   if (!prompt) return null;
   const resolvedModel = MODEL_MAP[model] ? model : 'haiku';
@@ -510,21 +609,29 @@ export async function callLLMWithModelAsync(
 
   // CLI is terminal - no provider to fall back to.
   if (mode === 'cli') return callModelCLIAsync(prompt, resolvedModel, { timeout });
+  const deadline = Date.now() + timeout;
 
   let primary = null;
   try {
-    primary = await callKeyedLeg(mode, prompt, resolvedModel, { timeout, maxTokens, temperature });
+    primary = await callKeyedLeg(mode, prompt, resolvedModel, {
+      timeout,
+      maxTokens,
+      temperature,
+      jsonSchema,
+    });
   } catch (e) {
     debugCatch(e, `callLLMWithModelAsync:${mode}:${resolvedModel}`);
   }
   if (primary) return primary;
 
+  const left = fallbackBudget(deadline, mode, resolvedModel);
+  if (!left) return null;
   debugLog(
     'WARN',
     'haiku-client',
     `${mode} call failed, falling back to async claude CLI (${resolvedModel})`,
   );
-  return callModelCLIAsync(prompt, resolvedModel, { timeout });
+  return callModelCLIAsync(prompt, resolvedModel, { timeout: left });
 }
 
 /**
@@ -549,13 +656,14 @@ export async function callModelJSON(prompt, model = 'haiku', opts) {
  * throws; returns parsed JSON or null.
  * @param {string|{system?:string,user:string}} prompt
  * @param {'haiku'|'sonnet'} model
- * @param {{timeout?:number,maxTokens?:number,temperature?:number}} [opts]
+ * @param {{timeout?:number,maxTokens?:number,temperature?:number,jsonSchema?:{name:string,schema:object}|null}} [opts]
+ *   jsonSchema: structured output for strict-body models (see callLLMWithModel)
  * @returns {Promise<object|null>}
  */
 export async function callModelJSONAsync(
   prompt,
   model = 'haiku',
-  { timeout = 15000, maxTokens = 1000, temperature = DEFAULT_LLM_TEMPERATURE } = {},
+  { timeout = 15000, maxTokens = 1000, temperature = DEFAULT_LLM_TEMPERATURE, jsonSchema = null } = {},
 ) {
   if (!prompt) return null;
   const resolvedModel = MODEL_MAP[model] ? model : 'haiku';
@@ -565,18 +673,26 @@ export async function callModelJSONAsync(
     const res = await callModelCLIAsync(prompt, resolvedModel, { timeout });
     return res?.text ? parseJsonFromLLM(res.text) : null;
   }
+  const deadline = Date.now() + timeout;
 
   // Keyed provider (api/openrouter): try it, then degrade to the ASYNC CLI on any
   // failure - NOT the blocking execFileSync callModelCLI that callModelJSON uses.
   let primary = null;
   try {
-    primary = await callKeyedLeg(mode, prompt, resolvedModel, { timeout, maxTokens, temperature });
+    primary = await callKeyedLeg(mode, prompt, resolvedModel, {
+      timeout,
+      maxTokens,
+      temperature,
+      jsonSchema,
+    });
   } catch (e) {
     debugCatch(e, `callModelJSONAsync:${mode}:${resolvedModel}`);
   }
   if (primary?.text) return parseJsonFromLLM(primary.text);
 
-  const res = await callModelCLIAsync(prompt, resolvedModel, { timeout });
+  const left = fallbackBudget(deadline, mode, resolvedModel);
+  if (!left) return null;
+  const res = await callModelCLIAsync(prompt, resolvedModel, { timeout: left });
   return res?.text ? parseJsonFromLLM(res.text) : null;
 }
 
@@ -590,7 +706,11 @@ export function _resetTemperatureCompat() {
   _temperatureDeprecated.clear();
 }
 
-async function callModelAPI(prompt, model, { timeout, maxTokens, temperature = DEFAULT_LLM_TEMPERATURE }) {
+async function callModelAPI(
+  prompt,
+  model,
+  { timeout, maxTokens, temperature = DEFAULT_LLM_TEMPERATURE, jsonSchema = null },
+) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
 
@@ -624,8 +744,11 @@ async function callModelAPI(prompt, model, { timeout, maxTokens, temperature = D
     // field outright (Azure Foundry's claude-sonnet-5 answers 400
     // "`temperature` is deprecated for this model."). Keep sending it until a
     // model refuses, then drop it for that model only - the retry at the bottom
-    // pays for itself once.
-    if (!_temperatureDeprecated.has(modelId)) body.temperature = temperature;
+    // pays for itself once. A model known to refuse it never gets it.
+    if (STRICT_BODY_MODELS.has(strictBodyKey(modelId))) {
+      body.thinking = { type: 'disabled' };
+      if (jsonSchema) body.output_config = { format: { type: 'json_schema', schema: jsonSchema.schema } };
+    } else if (!_temperatureDeprecated.has(modelId)) body.temperature = temperature;
     // System slot is constant per call type (instructions, schema, type taxonomy)
     // - mark it cache_control:ephemeral so repeated calls within the 5-min cache
     // window pay the cached-input rate (~0.10× base). Sub-1024-token systems still
@@ -713,7 +836,29 @@ async function callModelAPI(prompt, model, { timeout, maxTokens, temperature = D
     }
 
     const data = await res.json();
-    const text = data.content?.[0]?.text;
+    // A safety classifier's decline is a 200 that may carry no text or part of an answer.
+    // null hands it to the CLI fallback like any other failure; the category, logged only
+    // under QWEN_MEM_DEBUG, is the only trace of why.
+    if (data.stop_reason === 'refusal') {
+      debugLog('WARN', `${model}-api`, `refusal (${data.stop_details?.category ?? 'no category'})`);
+      return null;
+    }
+    // The callers parse a fixed-schema JSON answer out of this text (the opt-in lesson bridge
+    // keeps its first line), so a reply cut off at max_tokens is a failed call too: the CLI
+    // fallback has no such cap. A whole JSON answer followed by cut-off prose is discarded with
+    // it, although parseJsonFromLLM would have recovered it (D#322; D#338).
+    if (data.stop_reason === 'max_tokens') {
+      debugLog('WARN', `${model}-api`, 'reply cut off at max_tokens');
+      return null;
+    }
+    // By content, not position: a thinking block (no `text`) can come first. Every text
+    // block, joined, so an empty one cannot hide the answer after it (D#324).
+    const text = Array.isArray(data.content)
+      ? data.content
+          .filter((b) => typeof b?.text === 'string')
+          .map((b) => b.text)
+          .join('')
+      : '';
     return text ? { text } : null;
   } finally {
     clearTimeout(timer);
@@ -803,7 +948,13 @@ export function execClaudeCliSync(modelName, { input, timeout }) {
     input,
     timeout,
     encoding: 'utf8',
-    env: { ...process.env, QWEN_MEM_HOOK_RUNNING: '1', DISABLE_CLAUDEMD_HOOKS: '1' },
+    env: {
+      ...process.env,
+      QWEN_MEM_HOOK_RUNNING: '1',
+      DISABLE_CLAUDEMD_HOOKS: '1',
+      MAX_THINKING_TOKENS: '0',
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+    },
     stdio: ['pipe', 'pipe', 'pipe'],
     cwd: cliSpawnCwd(), // private dir, not /tmp - see cliSpawnCwd (R10 P2-13)
   };
@@ -889,7 +1040,13 @@ export async function callModelCLIAsync(prompt, model, { timeout }) {
       try {
         // Same headless-tax flags + flag-compat retry as callModelCLI (rationale there).
         child = spawn(getClaudePath(), args, {
-          env: { ...process.env, QWEN_MEM_HOOK_RUNNING: '1', DISABLE_CLAUDEMD_HOOKS: '1' },
+          env: {
+            ...process.env,
+            QWEN_MEM_HOOK_RUNNING: '1',
+            DISABLE_CLAUDEMD_HOOKS: '1',
+            MAX_THINKING_TOKENS: '0',
+            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+          },
           cwd: cliSpawnCwd(), // private dir, not /tmp - see cliSpawnCwd (R10 P2-13)
           stdio: ['pipe', 'pipe', 'pipe'],
         });
@@ -1145,7 +1302,27 @@ async function callOpenAICompatAPI(
     }
 
     const data = await res.json();
-    const text = data.choices?.[0]?.message?.content;
+    const choice = data.choices?.[0];
+    // OpenRouter normalises finish_reason to stop / length / content_filter / tool_calls /
+    // error and passes the provider's own value as native_finish_reason. A cut-off, filtered
+    // or refused reply can still carry part of an answer; none is one. (D#322, D#323)
+    const finish = choice?.finish_reason;
+    const native = choice?.native_finish_reason;
+    if (
+      finish === 'length' ||
+      finish === 'content_filter' ||
+      finish === 'error' ||
+      native === 'refusal' ||
+      choice?.error
+    ) {
+      debugLog(
+        'WARN',
+        `${tier}-openrouter`,
+        `no answer (finish_reason ${finish}, native ${native ?? 'none'})`,
+      );
+      return null;
+    }
+    const text = choice?.message?.content;
     return text ? { text } : null;
   } finally {
     clearTimeout(timer);

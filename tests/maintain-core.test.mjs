@@ -22,6 +22,7 @@ import {
   maintenanceStats,
   hardDeleteCandidateCount,
   sweepDeferredWorkOrphans,
+  DEFAULT_RETAIN_DAYS,
 } from '../lib/maintain-core.mjs';
 
 const DAY = 86400000;
@@ -375,6 +376,28 @@ describe('maintenanceStats (scan preview must match what execute does)', () => {
     expect(idleHidden).toBe(stats.stale);
   });
 
+  // Triage 2026-10-20 (v6.28.0 claims M1e): the hide pass skips a compression keeper — hiding it
+  // would hide every member folded into it — but the stale forecast counted it.
+  test('stale count excludes a compression keeper (parity with the hide pass)', () => {
+    const db = freshDb();
+    const keeper = add(db, { title: 'weekly summary', importance: 1, injectionCount: 0 });
+    add(db, { title: 'member', importance: 1, injectionCount: 0, compressedInto: keeper });
+    const stats = maintenanceStats(db, ctx(Date.now() - 30 * DAY));
+    expect(decayAndMarkIdle(db, ctx(Date.now() - 30 * DAY)).idleHidden).toBe(0);
+    expect(stats.stale).toBe(0);
+  });
+
+  // Same drift on the broken forecast: cleanupBroken keeps an empty row whose superseded_by is
+  // the redirect a citation of it follows to its successor.
+  test('broken count excludes an empty row that carries a superseded_by redirect', () => {
+    const db = freshDb();
+    const successor = add(db, { title: 'successor', importance: 2 });
+    add(db, { title: '', narrative: '', importance: 2, supersededBy: successor });
+    const stats = maintenanceStats(db, ctx(Date.now() - 30 * DAY));
+    expect(cleanupBroken(db, ctx(Date.now() - 30 * DAY))).toBe(0);
+    expect(stats.broken).toBe(0);
+  });
+
   test('stale + broken counts exclude lesson-bearing rows (parity with the execute lesson guard)', () => {
     // Same #8614 drift class, missed for lesson_learned: decayAndMarkIdle (:188) and
     // cleanupBroken (:153) refuse to touch a lesson-bearing row ("lessons never auto-GC"),
@@ -393,6 +416,33 @@ describe('maintenanceStats (scan preview must match what execute does)', () => {
     // Parity: scan forecast == what execute actually touches.
     expect(decayAndMarkIdle(db, ctx(Date.now() - 30 * DAY)).idleHidden).toBe(stats.stale);
     expect(cleanupBroken(db, ctx(0))).toBe(stats.broken);
+  });
+
+  // D#450: the scan counted every queued row, and /mem cleanup asked the user to approve that
+  // number, but purge_stale deletes only the queued rows older than its retain window.
+  // Ages on both sides of 7, 30 and 35 days, an explicit save, and a second project, so a wrong
+  // window, a dropped explicit-save guard or a dropped project filter each changes a count.
+  test('pendingPurgeDue is what a purge at the default retain window deletes', () => {
+    const db = freshDb();
+    insertSession(db, { id: 'manual-a', project: 'proj-a' });
+    insertSession(db, { id: 'sess-b', project: 'proj-b' });
+    const queued = (o) => add(db, { compressedInto: COMPRESSED_PENDING_PURGE, ...o });
+    queued({ title: '40 days' });
+    queued({ title: '32 days', epochOffset: -32 * DAY });
+    queued({ title: '25 days', epochOffset: -25 * DAY });
+    queued({ title: '5 days', epochOffset: -5 * DAY });
+    queued({ title: 'explicit save, 40 days', sessionId: 'manual-a' });
+    queued({ title: 'other project, 40 days', sessionId: 'sess-b', project: 'proj-b' });
+
+    const all = maintenanceStats(db, ctx(Date.now() - 30 * DAY));
+    expect(all.pendingPurge).toBe(5);
+    expect(all.pendingPurgeDue).toBe(3);
+    const projA = { ...ctx(Date.now() - 30 * DAY), projectFilter: 'AND project = ?', baseParams: ['proj-a'] };
+    expect(maintenanceStats(db, projA).pendingPurgeDue).toBe(2);
+
+    const cutoff = Date.now() - DEFAULT_RETAIN_DAYS * DAY;
+    expect(purgeStale(db, projA, cutoff)).toBe(2);
+    expect(purgeStale(db, ctx(), cutoff)).toBe(1);
   });
 });
 

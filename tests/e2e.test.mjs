@@ -1728,10 +1728,10 @@ describe('Suite 8a: Additional E2E', () => {
     } catch {}
   });
 
-  it('auto-migrates ~/claude-mem-lite/claude-mem.db → ~/.qwen-mem-lite/qwen-mem-lite.db on session-start', () => {
+  it('auto-migrates ~/qwen-mem-lite/claude-mem.db → ~/.qwen-mem-lite/qwen-mem-lite.db on session-start', () => {
     // Create a fresh home with old unhidden dir + old DB filename
     const migrateHome = makeTmpDir();
-    const oldUnhiddenDir = join(migrateHome, 'claude-mem-lite');
+    const oldUnhiddenDir = join(migrateHome, 'qwen-mem-lite');
     mkdirSync(oldUnhiddenDir, { recursive: true });
     mkdirSync(join(oldUnhiddenDir, 'runtime'), { recursive: true });
 
@@ -1758,7 +1758,7 @@ describe('Suite 8a: Additional E2E', () => {
     expect(existsSync(newHiddenDir)).toBe(false);
 
     // Session-start triggers ensureDb() which:
-    //   1. Renames ~/claude-mem-lite/ → ~/.qwen-mem-lite/
+    //   1. Moves the store's files (claude-mem.db) into ~/.qwen-mem-lite/; nothing else (D#561)
     //   2. Renames claude-mem.db → qwen-mem-lite.db
     const migrateProjDir = join(migrateHome, 'parent', 'migrateproj');
     mkdirSync(migrateProjDir, { recursive: true });
@@ -1767,8 +1767,9 @@ describe('Suite 8a: Additional E2E', () => {
     });
     expect(exitCode).toBe(0);
 
-    // Old unhidden dir should be gone
-    expect(existsSync(oldUnhiddenDir)).toBe(false);
+    // The store left the old unhidden dir; the dir and its other entries stay
+    expect(existsSync(oldDbPath)).toBe(false);
+    expect(existsSync(join(oldUnhiddenDir, 'runtime'))).toBe(true);
     // New hidden dir should exist with renamed DB
     const newDbPath = join(newHiddenDir, 'qwen-mem-lite.db');
     expect(existsSync(newDbPath)).toBe(true);
@@ -2187,7 +2188,7 @@ describe('Suite 8: Session-start context delivery', () => {
     const projDir = join(tmpHome, 'parent', 'migrate');
     mkdirSync(projDir, { recursive: true });
     const hint =
-      '<!-- claude-mem-lite: auto-updated context. To avoid git noise, add CLAUDE.md to .gitignore -->';
+      '<!-- qwen-mem-lite: auto-updated context. To avoid git noise, add CLAUDE.md to .gitignore -->';
     writeFileSync(
       join(projDir, 'CLAUDE.md'),
       `# My Project\n\n${hint}\n<claude-mem-context>\nstale content from v2.29\n</claude-mem-context>\n\n# Footer\n`,
@@ -2218,16 +2219,16 @@ describe('Suite 8: Session-start context delivery', () => {
     expect(claudeMd).toContain('# Footer');
     expect(claudeMd).not.toContain('<claude-mem-context>');
     expect(claudeMd).not.toContain('stale content from v2.29');
-    expect(claudeMd).not.toContain('claude-mem-lite: auto-updated');
+    expect(claudeMd).not.toContain('qwen-mem-lite: auto-updated');
   });
 });
 
 describe('Suite 9: Hidden Data Dir Migration', () => {
-  it('migrates ~/claude-mem-lite/ with runtime dir pre-created by module init', () => {
+  it('migrates ~/qwen-mem-lite/ with runtime dir pre-created by module init', () => {
     // Simulates the race: hook-shared.mjs creates ~/.qwen-mem-lite/runtime/
     // at module load time BEFORE ensureDb() runs. Migration must still work.
     const home = makeTmpDir();
-    const oldDir = join(home, 'claude-mem-lite');
+    const oldDir = join(home, 'qwen-mem-lite');
     const newDir = join(home, '.qwen-mem-lite');
 
     // Old dir with DB
@@ -2259,8 +2260,9 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
     });
     expect(exitCode).toBe(0);
 
-    // Old dir should be gone, data should be in new hidden dir
-    expect(existsSync(oldDir)).toBe(false);
+    // The store left the old dir (the dir and its other entries stay, D#561); data in the hidden dir
+    expect(existsSync(oldDbPath)).toBe(false);
+    expect(existsSync(join(oldDir, 'runtime'))).toBe(true);
     const newDbPath = join(newDir, 'qwen-mem-lite.db');
     expect(existsSync(newDbPath)).toBe(true);
 
@@ -2277,7 +2279,7 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
   it('skips migration when hidden dir already has DB', () => {
     // Both dirs exist with DBs - new dir data must NOT be overwritten
     const home = makeTmpDir();
-    const oldDir = join(home, 'claude-mem-lite');
+    const oldDir = join(home, 'qwen-mem-lite');
     const newDir = join(home, '.qwen-mem-lite');
 
     // Old dir with old marker
@@ -2343,10 +2345,10 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
   });
 
   it('migrates dir with already-renamed DB (no file rename needed)', () => {
-    // ~/claude-mem-lite/qwen-mem-lite.db → ~/.qwen-mem-lite/qwen-mem-lite.db
+    // ~/qwen-mem-lite/qwen-mem-lite.db → ~/.qwen-mem-lite/qwen-mem-lite.db
     // Only dir migration, DB filename already correct
     const home = makeTmpDir();
-    const oldDir = join(home, 'claude-mem-lite');
+    const oldDir = join(home, 'qwen-mem-lite');
     mkdirSync(oldDir, { recursive: true });
     mkdirSync(join(oldDir, 'runtime'), { recursive: true });
 
@@ -2371,8 +2373,9 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
     });
     expect(exitCode).toBe(0);
 
-    // Old dir gone, new hidden dir has the DB
-    expect(existsSync(oldDir)).toBe(false);
+    // The store left the old dir (the dir and its other entries stay, D#561); the hidden dir has it
+    expect(existsSync(dbPath)).toBe(false);
+    expect(existsSync(join(oldDir, 'runtime'))).toBe(true);
     const newDir = join(home, '.qwen-mem-lite');
     const newDbPath = join(newDir, 'qwen-mem-lite.db');
     expect(existsSync(newDbPath)).toBe(true);
@@ -2436,7 +2439,7 @@ describe('Suite 9: Hidden Data Dir Migration', () => {
     expect(flushFiles.length).toBeGreaterThanOrEqual(1);
 
     // No unhidden dir should have been created
-    expect(existsSync(join(home, 'claude-mem-lite'))).toBe(false);
+    expect(existsSync(join(home, 'qwen-mem-lite'))).toBe(false);
 
     try {
       rmSync(home, { recursive: true, force: true });
@@ -2489,7 +2492,7 @@ describe('Suite 10: Code Review Fix Validations', () => {
 
   it('migration preserves DB_DIR when it contains .db files', () => {
     const home = makeTmpDir();
-    const oldDir = join(home, 'claude-mem-lite');
+    const oldDir = join(home, 'qwen-mem-lite');
     const newDir = join(home, '.qwen-mem-lite');
 
     // Old dir with DB

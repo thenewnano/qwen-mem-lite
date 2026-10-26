@@ -19,10 +19,13 @@ import { REPO, walkShipped, relShipped, sourceWithoutComments } from './shipped-
 const JS_OLD_SHAPE = /homedir\(\)\s*,\s*['"]\.claude(?:\.json)?['"]|join\(\s*home\s*,\s*['"]\.claude['"]/;
 // The resolver itself, and memdir.mjs's deliberate legacy fallback (an opt-out written under
 // ~/.claude before CLAUDE_CONFIG_DIR was honoured still holds; tests/local-steering pins it).
-const JS_ALLOWED = new Set(['lib/data-paths.mjs', 'memdir.mjs']);
+// scripts/hook-launcher.mjs may not import lib/ (its pure-node charter: it must start on a broken
+// install), so its disabled-plugin check spells the same rule inline; tests/launcher-plugin-
+// disabled.test.mjs pins it against CLAUDE_CONFIG_DIR.
+const JS_ALLOWED = new Set(['lib/data-paths.mjs', 'memdir.mjs', 'scripts/hook-launcher.mjs']);
 
 // `.claude` alone too (D#269: a default spelled as a bare dir slipped past `/` and `.json`), but
-// not the data dirs that only share the prefix (`.claude-mem-lite`, `.claude-mem`).
+// not the data dirs that only share the prefix (`.qwen-mem-lite`, `.claude-mem`).
 const SH_OLD_SHAPE = /\$\{?HOME\}?\/\.claude(?:\/|\.json|(?![\w.-]))/;
 // The defaults each script spells once: setup.sh's two variables (its config-home choice and its
 // one-shot marker keys read them, D#270) and post-tool-use.sh's one.
@@ -74,7 +77,7 @@ describe('the host config home has one spelling in shipped code', () => {
     expect(shOffenders('    CC_CONFIG_DIR="$HOME/.claude"')).toHaveLength(1);
     expect(shOffenders('marker_suffix "$CC_CONFIG_DIR" "$HOME/.claude"')).toHaveLength(1);
     // …and the data dir, which only shares a prefix, is not.
-    expect(jsOffenders("const DATA_DIR = join(homedir(), '.claude-mem-lite');")).toHaveLength(0);
-    expect(shOffenders('CODE_DIR="$HOME/.claude-mem-lite"')).toHaveLength(0);
+    expect(jsOffenders("const DATA_DIR = join(homedir(), '.qwen-mem-lite');")).toHaveLength(0);
+    expect(shOffenders('CODE_DIR="$HOME/.qwen-mem-lite"')).toHaveLength(0);
   });
 });

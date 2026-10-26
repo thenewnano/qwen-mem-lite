@@ -5,7 +5,13 @@
 // testability (server.mjs has top-level side effects), hence the former
 // "server-internals" name — renamed in audit P3 since it is not server-only.
 
-import { debugCatch, COMPRESSED_AUTO, NOT_COMPRESSION_KEEPER_SQL, OBS_BM25 } from './utils.mjs';
+import {
+  debugCatch,
+  COMPRESSED_AUTO,
+  NOT_COMPRESSION_KEEPER_SQL,
+  NOT_EXPLICIT_SAVE_SQL,
+  OBS_BM25,
+} from './utils.mjs';
 import { BASE_STOP_WORDS } from './stop-words.mjs';
 import { porterStem } from './tfidf.mjs';
 import { CLI_INVOKE } from './cli-path.mjs';
@@ -27,8 +33,8 @@ import { PINNED_INJ_THRESHOLD } from './lib/maintain-core.mjs';
 // ─── MCP Server Instructions Builder ───────────────────────────────────────
 // Phase A (v2.31.3+): when quiet=true, drops WHEN-TO-USE proactive-trigger and
 // Decision-rules sections; keeps the irreducible CLI/MCP tool list. Intended
-// for users who adopted invited-memory (MEMORY.md sentinel carries the same
-// triggers at higher authority). Default false preserves v2.31.2 behavior.
+// for users who adopted invited-memory (the steering block carries the same
+// triggers). Default false preserves v2.31.2 behavior.
 // The CLI-vs-MCP round-trip routing rule lives in BASE (not VERBOSE) on purpose:
 // it must reach adopted (quiet) projects too, where tool-heavy sessions defer the
 // mem_* tools behind ToolSearch (CLI via Bash = 1 model round-trip; ToolSearch +
@@ -67,10 +73,10 @@ const INSTRUCTIONS_VERBOSE = [
   '  • "what happened recently?" → mem_recent (NOT search with empty query)',
   '  • "what do we know about file.mjs?" → mem_recall (NOT grep + manual search)',
   '  • "show me around observation #42" → mem_timeline (NOT mem_get + manual navigation)',
-  '  • "clean up old/duplicate memories" → mem_maintain (NOT manual mem_delete loop)',
-  '  • "is the search index healthy?" → mem_fts_check (NOT manual COUNT queries)',
-  '  • "overview of memory tiers" → mem_browse (NOT mem_search + manual grouping)',
-  '  • "export for backup" → mem_export (NOT manual SELECT queries)',
+  '  • "clean up old/duplicate memories" → CLI `maintain scan` to preview; the cleanup itself is /qwen-mem-lite:update, which the user starts (NOT deleting rows one by one)',
+  '  • "is the search index healthy?" → CLI `fts-check check` (NOT manual COUNT queries)',
+  '  • "overview of memory tiers" → CLI `browse` (NOT mem_search + manual grouping)',
+  '  • "export for backup" → CLI `export` (NOT manual SELECT queries)',
 ];
 
 export function buildServerInstructions(quiet = false) {
@@ -448,6 +454,7 @@ export function runIdleCleanup(db) {
           -- by citation-decay gets pending-purge'd here and hard-deleted by purgeStale.
           AND (lesson_learned IS NULL OR lesson_learned = '' OR lesson_learned = 'none')
           AND ${NOT_COMPRESSION_KEEPER_SQL}
+          AND ${NOT_EXPLICIT_SAVE_SQL}
       `,
         )
         .run(Date.now(), cutoff);
@@ -468,6 +475,7 @@ export function runIdleCleanup(db) {
           -- compressed lesson is unrecoverable. Parity with selectCompressionCandidates.
           AND (lesson_learned IS NULL OR lesson_learned = '' OR lesson_learned = 'none')
           AND ${NOT_COMPRESSION_KEEPER_SQL}
+          AND ${NOT_EXPLICIT_SAVE_SQL}
       `,
         )
         .run(Date.now(), cutoff);

@@ -6,10 +6,10 @@ description: "Use when: user asks to put the qwen-mem-lite steering block into t
 # /adopt
 
 Install the qwen-mem-lite **steering block** into the current project's
-`CLAUDE.md` (the canonical home for project instructions - loaded by Claude Code
-at system-prompt authority). This replaces the pre-v3.13 scheme that seeded the
-project's memory-dir `MEMORY.md`; that polluted an index meant for the user's own
-memories, and `MEMORY.md` carries no more weight than `CLAUDE.md` anyway.
+`CLAUDE.md` (the canonical home for project instructions — Claude Code loads it
+into every session, in a message after the system prompt). It does not go
+in the project's memory-dir `MEMORY.md`: that index belongs to the user's own
+memories.
 
 This normally runs on demand. Auto-adopt keeps a local copy on every SessionStart: in a git
 repository the block goes to `CLAUDE.local.md` at the repository root, excluded from git
@@ -61,10 +61,10 @@ doc). Other plugins' blocks (e.g. `code-graph-mcp:*`) and your own prose survive
 - `/unadopt` removes the CLAUDE.md block + `.claude/` detail doc (your prose stays),
   and the local block. The next session writes a local file if the plugin never
   created one in this repository; one it created before is not written back (the
-  text is injected instead) until `qwen-mem-lite adopt --enable`. Beside an
+  text is injected instead) until `node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" adopt --enable`. Beside an
   `AGENTS.md` that `CLAUDE.local.md` would switch off, no file is written unless
   `QWEN_MEM_RULES_STEERING=1`.
-- `qwen-mem-lite adopt --disable` permanently stops auto-adopt for this project
+- `node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" adopt --disable` permanently stops auto-adopt for this project
   (also for sessions started in its subdirectories) and removes the local block; a
   `CLAUDE.md` block stays until `/unadopt`.
 - `MEM_NO_AUTO_ADOPT=1` disables auto-adopt globally; blocks already written stay.
@@ -76,7 +76,7 @@ doc). Other plugins' blocks (e.g. `code-graph-mcp:*`) and your own prose survive
 Adoption does NOT remove the hook-based injection (SessionStart context,
 UserPromptSubmit related-memory). Those remain as fallback. Post-adopt the MCP
 `WHEN TO USE` section + the `File Lessons` / `Key Context` sections auto-trim,
-since the CLAUDE.md block already carries the triggers at higher authority.
+since the CLAUDE.md block already carries the triggers.
 
 ## Restart caveat for the MCP-instructions trim
 

@@ -251,6 +251,73 @@ describe('the CLI entry explains a broken install instead of stack-tracing', () 
     expect(out, 'a raw parser stack reached the user').not.toMatch(/SyntaxError|node:internal/);
   });
 
+  // E2E 2026-10-16 (install P1-7): the remedy was `npm install -g qwen-mem-lite@latest`,
+  // which installs a separate global package and leaves a broken ~/.qwen-mem-lite (and the
+  // settings.json hooks that run from it) exactly as broken. For that tree the remedy that
+  // rebuilds it from outside is `npx qwen-mem-lite@latest install`.
+  it('names the npx reinstall when the broken tree is the managed ~/.qwen-mem-lite', () => {
+    const root = buildCopyInstall(join(cliHome, '.qwen-mem-lite'));
+    rmSync(join(root, 'lib', 'atomic-write.mjs'));
+    const managed = runCli(root, ['doctor']);
+    expect(`${managed.stdout}${managed.stderr}`).toMatch(/npx qwen-mem-lite@latest install/);
+
+    const other = buildCopyInstall(join(cliHome, 'global-pkg'));
+    rmSync(join(other, 'lib', 'atomic-write.mjs'));
+    const g = runCli(other, ['doctor']);
+    expect(`${g.stdout}${g.stderr}`).toMatch(/npm install -g qwen-mem-lite@latest --force/);
+  });
+
+  // Round 4 (install NEW-2): a module cut short before its exports loads as a module with no
+  // exports, so the SyntaxError is "does not provide an export named …" and the only file:// URL
+  // in it is the IMPORTER's. The message named that intact file as the damaged one.
+  it('names the module that lacks an export, not the module that imports it', () => {
+    const root = buildCopyInstall(join(cliHome, 'cut-before-exports'));
+    const victim = join(root, 'lib', 'blank-text.mjs');
+    writeFileSync(victim, readFileSync(victim, 'utf8').slice(0, 200));
+    expect(readFileSync(victim, 'utf8')).not.toMatch(/export /);
+    const r = runCli(root, ['search', 'parser']);
+    const out = `${r.stdout}${r.stderr}`;
+    expect(out).toMatch(/This install is incomplete/);
+    expect(out).toContain(victim);
+    expect(out).not.toMatch(/damaged or truncated: \S*deferred-work\.mjs/);
+    expect(r.code).toBe(1);
+  });
+
+  // Round 3 (install NEW-3): the explanation reached the install-family commands only; the
+  // memory commands, the ones run every day, printed a raw ERR_MODULE_NOT_FOUND stack.
+  it('a memory command on a tree missing a module explains it too', () => {
+    const root = buildCopyInstall(join(cliHome, 'mem-cmd-tree'));
+    rmSync(join(root, 'lib', 'atomic-write.mjs'));
+    for (const args of [['search', 'parser'], ['recent'], ['save', 'hello']]) {
+      const r = runCli(root, args);
+      const out = `${r.stdout}${r.stderr}`;
+      expect(out, args.join(' ')).toMatch(/This install is incomplete/);
+      expect(out, args.join(' ')).not.toMatch(/node:internal/);
+      expect(r.code).toBe(1);
+    }
+  });
+
+  // Round 2 (install B12b): the npm -g line came first for every other tree. It repairs neither
+  // a plugin-cache tree (Claude Code's /plugin reinstall does) nor a git clone (git does).
+  it('names /plugin for a plugin-cache tree and git for a clone, not npm -g', () => {
+    const cache = buildCopyInstall(
+      join(cliHome, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', '9.9.9'),
+    );
+    rmSync(join(cache, 'lib', 'atomic-write.mjs'));
+    const c = runCli(cache, ['doctor']);
+    const cOut = `${c.stdout}${c.stderr}`;
+    expect(cOut).toMatch(/Repair.*\/plugin (uninstall|install)/);
+    expect(cOut).not.toMatch(/npm install -g/);
+
+    const clone = buildCopyInstall(join(cliHome, 'src', 'qwen-mem-lite'));
+    mkdirSync(join(clone, '.git'), { recursive: true });
+    rmSync(join(clone, 'lib', 'atomic-write.mjs'));
+    const k = runCli(clone, ['doctor']);
+    const kOut = `${k.stdout}${k.stderr}`;
+    expect(kOut).toMatch(/Repair: git -C \S+ (status|restore)/);
+    expect(kOut).not.toMatch(/npm install -g/);
+  });
+
   it('explains a truncated install.mjs rather than dying on a missing export', () => {
     const root = buildCopyInstall(join(cliHome, 'cli-noexport'));
     writeFileSync(join(root, 'install.mjs'), '// truncated before anything was exported\n');

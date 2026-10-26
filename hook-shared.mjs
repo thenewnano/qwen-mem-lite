@@ -17,7 +17,7 @@ import {
 } from 'fs';
 import { inferProject, debugCatch } from './utils.mjs';
 import { CITE_RECALL_FILE_PREFIX } from './lib/cite-recall-path.mjs';
-import { ensureDbWithWalRecovery, DB_DIR } from './schema.mjs';
+import { ensureDbWithWalRecovery, setBusyDeadline, DB_DIR } from './schema.mjs';
 import { resolveRuntimeDir } from './lib/resolve-data-dir.mjs';
 // Pure-`node:`/local module (it imports only binding-probe + native-binding-hint, and
 // neither imports this file) - no cycle.
@@ -50,7 +50,7 @@ export {
   UNCONSUMED_HANDOFF_SQL,
 } from './lib/handoff-constants.mjs';
 
-import { DAY_MS, ORPHAN_EPISODE_AGE_MS } from './lib/time-constants.mjs';
+import { DAY_MS, ORPHAN_EPISODE_AGE_MS, DB_BUSY_TIMEOUT_MS } from './lib/time-constants.mjs';
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 // P1-14: one resolver, so this module honours QWEN_MEM_RUNTIME_DIR like the five
@@ -425,7 +425,7 @@ export function sessionFile() {
 }
 
 /** True unless `pid` is certainly gone (ESRCH); EPERM means it exists under another user. */
-function processAlive(pid) {
+export function processAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;
@@ -485,14 +485,94 @@ export function getSessionId() {
   return createSessionId();
 }
 
-export function createSessionId() {
+// How many handoff ids one host's session file remembers (newest kept). Each /clear rotates the
+// host session id, so a long-lived process writes one id per /clear; handoffs expire in 7 days.
+const HANDOFF_IDS_MAX = 20;
+
+function writeSessionFile(file, data) {
+  const tmp = file + `.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(data), { mode: 0o600 });
+  renameSync(tmp, file);
+}
+
+/**
+ * Mint a new memory session id and write this host's session file.
+ *
+ * `keepHandoffIds` carries the file's `handoffIds` (recordHandoffWriter) into the new one. Pass
+ * false when a NEW Claude Code process starts: a recycled pid must not inherit a dead process's
+ * handoffs and hide them from everyone while it lives (E2E 2026-10-16 F5).
+ *
+ * @param {{keepHandoffIds?: boolean}} [opts]
+ * @returns {string}
+ */
+export function createSessionId({ keepHandoffIds = true } = {}) {
   const project = inferProject();
   const id = hookSessionId(project, randomUUID().slice(0, 8));
   const file = sessionFile();
-  const tmp = file + `.tmp-${process.pid}`;
-  writeFileSync(tmp, JSON.stringify({ id, startedAt: Date.now(), project }), { mode: 0o600 });
-  renameSync(tmp, file);
+  const data = { id, startedAt: Date.now(), project };
+  if (keepHandoffIds) {
+    try {
+      const prev = JSON.parse(readFileSync(file, 'utf8')).handoffIds;
+      if (Array.isArray(prev) && prev.length > 0) data.handoffIds = prev;
+    } catch {
+      /* no previous file */
+    }
+  }
+  writeSessionFile(file, data);
   return id;
+}
+
+/**
+ * Record in this host's session file that it wrote a handoff under `handoffSessionId` (the
+ * `session_handoffs.session_id` value), so a concurrent session can tell that the handoff's
+ * writer is still running (liveOtherHostHandoffIds). Only with a host pid: without one no
+ * reader can test the writer's liveness. Never throws.
+ *
+ * @param {string|null|undefined} handoffSessionId
+ */
+export function recordHandoffWriter(handoffSessionId) {
+  if (!handoffSessionId || !hostScopeSuffix()) return;
+  try {
+    const file = sessionFile();
+    const data = JSON.parse(readFileSync(file, 'utf8'));
+    const ids = Array.isArray(data.handoffIds) ? data.handoffIds.filter((x) => x !== handoffSessionId) : [];
+    ids.push(String(handoffSessionId));
+    data.handoffIds = ids.slice(-HANDOFF_IDS_MAX);
+    writeSessionFile(file, data);
+  } catch {
+    /* no session file yet, or unwritable: the handoff stays resumable, as before */
+  }
+}
+
+/**
+ * Handoff session ids written by ANOTHER Claude Code process that is still running, for
+ * `project`. Such a handoff is not a previous session's: its writer is open in another window,
+ * and resuming it there hands one session's work to a second one (E2E 2026-10-16 F5). Read from
+ * the per-host session files; a writer without a host pid, or one that has exited, adds nothing.
+ *
+ * @param {string} project
+ * @param {string} [runtimeDir]
+ * @returns {string[]}
+ */
+export function liveOtherHostHandoffIds(project, runtimeDir = RUNTIME_DIR) {
+  const stem = `session-${project}`;
+  let names;
+  try {
+    names = readdirSync(runtimeDir);
+  } catch {
+    return [];
+  }
+  const out = new Set();
+  for (const f of names) {
+    if (!f.startsWith(`${stem}@h`) || !isOtherLiveHost(f.slice(stem.length))) continue;
+    try {
+      const ids = JSON.parse(readFileSync(join(runtimeDir, f), 'utf8')).handoffIds;
+      if (Array.isArray(ids)) for (const id of ids) if (typeof id === 'string') out.add(id);
+    } catch {
+      /* unreadable or mid-rename: treat as no record */
+    }
+  }
+  return [...out];
 }
 
 // ─── Database ────────────────────────────────────────────────────────────────
@@ -517,6 +597,7 @@ export function lastSchemaSkew() {
 // boolean rather than the error, because the only thing SessionStart needs is "which notice",
 // and keeping an Error alive here would tempt a caller into rendering a stack trace at a user.
 let lastUnusable = false;
+let lastUnusableError = null;
 
 /**
  * True when the most recent openDb() returned null because the database file is not a usable
@@ -528,11 +609,45 @@ export function lastDbUnusable() {
   return lastUnusable;
 }
 
+/** The error behind lastDbUnusable(), so the notice can name the right family; null otherwise. */
+export function lastDbUnusableError() {
+  return lastUnusable ? lastUnusableError : null;
+}
+
+// The epoch (ms) until which a connection openDb() hands out in this process may wait for another
+// writer; null keeps ensureDb's DB_BUSY_TIMEOUT_MS. Set once, by hook.mjs, for the hook events the
+// host kills at a fixed timeout (setHookDbDeadline).
+let hookDbDeadline = null;
+
+/**
+ * Bound the busy wait of every statement on the connections this process opens by one deadline:
+ * each statement waits at most the time left until `epochMs` (never more than
+ * DB_BUSY_TIMEOUT_MS, 0 once it has passed), ensureDb's own statements included (schema.mjs
+ * setBusyDeadline, D#394); openDb also sets that as each connection's busy_timeout when it hands
+ * it out. E2E 2026-10-16 F9 and its pre-tag review: a 5 s wait in a hook the host kills at 5 s
+ * never fails inside the hook, and one fixed shorter wait per connection both lost writes a
+ * shorter lock only delayed and added up across Stop's several connections.
+ *
+ * The time left is read on this process's own timeline (performance.timeOrigin +
+ * performance.now()), which a step of the system clock does not move (round-2 review).
+ *
+ * @param {number|null} epochMs
+ */
+export function setHookDbDeadline(epochMs) {
+  hookDbDeadline = epochMs;
+  setBusyDeadline(epochMs);
+}
+
 export function openDb() {
   try {
     // WAL-corruption self-heal (was server.mjs-only): without it, hooks stayed
     // silently dead (null DB) on a corrupt WAL until the next MCP server start.
     const db = ensureDbWithWalRecovery();
+    if (hookDbDeadline !== null) {
+      const now = performance.timeOrigin + performance.now();
+      const left = Math.min(DB_BUSY_TIMEOUT_MS, Math.max(0, Math.floor(hookDbDeadline - now)));
+      db.pragma(`busy_timeout = ${left}`);
+    }
     lastSkew = null;
     lastUnusable = false;
     return db;
@@ -577,6 +692,7 @@ export function openDb() {
     // the skew dedup lost by calling a function that WRITES.
     if (isDbUnusableError(e)) {
       lastUnusable = true;
+      lastUnusableError = e;
       lastSkew = null; // the two flags are a set: whichever family fired last is the true one
       let project = '';
       try {

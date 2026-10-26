@@ -33,6 +33,9 @@ beforeEach(() => {
     join(REPO, 'scripts', 'hook-launcher.mjs'),
     join(fakeHome, '.qwen-mem-lite', 'scripts', 'hook-launcher.mjs'),
   );
+  // Our package, as every install root has: the directory name alone no longer makes an existing
+  // launcher ours (D#479).
+  writeFileSync(join(fakeHome, '.qwen-mem-lite', 'package.json'), '{"name":"qwen-mem-lite"}');
   savedHome = process.env.HOME;
 });
 

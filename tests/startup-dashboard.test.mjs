@@ -3,8 +3,12 @@
 // host filesystem or the repo's actual git state.
 
 import { test, expect, describe } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { createTestDb } from './test-helpers.mjs';
 import { buildDashboard } from '../lib/startup-dashboard.mjs';
+import { CLI_INVOKE } from '../cli-path.mjs';
 
 describe('startup dashboard (T10c)', () => {
   test('composes all sources into structured injection', () => {
@@ -65,8 +69,13 @@ describe('startup dashboard (T10c)', () => {
         },
       });
       expect(text).toMatch(/Invited-memory not enabled/);
-      expect(text).toMatch(/qwen-mem-lite adopt/);
+      expect(text).toContain(`${CLI_INVOKE} adopt`);
       expect(text).toMatch(/MEM_NO_ADOPT_HINT=1/);
+      // Auto-adopt has not written CLAUDE.md since v6.20, and this hint shows where it is off
+      // (v6.30.0 pre-tag claims review P2-6).
+      expect(text).not.toMatch(/自动/);
+      // No measurement behind a context or call-rate gain is current (D#499(6)).
+      expect(text).not.toMatch(/~40%|调用率/);
     } finally {
       if (prevNoHint === undefined) delete process.env.MEM_NO_ADOPT_HINT;
       else process.env.MEM_NO_ADOPT_HINT = prevNoHint;
@@ -186,7 +195,9 @@ describe('startup dashboard (T10c)', () => {
     expect(shownTasks.length).toBe(3);
   });
 
-  test('includes events count when non-zero', () => {
+  // Injection budget C6: the events count left the dashboard (the model ran `activity` in 4 of
+  // 52 sessions that were shown it). Seeded events must not bring it back.
+  test('carries no events count, even with events present', () => {
     const db = createTestDb();
     const now = Date.now();
     for (let i = 0; i < 5; i++) {
@@ -206,7 +217,38 @@ describe('startup dashboard (T10c)', () => {
         handoff: null,
       },
     });
-    expect(text).toMatch(/mem events: 5/);
+    expect(text).not.toMatch(/mem events/);
+  });
+
+  // Pre-ship defect review P2-2: the removed line keeps a switch back.
+  test('QWEN_MEM_DASHBOARD_EVENTS=1 restores the events count', () => {
+    const prev = process.env.QWEN_MEM_DASHBOARD_EVENTS;
+    process.env.QWEN_MEM_DASHBOARD_EVENTS = '1';
+    try {
+      const db = createTestDb();
+      const now = Date.now();
+      for (let i = 0; i < 5; i++) {
+        db.prepare(
+          `INSERT INTO events (project, event_type, title, importance, created_at_epoch)
+                  VALUES (?, ?, ?, ?, ?)`,
+        ).run('mem', 'lesson', `t${i}`, 1, now);
+      }
+      const text = buildDashboard({
+        db,
+        project: 'mem',
+        projectPath: process.cwd(),
+        stubs: {
+          git: { changed: [], stashes: [], branch: null, headSha: null },
+          tasks: [],
+          plans: [],
+          handoff: null,
+        },
+      });
+      expect(text).toMatch(/mem events: 5 entries/);
+    } finally {
+      if (prev === undefined) delete process.env.QWEN_MEM_DASHBOARD_EVENTS;
+      else process.env.QWEN_MEM_DASHBOARD_EVENTS = prev;
+    }
   });
 
   test('omits events line when count is zero', () => {
@@ -304,5 +346,46 @@ describe('startup dashboard (T10c)', () => {
       },
     });
     expect(Date.now() - t0).toBeLessThan(200);
+  });
+
+  // D#501(1): `adopt` writes CLAUDE.md, and Project instructions = managed-only leaves the project's
+  // CLAUDE.md out at launch, so the hint would offer a block that steers nothing.
+  test('no adopt hint under Project instructions = managed-only', () => {
+    const saved = Object.fromEntries(
+      ['MEM_NO_ADOPT_HINT', 'MEM_QUIET_HOOKS', 'CLAUDE_CONFIG_DIR'].map((k) => [k, process.env[k]]),
+    );
+    const config = mkdtempSync(join(tmpdir(), 'dash-managed-'));
+    delete process.env.MEM_NO_ADOPT_HINT;
+    delete process.env.MEM_QUIET_HOOKS;
+    process.env.CLAUDE_CONFIG_DIR = config;
+    try {
+      const build = () =>
+        buildDashboard({
+          db: createTestDb(),
+          project: 'mem',
+          projectPath: '/tmp',
+          stubs: {
+            git: { changed: [], stashes: [], branch: 'main', headSha: '' },
+            tasks: [],
+            plans: [],
+            handoff: null,
+            adopted: false,
+          },
+        });
+      expect(build(), 'premise: the hint shows without the setting').toMatch(/Invited-memory/);
+      writeFileSync(
+        join(config, 'settings.json'),
+        JSON.stringify({
+          pluginConfigs: { 'cc-plugin-agents-md@builtin': { options: { instructionFiles: 'managed-only' } } },
+        }),
+      );
+      expect(build()).not.toMatch(/Invited-memory/);
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      rmSync(config, { recursive: true, force: true });
+    }
   });
 });

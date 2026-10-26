@@ -28,6 +28,7 @@ import {
   chmodSync,
   cpSync,
   readFileSync,
+  symlinkSync,
 } from 'fs';
 import { createRequire } from 'module';
 import { tmpdir } from 'os';
@@ -52,6 +53,12 @@ function withRealDeps(root) {
     join(pkgDir, 'index.js'),
     `module.exports = require(${JSON.stringify(join(REPO, 'node_modules', 'better-sqlite3'))});\n`,
   );
+  // doctor also asks each root whether its MCP server can load the SDK (E2E 2026-10-16), so a
+  // healthy fixture carries that dependency too; its own imports resolve through the realpath.
+  symlinkSync(
+    join(REPO, 'node_modules', '@modelcontextprotocol'),
+    join(root, 'node_modules', '@modelcontextprotocol'),
+  );
   return root;
 }
 
@@ -75,10 +82,14 @@ function pluginCacheDir(version) {
   return join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', version);
 }
 
-function makePluginVersion(version, { deps = 'real' } = {}) {
+function makePluginVersion(version, { deps = 'real', launcher = 'current' } = {}) {
   const root = pluginCacheDir(version);
   mkdirSync(join(root, 'scripts'), { recursive: true });
-  writeFileSync(join(root, 'scripts', 'launch.mjs'), '// launcher\n');
+  // This tree's launcher, which leaves .npm-install-failed when its npm install fails; 'old' is
+  // one from before that marker (<= 6.27.0), which leaves nothing.
+  if (launcher === 'current')
+    copyFileSync(join(REPO, 'scripts', 'launch.mjs'), join(root, 'scripts', 'launch.mjs'));
+  else writeFileSync(join(root, 'scripts', 'launch.mjs'), '// launcher\n');
   for (const f of ['cli.mjs', 'server.mjs', 'hook.mjs']) writeFileSync(join(root, f), '// x\n');
   mkdirSync(join(root, 'hooks'), { recursive: true });
   writeFileSync(
@@ -165,7 +176,7 @@ describe('doctor: a healthy plugin-only install is not an error', () => {
     expect(r.stdout).not.toMatch(/✗ hook\.mjs: missing/);
     expect(r.stdout).not.toMatch(/Managed files: \d+ missing/);
     // `update` is the observation editor; the self-updater is `self-update`.
-    expect(r.stdout).not.toMatch(/qwen-mem-lite update(?!\s*<)/);
+    expect(r.stdout).not.toMatch(/(qwen-mem-lite|cli\.mjs) update(?!\s*<)/);
   });
 
   it('still FAILS a plugin-only install whose cache entry point is gone', () => {
@@ -622,4 +633,91 @@ describe('rebuild-binding: repairs every broken tree, and says so honestly', () 
     // re-spawn npm every 6h forever (2026-08-13).
     expect(existsSync(marker), 'marker cleared while a tree was still broken').toBe(true);
   }, 120_000);
+});
+
+// E2E 2026-10-16 (install P1-6): doctor imported the MCP SDK into its own process, which
+// answers for the tree doctor runs from. A managed install whose node_modules lost the SDK
+// read "✓ verified" while its server.mjs could not start; asked per code home it is a ✗ that
+// names the home and its repair.
+describe('doctor: the MCP SDK is checked in each code home', () => {
+  it('a managed install without the SDK is red, naming it', () => {
+    const root = makeManagedInstall();
+    rmSync(join(root, 'node_modules', '@modelcontextprotocol'), { recursive: true, force: true });
+    const r = run('doctor', { QWEN_MEM_DIR: join(home, 'data') });
+    const sdk = failLines(r.stdout).filter((l) => l.includes('@modelcontextprotocol/sdk'));
+    expect(sdk.length, r.stdout).toBe(1);
+    expect(sdk[0]).toMatch(/managed install/);
+    expect(r.stdout).toMatch(/repair: cd .*\.qwen-mem-lite && npm install --omit=dev/);
+    // The probe's own referrer is no part of the user's install (E2E round 2, install B10).
+    expect(sdk[0]).not.toMatch(/\[eval1\]/);
+  });
+
+  // Round 2 (install B10): Claude Code materialises each new plugin cache version without
+  // node_modules, and scripts/launch.mjs installs them on the MCP server's first start. The SDK
+  // line called that "cannot start" and added a third ✗ for the one missing directory.
+  it('a plugin cache version not yet provisioned is not an SDK failure', () => {
+    makePluginVersion('9.9.9', { deps: 'none' });
+    enablePlugin();
+    const r = run('doctor', { QWEN_MEM_DIR: join(home, 'data') });
+    const sdkFails = failLines(r.stdout).filter((l) => l.includes('@modelcontextprotocol/sdk'));
+    expect(sdkFails, r.stdout).toEqual([]);
+    expect(r.stdout).toMatch(/@modelcontextprotocol\/sdk: not installed yet in .*first start/);
+    // Round 3 (install STILL-BROKEN-2): b191ef09 fixed the SDK line only; better-sqlite3 and the
+    // native binding still called the same root broken, beside the ⚠ calling it benign.
+    const depFails = failLines(r.stdout).filter((l) => /better-sqlite3|Native DB binding/.test(l));
+    expect(depFails, r.stdout).toEqual([]);
+    expect(r.stdout).toMatch(/better-sqlite3: not installed yet in .*first start/);
+  });
+
+  // Round 4 (install REGRESSION-1): launch.mjs left no trace when its first-start npm install
+  // FAILED, so that cache read as "not installed yet" and doctor passed with the MCP server
+  // unable to start. launch.mjs now leaves a marker, and doctor reports the failure again.
+  it('a plugin cache whose first-start npm install failed is a failure with the npm remedy', () => {
+    const root = makePluginVersion('9.9.9', { deps: 'none' });
+    enablePlugin();
+    const failBin = join(home, 'failbin');
+    mkdirSync(failBin, { recursive: true });
+    writeFileSync(join(failBin, 'npm'), '#!/bin/sh\necho "npm error code ENOTFOUND" >&2\nexit 1\n');
+    chmodSync(join(failBin, 'npm'), 0o755);
+    const launch = join(REPO, 'scripts', 'launch.mjs');
+    const env = {
+      ...process.env,
+      HOME: home,
+      PATH: `${failBin}:${process.env.PATH}`,
+      CLAUDE_PLUGIN_ROOT: root,
+    };
+    delete env.QWEN_MEM_DIR;
+    const l = spawnSync(process.execPath, [launch], { env, encoding: 'utf8', input: '', timeout: 60000 });
+    expect(l.status, l.stderr).toBe(1);
+    expect(existsSync(join(root, '.npm-install-failed')), 'launch.mjs left its marker').toBe(true);
+    const r = run('doctor', { QWEN_MEM_DIR: join(home, 'data') });
+    expect(
+      failLines(r.stdout).some((l2) => /better-sqlite3/.test(l2)),
+      r.stdout,
+    ).toBe(true);
+    expect(r.stdout).toMatch(/npm install --omit=dev/);
+    expect(r.stdout).not.toMatch(/not installed yet/);
+  });
+
+  // v6.28.0 pre-tag review, install P3-8: only this tree's launch.mjs leaves the marker, so a
+  // <= 6.27.0 cache whose first-start npm install had failed (no node_modules, no marker) still
+  // read as "not installed yet" and stayed out of the ✗ count. Without a launcher that leaves the
+  // marker, its absence says nothing.
+  it('a plugin cache whose launcher leaves no failure marker is not called pending', () => {
+    makePluginVersion('6.27.0', { deps: 'none', launcher: 'old' });
+    enablePlugin();
+    const r = run('doctor', { QWEN_MEM_DIR: join(home, 'data') });
+    expect(
+      failLines(r.stdout).some((l) => /better-sqlite3/.test(l)),
+      r.stdout,
+    ).toBe(true);
+    expect(r.stdout).toMatch(/npm install --omit=dev/);
+    expect(r.stdout).not.toMatch(/not installed yet/);
+  });
+
+  it('a managed install with the SDK is green', () => {
+    makeManagedInstall();
+    const r = run('doctor', { QWEN_MEM_DIR: join(home, 'data') });
+    expect(r.stdout).toMatch(/✓ @modelcontextprotocol\/sdk: verified in .*managed install/);
+  });
 });

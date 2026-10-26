@@ -8,10 +8,9 @@ description: "Use when: capturing a non-obvious lesson/gotcha/workaround after a
 Record a lesson / gotcha / workaround. Writes a searchable **observation**
 (`type=discovery` with the text as `lesson_learned`) so future sessions can
 find it via `mem_search` and the PreToolUse recall hooks surface it on the
-relevant files. Does NOT touch memdir — so lessons never end up in the L1
-system-prompt memory section and do not conflict with the `WHAT_NOT_TO_SAVE`
-semantics sdscc enforces. (Redirected v3.39: was the `events` table, which
-`mem_search` never read.)
+relevant files. Does NOT touch memdir — so lessons never end up in the
+auto-memory index Claude Code loads into every session, and do not conflict with
+Claude Code's auto-memory rules on what not to save there.
 
 ## When to use
 
@@ -23,7 +22,7 @@ After you (or the user) solve a tricky bug or discover a non-obvious behavior:
 
 Don't use for trivial fixes (typos, renames), for rules that belong in memdir
 (user preferences, project-wide conventions), or for general project notes
-(use `/mem:memory` or `mem_save` instead).
+(use `/qwen-mem-lite:memory` or `mem_save` instead).
 
 ## Arguments
 

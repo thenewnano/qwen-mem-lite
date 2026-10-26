@@ -155,6 +155,60 @@ describe('P3-4 disabled plugin stops appending reads-<project>.txt', () => {
   });
 });
 
+// E2E 2026-10-16 round 2 (hooks REGRESSION-1): Claude Code merges enabledPlugins user <
+// project < local; the guard read the user scope only.
+describe('the bash guard merges the project and local scopes like the host', () => {
+  function scopedRead({ user, project, local, projectRaw }) {
+    const home = sandbox('mem-disabled-home-');
+    const memDir = sandbox('mem-disabled-data-');
+    const proj = join(sandbox('mem-disabled-proj-'), 'org', 'proj');
+    mkdirSync(join(proj, '.claude'), { recursive: true });
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    if (user !== undefined) writeFileSync(join(home, '.claude', 'settings.json'), settingsWith(user));
+    if (project !== undefined) writeFileSync(join(proj, '.claude', 'settings.json'), settingsWith(project));
+    if (local !== undefined) writeFileSync(join(proj, '.claude', 'settings.local.json'), settingsWith(local));
+    if (projectRaw !== undefined) writeFileSync(join(proj, '.claude', 'settings.json'), projectRaw);
+    const r = spawnSync('bash', [SCRIPT], {
+      input: JSON.stringify({
+        session_id: 'scoped',
+        tool_name: 'Read',
+        tool_input: { file_path: `${proj}/a.md` },
+      }),
+      env: {
+        ...process.env,
+        HOME: home,
+        QWEN_MEM_DIR: memDir,
+        CLAUDE_PROJECT_DIR: proj,
+        QWEN_MEM_HOOK_RUNNING: '',
+      },
+      encoding: 'utf8',
+    });
+    expect(r.status).toBe(0);
+    return existsSync(join(memDir, 'runtime', 'reads-org--proj.txt'));
+  }
+  it('user false, project true: runs', () => {
+    expect(scopedRead({ user: false, project: true })).toBe(true);
+  });
+  it('user true, local false: off', () => {
+    expect(scopedRead({ user: true, local: false })).toBe(false);
+  });
+  it('project false, local true: runs', () => {
+    expect(scopedRead({ project: false, local: true })).toBe(true);
+  });
+  it('control: user false alone is still off', () => {
+    expect(scopedRead({ user: false })).toBe(false);
+  });
+  // E2E 2026-10-16 round 3 (NEW-4): a regex reads the key out of a file that is not valid JSON,
+  // where node ignores the whole file. A trailing comma is the common hand edit.
+  it('a project file that does not parse sets nothing, as on the node side', () => {
+    const broken = `{"enabledPlugins":{"${PLUGIN_KEY}": false,}}`;
+    expect(() => JSON.parse(broken)).toThrow();
+    expect(scopedRead({ user: true, projectRaw: broken })).toBe(true);
+    // Control: the same file without the comma still switches it off.
+    expect(scopedRead({ user: true, projectRaw: `{"enabledPlugins":{"${PLUGIN_KEY}": false}}` })).toBe(false);
+  });
+});
+
 describe('bash/Node disable-detection parity', () => {
   const bash = readFileSync(SCRIPT, 'utf8');
   const nodeSrc = readFileSync(HOOK_MJS, 'utf8');

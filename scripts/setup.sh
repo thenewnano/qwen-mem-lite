@@ -99,8 +99,6 @@ if [[ -n "${QWEN_MEM_DIR:-}" || -n "${QWEN_MEM_RUNTIME_DIR:-}" ]] && [[ -f "$ROO
   unset _resolved _db _rt
 fi
 
-OLD_UNHIDDEN_DIR="$HOME/claude-mem-lite"
-
 # Colors
 if [[ -t 2 ]]; then
   GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; RED='\033[0;31m'; NC='\033[0m'
@@ -120,18 +118,12 @@ log_warn() { echo -e "${YELLOW}⚠${NC} $*" >&2; }
 # day GitHub bumps the runner image. Keep SC2317 for anyone on an older shellcheck.
 log_err()  { echo -e "${RED}✗${NC} $*" >&2; }
 
-# 1. Migrate unhidden dir (~/claude-mem-lite/ → ~/.qwen-mem-lite/; the source keeps its
-#    pre-v0.5 name - it is the old product layout, not the current identity)
-#    CODE_DIR, not DB_DIR, and deliberately: the pre-v0.5 unhidden directory held the
-#    INSTALL - server.mjs, hook.mjs, package.json - and CODE_DIR is the one location that
-#    must never follow the relocation env var. Moving it into a relocated DB_DIR would
-#    strand every absolute path settings.json and the MCP registration baked.
-if [[ -d "$OLD_UNHIDDEN_DIR" && ! -d "$CODE_DIR" ]]; then
-  mv "$OLD_UNHIDDEN_DIR" "$CODE_DIR"
-  log_ok "Migrated ~/claude-mem-lite/ → ~/.qwen-mem-lite/"
-fi
+# 1. ~/qwen-mem-lite/ (the unhidden dir of versions before the first release) is not moved
+#    here: the first open moves a store left there into DB_DIR, and only the store
+#    (schema.mjs migrateUnhiddenStore). This script moved the whole directory into a missing
+#    CODE_DIR, and a git clone of this repository made in ~ is at that path (D#568).
 
-# 2. Ensure both locations exist (runtime created after migration check)
+# 2. Ensure both locations exist
 mkdir -p "$CODE_DIR"
 mkdir -p "$DB_DIR"
 if [[ "$DB_DIR" == "$CODE_DIR" ]]; then
@@ -151,10 +143,39 @@ fi
 #    a relocation it never closed - nothing ever writes a database THERE - so this block
 #    copied the legacy database again on every single SessionStart, without bound. Measured
 #    2026-09-14: control arm stable at 1 backup across three runs, relocated arm 1 → 3.
+#    A backup already in DB_DIR closes it as well: while every open fails before creating the
+#    database (D#569's EXDEV did), the first condition never closes (D#573). Only the suffix is a
+#    pattern, so a `[` or `*` in DB_DIR's own path is matched as itself. The backup's database, not
+#    its log, which starts with the same name and is placed first.
+#
+#    The log goes under the name SQLite pairs with the backup (D#584: the database alone lacked the
+#    rows only in the log). Each file is copied under a private name and then moved into place, the
+#    database last, so a session start killed partway leaves no backup; the next one copies again
+#    while no database has been created yet. Whether there is a log is decided before the copy, so
+#    a private copy that went away fails the backup rather than leaving the log out of it.
+#    Private files not written for ten minutes are removed first: a session start is killed at
+#    30 s. install's own (`.legacy-backup-copy-`) are left to install, which removes them before a
+#    copy of its own, under its lock.
 OLD_DIR="$HOME/.claude-mem"
-if [[ -f "$OLD_DIR/claude-mem.db" && ! -f "$DB_DIR/qwen-mem-lite.db" && ! -f "$DB_DIR/claude-mem.db" ]]; then
-  BACKUP="$DB_DIR/qwen-mem-lite.db.legacy-backup-$(date +%s)"
-  if cp "$OLD_DIR/claude-mem.db" "$BACKUP" 2>/dev/null; then
+has_legacy_backup() {
+  local f
+  for f in "$DB_DIR"/qwen-mem-lite.db.legacy-backup-*; do
+    [[ -e "$f" && "$f" =~ \.legacy-backup-[0-9]+$ ]] && return 0
+  done
+  return 1
+}
+find "$DB_DIR/" -maxdepth 1 -name '.legacy-backup-setup-*' -mmin +10 -exec rm -f {} + 2>/dev/null || true
+if [[ -f "$OLD_DIR/claude-mem.db" && ! -f "$DB_DIR/qwen-mem-lite.db" && ! -f "$DB_DIR/claude-mem.db" ]] &&
+  ! has_legacy_backup; then
+  TS="$(date +%s)"
+  BACKUP="$DB_DIR/qwen-mem-lite.db.legacy-backup-$TS"
+  TMP="$DB_DIR/.legacy-backup-setup-$$-$TS"
+  WAL="$OLD_DIR/claude-mem.db-wal"
+  [[ -f "$WAL" ]] || WAL=""
+  if { [[ -z "$WAL" ]] || cp "$WAL" "$TMP-wal" 2>/dev/null; } &&
+    cp "$OLD_DIR/claude-mem.db" "$TMP" 2>/dev/null &&
+    { [[ -z "$WAL" ]] || mv "$TMP-wal" "$BACKUP-wal"; } &&
+    mv "$TMP" "$BACKUP"; then
     log_info "Legacy ~/.claude-mem/ DB is schema-incompatible; backed up to $(basename "$BACKUP") (a fresh DB will be created). Old ~/.claude-mem/ preserved."
   else
     log_warn "Legacy DB backup failed - a fresh database will be created"
@@ -170,7 +191,7 @@ if [[ -f "$DB_DIR/claude-mem.db" && ! -f "$DB_DIR/qwen-mem-lite.db" ]]; then
   log_ok "Database renamed: claude-mem.db → qwen-mem-lite.db"
 fi
 
-# 5. Ensure runtime directories exist (after migration to not mask migration check).
+# 5. Ensure runtime directories exist.
 #    Both: RUNTIME_DIR carries the cross-component flag below, while CODE_DIR/runtime keeps
 #    the two run-once install markers at the bottom of this file.
 mkdir -p "$RUNTIME_DIR"
@@ -426,20 +447,26 @@ fi
 #    hooks remain in the config home's settings.json. A user who installed via global
 #    `qwen-mem-lite install` and later switched to the marketplace plugin
 #    will run every hook twice (direct settings.json hooks AND plugin hooks)
-#    until they run `qwen-mem-lite uninstall` to clear the settings.json
-#    entries. /plugin uninstall does not touch settings.json.
+#    until they run cleanup-hooks to clear the settings.json entries (not
+#    uninstall, which removes the plugin too). /plugin uninstall does not touch
+#    settings.json.
 # CODE_DIR/runtime, same reason: the residue it warns about is stale hook entries in the config
-# home's settings.json - one warning per config home, regardless of where the data lives.
+# home's settings.json — one warning per config home, regardless of where the data lives.
+# The test for a stale hook is cleanup-hooks' classifier, lib/hook-prune.mjs beside this script.
+# A substring of the product name listed a user's own hook kept under ~/.qwen-mem-lite/ (D#513).
 RESIDUE_MARKER="$CODE_DIR/runtime/.residue-warned-v2.55$(marker_suffix "$CC_CONFIG_DIR/settings.json" "$CC_DEFAULT_CONFIG_DIR/settings.json")"
 if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && ! -f "$RESIDUE_MARKER" ]]; then
   SETTINGS="$CC_CONFIG_DIR/settings.json"
   if [[ -f "$SETTINGS" ]]; then
-    SETTINGS_PATH="$SETTINGS" node -e '
+    HOOK_PRUNE="$(dirname "${BASH_SOURCE[0]}")/../lib/hook-prune.mjs" \
+      SETTINGS_PATH="$SETTINGS" CFG_DIR="$CC_CONFIG_DIR" node -e '
       const fs = require("fs");
-      try {
+      const { pathToFileURL } = require("url");
+      import(pathToFileURL(process.env.HOOK_PRUNE).href).then(({ isMemHookCommand, ourInstallRoots }) => {
         const raw = fs.readFileSync(process.env.SETTINGS_PATH, "utf8");
         const data = JSON.parse(raw);
         const hooks = data.hooks || {};
+        const roots = ourInstallRoots(data);
         const events = Object.keys(hooks);
         const found = [];
         for (const ev of events) {
@@ -447,8 +474,7 @@ if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && ! -f "$RESIDUE_MARKER" ]]; then
           for (const entry of list) {
             const inner = Array.isArray(entry?.hooks) ? entry.hooks : [];
             for (const h of inner) {
-              const cmd = String(h?.command || "");
-              if (cmd.includes(".qwen-mem-lite/") || cmd.includes("qwen-mem-lite/scripts") || cmd.includes("qwen-mem-lite/hook.mjs")) {
+              if (isMemHookCommand(h?.command, roots)) {
                 found.push(ev);
                 break;
               }
@@ -460,11 +486,17 @@ if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && ! -f "$RESIDUE_MARKER" ]]; then
           process.stderr.write("\x1b[33m⚠\x1b[0m Legacy direct-install hooks detected in " + process.env.SETTINGS_PATH + "\n");
           process.stderr.write("  Events with stale entries: " + [...new Set(found)].join(", ") + "\n");
           process.stderr.write("  These will fire alongside plugin hooks (each tool call runs twice).\n");
-          process.stderr.write("  Fix: run \x1b[1mqwen-mem-lite uninstall\x1b[0m to clear settings.json,\n");
+          // A shell word, single-quoted unless plain (cli-path.mjs shellWord); \x27 is a quote here.
+          const q = (w) => (/^[\w@%+=:,.\/-]+$/.test(w) ? w : "\x27" + w.split("\x27").join("\x27\\\x27\x27") + "\x27");
+          // The config home this warning is about, named even when it is the default one: the shell
+          // the user types into may carry a CLAUDE_CONFIG_DIR that names another profile.
+          const env = "CLAUDE_CONFIG_DIR=" + q(process.env.CFG_DIR) + " ";
+          const fix = env + "node " + q(process.env.CLAUDE_PLUGIN_ROOT + "/cli.mjs") + " cleanup-hooks";
+          process.stderr.write("  Fix: run \x1b[1m" + fix + "\x1b[0m to clear settings.json,\n");
           process.stderr.write("       then keep using the plugin install. (One-time warning.)\n\n");
           process.exit(2);
         }
-      } catch {}
+      }).catch(() => {});
     ' || true
   fi
   # Mark the warning as shown regardless of result - silence is fine if no

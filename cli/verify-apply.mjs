@@ -23,12 +23,12 @@ import {
   markUndone,
 } from '../lib/verify-apply-core.mjs';
 import { parseArgs, out, fail, rejectBareStringFlags } from './common.mjs';
-import { shellWord } from '../cli-path.mjs';
+import { shellWord, CLI_INVOKE } from '../cli-path.mjs';
 
 const USAGE =
-  '[mem] Usage: qwen-mem-lite verify-apply <proposals.json> [--project P]          (dry run)\n' +
-  '       qwen-mem-lite verify-apply <proposals.json> [--project P] --apply --digest <d>\n' +
-  '       qwen-mem-lite verify-apply --undo <backup.json>';
+  `[mem] Usage: ${CLI_INVOKE} verify-apply <proposals.json> [--project P]          (dry run)\n` +
+  `       ${CLI_INVOKE} verify-apply <proposals.json> [--project P] --apply --digest <d>\n` +
+  `       ${CLI_INVOKE} verify-apply --undo <backup.json>`;
 
 const SNIPPET_CONTEXT = 60;
 const BACKUP_DIR = join(DB_DIR, 'backups');
@@ -153,7 +153,7 @@ export function cmdVerifyApply(db, args) {
     out(`[mem] Plan digest: ${digest}`);
     out('[mem] Dry run — nothing written. After the user approves exactly this plan, run:');
     out(
-      `  ${SELF} verify-apply ${shellWord(file)} --project ${shellWord(project)} --apply --digest ${digest}`,
+      `  ${SELF} verify-apply ${shellWord(file)} --project=${shellWord(project)} --apply --digest ${digest}`,
     );
     return;
   }

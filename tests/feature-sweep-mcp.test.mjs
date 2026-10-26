@@ -133,6 +133,23 @@ function withDb(fn) {
   }
 }
 
+/**
+ * Re-attribute a project's rows to a machine writer. The idle GC passes skip explicit saves
+ * (E2E 2026-10-16), and these sweeps seed through `save`, so the GC cases hand their rows to
+ * the population GC exists for: rows a hook or worker wrote.
+ */
+function asMachineWritten(project) {
+  return withDb((db) => {
+    const sid = `hook-sweep-${project}`;
+    db.prepare(
+      `INSERT OR IGNORE INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+       VALUES (?, ?, ?, ?, ?, 'active')`,
+    ).run(sid, sid, project, new Date().toISOString(), Date.now());
+    return db.prepare('UPDATE observations SET memory_session_id = ? WHERE project = ?').run(sid, project)
+      .changes;
+  });
+}
+
 /** Backdate a project's rows so the age-gated tools (compress/maintain) engage. */
 function ageProject(project, days) {
   return withDb((db) => {
@@ -456,7 +473,9 @@ describe('MCP feature sweep: public tools', () => {
     );
 
     const dropped = await call('mem_defer_drop', { id: `D#${id}`, reason: 'covered elsewhere', project: P });
-    expect(dropped).toContain(`Dropped D#${id} in project "${P}". Reason: covered elsewhere`);
+    expect(dropped).toContain(
+      `Dropped D#${id} "Retire the legacy uploader shim" in project "${P}". Reason: covered elsewhere`,
+    );
     const row = withDb((db) =>
       db.prepare('SELECT status, drop_reason FROM deferred_work WHERE id = ?').get(id),
     );
@@ -620,6 +639,7 @@ describe('MCP feature sweep: hidden tools', () => {
       expect(fresh).toMatch(/Stale \(>30d, imp=1, no access, never injected\): 0/);
 
       expect(ageProject(P, 90)).toBe(3);
+      expect(asMachineWritten(P)).toBe(3);
       expect(await call('mem_maintain', { action: 'scan', project: P })).toMatch(
         /Stale \(>30d, imp=1, no access, never injected\): 3/,
       );

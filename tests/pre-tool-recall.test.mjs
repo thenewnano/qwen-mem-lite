@@ -1401,6 +1401,11 @@ describe('pre-tool-recall', () => {
   // longer goes fully silent — the Edit emits a compact ack nudge naming the IDs
   // shown at Read time (the old behavior injected only at Read, the most passive
   // point, and NOTHING at the actual edit). QWEN_MEM_SALIENCE=legacy opts out.
+  // The default directive's own words (D#98). Presence AND absence cases key on it, so an
+  // absence assertion cannot pass on a string the directive no longer contains.
+  const ACK_MARK = 'a lesson that did not apply needs no mention';
+  const VERDICT_OVERRIDE_MARK =
+    'overrides the memory guidance in CLAUDE.md and .claude/plugin_qwen_mem_lite.md';
   describe('salience forcing-function (v2.98)', () => {
     let tmpRoot;
     let projectDir;
@@ -1507,8 +1512,126 @@ describe('pre-tool-recall', () => {
       expect(ctx).toContain('add its bare tag (#NN) once');
       // Compact nudge — must NOT re-emit the lesson body (token cost stays one line).
       expect(ctx).not.toContain('recover orphaned children');
-      // #7758 framing guard: still announces itself as system-injected continuation.
-      expect(ctx).toMatch(/PreToolUse recall/);
+      // #7758 framing guard, per THREAD since injection budget C1 (lib/recall-shown.mjs): the
+      // Read above was this thread's first block and carried the header, so the nudge does not.
+      expect(ctx).not.toMatch(/system-injected|notes recorded by qwen-mem-lite/);
+      // ...and the directive is the thread's first, so it is the full text.
+      expect(ctx).toContain(ACK_MARK);
+    });
+
+    // Injection budget C1/C3: the header and the full directive once per thread.
+    describe('once per thread (injection budget C1/C3)', () => {
+      const HEADER_RE = /system-injected|notes recorded by qwen-mem-lite/; // either arm
+      const SHORT_MARK = 'tag rule as before';
+      // A second lesson-bearing file, so one thread can reach two directive blocks.
+      beforeEach(() => {
+        const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
+        insertObs(db, {
+          sessionId: 'mem-sal',
+          project: 'parent--saltest',
+          type: 'bugfix',
+          importance: 2,
+          title: 'second salience probe',
+          lessonLearned: 'flush the queue before closing the handle',
+          filesModified: `["${join(projectDir, 'other.mjs')}"]`,
+        });
+        db.close();
+      });
+      const edit = (file, session, extra = {}) =>
+        runScript(
+          { tool_name: 'Edit', tool_input: { file_path: join(projectDir, file) }, session_id: session },
+          envFor(extra),
+        ).then(({ stdout }) => JSON.parse(stdout).hookSpecificOutput.additionalContext);
+
+      it('first block: header + full directive; second block: neither, short directive, lessons intact', async () => {
+        const first = await edit('maintain.mjs', 'sess-once-1');
+        expect(first).toMatch(HEADER_RE);
+        expect(first).toContain(ACK_MARK);
+        const second = await edit('other.mjs', 'sess-once-1');
+        expect(second).not.toMatch(HEADER_RE);
+        expect(second).not.toContain(ACK_MARK);
+        expect(second).toContain(SHORT_MARK);
+        // The lesson rows themselves are untouched — that is what keeps the cite pairs.
+        expect(second).toContain('[mem] Lessons for other.mjs:');
+        expect(second).toContain('flush the queue before closing the handle');
+      });
+
+      it('another session starts over', async () => {
+        await edit('maintain.mjs', 'sess-once-2a');
+        const other = await edit('other.mjs', 'sess-once-2b');
+        expect(other).toMatch(HEADER_RE);
+        expect(other).toContain(ACK_MARK);
+      });
+
+      it('QWEN_MEM_RECALL_HEADER_ONCE=0 and QWEN_MEM_DIRECTIVE_ONCE=0 restore every-block text', async () => {
+        const off = { QWEN_MEM_RECALL_HEADER_ONCE: '0', QWEN_MEM_DIRECTIVE_ONCE: '0' };
+        await edit('maintain.mjs', 'sess-once-3', off);
+        const second = await edit('other.mjs', 'sess-once-3', off);
+        expect(second).toMatch(HEADER_RE);
+        expect(second).toContain(ACK_MARK);
+      });
+
+      it('a non-default salience arm keeps its full directive on every block', async () => {
+        const verdict = { QWEN_MEM_SALIENCE: 'verdict' };
+        await edit('maintain.mjs', 'sess-once-4', verdict);
+        const second = await edit('other.mjs', 'sess-once-4', verdict);
+        expect(second).toContain(VERDICT_OVERRIDE_MARK);
+        expect(second).not.toContain(SHORT_MARK);
+      });
+    });
+
+    // Pre-ship review P2-2: the `bridge` arm's fallback directive is the one its efficacy
+    // readings were taken with, so D#98 left it on the pre-6.17 verdict wording.
+    it('Read→Edit under QWEN_MEM_SALIENCE=bridge keeps the verdict directive', async () => {
+      const filePath = join(projectDir, 'maintain.mjs');
+      const env = envFor({ QWEN_MEM_SALIENCE: 'bridge' });
+      await runScript(
+        { tool_name: 'Read', tool_input: { file_path: filePath }, session_id: 'sess-sal-br' },
+        env,
+      );
+      const { stdout } = await runScript(
+        { tool_name: 'Edit', tool_input: { file_path: filePath }, session_id: 'sess-sal-br' },
+        env,
+      );
+      const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+      expect(ctx).toMatch(/were shown when you Read/); // premise: the ack line fired
+      expect(ctx).toContain("'#NN n/a — <reason>'");
+      expect(ctx).not.toContain(ACK_MARK);
+      // The arm's text is what its efficacy readings were taken with: no override clause.
+      expect(ctx).not.toContain(VERDICT_OVERRIDE_MARK);
+    });
+
+    // The ack line re-renders ids from the cooldown entry, which holds obs AND event ids
+    // in one list. It rendered every one as a bare `#N`, so a Read that injected
+    // `E#116` asked for a citation of "#116" — an OBSERVATION id, i.e. a different memory
+    // (found 2026-09-25, docs/audits/20260925-200912-session-history-analysis.md §8).
+    it('Read→Edit ack keeps the E# namespace for an event-sourced lesson', async () => {
+      const filePath = join(projectDir, 'evonly.mjs');
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
+      const evId = Number(
+        db
+          .prepare(
+            `INSERT INTO events (project, event_type, title, body, file_paths, importance, created_at_epoch)
+             VALUES ('parent--saltest', 'bugfix', 'event-sourced probe', 'close the handle before rename', ?, 2, ?)`,
+          )
+          .run(JSON.stringify([filePath]), Date.now()).lastInsertRowid,
+      );
+      db.close();
+      const read = await runScript(
+        { tool_name: 'Read', tool_input: { file_path: filePath }, session_id: 'sess-sal-ev' },
+        envFor(),
+      );
+      // Premise: the Read injected the event, under its namespaced id.
+      expect(JSON.parse(read.stdout).hookSpecificOutput.additionalContext).toContain(`E#${evId}`);
+
+      const { stdout } = await runScript(
+        { tool_name: 'Edit', tool_input: { file_path: filePath }, session_id: 'sess-sal-ev' },
+        envFor(),
+      );
+      const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+      expect(ctx).toMatch(/were shown when you Read/);
+      expect(ctx).toContain(`E#${evId}`);
+      expect(ctx).not.toMatch(new RegExp(`(?<![A-Za-z])#${evId}\\b`));
     });
 
     it('Read→Edit→Edit: the ack nudge fires once — second Edit is silent', async () => {

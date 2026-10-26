@@ -567,3 +567,122 @@ describe('v6.19.4 pre-tag reviews', () => {
     expect(out).not.toContain(last);
   });
 });
+
+// D#167: a cut key whose one full line is 16-39 characters, under an opener whose prefix does
+// not match the `+` diff lines below it (`'+`, `rb'+`, `+KEY = '''`). The line keeps its `+`,
+// so the key-magic test saw `+MHcC…` and the line was stored. A plain `+` prefix was erased.
+describe('a short first key line under a quote-plus opener', () => {
+  const line = `+MHcCAQEEIB${b64(17)}`;
+  it.each([
+    ['a plain diff prefix', '+-----BEGIN EC PRIVATE KEY-----'],
+    ['a quote-plus opener', "x = '+-----BEGIN EC PRIVATE KEY-----"],
+    ['a bytes-literal opener', "rb'+-----BEGIN EC PRIVATE KEY-----"],
+    ['a triple-quote opener', "+KEY = '''-----BEGIN EC PRIVATE KEY-----"],
+  ])('%s', (_name, begin) => {
+    expect(line.length - 1, 'premise: 16-39 characters after the diff mark').toBeLessThan(40);
+    expect(scrubSecrets(`${begin}\n${line}…`)).not.toContain(line.slice(1, 20));
+  });
+  // The other direction: a `+` line that does not start with a key magic stays.
+  it('keeps a short base64 line with no key magic', () => {
+    const plain = `+QUJD${b64(23)}`;
+    expect(scrubSecrets(`x = '+-----BEGIN EC PRIVATE KEY-----\n${plain}…`)).toContain(plain);
+  });
+});
+
+// D#504 F1: one cut key line of 16-39 characters counts as key material only when it starts the
+// way a key encoding starts, and that test was a list of five prefixes. The DER headers below are
+// from keys OpenSSL 3.5.5 generated on 2026-10-20 (`openssl ecparam -genkey`, `openssl genpkey`,
+// `openssl pkcs8 -topk8`); none of them is on the list, so a first line cut to 16-39 characters
+// was stored.
+describe('a short first key line of a key type the prefix list missed', () => {
+  it.each([
+    ['secp256k1 SEC1', 'MHQCAQEEI'],
+    ['P-521 SEC1', 'MIHcAgEBBEI'],
+    ['P-521 PKCS#8', 'MIHuAgEAMBA'],
+    ['brainpoolP512r1 SEC1', 'MIHaAgEBBEA'],
+    ['brainpoolP256r1 SEC1', 'MHgCAQEEI'],
+    ['secp224r1 SEC1', 'MGgCAQEEH'],
+    ['secp224r1 PKCS#8', 'MHgCAQAwEAY'],
+    ['prime192v1 SEC1', 'MF8CAQEEG'],
+    ['Ed448 PKCS#8', 'MEcCAQAwBQY'],
+    ['X448 PKCS#8', 'MEYCAQAwBQY'],
+  ])('%s', (_name, header) => {
+    for (const len of [16, 28, 39]) {
+      const line = header + b64(len - header.length);
+      for (const begin of ['-----BEGIN EC PRIVATE KEY-----', '-----BEGIN PRIVATE KEY-----']) {
+        expect(scrubSecrets(`$ head -c 60 k.pem\n${begin}\n${line}`), `${len} chars`).not.toContain(line);
+        expect(scrubSecrets(`${begin}\n${line}…`), `${len} chars, cut mark`).not.toContain(line);
+        expect(scrubSecrets(`+${begin}\n+${line}`), `${len} chars, diff`).not.toContain(line.slice(0, 16));
+      }
+      // The key-tail reading asks the same question of the top line over an END that words follow.
+      const tail = `${line}\n-----END EC PRIVATE KEY----- (see above)`;
+      expect(scrubSecrets(tail), `${len} chars over an END`).not.toContain(line);
+    }
+  });
+  // The other direction: words in the base64 alphabet that start with M and are no DER header stay.
+  it.each(['MaintenanceWindowConfig', 'MHQCAndOtherNotes', 'MEYCHANGELOGENTRY2026', 'MAXRETRIESEXCEEDED'])(
+    'keeps %s',
+    (word) => {
+      const text = `-----BEGIN EC PRIVATE KEY-----\n${word}\nmore notes`;
+      expect(scrubSecrets(text)).toContain(word);
+    },
+  );
+});
+
+// D#169 (a crafted run of blank lines after armor-header BEGINs read slowly) was attempted twice for
+// v6.30.0 and withdrawn: each attempt stopped reading after 16 blank lines in some case, and a cut key
+// below 17 or more blank lines was stored where v6.29.3 erased it (pre-tag reviews r1 and r2). These
+// shapes pin the erasing side for whatever fixes D#169 next.
+describe('blank lines between a BEGIN and a cut key body', () => {
+  const body = [b64(64), b64(64), `${b64(40)}…`];
+  const windows = body.flatMap((l) => [l.slice(0, 16), l.slice(-17, -1)]);
+  for (const blanks of [16, 17, 20, 40]) {
+    for (const [eol, sep] of [
+      ['LF', '\n'],
+      ['CRLF', '\r\n'],
+    ]) {
+      it(`${blanks} blank lines, ${eol}`, () => {
+        const text = ['-----BEGIN RSA PRIVATE KEY-----', ...Array(blanks).fill(''), ...body].join(sep);
+        const out = scrubSecrets(`$ head id_rsa${sep}${text}`);
+        expect(windows.filter((w) => out.includes(w))).toEqual([]);
+        expect(out).toContain('$ head id_rsa');
+      });
+    }
+  }
+  it('a PGP header, then 17 blank lines', () => {
+    const text = ['-----BEGIN PGP PRIVATE KEY BLOCK-----', 'Version: 1', ...Array(17).fill(''), ...body];
+    const out = scrubSecrets(text.join('\n'));
+    expect(windows.filter((w) => out.includes(w))).toEqual([]);
+  });
+  // r2: a header line that holds a BEGIN no reading starts from (another label, words after it, a
+  // quote, no closing dashes) and then 17 or more blank lines.
+  it.each([
+    'X-Ref: -----BEGIN CERTIFICATE-----',
+    'Comment: -----BEGIN PGP SIGNATURE-----',
+    'Comment: see -----BEGIN here',
+    'X-Ref: "-----BEGIN RSA PRIVATE KEY-----"',
+    'X-Ref: -----BEGIN RSA PRIVATE KEY',
+    'X-Ref: -----BEGIN RSA PRIVATE KEY-----',
+  ])('a header holding %s, then 17 and 40 blank lines', (header) => {
+    for (const n of [17, 40]) {
+      const text = ['-----BEGIN RSA PRIVATE KEY-----', header, ...Array(n).fill(''), ...body];
+      const out = scrubSecrets(text.join('\n'));
+      expect(
+        windows.filter((w) => out.includes(w)),
+        `${n} blank lines`,
+      ).toEqual([]);
+    }
+  });
+  it('Read-tool numbered output with 17 blank lines under a header holding a BEGIN', () => {
+    const lines = [
+      '-----BEGIN RSA PRIVATE KEY-----',
+      'Comment: -----BEGIN RSA PRIVATE KEY-----',
+      ...Array(17).fill(''),
+      ...body,
+    ];
+    const out = scrubSecrets(numbered(lines));
+    expect(windows.filter((w) => out.includes(w))).toEqual([]);
+    const escaped = scrubSecrets(J(numbered(lines)));
+    expect(windows.filter((w) => escaped.includes(w))).toEqual([]);
+  });
+});

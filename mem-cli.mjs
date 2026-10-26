@@ -5,7 +5,7 @@
 import { ensureDbWithWalRecovery, refreshPlannerStats, DB_PATH, DB_DIR, CODE_DIR } from './schema.mjs';
 import { dirAccessError, walOpenBlocked, dataDirRemedy, WAL_BLOCKED_WHY } from './lib/wal-open-blocked.mjs';
 import { resolveRuntimeDir } from './lib/resolve-data-dir.mjs';
-import { isFtsCorruptionError, FTS_CORRUPTION_REMEDY } from './lib/db-unusable.mjs';
+import { isFtsCorruptionError, isDbUnusableError, FTS_CORRUPTION_REMEDY } from './lib/db-unusable.mjs';
 import {
   truncate,
   queryLabel,
@@ -14,7 +14,9 @@ import {
   scrubSecrets,
   COMPRESSED_PENDING_PURGE,
 } from './utils.mjs';
-import { resolveProject } from './project-utils.mjs';
+import { isBlankText } from './lib/blank-text.mjs';
+import { resolveProject, checkWriteProject, unknownProjectNote } from './project-utils.mjs';
+import { editDistance } from './lib/edit-distance.mjs';
 // READ commands resolve the project DB-aware: a subdirectory whose own name holds no rows
 // falls back to the enclosing work-tree root, so `cd src/auth && … recent` reads what the
 // session's hooks wrote. WRITE commands (save / defer add / restore / import-jsonl) keep
@@ -36,6 +38,7 @@ import {
   PROMPT_DETAIL_FIELDS,
   EVENT_DETAIL_FIELDS,
   supersededNotice,
+  supersededEventNotice,
 } from './lib/get-core.mjs';
 import {
   collectBrowseTiers,
@@ -54,12 +57,14 @@ import { selectCompressionCandidates, groupByProjectWeek, compressGroup } from '
 import {
   runMaintainOps,
   findDuplicates,
+  reviewRows,
   maintenanceStats,
   OP_CAP,
   STALE_AGE_MS,
   PINNED_INJ_THRESHOLD,
   resolveDefaultMaintainOps,
   ALL_MAINTAIN_OPS,
+  DEFAULT_RETAIN_DAYS,
 } from './lib/maintain-core.mjs';
 // snapshotDb left with maintain-core: the pre-maintain snapshot is part of the op ORDER
 // (it must see the pre-existing pending rows), so it moved into runMaintainOps (P1-5).
@@ -78,6 +83,7 @@ import { aggregateProjectCiteRecall } from './lib/citation-tracker.mjs';
 import {
   probeOtherSources as probeIdSources,
   bucketIdTokens,
+  formatSourceOverrideNote,
   splitDeferredTokens,
 } from './lib/id-routing.mjs';
 import { join, dirname } from 'path';
@@ -94,7 +100,7 @@ import {
   schemaSkewRemedy,
   formatSchemaSkewNotice,
 } from './lib/schema-skew.mjs';
-import { CLI_PATH, CLI_INVOKE } from './cli-path.mjs';
+import { CLI_PATH, CLI_INVOKE, shellWord } from './cli-path.mjs';
 import {
   parseArgs,
   out,
@@ -107,14 +113,18 @@ import {
   rejectBareStringFlags,
   resolvePositionalAlias,
   suggestUnknownFlags,
+  KNOWN_CLI_FLAGS,
+  BOOLEAN_CLI_FLAGS,
   resetFlagTracking,
   inertFilterFlags,
   inertFilterFlagNotice,
+  FILTER_FLAGS,
   OBS_TIME_FIELDS,
   formatObsFieldValue,
   obsFieldLabel,
   formatPendingPurgeLine,
   formatHiddenLine,
+  formatReviewSide,
 } from './cli/common.mjs';
 import {
   saveObservation,
@@ -123,7 +133,7 @@ import {
   formatSupersededNote,
 } from './lib/save-observation.mjs';
 import { normalizeScope, applyObsUpdate } from './lib/observation-write.mjs';
-import { EXPORT_COLUMNS_SQL, buildExportWhere } from './lib/export-columns.mjs';
+import { EXPORT_COLUMNS_SQL, EXPORT_FIDELITY_NOTE, buildExportWhere } from './lib/export-columns.mjs';
 import { recallByFile, countRecallableByFile } from './lib/recall-core.mjs';
 import { fetchRecent, RECENT_MAX } from './lib/recent-core.mjs';
 import {
@@ -139,6 +149,7 @@ import {
   parseDuration,
   coreRunSearchPipeline,
   reachabilityNote,
+  ignoredOperatorNote,
 } from './lib/search-core.mjs';
 import { AUTO_MERGE_THRESHOLD } from './lib/dedup-constants.mjs';
 import { countRecentHookErrors } from './lib/hook-telemetry.mjs';
@@ -166,6 +177,7 @@ import {
   insertDeferred,
   listOpenWithOrdinal,
   openOrdinalOf,
+  deferredDropLabel,
   dropDeferred,
   formatDropReasonHint,
   resolveDeferredIds,
@@ -178,7 +190,7 @@ import {
   countStaleOpen,
   formatDeferStaleHint,
 } from './lib/deferred-work.mjs';
-import { shouldQueueSaveEnrich, queueSaveEnrich } from './lib/save-enrich.mjs';
+import { saveEnrichNote } from './lib/save-enrich.mjs';
 
 // ─── Commands ────────────────────────────────────────────────────────────────
 
@@ -206,7 +218,7 @@ function emitRecallHint(db, query) {
     const n = countRecallableByFile(db, q);
     if (n > 0) {
       out(`[mem] ${n} observation(s) are linked to that file — search indexes text, not file paths.`);
-      out(`[mem] Try: qwen-mem-lite recall "${queryLabel(q)}"`);
+      out(`[mem] Try: ${CLI_INVOKE} recall "${queryLabel(q)}"`);
     }
   } catch {
     /* hint is best-effort; never break search */
@@ -225,7 +237,7 @@ async function cmdSearch(db, args, { llm } = {}) {
   if (query === null) return;
   if (!query) {
     fail(
-      '[mem] Usage: qwen-mem-lite search <query> [--type TYPE] [--source SOURCE] [--limit N] [--project P] [--from DATE] [--to DATE] [--since DUR] [--importance N] [--branch B] [--offset N] [--sort relevance|time|importance] [--include-noise] [--deep] [--no-deep] [--rerank] — query may also be passed via --query "<query>"',
+      `[mem] Usage: ${CLI_INVOKE} search <query> [--type TYPE] [--source SOURCE] [--limit N] [--project P] [--from DATE] [--to DATE] [--since DUR] [--importance N] [--branch B] [--offset N] [--sort relevance|time|importance] [--include-noise] [--deep] [--no-deep] [--rerank] — query may also be passed via --query "<query>"`,
     );
     return;
   }
@@ -237,7 +249,9 @@ async function cmdSearch(db, args, { llm } = {}) {
     fail(`[mem] Invalid --type "${type}". Valid: ${[...validObsTypes].join(', ')}`);
     return;
   }
-  const source = flags.source || null; // observations|sessions|prompts|events (null = all)
+  // observations|sessions|prompts|events (null = all). `get` spells them obs|session|prompt|event,
+  // and each command refused the other's spelling (E2E 2026-10-16); both are accepted here.
+  const source = flags.source ? (SEARCH_SOURCE_SPELLINGS[flags.source] ?? flags.source) : null;
   const project = flags.project ? resolveProject(db, flags.project) : null;
   const bounds = parseDateBounds(flags.from, flags.to, flags.since);
   if (!bounds.ok) {
@@ -279,6 +293,16 @@ async function cmdSearch(db, args, { llm } = {}) {
     return;
   }
   const useOr = flags.or === true || flags.or === 'true';
+  // stderr, so a --json consumer's stdout stays one parseable document (E2E 2026-10-16, cli F5).
+  // Written once the search has run: a fired AND→OR fallback did match any word, so OR then gets
+  // no note (it would say every word must match under a results line that says it relaxed).
+  const emitOpNote = (orFallback) => {
+    const opNote = ignoredOperatorNote(query, {
+      orHint: 'use --or for any-word matching',
+      orMode: useOr || orFallback,
+    });
+    if (opNote) process.stderr.write(`[mem] ${opNote}\n`);
+  };
   // R-1: opt-in flag to surface hook-llm fallback titles ("Modified X", "Worked on X", raw
   // error logs, etc.) which are otherwise filtered from default search. Use for auditing or
   // when explicitly searching for a file/command that produced a degraded title.
@@ -309,7 +333,9 @@ async function cmdSearch(db, args, { llm } = {}) {
   }
 
   if (source && !['observations', 'sessions', 'prompts', 'events'].includes(source)) {
-    fail(`[mem] Invalid --source "${source}". Use: observations, sessions, prompts, events`);
+    fail(
+      `[mem] Invalid --source "${source}". Use: observations|obs, sessions|session, prompts|prompt, events|event`,
+    );
     return;
   }
 
@@ -324,7 +350,7 @@ async function cmdSearch(db, args, { llm } = {}) {
     if (!wantDeferredTrailer) return;
     try {
       const rows = searchDeferredWork(db, query, project || cliProject(db));
-      for (const line of formatDeferredSearchTrailer(rows, 'qwen-mem-lite get D#<id>')) out(line);
+      for (const line of formatDeferredSearchTrailer(rows, `${CLI_INVOKE} get D#<id>`)) out(line);
     } catch {
       /* trailer is best-effort; never break search */
     }
@@ -334,6 +360,7 @@ async function cmdSearch(db, args, { llm } = {}) {
   // --deep proceeds even when the literal query sanitizes to nothing — its LLM
   // rewrite may still produce searchable variants (F3, parity with server.mjs).
   if (!ftsQuery && deepMode === 'normal') {
+    emitOpNote(false);
     // A query that sanitizes to an empty FTS expression (only operators/punctuation/
     // sub-min-length tokens) is a zero-result search, not a malformed one. In --json
     // mode emit the same empty envelope as the no-match path below so programmatic
@@ -437,6 +464,7 @@ async function cmdSearch(db, args, { llm } = {}) {
   );
   const isDeep = res.isDeep;
   const orFallbackFired = res.orFallbackFired;
+  emitOpNote(orFallbackFired);
   const deepVariants = res.variants;
   const paged = res.page;
   const total = res.total;
@@ -493,7 +521,17 @@ async function cmdSearch(db, args, { llm } = {}) {
         }),
       );
     } else {
-      out(`[mem] No results for "${queryLabel(query)}"`);
+      // Deep search on operators or punctuation: the query itself was never searched. Whether a
+      // rewrite ran decides the rest, as on the MCP face (d963eb0a): a failed rewrite searched
+      // nothing at all (pre-tag claims review 2026-10-16 S4c).
+      const rewriteRan = (deepVariants?.length ?? 0) > 1;
+      out(
+        ftsQuery
+          ? `[mem] No results for "${queryLabel(query)}"`
+          : rewriteRan
+            ? `[mem] No results for "${queryLabel(query)}" — it has no searchable terms, and its deep rewrites found nothing`
+            : `[mem] No results for "${queryLabel(query)}" — it has no searchable terms, and deep search could not rewrite it (the LLM call failed or returned no usable variants)`,
+      );
       emitRecallHint(db, query);
       // The zero-result path is where the trailer earns its keep — the D#92
       // failure chain was exactly "searched, found nothing, item was deferred".
@@ -739,7 +777,7 @@ function cmdRecall(db, args) {
   if (file === null) return;
   if (!file) {
     fail(
-      '[mem] Usage: qwen-mem-lite recall <file> [--limit N] [--project P] [--include-noise] [--json] — file may also be passed via --file <file>',
+      `[mem] Usage: ${CLI_INVOKE} recall <file> [--limit N] [--project P] [--include-noise] [--json] — file may also be passed via --file <file>`,
     );
     return;
   }
@@ -890,6 +928,8 @@ function renderEventRows(db, ids) {
   const parts = [];
   for (const r of rows) {
     const lines = [`E#${r.id} [${r.event_type}] ${r.created_at ? fmtDateShort(r.created_at) : ''}`];
+    const retired = supersededEventNotice(r);
+    if (retired) lines.push(retired);
     for (const f of EVENT_DETAIL_FIELDS) {
       if (f === 'id' || f === 'event_type' || f === 'created_at') continue; // in the header
       const val = r[f];
@@ -908,7 +948,7 @@ function cmdGet(db, args) {
   if (idStr === null) return;
   if (!idStr) {
     fail(
-      '[mem] Usage: qwen-mem-lite get <id1,id2,...> [--source obs|session|prompt|event] [--fields f1,f2,...] — ids may also be passed via --ids 1,2\n' +
+      `[mem] Usage: ${CLI_INVOKE} get <id1,id2,...> [--source obs|session|prompt|event] [--fields f1,f2,...] — ids may also be passed via --ids 1,2\n` +
         '        IDs accept prefix from search output: #123 (obs), P#123 (prompt), S#123 (session), E#123 (event), D#123 (deferred item, full detail).',
     );
     return;
@@ -920,10 +960,12 @@ function cmdGet(db, args) {
     .filter(Boolean);
 
   // Explicit --source overrides any prefix; otherwise each token's prefix routes individually.
-  const explicit = flags.source;
+  const explicit = flags.source ? (GET_SOURCE_SPELLINGS[flags.source] ?? flags.source) : flags.source;
   const validSources = new Set(['obs', 'session', 'prompt', 'event']);
   if (explicit && !validSources.has(explicit)) {
-    fail(`[mem] Invalid --source "${explicit}". Use: obs, session, prompt, event`);
+    fail(
+      `[mem] Invalid --source "${explicit}". Use: obs|observations, session|sessions, prompt|prompts, event|events`,
+    );
     return;
   }
 
@@ -932,10 +974,16 @@ function cmdGet(db, args) {
   const { deferredIds, rest } = splitDeferredTokens(tokens);
 
   // Shared bucketing with MCP mem_get — single source of truth for P#/S#/E#/# routing (#8050).
-  const { bySrc, invalid: unparseable } = bucketIdTokens(rest, { explicit, defaultSource: 'obs' });
+  const {
+    bySrc,
+    invalid: unparseable,
+    overridden,
+  } = bucketIdTokens(rest, { explicit, defaultSource: 'obs' });
   if (unparseable.length > 0) {
     process.stderr.write(`[mem] Ignoring unparseable ID token(s): ${unparseable.join(', ')}\n`);
   }
+  const overrideNote = formatSourceOverrideNote(overridden, `--source ${flags.source}`);
+  if (overrideNote) process.stderr.write(`[mem] ${overrideNote}\n`);
   if (
     bySrc.obs.length +
       bySrc.session.length +
@@ -951,7 +999,11 @@ function cmdGet(db, args) {
   // Validate --fields against obs schema (only meaningful for obs rows).
   if (rejectBareStringFlags(flags, ['fields', 'source'])) return;
   let requestedFields = null;
-  if (flags.fields) {
+  if (flags.fields && bySrc.obs.length === 0) {
+    // Nothing to select from: checked against the observation fields, `get E#2 --fields body`
+    // failed "No valid fields specified" for the Body an event prints (E2E 2026-10-16 round 2).
+    process.stderr.write('[mem] --fields selects observation fields; E#/S#/P# records print in full\n');
+  } else if (flags.fields) {
     const allRequested = flags.fields.split(',').map((s) => s.trim());
     const invalid = allRequested.filter((f) => !OBS_FIELDS.includes(f));
     if (invalid.length > 0) {
@@ -963,6 +1015,10 @@ function cmdGet(db, args) {
     if (requestedFields.length === 0) {
       fail('[mem] No valid fields specified');
       return;
+    }
+    // A mixed request: the other records print in full, and that went unsaid (round 3).
+    if (bySrc.session.length + bySrc.prompt.length + bySrc.event.length > 0) {
+      process.stderr.write('[mem] --fields selects observation fields; E#/S#/P# records print in full\n');
     }
   }
 
@@ -1018,7 +1074,7 @@ function cmdGet(db, args) {
       bySrc.obs.length + bySrc.session.length + bySrc.prompt.length + bySrc.event.length === 0
     ) {
       fail(
-        `[mem] Deferred item(s) not found: ${deferredMissing.map((i) => `D#${i}`).join(', ')}. List open items: qwen-mem-lite defer list`,
+        `[mem] Deferred item(s) not found: ${deferredMissing.map((i) => `D#${i}`).join(', ')}. List open items: ${CLI_INVOKE} defer list`,
       );
       return;
     }
@@ -1107,6 +1163,35 @@ function cmdTimeline(db, args) {
     anchorNote = resolved.anchorNote;
   }
 
+  // A lone positional that names a record (`timeline 12`, `timeline #12`, `timeline E#3`) is the
+  // anchor the user meant: it used to go to the query search, which answered "No anchor found
+  // for \"12\"" with #12 right there (E2E 2026-10-16). Only when it resolves; otherwise it stays
+  // a query, so a search for a number still works. Under --project it must also resolve INSIDE
+  // that project: the id lookup spans every project, so `timeline 3 --project app-b` centred on
+  // another project's #3 where it used to search app-b for "3" (E2E round 2, data R1).
+  if (
+    (!anchorId || isNaN(anchorId)) &&
+    flags.query === undefined &&
+    positional.length === 1 &&
+    parseIdToken(positional[0])
+  ) {
+    const resolved = resolveAnchorToken(db, positional[0], { project });
+    // crossProject: the token names a record of another project, which resolveAnchorToken
+    // answers with this project's nearest row in time. That is what --anchor asks for; a lone
+    // positional may be a search, so it stays one, and says why (E2E 2026-10-16 round 3).
+    const inScope = resolved.ok && !resolved.crossProject;
+    if (resolved.ok && resolved.crossProject) {
+      process.stderr.write(
+        `[mem] ${positional[0]} is in another project — searched ${project} for "${positional[0]}" instead; ` +
+          `--anchor ${positional[0]} shows ${project} around its time\n`,
+      );
+    }
+    if (inScope) {
+      anchorId = resolved.anchorId;
+      anchorNote = resolved.anchorNote;
+    }
+  }
+
   // Support query-based anchor: `timeline --query "search terms"` or positional.
   // Shared with MCP so AND→OR fallback semantics match `search` — without this,
   // queries like "ep-flush leak" miss rows whose title is "ep-flush ... leaked"
@@ -1122,10 +1207,14 @@ function cmdTimeline(db, args) {
 
   // No anchor: show most recent observations (shared fallback with MCP mem_timeline)
   if (!anchorId || isNaN(anchorId)) {
+    // The current project unless one was named, like mem_timeline (MCP P2-17, E2E 2026-10-16).
+    const listProject = project || cliProject(db);
     if (queryStr) {
-      process.stderr.write(`[mem] No anchor found for "${queryStr}", showing recent timeline\n`);
+      process.stderr.write(
+        `[mem] No anchor found for "${queryStr}", showing the recent timeline of project "${listProject}"\n`,
+      );
     }
-    const rows = fetchRecentTimeline(db, { project, limit: before + after + 1 });
+    const rows = fetchRecentTimeline(db, { project: listProject, limit: before + after + 1 });
 
     if (jsonOutput) {
       out(
@@ -1142,11 +1231,11 @@ function cmdTimeline(db, args) {
     }
 
     if (rows.length === 0) {
-      out('[mem] No observations found.');
+      out(`[mem] No observations found in project "${listProject}".`);
       return;
     }
 
-    out(`[mem] Timeline (most recent ${rows.length}):`);
+    out(`[mem] Timeline (most recent ${rows.length}, project ${listProject}):`);
     for (const r of rows.reverse()) {
       const time = relativeTime(r.created_at_epoch);
       const title = truncate(r.title || r.subtitle || '(untitled)', 80);
@@ -1229,7 +1318,7 @@ function cmdSave(db, args) {
   if (text === null) return;
   if (!text.trim()) {
     fail(
-      '[mem] Usage: qwen-mem-lite save "<text>" [--type T] [--title T] [--importance N] [--project P] [--files f1,f2] [--lesson T] [--closes-deferred 1,D#42] [--supersedes 8754,E#10524] [--force] — content may also be passed via --text/--content "<text>"',
+      `[mem] Usage: ${CLI_INVOKE} save "<text>" [--type T] [--title T] [--importance N] [--project P] [--files f1,f2] [--lesson T] [--closes-deferred 1,D#42] [--supersedes 8754,E#10524] [--force] — content may also be passed via --text/--content "<text>"`,
     );
     return;
   }
@@ -1255,6 +1344,12 @@ function cmdSave(db, args) {
   // R10 P2-3: write mode — exact matching only, so `--project api` cannot land the row in
   // `mono--api-gateway` where the caller's own next `--project api` read will not find it.
   const project = flags.project ? resolveProject(db, flags.project, { mode: 'write' }) : inferProject();
+  // A named project that does not exist: a near-miss is refused, a new name is noted (cli F14).
+  const projectCheck = flags.project ? checkWriteProject(db, project) : { ok: true, note: '' };
+  if (!projectCheck.ok) {
+    fail(`[mem] ${projectCheck.message}`);
+    return;
+  }
   const saveFiles = flags.files
     ? flags.files
         .split(',')
@@ -1359,7 +1454,7 @@ function cmdSave(db, args) {
 
   if (result.kind === 'duplicate') {
     out(
-      `[mem] Skipped: similar to existing #${result.existingId}. Use "qwen-mem-lite get ${result.existingId}" to review.`,
+      `[mem] Skipped: similar to existing #${result.existingId}. Use "${CLI_INVOKE} get ${result.existingId}" to review.`,
     );
     // D#201: the dedup swallowed the requested supersession too — say so here,
     // because this branch returns before the note below is ever reached.
@@ -1374,10 +1469,9 @@ function cmdSave(db, args) {
   const supersededNote = formatSupersededNote(result);
   // G1+G2: detached backfill worker (lesson for obligated types + aliases for
   // every save) — fill-only-empty, so an agent acting on the nudge still wins.
-  const enrichNote =
-    shouldQueueSaveEnrich(result) && queueSaveEnrich(result.id) ? ' (background enrichment queued)' : '';
+  const enrichNote = saveEnrichNote(result);
   out(
-    `[mem] Saved #${result.id} [${result.type}] "${truncate(result.title, 80)}" (project: ${result.project})${lessonNote}${closedNote}${supersededNote}${enrichNote}${buildLessonNudge({ type: result.type, id: result.id, lessonCaptured: result.lessonCaptured, surface: 'cli' })}`,
+    `[mem] Saved #${result.id} [${result.type}] "${truncate(result.title, 80)}" (project: ${result.project})${result.kind === 'saved' ? projectCheck.note : ''}${lessonNote}${closedNote}${supersededNote}${enrichNote}${buildLessonNudge({ type: result.type, id: result.id, lessonCaptured: result.lessonCaptured, surface: 'cli' })}`,
   );
   // D#201: on its OWN line, after the success line. Appending it to the success
   // string would put a warning inside a sentence that reads as "done".
@@ -1401,7 +1495,7 @@ function cmdDefer(db, args) {
       cmdDeferDrop(db, rest);
       break;
     default:
-      fail('[mem] Usage: qwen-mem-lite defer <add|list|drop> ...');
+      fail(`[mem] Usage: ${CLI_INVOKE} defer <add|list|drop> ...`);
       fail('[mem]   defer add "<title>" [--priority 1|2|3] [--detail T] [--files f1,f2] [--project P]');
       fail('[mem]   defer list [--project P] [--limit N]');
       fail('[mem]   defer drop <id-or-D#N> --reason "<reason>" [--project P]');
@@ -1420,7 +1514,7 @@ function cmdDeferAdd(db, args) {
   const title = resolvedTitle.trim();
   if (!title) {
     fail(
-      '[mem] Usage: qwen-mem-lite defer add "<title>" [--priority 1|2|3] [--detail T] [--files f1,f2] [--project P] — title may also be passed via --title "<title>"',
+      `[mem] Usage: ${CLI_INVOKE} defer add "<title>" [--priority 1|2|3] [--detail T] [--files f1,f2] [--project P] — title may also be passed via --title "<title>"`,
     );
     return;
   }
@@ -1447,6 +1541,11 @@ function cmdDeferAdd(db, args) {
   // R10 P2-3: write mode — exact matching only, so `--project api` cannot land the row in
   // `mono--api-gateway` where the caller's own next `--project api` read will not find it.
   const project = flags.project ? resolveProject(db, flags.project, { mode: 'write' }) : inferProject();
+  const projectCheck = flags.project ? checkWriteProject(db, project) : { ok: true, note: '' };
+  if (!projectCheck.ok) {
+    fail(`[mem] ${projectCheck.message}`);
+    return;
+  }
   const detail = typeof flags.detail === 'string' ? flags.detail : null;
   const files = flags.files
     ? flags.files
@@ -1465,7 +1564,7 @@ function cmdDeferAdd(db, args) {
   // Compute the freshly-inserted row's ordinal for an immediately-actionable
   // response ("ok, deferred this as item N"), as mem_defer does.
   const ord = openOrdinalOf(db, project, r.id) ?? '?';
-  out(`[mem] Deferred as D#${r.id} (item ${ord}) in project "${project}".`);
+  out(`[mem] Deferred as D#${r.id} (item ${ord}) in project "${project}".${projectCheck.note}`);
 }
 
 function cmdDeferList(db, args) {
@@ -1487,7 +1586,7 @@ function cmdDeferList(db, args) {
   if (staleHint) out(`  ${staleHint}`);
   // Affordance for the detail field — list stays title-only by design (it is
   // mirrored into the SessionStart dashboard, where detail would be noise).
-  out(`  Full detail: qwen-mem-lite get D#<id>`);
+  out(`  Full detail: ${CLI_INVOKE} get D#<id>`);
 }
 
 function cmdDeferDrop(db, args) {
@@ -1498,7 +1597,7 @@ function cmdDeferDrop(db, args) {
   if (idStr === null) return;
   if (!idStr.trim()) {
     fail(
-      '[mem] Usage: qwen-mem-lite defer drop <id-or-D#N>[,id2,...] --reason "<reason>" [--project P] — id may also be passed via --id D#N',
+      `[mem] Usage: ${CLI_INVOKE} defer drop <id-or-D#N>[,id2,...] --reason "<reason>" [--project P] — id may also be passed via --id D#N`,
     );
     return;
   }
@@ -1534,7 +1633,7 @@ function cmdDeferDrop(db, args) {
   }
   if (dropped.length > 0) {
     out(
-      `[mem] Dropped ${dropped.map((id) => `D#${id}`).join(', ')} in project "${project}". Reason: ${reason.trim()}`,
+      `[mem] Dropped ${dropped.map((id) => deferredDropLabel(db, id)).join(', ')} in project "${project}". Reason: ${reason.trim()}`,
     );
   }
   if (noop.length > 0) {
@@ -1852,7 +1951,15 @@ function cmdContext(db, args) {
     for (let i = 0; i < sectionStarts.length; i++) {
       const start = sectionStarts[i].headerEnd;
       const end = i + 1 < sectionStarts.length ? sectionStarts[i + 1].index : block.length;
-      const key = sectionStarts[i].name.replace(/\s+/g, '_').toLowerCase();
+      // A dated heading ("Recent (2026-10-16)") is keyed without its date, which goes beside
+      // the sections: a key that changes every day cannot be addressed (E2E 2026-10-16, cli F13).
+      let name = sectionStarts[i].name;
+      const dated = name.match(/^(.*\S)\s*\((\d{4}-\d{2}-\d{2})\)$/);
+      if (dated) {
+        name = dated[1];
+        result.date = dated[2];
+      }
+      const key = name.replace(/\s+/g, '_').toLowerCase();
       result.sections[key] = block.slice(start, end).trim();
     }
     out(JSON.stringify(result, null, 2));
@@ -1976,7 +2083,7 @@ function cmdDelete(db, args) {
   if (idStr === null) return;
   if (!idStr) {
     fail(
-      '[mem] Usage: qwen-mem-lite delete <id1,id2,...> [--confirm] — ids may also be passed via --ids 1,2',
+      `[mem] Usage: ${CLI_INVOKE} delete <id1,id2,...> [--confirm] — ids may also be passed via --ids 1,2`,
     );
     return;
   }
@@ -1991,16 +2098,20 @@ function cmdDelete(db, args) {
   if (nonObs.length > 0) {
     fail(
       `[mem] delete only works on observations. Rejected: ${nonObs.join(', ')}. ` +
-        `Prompts, sessions, and events are not deletable here — inspect with \`qwen-mem-lite get P#N --source prompt\` / \`--source session\` / \`--source event\`.`,
+        `Delete an event with \`${CLI_INVOKE} activity delete E#N --confirm\`. Prompts and sessions are not ` +
+        `deletable — inspect with \`${CLI_INVOKE} get P#N --source prompt\` / \`--source session\`.`,
     );
     return;
   }
-  const ids = tokens
-    .map((t) => {
-      const p = parseIdToken(t);
-      return p && p.source === null ? p.id : NaN;
-    })
-    .filter((n) => !isNaN(n));
+  // Every token must be an observation id, or nothing is deleted: `delete 1,2x --confirm`
+  // deleted #1 and dropped `2x` without a word, where `activity delete` refuses the batch
+  // (E2E 2026-10-16 round 2).
+  const bad = tokens.filter((t) => parseIdToken(t)?.source !== null);
+  if (bad.length > 0) {
+    fail(`[mem] delete: not an observation id: ${bad.join(', ')} (use N or #N) — nothing was deleted`);
+    return;
+  }
+  const ids = tokens.map((t) => parseIdToken(t).id);
   if (ids.length === 0) {
     fail('[mem] No valid IDs provided');
     return;
@@ -2064,7 +2175,7 @@ function cmdUpdate(db, args) {
   const id = parsed && parsed.source === null ? parsed.id : NaN;
   if (!id || isNaN(id)) {
     fail(
-      '[mem] Usage: qwen-mem-lite update <id> [--title T] [--type T] [--importance N] [--lesson T] [--narrative T] [--concepts T] — id may also be passed via --id N',
+      `[mem] Usage: ${CLI_INVOKE} update <id> [--title T] [--type T] [--importance N] [--lesson T] [--narrative T] [--concepts T] — id may also be passed via --id N`,
     );
     return;
   }
@@ -2084,7 +2195,7 @@ function cmdUpdate(db, args) {
   if (flags.title !== undefined) {
     // Reject empty title — clears the observation's identifier and would render it
     // as `(untitled)` in every listing. Almost always an accidental shell-stripped arg.
-    if (typeof flags.title === 'string' && flags.title.trim() === '') {
+    if (typeof flags.title === 'string' && isBlankText(flags.title)) {
       fail(
         '[mem] --title cannot be empty. Pass a non-empty string or omit the flag to leave the title unchanged.',
       );
@@ -2181,23 +2292,15 @@ function cmdExport(db, args) {
       return;
     }
   }
-  let exportFromEpoch = null;
-  let exportToEpoch = null;
-  if (flags.from) {
-    exportFromEpoch = new Date(flags.from).getTime();
-    if (isNaN(exportFromEpoch)) {
-      fail(`[mem] Invalid --from date: "${flags.from}". Use YYYY-MM-DD or ISO 8601.`);
-      return;
-    }
+  // A bare YYYY-MM-DD is the LOCAL calendar day, as on search (parseDateBounds); export read
+  // it as a UTC day, so the same date matched a row on search and dropped it here.
+  const exportBounds = parseDateBounds(flags.from, flags.to);
+  if (!exportBounds.ok) {
+    fail(`[mem] Invalid --${exportBounds.bad} date: "${exportBounds.value}". Use YYYY-MM-DD or ISO 8601.`);
+    return;
   }
-  if (flags.to) {
-    exportToEpoch = new Date(flags.to).getTime();
-    if (isNaN(exportToEpoch)) {
-      fail(`[mem] Invalid --to date: "${flags.to}". Use YYYY-MM-DD or ISO 8601.`);
-      return;
-    }
-    if (/^\d{4}-\d{2}-\d{2}$/.test(flags.to)) exportToEpoch += DAY_MS - 1;
-  }
+  const exportFromEpoch = exportBounds.epochFrom;
+  const exportToEpoch = exportBounds.epochTo;
   // --include-compressed: include compressed observations (aligned with MCP mem_export).
   // Superseded rows are excluded either way; the flag only toggles the compressed half
   // of the live-row pair (backup/export of tombstones is opt-in, retractions are not).
@@ -2298,9 +2401,7 @@ function cmdExport(db, args) {
   }
   // Fidelity caveat at backup-creation time (mirrors the restore-side note). stderr,
   // so stdout stays a clean JSON/JSONL stream for `export > backup.json`.
-  process.stderr.write(
-    '[mem] Note: export omits related_ids and supersession links (superseded rows are excluded) — content and value-signals round-trip, the relationship graph does not.\n',
-  );
+  process.stderr.write(`[mem] Note: ${EXPORT_FIDELITY_NOTE}\n`);
 }
 
 // ─── Restore ───────────────────────────────────────────────────────────────
@@ -2326,7 +2427,7 @@ function cmdRestore(db, argv) {
   const { positional, flags } = parseArgs(argv);
   const file = positional[0];
   if (!file) {
-    fail('[mem] Usage: qwen-mem-lite restore <file> [--project P] [--dry-run]');
+    fail(`[mem] Usage: ${CLI_INVOKE} restore <file> [--project P] [--dry-run]`);
     return;
   }
   let raw;
@@ -2376,8 +2477,14 @@ function cmdRestore(db, argv) {
     return;
   }
 
-  const projOverride = flags.project ? resolveProject(db, flags.project) : null;
-  const dryRun = flags['dry-run'] === true || flags['dry-run'] === 'true';
+  const projOverride = flags.project ? resolveProject(db, flags.project, { mode: 'write' }) : null;
+  // The check `save` and `import-jsonl` make: a near miss is refused before anything is restored.
+  const projectCheck = projOverride ? checkWriteProject(db, projOverride) : { ok: true, note: '' };
+  if (!projectCheck.ok) {
+    fail(`[mem] ${projectCheck.message}`);
+    return;
+  }
+  const dryRun = asksDryRun(flags['dry-run']);
   const num = (v) => (Number.isFinite(Number(v)) ? Math.trunc(Number(v)) : 0);
 
   const dupCheck = db.prepare(
@@ -2518,7 +2625,7 @@ function cmdRestore(db, argv) {
   out(
     `[mem] Restore${dryRun ? ' (dry-run)' : ''}: ${restored} ${dryRun ? 'would be restored (at most)' : 'restored'}` +
       `, ${skipped} duplicate(s) ${dryRun ? 'would be skipped' : 'skipped'}${tombstoneNote}` +
-      `, ${totalMalformed} malformed/failed from ${totalLines} row(s).`,
+      `, ${totalMalformed} malformed/failed from ${totalLines} row(s)${projectCheck.note}.`,
   );
   // Nothing restorable, and not because it was all already here: the same verdict the
   // all-lines-unparseable JSONL case gives. A JSON array of malformed rows exited 0, so
@@ -2544,7 +2651,7 @@ function cmdCompress(db, args) {
   // a silent preview; fail fast pointing at the right flag. --execute still wins if both.
   if ((flags.run === true || flags.run === 'true') && flags.execute !== true && flags.execute !== 'true') {
     fail(
-      "[mem] compress executes with --execute, not --run (--run is optimize's flag). Re-run: qwen-mem-lite compress --execute",
+      `[mem] compress executes with --execute, not --run (--run is optimize's flag). Re-run: ${CLI_INVOKE} compress --execute`,
     );
     return;
   }
@@ -2627,7 +2734,7 @@ function cmdMaintain(db, args) {
   const action = positional[0];
   if (!action || !['scan', 'execute'].includes(action)) {
     fail(
-      "[mem] Usage: qwen-mem-lite maintain <scan|execute> [--ops cleanup,decay,boost,demote_pinned,dedup,purge_stale,vacuum] [--project P] [--retain-days N] [--merge-ids keepId:removeId,...] — 'scan' previews, 'execute' applies.",
+      `[mem] Usage: ${CLI_INVOKE} maintain <scan|execute> [--ops cleanup,decay,boost,demote_pinned,dedup,purge_stale,vacuum] [--project P] [--retain-days N] [--merge-ids keepId:removeId,...] — 'scan' previews, 'execute' applies.`,
     );
     return;
   }
@@ -2672,12 +2779,17 @@ function cmdMaintain(db, args) {
     out(`  Near-duplicate pairs: ${duplicates.length}`);
     out(`  Stale (>30d, imp=1, no access, never injected): ${stats.stale}`);
     out(`  Broken (no title/narrative): ${stats.broken}`);
+    out(`  Decayable (imp>1, never accessed or injected, past the stale age): ${stats.decayable}`);
     out(`  Boostable (accessed>3, imp<3): ${stats.boostable}`);
     out(
       `  Pinned-but-uncited (inj>=${PINNED_INJ_THRESHOLD}, cited=0, above floor): ${stats.pinned} — floored by the default maintain set since v3.76.0, no lesson → 1, lesson → 2 (opt out: QWEN_MEM_SKIP_DEMOTE_PINNED=1)`,
     );
     out(formatHiddenLine(stats.hidden));
-    out(formatPendingPurgeLine(stats.pendingPurge));
+    out(formatPendingPurgeLine(stats.pendingPurge, stats.pendingPurgeDue, DEFAULT_RETAIN_DAYS));
+    if (stats.explicitToShowAgain > 0)
+      out(
+        `  Explicit saves an earlier release hid (the next execute that runs decay — the default set does — shows them again): ${stats.explicitToShowAgain}`,
+      );
     if (duplicates.length > 0) {
       const autoMergeable = duplicates.filter((d) => parseFloat(d.similarity) >= AUTO_MERGE_THRESHOLD);
       const manualReview = duplicates.filter((d) => parseFloat(d.similarity) < AUTO_MERGE_THRESHOLD);
@@ -2696,15 +2808,22 @@ function cmdMaintain(db, args) {
           const remove = keep === d.a ? d.b : d.a;
           return `${keep.id}:${remove.id}`;
         });
-        out(`  Ready-to-use: qwen-mem-lite maintain execute --ops dedup --merge-ids ${mergeIds.join(',')}`);
+        out(`  Ready-to-use: ${CLI_INVOKE} maintain execute --ops dedup --merge-ids ${mergeIds.join(',')}`);
       }
 
       if (manualReview.length > 0) {
         out('  Needs review:');
-        for (const d of manualReview.slice(0, 15)) {
+        const shown = manualReview.slice(0, 15);
+        const rows = reviewRows(
+          db,
+          shown.flatMap((d) => [d.a.id, d.b.id]),
+        );
+        for (const d of shown) {
           out(
             `    [${d.a.id}] "${truncate(d.a.title, 40)}" <-> [${d.b.id}] "${truncate(d.b.title, 40)}" (${d.similarity})`,
           );
+          out(`      ${formatReviewSide(rows.get(d.a.id))}`);
+          out(`      ${formatReviewSide(rows.get(d.b.id))}`);
         }
       }
     }
@@ -2732,7 +2851,7 @@ function cmdMaintain(db, args) {
   // whole command atomically. The old code validated inside db.transaction() with a bare
   // `return`, so an earlier op (cleanup hard-delete / decay / boost) had already mutated and
   // the transaction COMMITTED despite the exit-1 error (audit MED-2 atomicity).
-  let retainDays = 30;
+  let retainDays = DEFAULT_RETAIN_DAYS;
   if (ops.includes('purge_stale') && flags['retain-days'] !== undefined) {
     // Number + isInteger (not parseInt) so "7.5"/"30x" are rejected rather than silently
     // truncated — parity with the mem_maintain zod .int().min(7).max(365) bound.
@@ -2781,10 +2900,13 @@ function cmdMaintain(db, args) {
         'purge_stale preview (no --confirm):',
         `  Candidates (pending-purge, older than ${retainDays}d): ${previewRow.candidates}`,
       ];
-      if (previewRow.candidates > 0) {
-        lines.push(`  Oldest: ${new Date(previewRow.oldest).toISOString().slice(0, 10)}`);
-        lines.push(`  Newest: ${new Date(previewRow.newest).toISOString().slice(0, 10)}`);
+      if (previewRow.candidates === 0) {
+        // D#468: a confirm of 0 rows deletes nothing, so there is nothing to invite.
+        lines.push('  Nothing to delete.');
+        return lines.join('\n');
       }
+      lines.push(`  Oldest: ${new Date(previewRow.oldest).toISOString().slice(0, 10)}`);
+      lines.push(`  Newest: ${new Date(previewRow.newest).toISOString().slice(0, 10)}`);
       lines.push('  To delete, re-run with --confirm.');
       return lines.join('\n');
     },
@@ -3110,7 +3232,7 @@ function cmdCitationStats(db, args) {
     // created, `no such table` swallowed into the debug log) read as "no data
     // yet" for as long as the surface stayed unmetered.
     out(`  (UNAVAILABLE — the per-face table could not be read: ${surfaceFunnel.unavailable})`);
-    out('  this is a failure, not an empty window: run `qwen-mem-lite fts-check` to repair the schema');
+    out('  this is a failure, not an empty window');
   } else if (surfaceFunnel.surfaces.length === 0) {
     out('  (no rows in this window yet — rows accrue at Stop, one per injection face per session)');
   } else {
@@ -3283,7 +3405,7 @@ Commands:
     --project P         Override the restored project for every row
     --dry-run           Preview what would be restored without writing
 
-  verify-apply <file>   Apply agent-verified memory corrections (/verify writes these).
+  verify-apply <file>   Apply agent-verified memory corrections (/qwen-mem-lite:verify writes these).
                         Dry run by default: prints the changes and a plan digest.
     --apply             Back up the target rows, apply in one transaction, read back
     --digest D          Required with --apply: the digest the approved dry run printed
@@ -3332,8 +3454,10 @@ Commands:
     --session-audit     Audit session/episode state for orphans and drift
     --json              Machine-readable output (plain doctor run)
 
-  fts-check <check|rebuild>  FTS5 index check or rebuild
-                        Exit 0 when every index is healthy / rebuilt, 1 otherwise —
+  fts-check <check|rebuild>  FTS5 index check, or a rebuild of the FTS5 indexes and then
+                        every other index (REINDEX)
+                        Exit 0 when the FTS5 indexes are healthy (check) or every index
+                        is rebuilt (rebuild), 1 otherwise —
                         so "fts-check rebuild && <next step>" is safe to chain.
 
   stats                 Show memory statistics
@@ -3376,22 +3500,30 @@ Commands:
 
     Valid types: bugfix, lesson, bug, discovery, refactor, feature, observation, decision
     --files (plural, comma-split) preferred; --file (singular) kept for back-compat.
-    Use /lesson or /bug slash commands for faster capture (T8).
+    Use /lesson or /qwen-mem-lite:bug slash commands for faster capture (T8).
 
-  adopt                 Write the qwen-mem-lite managed block into this project's
-                        CLAUDE.md + a plugin_qwen_mem_lite.md detail doc under
-                        .claude/ (loaded as project instructions). Runs automatically
-                        on each SessionStart; use this to force it now.
+  adopt                 Put the qwen-mem-lite managed block into this project's
+                        CLAUDE.md (normally committed, so the team gets it) + a
+                        plugin_qwen_mem_lite.md detail doc under .claude/, and remove
+                        the auto-written local copy (CLAUDE.local.md, or
+                        .claude/rules/qwen-mem-lite.md). Acts on the directory it runs
+                        in and takes no argument. SessionStart keeps an adopted block in
+                        sync but never adds one to CLAUDE.md.
     --all               Legacy sweep: strip old memory-dir (MEMORY.md) sentinels from
-                        known projects. Does NOT adopt — CLAUDE.md adoption is
-                        per-project, on each project's next SessionStart.
+                        known projects. Does NOT adopt — run adopt in each project
+                        whose CLAUDE.md should carry the block.
     --force             Also remove a legacy memory-dir block that has no state
                         sidecar. (The CLAUDE.md block is always rewritten to the
                         current template, edits inside it included.)
     --dry-run           Print intended writes without touching disk
     --status            List adopted projects + version
+    --disable           Stop SessionStart auto-adopt for this project (with --all: every
+                        known project); removes the CLAUDE.local.md block, keeps a
+                        CLAUDE.md one
+    --enable            Undo --disable (with --all: every known project)
 
-  unadopt               Precise removal of the sentinel block + plugin_qwen_mem_lite.md.
+  unadopt               Precise removal of the sentinel block + plugin_qwen_mem_lite.md,
+                        and of the auto-written CLAUDE.local.md (or rules file) block.
     --all               Unadopt every project
     --status            Read-only: list adopted projects (same as adopt --status)
     --dry-run           Preview what would be removed; no filesystem writes
@@ -3411,7 +3543,7 @@ async function cmdImportJsonl(db, argv) {
   const { positional, flags } = parseArgs(argv);
   const target = positional[0];
   if (!target) {
-    fail('[mem] Usage: qwen-mem-lite import-jsonl <file-or-dir> [--project <name>]');
+    fail(`[mem] Usage: ${CLI_INVOKE} import-jsonl <file-or-dir> [--project <name>]`);
     return;
   }
 
@@ -3425,6 +3557,13 @@ async function cmdImportJsonl(db, argv) {
     return;
   }
   const project = flags.project ? resolveProject(db, flags.project, { mode: 'write' }) : inferProject();
+  // The check `save` and `defer add` make: a near miss is refused before anything is imported,
+  // a new name is noted (pre-tag review 2026-10-16 P3-4).
+  const projectCheck = flags.project ? checkWriteProject(db, project) : { ok: true, note: '' };
+  if (!projectCheck.ok) {
+    fail(`[mem] ${projectCheck.message}`);
+    return;
+  }
   const fs = await import('fs');
   const { join: pjoin, resolve } = await import('path');
   const abs = resolve(target);
@@ -3502,7 +3641,8 @@ async function cmdImportJsonl(db, argv) {
     // totalObs (lib/import-jsonl.mjs), so they already count as "something was imported"
     // — an orphan-only first import must not fall through to the "already imported"
     // no-op branch below.
-    out(`[mem] Try: qwen-mem-lite recent 5 --project ${project}`);
+    if (projectCheck.note) out(`[mem] Imported${projectCheck.note}.`);
+    out(`[mem] Try: ${CLI_INVOKE} recent 5 --project=${shellWord(project)}`);
   } else if (totalRecognized > 0) {
     // Lines WERE Claude Code transcript events but produced no new rows — the file
     // was already imported (idempotent re-run) or carried no extractable content.
@@ -3521,7 +3661,13 @@ async function cmdImportJsonl(db, argv) {
     out(
       `[mem] Warning: 0 imported, ${totalSkip} line(s) skipped — none matched the expected Claude Code transcript JSONL shape (user/assistant/tool_result). 'export' output is NOT re-importable via import-jsonl.`,
     );
+    // Nothing was recognised, so nothing was imported: not a success (restore treats its own
+    // "nothing restorable" the same way). E2E 2026-10-16.
+    process.exitCode = 1;
   }
+  // A file that could not be read is a failure even when the others imported; the summary says
+  // which, and `import-jsonl dir && …` must not read it as a clean run.
+  if (errorCount > 0) process.exitCode = 1;
 }
 
 // ─── Enrich ─────────────────────────────────────────────────────────────────
@@ -3535,12 +3681,16 @@ async function cmdOptimize(db, args) {
   // the default budget (tasks/project undefined → run-everything). Normalize
   // `--flag=value` into `--flag value` up front so both forms parse identically;
   // the `--execute=` special-case below already anticipated this for one flag.
+  // On/off flags are read as parseArgs and the dispatcher's dry-run check read them (isTrue): after
+  // the split below, `args.includes('--run')` took `--run=false` and `--run false` as a run, which
+  // that check had let through as no write (D#514).
+  const { flags } = parseArgs(args, { track: false });
   args = args.flatMap((a) => {
     const m = /^(--[a-z][a-z-]*)=([\s\S]*)$/.exec(a);
     return m ? [m[1], m[2]] : [a];
   });
-  const run = args.includes('--run');
-  const runAll = args.includes('--run-all');
+  const run = isTrue(flags.run);
+  const runAll = isTrue(flags['run-all']);
   // Sibling-command flag footgun: optimize executes with --run (compress uses
   // --execute, maintain uses positional `execute`). A bare --execute previously fell
   // through to a silent preview, so the user thought they ran a mutation but didn't.
@@ -3549,11 +3699,11 @@ async function cmdOptimize(db, args) {
   const hasExecuteFlag = args.some((a) => a === '--execute' || a.startsWith('--execute='));
   if (hasExecuteFlag && !run && !runAll) {
     fail(
-      "[mem] optimize executes with --run, not --execute (--execute is compress's flag). Re-run: qwen-mem-lite optimize --run",
+      `[mem] optimize executes with --run, not --execute (--execute is compress's flag). Re-run: ${CLI_INVOKE} optimize --run`,
     );
     return;
   }
-  const verbose = args.includes('--verbose') || args.includes('-v');
+  const verbose = isTrue(flags.verbose) || args.includes('-v');
   // T2-P1-D: --task accepts a single task or a comma-separated list, parity with MCP memOptimizeSchema.tasks.
   const VALID_TASKS = ['re-enrich', 'normalize', 'cluster-merge', 'smart-compress'];
   const taskIdx = args.indexOf('--task');
@@ -3722,6 +3872,94 @@ import { HOOK_TEXT_CAP } from './lib/hook-text-cap.mjs';
  * remembered to enumerate.
  */
 const ARGV_PARSED_COMMANDS = new Set(['adopt', 'unadopt', 'doctor', 'optimize']);
+// `search --source` and `get --source` name the same four record kinds in two spellings.
+const SEARCH_SOURCE_SPELLINGS = {
+  obs: 'observations',
+  session: 'sessions',
+  prompt: 'prompts',
+  event: 'events',
+};
+const GET_SOURCE_SPELLINGS = { observations: 'obs', sessions: 'session', prompts: 'prompt', events: 'event' };
+// The flags each content writer takes (canonical names, after parseArgs' alias mapping). A flag
+// added to one of these commands and not here is refused, so the omission fails loudly in that
+// flag's own test rather than being dropped in silence. `json` is taken and ignored with the
+// generic --json note, so a script passing it does not lose its write.
+const CONTENT_WRITER_FLAGS = {
+  save: [
+    'text',
+    'content',
+    'type',
+    'title',
+    'importance',
+    'project',
+    'files',
+    'lesson',
+    'lesson-learned',
+    'closes-deferred',
+    'supersedes',
+    'force',
+    'json',
+  ],
+  update: ['id', 'title', 'narrative', 'lesson', 'lesson-learned', 'concepts', 'importance', 'type', 'json'],
+  'defer add': ['title', 'priority', 'detail', 'files', 'project', 'json'],
+  'activity save': ['type', 'title', 'body', 'files', 'file', 'project', 'importance', 'json'],
+};
+// Commands whose --project names where rows are WRITTEN (a new project is theirs to create).
+const PROJECT_WRITE_CMDS = new Set([
+  'save',
+  'defer add',
+  'activity save',
+  'import-jsonl',
+  'verify-apply',
+  'restore',
+]);
+// Commands whose first argument is free text, so a bare `--word` there may be text, not a flag.
+const TEXT_COMMANDS = new Set(['save', 'search', 'defer add']);
+// The mutating runs of the maintenance commands and the filter flags each actually reads.
+const isTrue = (v) => v === true || v === 'true';
+const MUTATING_FILTER_READS = {
+  compress: { writes: ({ flags }) => isTrue(flags.execute), reads: ['project', 'age-days'] },
+  maintain: { writes: ({ positional }) => positional[0] === 'execute', reads: ['project'] },
+  optimize: {
+    writes: ({ flags }) => isTrue(flags.run) || isTrue(flags['run-all']),
+    reads: ['project', 'scope'],
+  },
+  delete: { writes: ({ flags }) => isTrue(flags.confirm), reads: [], byId: true },
+  // Subcommands are keyed `<command> <sub>`: keyed on `activity` alone, `activity promote
+  // --execute --type lesson` promoted every event type and `activity delete N --confirm --project
+  // P` deleted another project's event (E2E 2026-10-16 round 2).
+  'activity promote': { writes: ({ flags }) => isTrue(flags.execute), reads: ['project', 'min-importance'] },
+  'activity delete': { writes: ({ flags }) => isTrue(flags.confirm), reads: [], byId: true },
+};
+// The writes that do not read --dry-run (restore and adopt do), and how each previews, if it can.
+// Since a flag that takes no value stopped swallowing the next word (D#385), `maintain --dry-run
+// execute` ran the hard delete it was a usage error before, and `import-jsonl --dry-run <file>`
+// imported (pre-tag review 2026-10-17 P2-1); `maintain execute --dry-run` already did.
+// A command not in MUTATING_FILTER_READS names here when its run writes (round-2 pre-tag review
+// P3-2: defer drop and fts-check rebuild ignored --dry-run silently; verify-apply --apply is left
+// to its digest, since --apply is verify-apply's own flag and the dispatcher may not read it).
+// A preview is the same command without the flag that makes it write, or with its previewing
+// subcommand in place of the writing one (`swap`), so the user's other flags stay (`maintain scan`
+// alone previewed every project, D#514); else another command (`preview`).
+const DRY_RUN_UNREAD = {
+  compress: { without: '--execute' },
+  maintain: { swap: 'scan in place of execute' },
+  optimize: { without: '--run or --run-all' },
+  delete: { without: '--confirm' },
+  'activity promote': { without: '--execute' },
+  'activity delete': { without: '--confirm' },
+  'import-jsonl': { preview: null, writes: () => true },
+  'defer drop': { preview: null, writes: () => true },
+  'fts-check': { preview: 'fts-check check', writes: ({ positional }) => positional[0] === 'rebuild' },
+};
+// Whether a --dry-run value asks for a dry run: any spelling of yes (`--dry-run`, `=1`, `=yes`,
+// `=TRUE`), not an explicit false (round-2 pre-tag review P3-2: only true / 'true' counted).
+const asksDryRun = (v) => v !== undefined && v !== false && !/^(false|0|no|off)$/i.test(String(v));
+// Every flag adopt-cli.mjs reads (hasFlag) for the two commands that write into a repository.
+const WRITER_COMMAND_FLAGS = {
+  adopt: ['--dry-run', '--all', '--status', '--disable', '--enable', '--force'],
+  unadopt: ['--dry-run', '--all', '--status', '--force'],
+};
 
 export async function run(argv) {
   // The inert-selection-flag notice is emitted HERE rather than inside the dispatcher because
@@ -3771,19 +4009,181 @@ async function runDispatch(argv) {
     return;
   }
 
+  // adopt / unadopt write and delete files in the user's repository, so an unknown flag stops
+  // them instead of being warned about and ignored, the rule the install family follows.
+  // `adopt --dryrun` used to warn and then write the committed CLAUDE.md, `adopt --disabel`
+  // adopted, `unadopt --dryrun` removed the block, all exit 0 (E2E 2026-10-16).
+  const writerFlags = WRITER_COMMAND_FLAGS[cmd];
+  if (writerFlags) {
+    if (cmdArgs[0] === 'help') {
+      cmdHelp();
+      return;
+    }
+    const unknown = cmdArgs.filter((a) => a.startsWith('-') && !writerFlags.includes(a));
+    if (unknown.length > 0) {
+      fail(
+        `[mem] ${cmd}: unknown flag ${unknown.join(', ')} — nothing was changed. ` +
+          `${cmd} takes: ${writerFlags.join(' ')}`,
+      );
+      return;
+    }
+    // None of these flags takes a value, so any other word is a positional, and none is read:
+    // `adopt api` adopted the directory it ran in, `unadopt api` removed the block there, and
+    // `/adopt <dir>` passes its words on (E2E 2026-10-16 round 2).
+    const words = cmdArgs.filter((a) => !a.startsWith('-'));
+    if (words.length > 0) {
+      fail(
+        `[mem] ${cmd}: takes no directory or other argument (got ${words.join(' ')}) — nothing was ` +
+          `changed. It acts on the project it runs in: cd there and run \`${cmd}\` again.`,
+      );
+      return;
+    }
+  }
+
+  // A mutating run refuses a filter flag it does not read BEFORE it writes. The after-the-fact
+  // notice ("the results above are UNFILTERED") came too late for these: `compress --execute
+  // --type change` had compressed every type, `maintain execute --type change` had decayed and
+  // hidden every type, and optimize (argv-parsed) said nothing (E2E 2026-10-16). A preview
+  // writes nothing and keeps the notice.
+  const mutatingKey = cmd === 'activity' || cmd === 'defer' ? `${cmd} ${cmdArgs[0]}` : cmd;
+  const mutating = MUTATING_FILTER_READS[mutatingKey];
+  if (mutating) {
+    const parsed = parseArgs(cmdArgs);
+    if (mutating.writes(parsed)) {
+      const unread = Object.keys(parsed.flags).filter(
+        (f) => FILTER_FLAGS.has(f) && !mutating.reads.includes(f),
+      );
+      if (unread.length > 0) {
+        const names = unread.map((f) => `--${f}`).join(', ');
+        fail(
+          `[mem] ${mutatingKey} does not filter on ${names} — nothing was changed, since ` +
+            (mutating.byId
+              ? `it acts on the ids it is given and ${names} would not have narrowed them. `
+              : 'the run would have acted on every row. ') +
+            (mutating.reads.length > 0
+              ? `It narrows by: ${mutating.reads.map((f) => `--${f}`).join(' ')}.`
+              : 'It takes no filter flags.'),
+        );
+        return;
+      }
+    }
+  }
+
+  if (Object.hasOwn(DRY_RUN_UNREAD, mutatingKey)) {
+    const parsed = parseArgs(cmdArgs, { track: false });
+    const { preview, without, swap, writes } = DRY_RUN_UNREAD[mutatingKey];
+    if ((mutating ? mutating.writes(parsed) : writes(parsed)) && asksDryRun(parsed.flags['dry-run'])) {
+      const how = without
+        ? `Run it again without ${without} to preview.`
+        : swap
+          ? `Run it again with ${swap} to preview.`
+          : preview
+            ? `Preview with: \`${CLI_INVOKE} ${preview}\`.`
+            : 'It has no preview.';
+      fail(
+        `[mem] ${mutatingKey} does not read --dry-run — nothing was changed, since the run would have ` +
+          `written. ${how}`,
+      );
+      return;
+    }
+  }
+
   // Typo guard: parseArgs silently DROPS unknown flags, so `save --improtance 3` used to
   // persist the DEFAULT importance and `recent --projcte X` silently queried the inferred
   // project — a misspelled flag changed results with zero signal. Warn (stderr, non-fatal)
   // when a flag looks like a misspelling of a real one; stdout + exit code stay untouched,
   // so JSON/text consumers are unaffected. Mirrors the unknown-COMMAND suggester in cli.mjs.
-  for (const { flag, suggestion, owner } of suggestUnknownFlags(parseArgs(cmdArgs).flags, cmd)) {
+  const parsedForTypos = parseArgs(cmdArgs, { track: false });
+  const writeKey = cmd === 'defer' || cmd === 'activity' ? `${cmd} ${cmdArgs[0]}` : cmd;
+  const writerAccepts = CONTENT_WRITER_FLAGS[writeKey];
+  // Tokens the hints below read as a value or text, not a flag; the writer check leaves them to
+  // the command's own refusal, which names the --name="…" form.
+  const valueLike = new Set();
+  for (const { flag, suggestion, owner } of suggestUnknownFlags(parsedForTypos.flags, cmd)) {
+    // The words before the first flag, so a subcommand keeps its place: `defer add -- "…"`, not
+    // `defer -- "…"`, which fails (E2E 2026-10-16 round 4).
+    const firstFlag = cmdArgs.findIndex((a) => a.startsWith('-'));
+    const dashLead = [cmd, ...cmdArgs.slice(0, firstFlag < 0 ? 0 : firstFlag)].join(' ');
+    // No flag name holds a space: this is a value or text that starts with `-`, and "Unknown
+    // flag … ignored" before the refusal that follows contradicted it (E2E 2026-10-16 round 3).
+    if (/\s/.test(flag)) {
+      valueLike.add(flag);
+      process.stderr.write(
+        `[mem] "--${flag}" was read as a flag. A value that starts with - is written --name="…"; ` +
+          `text that starts with - goes after a bare --: ${dashLead} -- "…"\n`,
+      );
+      continue;
+    }
+    // A one-word value has no space to give it away (`--lesson "--no-verify"`, `save "--draft"`),
+    // so the same contradiction survived round 3 (E2E 2026-10-16 round 4). Two shapes say it may be
+    // a value or text: it follows a known flag that was left with no value, or it is the bare first
+    // argument of a command that then has no text at all.
+    if (!owner) {
+      const at = cmdArgs.indexOf(`--${flag}`);
+      const prev = at > 0 ? cmdArgs[at - 1] : '';
+      const prevKey = prev.startsWith('--') && !prev.includes('=') ? prev.slice(2) : null;
+      const asFlag = suggestion ? ` As a flag, did you mean --${suggestion}?` : ' As a flag it is unknown.';
+      // Not after a flag that takes no value (D#385): it has no value to misread.
+      if (
+        prevKey &&
+        KNOWN_CLI_FLAGS.has(prevKey) &&
+        !BOOLEAN_CLI_FLAGS.has(prevKey) &&
+        parsedForTypos.flags[prevKey] === true
+      ) {
+        valueLike.add(flag);
+        process.stderr.write(
+          `[mem] "--${flag}" right after --${prevKey} was read as a flag, not as its value. A value ` +
+            `that starts with - is written --${prevKey}="--${flag}".${asFlag}\n`,
+        );
+        continue;
+      }
+      if (at === firstFlag && parsedForTypos.positional.length === 0 && TEXT_COMMANDS.has(dashLead)) {
+        valueLike.add(flag);
+        process.stderr.write(
+          `[mem] "--${flag}" was read as a flag. Text that starts with - goes after a bare --: ` +
+            `${dashLead} -- "--${flag}".${asFlag}\n`,
+        );
+        continue;
+      }
+    }
+    // A content writer refuses its unknown flags below, with suggestions from its own flags.
+    if (writerAccepts) continue;
     process.stderr.write(
       owner
         ? `[mem] --${flag} is read only by ${owner}; ${cmd} does not read it.\n`
         : suggestion
           ? `[mem] Unknown flag --${flag}; did you mean --${suggestion}?\n`
-          : `[mem] Unknown flag --${flag} — ignored, it had no effect. Run "qwen-mem-lite help" for this command's flags.\n`,
+          : `[mem] Unknown flag --${flag} — ignored, it had no effect. Run "${CLI_INVOKE} help" for this command's flags.\n`,
     );
+  }
+
+  // The content writers refuse a flag they do not take, BEFORE writing. Read-tracking reported
+  // these after the row was written, in read-command words ("the results above are
+  // UNFILTERED"), or not at all for a flag another command reads (`update --files` left the
+  // files alone, exit 0), and the typo hint suggested other commands' flags (`save --tags` →
+  // "did you mean --days?") (E2E 2026-10-16, cli F10).
+  if (writerAccepts) {
+    const refused = Object.keys(parsedForTypos.flags).filter(
+      (f) => f && !valueLike.has(f) && !writerAccepts.includes(f),
+    );
+    if (refused.length > 0) {
+      const named = refused.map((f) => {
+        // The nearest accepted flag within two edits, not the first: --file was steered to
+        // --title over --files (pre-tag review 2026-10-16 P3-7). Ties keep the listed order.
+        let near = null;
+        let nearDist = 3;
+        for (const a of writerAccepts) {
+          const d = editDistance(f, a);
+          if (d < nearDist) [near, nearDist] = [a, d];
+        }
+        return near ? `--${f} (did you mean --${near}?)` : `--${f}`;
+      });
+      fail(
+        `[mem] ${writeKey} does not take ${named.join(', ')} — nothing was written. ` +
+          `It takes: ${writerAccepts.map((a) => `--${a}`).join(' ')}`,
+      );
+      return;
+    }
   }
 
   // adopt / unadopt do pure filesystem work on ~/.claude/projects/<encoded>/memory/ —
@@ -3895,6 +4295,8 @@ async function runDispatch(argv) {
     }
     out(`[mem] Error: Cannot open database: ${e.message}`);
     out(`[mem] DB path: ${DB_PATH}`);
+    // The remedy overwrites the database, so it is doctor's to print, not this line's (D#488).
+    if (isDbUnusableError(e)) out(`[mem] Next: run \`${CLI_INVOKE} doctor\`.`);
     process.exitCode = 1;
     return;
   }
@@ -3931,6 +4333,19 @@ async function runDispatch(argv) {
     process.stderr.write(
       `[mem] Note: --json is supported only on: ${[...JSON_SUPPORTED_CMDS].join(', ')}. "${cmd}" outputs text.\n`,
     );
+  }
+
+  // A read naming no project says so once here, for every command that takes --project; the
+  // writes check it themselves and refuse a near miss (E2E 2026-10-16, cli F14).
+  const projectFlag = parseArgs(cmdArgs, { track: false }).flags.project;
+  const subKey = cmd === 'defer' || cmd === 'activity' ? `${cmd} ${cmdArgs[0]}` : cmd;
+  if (
+    typeof projectFlag === 'string' &&
+    !['.', 'current'].includes(projectFlag) &&
+    !PROJECT_WRITE_CMDS.has(subKey)
+  ) {
+    const note = unknownProjectNote(db, projectFlag);
+    if (note) process.stderr.write(`[mem] ${note}\n`);
   }
 
   try {
@@ -4006,7 +4421,7 @@ async function runDispatch(argv) {
         break;
       default:
         out(`[mem] Unknown command: ${cmd}`);
-        out('[mem] Run "qwen-mem-lite help" for usage');
+        out(`[mem] Run "${CLI_INVOKE} help" for usage`);
         process.exitCode = 1;
     }
   } catch (e) {

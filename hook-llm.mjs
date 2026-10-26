@@ -1,8 +1,8 @@
 // qwen-mem-lite: Background LLM workers for episode extraction and session summaries
 // Extracted from hook.mjs for testability and reduced complexity
 
-import { basename, join } from 'path';
-import { existsSync, readFileSync, unlinkSync, readdirSync, statSync } from 'fs';
+import { basename, dirname, join } from 'path';
+import { existsSync, readFileSync, unlinkSync, readdirSync, statSync, renameSync } from 'fs';
 import {
   jaccardSimilarity,
   truncate,
@@ -13,7 +13,7 @@ import {
   scrubSecrets,
   computeMinHash,
   estimateJaccardFromMinHash,
-  cjkBigrams,
+  cjkIndexTerms,
   isEditEntry,
   splitEpisodeFiles,
   LOW_SIGNAL_TITLE,
@@ -23,7 +23,7 @@ import {
   getCurrentBranch,
   notLowSignalTitleClause,
 } from './utils.mjs';
-import { acquireLLMSlot, releaseLLMSlot } from './hook-semaphore.mjs';
+import { acquireLLMSlot, releaseLLMSlot, LLM_SEM_TIMEOUT } from './hook-semaphore.mjs';
 import { BG_LLM_TIMEOUT_MS } from './haiku-client.mjs';
 import { scrubRecord, scrubFilePaths } from './lib/scrub-record.mjs';
 import { mergeModelSummary, summarySuperseded } from './lib/fast-summary.mjs';
@@ -46,8 +46,11 @@ import {
   openDb,
   callLLM,
   sleep,
+  spawnBackground,
+  processAlive,
 } from './hook-shared.mjs';
 import { EVENT_TYPES, saveEvent } from './lib/activity.mjs';
+import { isDbBusyError } from './lib/db-busy.mjs';
 import { isNoiseObservation, capNoiseImportance, isLowYieldChangeObs } from './lib/low-signal-patterns.mjs';
 import { episodeHasSignificantContent } from './hook-episode.mjs';
 import { OBS_TYPE_SET } from './lib/obs-types.mjs';
@@ -90,15 +93,19 @@ export function retractPreSavedObs(db, obsId, where) {
   // Both statements run in one transaction so a crash between them cannot leave that state
   // either; nesting under persistHaikuSummary's transaction is safe (better-sqlite3 uses
   // savepoints).
-  return db.transaction(() => {
-    const live = db.prepare(`SELECT 1 FROM observations WHERE id = ? AND ${liveObsFilterSql('')}`).get(obsId);
-    if (!live) {
-      debugLog('DEBUG', 'llm-episode', `${where}: pre-saved obs #${obsId} no longer live — left in place`);
-      return false;
-    }
-    recoverChildrenOf(db, [obsId]);
-    return db.prepare('DELETE FROM observations WHERE id = ?').run(obsId).changes > 0;
-  })();
+  return db
+    .transaction(() => {
+      const live = db
+        .prepare(`SELECT 1 FROM observations WHERE id = ? AND ${liveObsFilterSql('')}`)
+        .get(obsId);
+      if (!live) {
+        debugLog('DEBUG', 'llm-episode', `${where}: pre-saved obs #${obsId} no longer live — left in place`);
+        return false;
+      }
+      recoverChildrenOf(db, [obsId]);
+      return db.prepare('DELETE FROM observations WHERE id = ?').run(obsId).changes > 0;
+    })
+    .immediate();
 }
 // T9: memdir-incompatible types live in the `events` table, not `observations`.
 // Set lookup is O(1) — authoritative source is lib/activity.mjs::EVENT_TYPES.
@@ -243,7 +250,13 @@ function buildFtsTextField(obs) {
   const conceptsText = Array.isArray(obs.concepts) ? obs.concepts.join(' ') : '';
   const factsText = Array.isArray(obs.facts) ? obs.facts.join(' ') : '';
   const aliasesText = obs.searchAliases || '';
-  const bigramText = cjkBigrams((obs.title || '') + ' ' + (obs.narrative || ''));
+  // Every field the row is searched by, not title + narrative alone: unicode61 keeps a CJK run as
+  // one token, so CJK in a lesson, fact, concept or alias was unreachable without these (D#374).
+  const bigramText = cjkIndexTerms(
+    [obs.title, obs.narrative, conceptsText, factsText, aliasesText, obs.lessonLearned]
+      .filter(Boolean)
+      .join(' '),
+  );
 
   // Degraded fallback: when LLM enrichment is missing, extract lightweight keywords
   // from title + narrative so degraded observations remain FTS-searchable
@@ -446,7 +459,9 @@ export function saveObservation(obs, projectOverride, sessionIdOverride, externa
         minhash_sig: minhashSig,
         lesson_learned: safe.lesson_learned,
         search_aliases: safe.search_aliases,
-        branch: getCurrentBranch(),
+        // An episode worker passes the branch its flush file names, null included (P3-5); every
+        // other writer runs in the session's own cwd.
+        branch: obs.branch === undefined ? getCurrentBranch() : obs.branch,
         created_at: now.toISOString(),
         created_at_epoch: now.getTime(),
         // P3 (D#78): re-validate at the write boundary — saveObservation is also
@@ -497,7 +512,9 @@ function obsToSummary(obs) {
 //
 // Input shape (matches the v2.31 MVP plan's stable interface):
 //   summary: { type, title, lesson_learned?, narrative?, importance?, files_modified? }
-//   ctx:     { project, session_id, preSavedObsId? }
+//   ctx:     { project, session_id, preSavedObsId?, branch? }
+//   (`branch`: the episode's, observations only — events have no branch column; omitted, the
+//   row takes this process's cwd branch)
 //
 // Returns { table: 'events'|'observations', id: number|null }. Callers inspect
 // `table` to decide whether follow-up observations-only logic (linking, vector
@@ -531,13 +548,15 @@ export function persistHaikuSummary(db, summary, ctx) {
       });
 
     if (ctx.preSavedObsId) {
-      const id = db.transaction(() => {
-        // Same live-row guard as the in-place upgrade (FLOW-7); the event gets written
-        // either way. Shared helper since audit 2026-09-02 P0-6 — this was the only one
-        // of the three retraction sites that carried the guard.
-        retractPreSavedObs(db, ctx.preSavedObsId, 'upgrade-delete');
-        return insertEvent();
-      })();
+      const id = db
+        .transaction(() => {
+          // Same live-row guard as the in-place upgrade (FLOW-7); the event gets written
+          // either way. Shared helper since audit 2026-09-02 P0-6 — this was the only one
+          // of the three retraction sites that carried the guard.
+          retractPreSavedObs(db, ctx.preSavedObsId, 'upgrade-delete');
+          return insertEvent();
+        })
+        .immediate();
       return { table: 'events', id };
     }
 
@@ -560,6 +579,7 @@ export function persistHaikuSummary(db, summary, ctx) {
       lessonLearned: summary.lesson_learned || null,
       searchAliases: summary.search_aliases || null,
       scope: summary.scope ?? null,
+      branch: ctx.branch,
     },
     ctx.project,
     ctx.session_id,
@@ -757,6 +777,18 @@ export function saveEpisodeImmediate(episode, externalDb, scope = 'saveEpisodeIm
     return saveObservation(obs, episode.project, episode.sessionId, externalDb) || null;
   } catch (e) {
     debugCatch(e, scope);
+    // Another process holds the write lock past this connection's wait. The callers flush one
+    // episode per session on one connection, and each save waited the whole busy timeout again:
+    // three sessions in Stop's buffer took 3 x 3.4 s, past the host's 5 s (pre-tag review
+    // 2026-10-16). The rest of this connection's saves fail at once; each episode still goes to
+    // its flush file and llm-episode worker, which saves it without the pre-save.
+    if (externalDb && isDbBusyError(e)) {
+      try {
+        externalDb.pragma('busy_timeout = 0');
+      } catch {
+        /* a closed handle: nothing waits on it */
+      }
+    }
     return null;
   }
 }
@@ -933,8 +965,216 @@ ${diagnosisBlock(diag)}`;
 
 // ─── Background: LLM Episode Extraction (Tier 2 F) ──────────────────────────
 
+/**
+ * The episode-extraction prompt, `{ system, user }`. Exported so
+ * benchmark/haiku-model-ab.mjs sends the SHIPPED prompt rather than a retyped copy
+ * (buildCompressPrompt was extracted for the same reason).
+ * @param {object} episode
+ * @param {string[]} [diag] episodeDiagnosis(episode); the handler passes the one it keeps
+ * @returns {{system: string, user: string}}
+ */
+export function buildEpisodePrompt(episode, diag = episodeDiagnosis(episode)) {
+  // Same guard as the handler: an older-format tmp file can omit `files`.
+  const episodeFiles = Array.isArray(episode.files) ? episode.files : [];
+  const fileList = episodeFiles.map((f) => basename(f)).join(', ') || '(multiple)';
+
+  // Defense-in-depth (cso F#4): split static instructions (system) from
+  // per-call data (user). Episode descriptions and file paths come from tool
+  // events; treating them as a separate role + boundary marker reduces the
+  // attack surface for memory poisoning via crafted file content.
+  const SHARED_OBS_SCHEMA_TAIL = `${MEMORY_INPUT_GUARD}
+Grounding: state only outcomes the user message shows. An action description may be cut short ("…"); if its result is not visible, say what was run, not how it turned out. Never write that something passed, failed, was verified or confirmed unless that result appears in the user message.
+type: pick by strongest signal. decision = explicit tradeoff / "chose X over Y because Z" / rejected an approach (e.g. "Rejected schema migration — single-source module + sync test instead"; "Heterogeneous hook events → heterogeneous context budgets"). bugfix = prior-failing path fixed with a named root cause; a test that failed only until this episode's implementation landed (written first, then made to pass) is TDD, not a bugfix — type that feature or refactor. feature = new user-visible capability. refactor = behavior unchanged but structure improved. discovery = learned how a system works (read-heavy, no writes). change = routine edit with no new principle (default if unsure and nothing else fits).
+Facts: each MUST be (1) atomic—one claim, (2) self-contained—no pronouns, include file/function name, (3) specific—"refreshToken() in auth.ts:45 uses 1h TTL" not "handles tokens"
+importance: Be strict — default to 1. 0=pure browsing with zero learning value. 1=routine file edits, standard changes, normal workflow (MOST episodes). 2=notable ONLY if it reveals something non-obvious: error fix with discovered root cause, architectural decision with explicit tradeoff, config change with unexpected side effects. 3=critical: breaking change affecting users, security vulnerability fix, data migration. Ask yourself: "would a future session benefit from knowing this?" — if not, it's importance=1.
+lesson_learned: The non-obvious insight a future session would benefit from, resting ONLY on the DIAGNOSIS lines: copy at least 4 consecutive words verbatim, in double quotes, from one DIAGNOSIS line, and claim no mechanism that line does not state. Example: FTS5's "default tokenizer doesn't split CJK" — index bigrams instead. No DIAGNOSIS line, or none that states a cause → output JSON null; a lesson without such a quote is discarded. Do NOT invent a lesson. A mutation/probe run (a file changed on purpose, a checksum, a restore) and the agent's own script errors are not product bugs. Do NOT write the strings "none"/"n/a"/"todo"/"tbd"/"-" — those will be discarded as noise.
+scope: ${SCOPE_PROMPT_LEGEND}
+search_aliases: 2-6 alternative search terms someone might use to find this memory later (include CJK if project uses Chinese)`;
+
+  if (episode.entries.length === 1) {
+    const e = episode.entries[0];
+    const system = `Extract a structured observation from this code change. Return ONLY valid JSON, no markdown fences.
+
+JSON: {"type":"decision|bugfix|feature|refactor|discovery|change","title":"concise ≤80 char description","narrative":"what changed, why, and outcome (2-3 sentences)","concepts":["kw1","kw2"],"facts":["fact1","fact2"],"importance":1,"lesson_learned":"non-obvious insight a future session needs, or null","scope":"file|module|project|environment","search_aliases":["alt query 1","alt query 2"]}
+${SHARED_OBS_SCHEMA_TAIL}`;
+    const user = `Tool: ${e.tool}
+File: ${episodeFiles.join(', ') || 'unknown'}
+Action: ${e.desc}
+Error: ${e.isError ? 'yes' : 'no'}
+
+${diagnosisBlock(diag)}`;
+    return { system, user };
+  }
+
+  const actionList = episode.entries
+    .map((e, i) => `${i + 1}. [${e.tool}] ${e.desc}${e.isError ? ' (ERROR)' : ''}`)
+    .join('\n');
+
+  const system = `Summarize this coding episode as ONE coherent observation. Return ONLY valid JSON, no markdown fences.
+
+JSON: {"type":"decision|bugfix|feature|refactor|discovery|change","title":"coherent ≤80 char summary","narrative":"what was done, why, and outcome (3-5 sentences)","concepts":["keyword1","keyword2"],"facts":["specific fact 1","specific fact 2"],"importance":1,"lesson_learned":"non-obvious insight a future session needs, or null","scope":"file|module|project|environment","search_aliases":["alt query 1","alt query 2"]}
+${SHARED_OBS_SCHEMA_TAIL}`;
+  const user = `Project: ${episode.project}
+Files: ${fileList}
+Actions (${episode.entries.length} total):
+${actionList}
+
+${diagnosisBlock(diag)}`;
+  return { system, user };
+}
+
+// The pre-call delay's ceiling while the session is still open (handleLLMEpisode spreads
+// background calls over 2-5 s so they do not compete with the live session).
+const EPISODE_DELAY_MAX_MS = 5000;
+// Node boot, the DB opens (each can wait DB_BUSY_TIMEOUT_MS) and the writes around the calls.
+// Generous rather than measured: it only has to cover what the two terms below do not.
+const EPISODE_WORKER_SLACK_MS = 60_000;
+
+/**
+ * The longest an `llm-episode` worker can legitimately run: its delay, then up to two model calls
+ * (the episode, and the bugfix/decision lesson retry), each behind an LLM slot wait. Each term is
+ * a bound its own code enforces: acquireLLMSlot gives up at LLM_SEM_TIMEOUT, and a call ends by
+ * BG_LLM_TIMEOUT_MS, keyed provider and CLI fallback together (haiku-client fallbackBudget).
+ * 275 s today.
+ *
+ * Two consumers, and both need the bound itself rather than a typical duration: the summary
+ * worker waits this long for the episode it summarises (E2E 2026-10-16 P2-4), and a flush file
+ * older than this has no live worker left to finish it.
+ *
+ * A function rather than a module-level constant so that loading this module reads no imported
+ * binding: several suites mock haiku-client / hook-semaphore with only the calls they drive.
+ *
+ * @returns {number} ms
+ */
+export function episodeWorkerMaxMs() {
+  return EPISODE_DELAY_MAX_MS + 2 * (LLM_SEM_TIMEOUT + BG_LLM_TIMEOUT_MS) + EPISODE_WORKER_SLACK_MS;
+}
+
+/**
+ * episodeWorkerMaxMs() for a worker of v6.27.0 or older, which never claims its flush file
+ * (claimFlushFile is v6.28.0's) and whose keyed-provider fallback gave the CLI a fresh full
+ * timeout, so each of its two calls could take 2 x BG_LLM_TIMEOUT_MS: 365 s today. The age an
+ * unclaimed file must reach before recoverOrphanEpisodeFlushes hands it on (pre-tag review
+ * 2026-10-16 P3-4): during the update from such a version its worker can still be saving the
+ * episode at 275 s, and a second worker saved it again. A worker of this version claims its file
+ * before its delay, so an unclaimed file is otherwise one whose worker never started, and it is
+ * handed on 90 s later than a claimed one.
+ *
+ * @returns {number} ms
+ */
+export function unclaimedFlushMinAgeMs() {
+  return EPISODE_DELAY_MAX_MS + 2 * (LLM_SEM_TIMEOUT + 2 * BG_LLM_TIMEOUT_MS) + EPISODE_WORKER_SLACK_MS;
+}
+
+/** The ending a flush file takes when it is handed to a second worker. It is never handed on again. */
+export const RECOVERED_FLUSH_SUFFIX = '.recovered.json';
+// Per SessionStart: LLM_SEM_MAX workers can call the model at once, and a backlog after a reboot
+// drains over the next few starts rather than all at once.
+const FLUSH_RECOVERIES_PER_START = 2;
+// `ep-flush-<ts>-<rand>` (flushEpisode), then `.recovered` once handed on, then `.w<pid>` once a
+// worker has claimed it. The stem is what every rename keeps.
+const FLUSH_NAME_RE = /^(ep-flush-[^.]+)(\.recovered)?(?:\.w(\d+))?\.json$/;
+
+/**
+ * Rename a flush file to carry this worker's pid, before the worker reads it, so
+ * recoverOrphanEpisodeFlushes can tell a live worker's file from a dead one's however old it is
+ * (D#383). Returns the path the worker now owns, or null when the file is gone: another worker
+ * took it, and the episode is that worker's to save. A name that is not a flush file's, or a
+ * rename that fails otherwise, keeps the path as handed.
+ *
+ * @param {string} path
+ * @param {number} [pid]
+ * @returns {string|null}
+ */
+export function claimFlushFile(path, pid = process.pid) {
+  const m = FLUSH_NAME_RE.exec(basename(path));
+  if (!m) return path;
+  const claimed = join(dirname(path), `${m[1]}${m[2] || ''}.w${pid}.json`);
+  try {
+    renameSync(path, claimed);
+    return claimed;
+  } catch (e) {
+    return e?.code === 'ENOENT' ? null : path;
+  }
+}
+
+/**
+ * Hand flush files that no live worker can still own to a new `llm-episode` worker, oldest first,
+ * at most `limit` per call. Returns the paths handed on.
+ *
+ * E2E 2026-10-16 P2-3: a flush file goes to exactly one worker (flushEpisode spawns it with the
+ * path), so a worker killed by a reboot, the OOM killer or `kill -9` lost its episode: nothing
+ * read the file again and the 1 h sweep deleted it. Three properties make the hand-off safe:
+ *
+ *   - Not a live worker's file: only files older than episodeWorkerMaxMs(), the longest a worker
+ *     can legitimately run, and none whose claiming worker (claimFlushFile) is still running. A
+ *     worker paused past that bound by a suspended machine finishes and saves once the machine
+ *     wakes, so handing its file on too stored the episode twice (D#383: events have no
+ *     duplicate check). A pid reused by an unrelated process reads as alive, and that file is
+ *     left to the 1 h sweep, as every flush file was before this hand-off existed. An unclaimed
+ *     file waits for unclaimedFlushMinAgeMs() instead: it can be a pre-claim worker's, whose
+ *     bound is longer.
+ *   - One taker: the file is renamed before the spawn, and of two SessionStarts only one rename
+ *     succeeds; of a SessionStart and a worker claiming the same file, likewise.
+ *   - No loop: the new name carries `.recovered`, which this never hands on, claimed or not. If
+ *     the second worker dies too, the file waits for the 1 h sweep (`ep-flush-` prefix; renames
+ *     keep the mtime, so that clock still runs from the original flush).
+ *
+ * Files at or past ORPHAN_EPISODE_AGE_MS are the sweep's, as before.
+ *
+ * @param {string} [runtimeDir]
+ * @param {{now?: number, limit?: number, spawn?: (file: string) => void}} [opts]
+ * @returns {string[]}
+ */
+export function recoverOrphanEpisodeFlushes(
+  runtimeDir = RUNTIME_DIR,
+  {
+    now = Date.now(),
+    limit = FLUSH_RECOVERIES_PER_START,
+    spawn = (file) => spawnBackground('llm-episode', file),
+  } = {},
+) {
+  let names;
+  try {
+    names = readdirSync(runtimeDir);
+  } catch {
+    return [];
+  }
+  const minAge = episodeWorkerMaxMs();
+  const unclaimedMinAge = unclaimedFlushMinAgeMs();
+  const candidates = [];
+  for (const f of names) {
+    const m = FLUSH_NAME_RE.exec(f);
+    if (!m || m[2] || (m[3] && processAlive(Number(m[3])))) continue;
+    let mtimeMs;
+    try {
+      mtimeMs = statSync(join(runtimeDir, f)).mtimeMs;
+    } catch {
+      continue; // its worker finished meanwhile
+    }
+    const age = now - mtimeMs;
+    if (age > (m[3] ? minAge : unclaimedMinAge) && age < ORPHAN_EPISODE_AGE_MS)
+      candidates.push({ f, mtimeMs });
+  }
+  candidates.sort((a, b) => a.mtimeMs - b.mtimeMs || (a.f < b.f ? -1 : 1));
+  const handed = [];
+  for (const { f } of candidates) {
+    if (handed.length >= limit) break;
+    const to = join(runtimeDir, FLUSH_NAME_RE.exec(f)[1] + RECOVERED_FLUSH_SUFFIX);
+    try {
+      renameSync(join(runtimeDir, f), to);
+    } catch {
+      continue; // another SessionStart took it
+    }
+    spawn(to);
+    handed.push(to);
+  }
+  return handed;
+}
+
 export async function handleLLMEpisode() {
-  const tmpFile = process.argv[3];
+  if (!process.argv[3]) return;
+  const tmpFile = claimFlushFile(process.argv[3]);
   if (!tmpFile) return;
 
   let episode;
@@ -957,7 +1197,9 @@ export async function handleLLMEpisode() {
   // Rate-limit background LLM calls to avoid competing with active sessions
   if (!process.env.QWEN_MEM_NO_DELAY) {
     const sessionActive = existsSync(sessionFile());
-    const delayMs = sessionActive ? 2000 + Math.random() * 3000 : 500 + Math.random() * 1000;
+    const delayMs = sessionActive
+      ? 2000 + Math.random() * (EPISODE_DELAY_MAX_MS - 2000)
+      : 500 + Math.random() * 1000;
     debugLog(
       'DEBUG',
       'llm-episode',
@@ -974,51 +1216,8 @@ export async function handleLLMEpisode() {
   const fileList = episodeFiles.map((f) => basename(f)).join(', ') || '(multiple)';
   const edgeFiles = splitEpisodeFiles(episode);
 
-  // Defense-in-depth (cso F#4): split static instructions (system) from
-  // per-call data (user). Episode descriptions and file paths come from tool
-  // events; treating them as a separate role + boundary marker reduces the
-  // attack surface for memory poisoning via crafted file content.
-  const SHARED_OBS_SCHEMA_TAIL = `${MEMORY_INPUT_GUARD}
-Grounding: state only outcomes the user message shows. An action description may be cut short ("…"); if its result is not visible, say what was run, not how it turned out. Never write that something passed, failed, was verified or confirmed unless that result appears in the user message.
-type: pick by strongest signal. decision = explicit tradeoff / "chose X over Y because Z" / rejected an approach (e.g. "Rejected schema migration — single-source module + sync test instead"; "Heterogeneous hook events → heterogeneous context budgets"). bugfix = prior-failing path fixed with a named root cause; a test that failed only until this episode's implementation landed (written first, then made to pass) is TDD, not a bugfix — type that feature or refactor. feature = new user-visible capability. refactor = behavior unchanged but structure improved. discovery = learned how a system works (read-heavy, no writes). change = routine edit with no new principle (default if unsure and nothing else fits).
-Facts: each MUST be (1) atomic—one claim, (2) self-contained—no pronouns, include file/function name, (3) specific—"refreshToken() in auth.ts:45 uses 1h TTL" not "handles tokens"
-importance: Be strict — default to 1. 0=pure browsing with zero learning value. 1=routine file edits, standard changes, normal workflow (MOST episodes). 2=notable ONLY if it reveals something non-obvious: error fix with discovered root cause, architectural decision with explicit tradeoff, config change with unexpected side effects. 3=critical: breaking change affecting users, security vulnerability fix, data migration. Ask yourself: "would a future session benefit from knowing this?" — if not, it's importance=1.
-lesson_learned: The non-obvious insight a future session would benefit from, resting ONLY on the DIAGNOSIS lines: copy at least 4 consecutive words verbatim, in double quotes, from one DIAGNOSIS line, and claim no mechanism that line does not state. Example: FTS5's "default tokenizer doesn't split CJK" — index bigrams instead. No DIAGNOSIS line, or none that states a cause → output JSON null; a lesson without such a quote is discarded. Do NOT invent a lesson. A mutation/probe run (a file changed on purpose, a checksum, a restore) and the agent's own script errors are not product bugs. Do NOT write the strings "none"/"n/a"/"todo"/"tbd"/"-" — those will be discarded as noise.
-scope: ${SCOPE_PROMPT_LEGEND}
-search_aliases: 2-6 alternative search terms someone might use to find this memory later (include CJK if project uses Chinese)`;
-
   const diag = episodeDiagnosis(episode);
-  let prompt;
-  if (episode.entries.length === 1) {
-    const e = episode.entries[0];
-    const system = `Extract a structured observation from this code change. Return ONLY valid JSON, no markdown fences.
-
-JSON: {"type":"decision|bugfix|feature|refactor|discovery|change","title":"concise ≤80 char description","narrative":"what changed, why, and outcome (2-3 sentences)","concepts":["kw1","kw2"],"facts":["fact1","fact2"],"importance":1,"lesson_learned":"non-obvious insight a future session needs, or null","scope":"file|module|project|environment","search_aliases":["alt query 1","alt query 2"]}
-${SHARED_OBS_SCHEMA_TAIL}`;
-    const user = `Tool: ${e.tool}
-File: ${episodeFiles.join(', ') || 'unknown'}
-Action: ${e.desc}
-Error: ${e.isError ? 'yes' : 'no'}
-
-${diagnosisBlock(diag)}`;
-    prompt = { system, user };
-  } else {
-    const actionList = episode.entries
-      .map((e, i) => `${i + 1}. [${e.tool}] ${e.desc}${e.isError ? ' (ERROR)' : ''}`)
-      .join('\n');
-
-    const system = `Summarize this coding episode as ONE coherent observation. Return ONLY valid JSON, no markdown fences.
-
-JSON: {"type":"decision|bugfix|feature|refactor|discovery|change","title":"coherent ≤80 char summary","narrative":"what was done, why, and outcome (3-5 sentences)","concepts":["keyword1","keyword2"],"facts":["specific fact 1","specific fact 2"],"importance":1,"lesson_learned":"non-obvious insight a future session needs, or null","scope":"file|module|project|environment","search_aliases":["alt query 1","alt query 2"]}
-${SHARED_OBS_SCHEMA_TAIL}`;
-    const user = `Project: ${episode.project}
-Files: ${fileList}
-Actions (${episode.entries.length} total):
-${actionList}
-
-${diagnosisBlock(diag)}`;
-    prompt = { system, user };
-  }
+  const prompt = buildEpisodePrompt(episode, diag);
 
   const ruleImportance = computeRuleImportance(episode);
 
@@ -1236,8 +1435,8 @@ ${diagnosisBlock(diag)}`;
         // returns 3 for any entry touching schema./migration/prisma/.env/.key paths; via the
         // Math.max below that force-promoted ordinary has-lesson episodes to "critical" imp=3
         // even when Haiku judged them 1-2 (audit: auto imp=3 = 34.8%, e.g. a thin-lesson edit
-        // to schema.mjs). Haiku's OWN importance can still reach 3 (genuine judgment); only the
-        // path heuristic is capped. The isLessonLowSignal branch still floors no-lesson
+        // to schema.mjs). Only the path heuristic was capped then; D#414 below caps the model's own
+        // score too. The isLessonLowSignal branch still floors no-lesson
         // non-decision autos at ≤1; manual mem_save uses a different path and is unaffected.
         // D#69: `!lessonLearned` is the old `isLessonLowSignal && !retryRecovered` (the
         // two are equal with grounding off). A lesson the grounding check dropped caps
@@ -1247,10 +1446,16 @@ ${diagnosisBlock(diag)}`;
         // carries text whoever controls that output wrote — reproduced on real Haiku,
         // 3 of 6 hostile windows stored the directive at importance 2. The row and
         // lesson stay searchable; only the automatic injection faces lose them.
+        // D#414: the model's own score is capped at 2 as well, as re-enrich's is (D#376). The window
+        // carries tool output, text whoever controls a file or a command's output wrote, and 3 is
+        // Key Context's top tier; benign episodes did not use it: 72 real sub-episodes from this
+        // machine's transcripts through this prompt (claude -p haiku, 2026-10-17) scored 1 x42,
+        // 2 x30, 3 x0. (A rule-based row, buildImmediateObservation's, saved before the call or when
+        // it fails, can still be 3 after a failing test or build command: that is no model output.)
         importance:
           (!lessonLearned && (groundingDropped || parsed.type !== 'decision')) || quotesToolOutput
             ? Math.min(ruleImportance, 1)
-            : Math.max(Math.min(ruleImportance, 2), clampImportance(parsed.importance)),
+            : Math.min(Math.max(ruleImportance, clampImportance(parsed.importance)), 2),
         lessonLearned,
         searchAliases,
         // P3 (D#78): lesson applicability scope — whitelist-validated, invalid → null.
@@ -1309,6 +1514,10 @@ ${diagnosisBlock(diag)}`;
   try {
     let savedId;
     let savedTable;
+    // One context for every save below. `branch` is the one the flushing hook read in the
+    // session's cwd (P3-5); a file written before that stamp has none, and the row takes this
+    // worker's cwd branch, as before.
+    const ctx = { project: episode.project, session_id: episode.sessionId, branch: episode.branch };
 
     if (episode.savedId && obs) {
       if (EVENT_TYPE_SET.has(obs.type)) {
@@ -1316,11 +1525,7 @@ ${diagnosisBlock(diag)}`;
         // classified by Haiku as an event type. Delete the stale observations
         // row and insert into events instead. Dispatcher handles the atomic
         // swap via transaction.
-        const result = persistHaikuSummary(db, obsToSummary(obs), {
-          project: episode.project,
-          session_id: episode.sessionId,
-          preSavedObsId: episode.savedId,
-        });
+        const result = persistHaikuSummary(db, obsToSummary(obs), { ...ctx, preSavedObsId: episode.savedId });
         savedId = result.id;
         savedTable = result.table;
         debugLog('DEBUG', 'llm-episode', `upgrade-delete: obs #${episode.savedId} → event #${savedId}`);
@@ -1387,10 +1592,7 @@ ${diagnosisBlock(diag)}`;
             'llm-episode',
             `pre-saved obs #${episode.savedId} no longer live — saving enrichment as a fresh row`,
           );
-          const result = persistHaikuSummary(db, obsToSummary(obs), {
-            project: episode.project,
-            session_id: episode.sessionId,
-          });
+          const result = persistHaikuSummary(db, obsToSummary(obs), ctx);
           savedId = result.id;
           savedTable = result.table;
         } else {
@@ -1401,10 +1603,7 @@ ${diagnosisBlock(diag)}`;
       }
     } else {
       // Clean insert (no pre-save) — dispatcher routes by type.
-      const result = persistHaikuSummary(db, obsToSummary(obs), {
-        project: episode.project,
-        session_id: episode.sessionId,
-      });
+      const result = persistHaikuSummary(db, obsToSummary(obs), ctx);
       savedId = result.id;
       savedTable = result.table;
     }
@@ -1429,10 +1628,34 @@ ${diagnosisBlock(diag)}`;
 
 // ─── Background: LLM Session Summary ────────────────────────────────────────
 
-export async function handleLLMSummary() {
-  const parsed = parseInt(process.env.QWEN_MEM_FLUSH_TIMEOUT, 10);
-  const flushTimeout = Number.isNaN(parsed) ? 15 : parsed;
+/**
+ * The stem of a flush file whose episode a worker can still save, or null: a name that is not a
+ * flush file's, or a file whose claiming worker (`.w<pid>`, claimFlushFile) is gone. Such a file
+ * waits for SessionStart's hand-off, which takes it only once it is older than
+ * episodeWorkerMaxMs(), so a summary waiting on it waited its whole default for nothing (pre-tag
+ * review 2026-10-16 P3-3: ~82 MB resident for up to 275 s, one per Stop). A pid reused by another
+ * process reads as alive, and its file is waited on as before.
+ *
+ * @param {string} name
+ * @returns {string|null}
+ */
+function inFlightFlushStem(name) {
+  const m = FLUSH_NAME_RE.exec(name);
+  if (!m || (m[3] && !processAlive(Number(m[3])))) return null;
+  return m[1];
+}
 
+/**
+ * Wait up to `flushTimeout` seconds for the episode flushes in flight when it is called, so the
+ * summary reads the observations they save. Returns true as soon as `superseded()` says this
+ * summary's reply would be dropped anyway (checked before every tick): Stop spawns one summary
+ * worker per turn, and each waited out the flush after a later Stop had made it moot (P3-3).
+ *
+ * @param {number} flushTimeout seconds
+ * @param {() => boolean} superseded
+ * @returns {Promise<boolean>}
+ */
+async function waitForEpisodeFlushes(flushTimeout, superseded) {
   // Wait for a DEFINED SET of flush files, not for "the directory is empty" (audit
   // 2026-09-02 P1-7). RUNTIME_DIR is shared by every project on the machine, and the old
   // predicate was `readdirSync(RUNTIME_DIR).some(f => f.startsWith('ep-flush-'))` — so:
@@ -1446,32 +1669,49 @@ export async function handleLLMSummary() {
   //
   // The set is snapshotted at entry and filtered to files young enough to belong to a live
   // worker. A file that appears after this point is somebody else's; a file older than
-  // ORPHAN_EPISODE_AGE_MS is nobody's. Both were previously indistinguishable from work in
-  // progress.
+  // episodeWorkerMaxMs() is nobody's (it was ORPHAN_EPISODE_AGE_MS, the 1 h sweep's age, which
+  // let a dead worker's file cost every summary the whole default wait for up to an hour). Both
+  // were previously indistinguishable from work in progress.
   //
   // Not narrowed to this project: the flush filename is `ep-flush-<ts>-<rand>.json` and
   // carries no project. Widening it is a marker-format change with in-flight files during
   // an upgrade, and the two filters above already remove the unbounded cases — what is left
   // is a bounded overlap with genuinely concurrent work.
+  //
+  // Tracked by stem (D#383): the worker renames its file when it claims it, and a hand-off renames
+  // it again, so the flush is in flight until no file of that stem is left, or only one whose
+  // claiming worker is gone (inFlightFlushStem).
   let pending;
   try {
-    const cutoff = Date.now() - ORPHAN_EPISODE_AGE_MS;
-    pending = readdirSync(RUNTIME_DIR)
-      .filter((f) => f.startsWith('ep-flush-'))
-      .filter((f) => {
-        try {
-          return statSync(join(RUNTIME_DIR, f)).mtimeMs >= cutoff;
-        } catch {
-          return false;
-        }
-      });
+    const cutoff = Date.now() - episodeWorkerMaxMs();
+    pending = [
+      ...new Set(
+        readdirSync(RUNTIME_DIR)
+          .filter((f) => inFlightFlushStem(f) !== null)
+          .filter((f) => {
+            try {
+              return statSync(join(RUNTIME_DIR, f)).mtimeMs >= cutoff;
+            } catch {
+              return false;
+            }
+          })
+          .map((f) => FLUSH_NAME_RE.exec(f)[1]),
+      ),
+    ];
   } catch {
     pending = [];
   }
 
   for (let i = 0; i < flushTimeout && pending.length > 0; i++) {
+    if (superseded()) return true;
     await sleep(1000);
-    pending = pending.filter((f) => existsSync(join(RUNTIME_DIR, f)));
+    let names;
+    try {
+      names = readdirSync(RUNTIME_DIR);
+    } catch {
+      names = [];
+    }
+    pending = pending.filter((stem) => names.some((f) => inFlightFlushStem(f) === stem));
     debugLog(
       'DEBUG',
       'llm-summary',
@@ -1485,10 +1725,22 @@ export async function handleLLMSummary() {
       `gave up waiting on ${pending.length} flush file(s) after ${flushTimeout}s: ${pending.join(', ')}`,
     );
   }
+  return false;
+}
+
+export async function handleLLMSummary() {
+  // Seconds. The default spans an episode worker's whole bound (E2E 2026-10-16 P2-4): it was 15,
+  // below one CLI-leg episode (2-5 s delay + 8-13 s call, + the lesson retry on a bugfix), so the
+  // summary read the DB before the episode's observation existed, found nothing, and the session
+  // kept its Stop-time baseline. A longer default costs nothing when the flush clears early: the
+  // wait exits on the first tick that finds this summary's files gone.
+  const parsed = parseInt(process.env.QWEN_MEM_FLUSH_TIMEOUT, 10);
+  const flushTimeout = Number.isNaN(parsed) ? Math.ceil(episodeWorkerMaxMs() / 1000) : parsed;
 
   // The spawning Stop's epoch (absent for the /clear spawn and pre-upgrade workers). Checked
-  // before the model call and again in the write's transaction, because two workers of one
-  // session can finish out of order (P3-6); the later Stop's worker reads the newer window.
+  // during the flush wait, before the model call and again in the write's transaction, because
+  // two workers of one session can finish out of order (P3-6); the later Stop's worker reads the
+  // newer window.
   const parsedEpoch = Number(process.argv[5]);
   const spawnEpoch = Number.isFinite(parsedEpoch) && parsedEpoch > 0 ? parsedEpoch : null;
   // One `summary_worker` metric row per exit (QWEN_MEM_METRICS=1), carrying the session and
@@ -1506,12 +1758,18 @@ export async function handleLLMSummary() {
       ...(llmMs === undefined ? {} : { llmMs }),
     });
 
+  // Opened before the flush wait, which reads the session's latest Stop before every tick.
   const db = openDb();
   if (!db) return outcome('no-db');
 
   try {
     const sessionId = process.argv[3] || getSessionId();
     const project = process.argv[4] || inferProject();
+
+    if (await waitForEpisodeFlushes(flushTimeout, () => summarySuperseded(db, sessionId, spawnEpoch))) {
+      debugLog('DEBUG', 'llm-summary', 'a later Stop owns this session summary, stopped waiting');
+      return outcome('superseded-before-call');
+    }
 
     // Exclude LOW_SIGNAL hook-llm fallback titles ("Error: files +2 more: ...",
     // "Modified X", "Worked on X", etc.) from the Haiku summary input — they

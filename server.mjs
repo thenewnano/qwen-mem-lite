@@ -6,7 +6,12 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { truncate, typeIcon, inferProject, fmtDate, debugLog, debugCatch } from './utils.mjs';
-import { resolveProject as _resolveProjectShared } from './project-utils.mjs';
+import {
+  resolveProject as _resolveProjectCached,
+  _resetProjectCache,
+  checkWriteProject,
+  unknownProjectNote,
+} from './project-utils.mjs';
 import { ensureDbWithWalRecovery, refreshPlannerStats, DB_PATH, DB_DIR, CODE_DIR } from './schema.mjs';
 // schema.mjs already imports this module for SCHEMA_SKEW_CODE, so it is in the graph before
 // the DB is touched - a static import here adds no cold-start cost.
@@ -40,15 +45,18 @@ import {
   parseDuration,
   coreRunSearchPipeline,
   reachabilityNote,
+  ignoredOperatorNote,
 } from './lib/search-core.mjs';
 import {
   runMaintainOps,
   findDuplicates,
+  reviewRows,
   maintenanceStats,
   OP_CAP,
   STALE_AGE_MS,
   resolveDefaultMaintainOps,
   DEFAULT_MAINTAIN_OPS,
+  DEFAULT_RETAIN_DAYS,
 } from './lib/maintain-core.mjs';
 // snapshotDb left with maintain-core: the pre-maintain snapshot is part of the op ORDER
 // (it must see the pre-existing pending rows), so it moved into runMaintainOps (P1-5).
@@ -63,6 +71,7 @@ import {
   PROMPT_DETAIL_FIELDS,
   EVENT_DETAIL_FIELDS,
   supersededNotice,
+  supersededEventNotice,
 } from './lib/get-core.mjs';
 import {
   collectBrowseTiers,
@@ -78,6 +87,7 @@ import {
   obsFieldLabel,
   formatPendingPurgeLine,
   formatHiddenLine,
+  formatReviewSide,
 } from './cli/common.mjs';
 import { countMcpEligibleCorpus, rateSearchResults, recordSearch } from './lib/search-telemetry.mjs';
 import { recordHookError } from './lib/hook-telemetry.mjs';
@@ -122,19 +132,21 @@ import { join } from 'path';
 import {
   probeOtherSources as probeIdSources,
   bucketIdTokens,
+  formatSourceOverrideNote,
   splitDeferredTokens,
 } from './lib/id-routing.mjs';
 import { saveWithClosures, formatSupersedeSkipped, formatSupersededNote } from './lib/save-observation.mjs';
 import { applyObsUpdate } from './lib/observation-write.mjs';
-import { EXPORT_COLUMNS_SQL, buildExportWhere } from './lib/export-columns.mjs';
+import { EXPORT_COLUMNS_SQL, EXPORT_FIDELITY_NOTE, buildExportWhere } from './lib/export-columns.mjs';
 import { recallByFile } from './lib/recall-core.mjs';
-import { isFtsCorruptionError, FTS_CORRUPTION_REMEDY } from './lib/db-unusable.mjs';
+import { isFtsCorruptionError, ftsCorruptionRemedy } from './lib/db-unusable.mjs';
 import { fetchRecent } from './lib/recent-core.mjs';
 import { AUTO_MERGE_THRESHOLD } from './lib/dedup-constants.mjs';
 import {
   insertDeferred,
   listOpenWithOrdinal,
   openOrdinalOf,
+  deferredDropLabel,
   dropDeferred,
   formatDropReasonHint,
   resolveDeferredIds,
@@ -147,7 +159,7 @@ import {
   countStaleOpen,
   formatDeferStaleHint,
 } from './lib/deferred-work.mjs';
-import { shouldQueueSaveEnrich, queueSaveEnrich } from './lib/save-enrich.mjs';
+import { saveEnrichNote } from './lib/save-enrich.mjs';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -166,14 +178,30 @@ import {
   chmodSync,
 } from 'fs';
 
+// Corruption-gated WAL recovery lives in schema.mjs (shared with hooks/CLI since the D#8-adjacent
+// P3 fix); the server keeps only its exit semantics. A busy open is retried for
+// SERVER_OPEN_BUSY_RETRY_MS first. Only an open that has to write (a migration, a pending
+// one-shot cleanup) waits for the lock, so this is the first open after an update meeting another
+// writer (another process migrating the store, a long maintain): waited out rather than costing
+// the session its memory tools.
+function openDbAtStartup() {
+  const start = Date.now();
+  for (;;) {
+    try {
+      return ensureDbWithWalRecovery({
+        warn: (m) => debugLog('WARN', 'server', m),
+        info: (m) => debugLog('INFO', 'server', m),
+      });
+    } catch (err) {
+      if (!isDbBusyError(err) || Date.now() - start >= SERVER_OPEN_BUSY_RETRY_MS) throw err;
+      debugLog('WARN', 'server', `database busy at startup, waiting for the other writer: ${err.message}`);
+    }
+  }
+}
+
 let db;
 try {
-  // Corruption-gated WAL recovery lives in schema.mjs (shared with hooks/CLI
-  // since the D#8-adjacent P3 fix); the server keeps only its exit semantics.
-  db = ensureDbWithWalRecovery({
-    warn: (m) => debugLog('WARN', 'server', m),
-    info: (m) => debugLog('INFO', 'server', m),
-  });
+  db = openDbAtStartup();
 } catch (err) {
   // Schema skew gets the same treatment as the CLI (mem-cli.mjs) and for the same reason:
   // the raw message ends in `npm i -g github:thenewnano/qwen-mem-lite`, which repairs nothing on the
@@ -249,6 +277,18 @@ refreshPlannerStats(db, { busyTimeoutMs: 250 });
 // Users naturally type short names like "mem" but inferProject() stores
 // "projects--mem" (parent--base from CWD). resolveProject() bridges this gap.
 // Implementation extracted to project-utils.mjs; local adapter closes over module-level `db`.
+
+//
+// project-utils caches every answer for the life of the process. That suits a CLI command; this
+// server lives for a whole Claude Code session, so a short name resolved before its canonical
+// project had rows kept answering the old way after another session or the CLI wrote them:
+// reads stayed empty and writes went to a bare-name namespace a fresh process never reads by
+// that name (E2E 2026-10-16). Every resolution here starts from a cleared cache; it costs the
+// few indexed-or-scanned SELECTs of one lookup per tool call.
+function _resolveProjectShared(dbh, name, opts) {
+  _resetProjectCache();
+  return _resolveProjectCached(dbh, name, opts);
+}
 
 function resolveProject(name) {
   return _resolveProjectShared(db, name);
@@ -327,7 +367,9 @@ let idleCleanupRan = false;
  * The schemas declare both spellings (see tool-schemas.mjs); this is where the alias
  * actually takes effect. Canonical wins when both are present - an explicit canonical
  * value is the more specific intent, and silently letting an alias override it would
- * reintroduce the same class of surprise the aliases exist to remove.
+ * reintroduce the same class of surprise the aliases exist to remove. A blank canonical string
+ * is not a value: `mem_save(lesson_learned: "", lesson: "X")` dropped X and saved no lesson
+ * (pre-tag review 2026-10-16 P3-8), so a non-blank alias fills it.
  *
  * @param {object} args Raw validated tool arguments.
  * @param {Record<string,string>} pairs alias → canonical field name.
@@ -335,9 +377,11 @@ let idleCleanupRan = false;
  */
 function applyArgAliases(args, pairs) {
   if (!args || typeof args !== 'object') return args;
+  const blank = (v) => typeof v === 'string' && v.trim() === '';
   let next = args;
   for (const [alias, canonical] of Object.entries(pairs)) {
-    if (next[alias] !== undefined && next[canonical] === undefined) {
+    const canonicalAbsent = next[canonical] === undefined || (blank(next[canonical]) && !blank(next[alias]));
+    if (next[alias] !== undefined && canonicalAbsent) {
       if (next === args) next = { ...args };
       next[canonical] = next[alias];
     }
@@ -383,13 +427,31 @@ function defangResult(result, { skillBlocks = true } = {}) {
  * registry, so the chokepoint is now unconditional - every non-verbatim result is defanged
  * for skill blocks. Do not reintroduce the opt-out for a handler that merely wants to emit
  * a wrapper; R6 P1-1 was exactly the shape where one exempt face carried the whole risk.
+ *
+ * @param {boolean} [opts.projectWrite=false] The tool writes rows under `project` and makes
+ *   its own checkWriteProject check (safeProjectWriteHandler). Every other tool given a
+ *   `project` with no rows anywhere gets the CLI dispatcher's note (unknownProjectNote) at the
+ *   top of its answer, or of its error: mem_search / mem_recent / mem_timeline(project:
+ *   "otherr-api") answered like a real project with nothing matching (pre-tag review
+ *   2026-10-16 P3-5). Here, so a new tool that takes `project` is covered by construction.
  */
-function safeHandler(fn, { verbatim = false } = {}) {
+function safeHandler(fn, { verbatim = false, projectWrite = false } = {}) {
   return async (args, extra) => {
+    let projectNote = '';
+    const withNote = (text) => (projectNote ? `Note: ${projectNote}\n\n${text}` : text);
     try {
       lastMcpRequestTime = Date.now();
       idleCleanupRan = false;
-      const result = await fn(args, extra);
+      // Before the tool runs, like the CLI's note, so a mutating tool is judged on the project
+      // as the caller named it.
+      if (!projectWrite && typeof args?.project === 'string' && args.project) {
+        projectNote = unknownProjectNote(db, args.project);
+      }
+      let result = await fn(args, extra);
+      if (projectNote && result?.content?.[0]?.type === 'text') {
+        const [first, ...rest] = result.content;
+        result = { ...result, content: [{ ...first, text: withNote(first.text) }, ...rest] };
+      }
       return verbatim ? result : defangResult(result, { skillBlocks: true });
     } catch (err) {
       // A damaged FTS5 index arrives here as SQLITE_CORRUPT_VTAB from the first MATCH.
@@ -397,17 +459,22 @@ function safeHandler(fn, { verbatim = false } = {}) {
       // could have had fixed in one command - and mem_recent / mem_recall / mem_browse
       // keep answering, so the dead end reads as "nothing matched". Both channels carry the
       // same string here, deliberately: unlike the file-level remedy this one is lossless
-      // (see FTS_CORRUPTION_REMEDY in lib/db-unusable.mjs).
-      const hint = isFtsCorruptionError(err) ? `\n${FTS_CORRUPTION_REMEDY}` : '';
+      // (see ftsCorruptionRemedy in lib/db-unusable.mjs).
+      const hint = isFtsCorruptionError(err) ? `\n${ftsCorruptionRemedy(CLI_INVOKE)}` : '';
       return defangResult({
-        content: [{ type: 'text', text: `Error: ${err.message}${hint}` }],
+        content: [{ type: 'text', text: withNote(`Error: ${err.message}${hint}`) }],
         isError: true,
       });
     }
   };
 }
 
-// ─── Tool: mem_search - helper functions ────────────────────────────────────
+/** safeHandler for a tool that writes rows under `project` and checks it itself (mem_save, mem_defer). */
+function safeProjectWriteHandler(fn) {
+  return safeHandler(fn, { projectWrite: true });
+}
+
+// ─── Tool: mem_search — helper functions ────────────────────────────────────
 
 // TYPE_DECAY_CASE imported from utils.mjs
 
@@ -426,10 +493,25 @@ function formatSearchOutput(
   orFallbackFired = false,
   isDeepSearch = false,
   listing = null,
+  deepVariantCount = null,
 ) {
   if (paginatedResults.length === 0) {
     const hint = [];
-    if (isDeepSearch) {
+    if (isDeepSearch && deepVariantCount !== null && deepVariantCount <= 1 && args.query && !ftsQuery) {
+      // Nothing was searched at all: the original query is operators or punctuation only.
+      hint.push(
+        `Query "${queryLabel(args.query)}" was filtered (FTS5 keywords/special chars only), and deep search could not rewrite it (the LLM call failed or returned no usable variants).`,
+      );
+      hint.push('Tip: use content words instead of operators (AND, OR, NOT, NEAR).');
+    } else if (isDeepSearch && deepVariantCount !== null && deepVariantCount <= 1) {
+      // The rewrite failed (LLM unavailable, timed out, or no usable variants), so deep search
+      // was the plain search. Saying "the rewrite ran … the memory likely has no related
+      // observations" told the model a search that did not happen had come back empty.
+      hint.push(
+        'No results — deep search could not rewrite the query (the LLM call failed or returned no usable variants), so only the original query was searched.',
+      );
+      hint.push('Treat this as a plain search miss: try other words, or deep search again later.');
+    } else if (isDeepSearch) {
       // Deep search runs even when the literal query sanitizes to empty, so the
       // "query was filtered" hint below would be misleading - the LLM rewrite ran
       // N variants and simply found nothing (F9).
@@ -442,6 +524,11 @@ function formatSearchOutput(
       hint.push('Tip: use content words instead of operators (AND, OR, NOT, NEAR).');
     } else {
       hint.push('No results found.');
+      const opNote = ignoredOperatorNote(args.query, {
+        orHint: 'pass or=true for any-word matching',
+        orMode: !!args.or,
+      });
+      if (opNote) hint.push(opNote);
       if (args.query) {
         const expanded = ftsQuery || args.query;
         // Bounded like the other two echo sites. This one is the worst of the three: it
@@ -450,7 +537,7 @@ function formatSearchOutput(
         // skipped the branch on the reasoning that it "never renders the label" - true of
         // the label, false of the echo.
         if (expanded !== args.query) hint.push(`Searched as: ${queryLabel(expanded)}`);
-        hint.push('Tip: check spelling, try broader terms, or use mem_stats to see available data.');
+        hint.push('Tip: check spelling, try broader terms, or use mem_recent to see what is stored.');
       }
     }
     return { content: [{ type: 'text', text: hint.join('\n') }] };
@@ -482,13 +569,22 @@ function formatSearchOutput(
   const what = args.obs_type ? `${args.obs_type} observation(s)` : 'row(s) matching the filters';
   const header =
     listing === 'type'
-      ? `No match for "${queryLabel(args.query)}" - the ${countLabel} most recent ${what} instead`
+      ? `No match for "${queryLabel(args.query)}" — the ${countLabel} most recent ${what} in project "${args.project || inferProject()}" instead`
       : listing === 'dropped'
         ? `Query "${queryLabel(args.query)}" was filtered (FTS5 keywords/special chars only) - the ${countLabel} most recent ${what} instead`
         : `Found ${countLabel} result(s)${qLabel}${fallbackHint}`;
   lines.push(
     `${header}:${hasMixed ? ' (# observation, S# session, P# prompt, E# event)' : ''}${autoLegend(paginatedResults)}\n`,
   );
+  if (!listing) {
+    // A fired AND→OR fallback did match any word, so OR gets no note (it would say every word
+    // must match under a results line that says the search relaxed).
+    const opNote = ignoredOperatorNote(args.query, {
+      orHint: 'pass or=true for any-word matching',
+      orMode: !!args.or || orFallbackFired,
+    });
+    if (opNote) lines.push(`${opNote}\n`);
+  }
 
   // `~Nt` = estimated tokens to fetch this row's full body via mem_get (attachBodyTokens).
   // Conditional so a result that skipped enrichment renders cleanly, not "~undefinedt".
@@ -710,7 +806,16 @@ async function runSearchPipeline(
     };
   }
   const listing = r.typeFallbackFired ? 'type' : queryDropped ? 'dropped' : null;
-  const output = formatSearchOutput(r.page, args, ftsQuery, r.total, r.orFallbackFired, r.isDeep, listing);
+  const output = formatSearchOutput(
+    r.page,
+    args,
+    ftsQuery,
+    r.total,
+    r.orFallbackFired,
+    r.isDeep,
+    listing,
+    r.variants ? r.variants.length : null,
+  );
   // Surface the rewrite to the calling agent (F13) + the rerank signal (D#43).
   if (r.isDeep && r.variants && output.content?.[0]?.type === 'text') {
     output.content[0].text +=
@@ -915,6 +1020,7 @@ server.registerTool(
     inputSchema: memTimelineSchema,
   },
   safeHandler(async (args) => {
+    args = applyArgAliases(args, { id: 'anchor' });
     if (args.project) args = { ...args, project: resolveProject(args.project) };
     const before = args.before ?? 5;
     const after = args.after ?? 5;
@@ -947,18 +1053,20 @@ server.registerTool(
       }
     }
 
-    // No anchor: return most recent
+    // No anchor: return most recent — of the current project unless one was named. Other
+    // projects' rows read as "the most recent" here (MCP P2-17, E2E 2026-10-16).
     if (!anchorId) {
-      const rows = fetchRecentTimeline(db, { project: args.project ?? null, limit: before + after + 1 });
+      const listProject = args.project ?? inferProject();
+      const rows = fetchRecentTimeline(db, { project: listProject, limit: before + after + 1 });
 
       if (rows.length === 0) {
-        return { content: [{ type: 'text', text: 'No observations found.' }] };
+        return { content: [{ type: 'text', text: `No observations found in project "${listProject}".` }] };
       }
 
       // A query that anchored nothing says so, as the CLI does: without it the recency window
       // read as the neighbourhood of what the caller asked about.
       const miss = args.query
-        ? `No anchor found for "${queryLabel(args.query)}" - showing the most recent observations instead.\n`
+        ? `No anchor found for "${queryLabel(args.query)}" — showing the most recent observations in project "${listProject}" instead.\n`
         : '';
       const lines = [`${miss}Timeline (most recent ${rows.length}):\n`];
       for (const r of rows.reverse()) {
@@ -1003,7 +1111,11 @@ server.registerTool(
     const { deferredIds, rest } = splitDeferredTokens(args.ids);
     // Bucket by per-token prefix (or force all to `args.source` when explicit).
     // coerceMixedIdTokens has already stringified + regex-validated each token.
-    const { bySrc, invalid } = bucketIdTokens(rest, { explicit: args.source || null, defaultSource: 'obs' });
+    const { bySrc, invalid, overridden } = bucketIdTokens(rest, {
+      explicit: args.source || null,
+      defaultSource: 'obs',
+    });
+    const overrideNote = formatSourceOverrideNote(overridden, `source="${args.source}"`);
     if (invalid.length > 0) {
       // Should not happen - schema regex already rejected bad tokens - but guard defensively.
       return {
@@ -1036,7 +1148,19 @@ server.registerTool(
       if (invalidFields.length > 0) {
         fieldsNote = `Note: unknown field(s) dropped: ${invalidFields.join(', ')}. Valid: ${OBS_FIELDS.join(', ')}`;
       }
+      // A mixed request: the other records are shown in full, and that went unsaid (round 3).
+      if (bySrc.session.length + bySrc.prompt.length + bySrc.event.length > 0) {
+        fieldsNote = [
+          fieldsNote,
+          'Note: fields selects observation fields; E#/S#/P# records are shown in full.',
+        ]
+          .filter(Boolean)
+          .join('\n');
+      }
       obsFieldFilter = validFields;
+    } else if (args.fields?.length) {
+      // Said rather than dropped without a word (E2E 2026-10-16 round 2).
+      fieldsNote = 'Note: fields selects observation fields; E#/S#/P# records are shown in full.';
     }
 
     // Per-source fetchers - each returns { rows, foundIds:Set, prefix }.
@@ -1111,6 +1235,8 @@ server.registerTool(
       for (const row of fetchEventDetail(db, bySrc.event)) {
         foundBySource.event.add(row.id);
         const lines = [`── E#${row.id} [${row.event_type}] ──`];
+        const retired = supersededEventNotice(row);
+        if (retired) lines.push(retired);
         for (const f of EVENT_DETAIL_FIELDS) {
           if (f === 'id' || f === 'event_type') continue; // already in the header
           const val = row[f];
@@ -1182,7 +1308,8 @@ server.registerTool(
           ? ` Deferred item(s) not found: ${deferredMissing.map((i) => `D#${i}`).join(', ')}.`
           : '';
       const msg = `No records found in source(s) [${queriedList}] for the given ID(s).${deferredNote}${hint}`;
-      return { content: [{ type: 'text', text: fieldsNote ? `${msg}\n\n${fieldsNote}` : msg }] };
+      const notes = [fieldsNote, overrideNote].filter(Boolean);
+      return { content: [{ type: 'text', text: [msg, ...notes].join('\n\n') }] };
     }
 
     // Missing-ID note per bucket (mirrors mem_delete). Show missing IDs with their bucket prefix
@@ -1196,6 +1323,7 @@ server.registerTool(
     missingHints.push(...deferredMissing.map((id) => `D#${id}`));
 
     const parts = [];
+    if (overrideNote) parts.push(overrideNote);
     if (fieldsNote) parts.push(fieldsNote);
     parts.push(...deferredSections, ...sections);
     if (missingHints.length > 0) {
@@ -1282,12 +1410,16 @@ server.registerTool(
     description: descriptionOf('mem_save'),
     inputSchema: memSaveSchema,
   },
-  safeHandler(async (args) => {
+  safeProjectWriteHandler(async (args) => {
     // `obs_type` → `type`: the sibling read tools all name it obs_type (see the schema
     // comment). Without this, an unknown key was dropped and the row saved as `discovery`.
-    args = applyArgAliases(args, { obs_type: 'type' });
+    // `lesson` → `lesson_learned`: the CLI flag the description prints (D#367).
+    args = applyArgAliases(args, { obs_type: 'type', lesson: 'lesson_learned' });
     if (args.project) args = { ...args, project: resolveProjectForWrite(args.project) };
     const project = args.project || inferProject();
+    // A named project that does not exist: a near-miss is refused, a new name is noted (cli F14).
+    const projectCheck = args.project ? checkWriteProject(db, project) : { ok: true, note: '' };
+    if (!projectCheck.ok) return { content: [{ type: 'text', text: projectCheck.message }], isError: true };
 
     let closesIds, result;
     try {
@@ -1342,12 +1474,11 @@ server.registerTool(
       surface: 'mcp',
     });
     // G1+G2: detached backfill worker (lesson for obligated types + aliases for
-    // every save) - fill-only-empty, so an agent acting on the nudge still wins.
-    const enrichNote =
-      shouldQueueSaveEnrich(result) && queueSaveEnrich(result.id) ? ' (background enrichment queued)' : '';
+    // every save) — fill-only-empty, so an agent acting on the nudge still wins.
+    const enrichNote = saveEnrichNote(result);
     // D#201: on its own line rather than inside the success sentence.
     const skipNote = formatSupersedeSkipped(result.supersedeSkipped);
-    const savedText = `Saved as observation #${result.id} [${result.type}] in project "${project}".${lessonNote}${closedNote}${supersededNote}${enrichNote}${nudge}`;
+    const savedText = `Saved as observation #${result.id} [${result.type}] in project "${project}".${projectCheck.note}${lessonNote}${closedNote}${supersededNote}${enrichNote}${nudge}`;
     return { content: [{ type: 'text', text: skipNote ? `${savedText}\n${skipNote}` : savedText }] };
   }),
 );
@@ -1360,9 +1491,11 @@ server.registerTool(
     description: descriptionOf('mem_defer'),
     inputSchema: memDeferSchema,
   },
-  safeHandler(async (args) => {
+  safeProjectWriteHandler(async (args) => {
     if (args.project) args = { ...args, project: resolveProjectForWrite(args.project) };
     const project = args.project || inferProject();
+    const projectCheck = args.project ? checkWriteProject(db, project) : { ok: true, note: '' };
+    if (!projectCheck.ok) return { content: [{ type: 'text', text: projectCheck.message }], isError: true };
     const r = insertDeferred(db, {
       project,
       title: args.title,
@@ -1377,7 +1510,7 @@ server.registerTool(
       content: [
         {
           type: 'text',
-          text: `Deferred as D#${r.id} (item ${ord ?? '?'}) in project "${project}" - surfaces in next SessionStart banner.`,
+          text: `Deferred as D#${r.id} (item ${ord ?? '?'}) in project "${project}"${projectCheck.note} — surfaces in next SessionStart banner.`,
         },
       ],
     };
@@ -1434,7 +1567,7 @@ server.registerTool(
     // D#195 (c): same advisory as the CLI's `defer drop`, so an agent reaching
     // this through MCP gets the same steer toward `mem_save(closes_deferred)`.
     const hint = formatDropReasonHint(args.reason);
-    const dropText = `Dropped D#${realId} in project "${project}". Reason: ${args.reason}`;
+    const dropText = `Dropped ${deferredDropLabel(db, realId)} in project "${project}". Reason: ${args.reason}`;
     return { content: [{ type: 'text', text: hint ? `${dropText}\n${hint}` : dropText }] };
   }),
 );
@@ -1611,9 +1744,15 @@ server.registerTool(
         `  Near-duplicate pairs: ${duplicates.length}`,
         `  Stale (>30d, imp=1, no access, never injected): ${stats.stale}`,
         `  Broken (no title/narrative): ${stats.broken}`,
+        `  Decayable (imp>1, never accessed or injected, past the stale age): ${stats.decayable}`,
         `  Boostable (accessed>3, imp<3): ${stats.boostable}`,
         formatHiddenLine(stats.hidden),
-        formatPendingPurgeLine(stats.pendingPurge),
+        formatPendingPurgeLine(stats.pendingPurge, stats.pendingPurgeDue, DEFAULT_RETAIN_DAYS),
+        ...(stats.explicitToShowAgain > 0
+          ? [
+              `  Explicit saves an earlier release hid (the next execute that runs decay — the default set does — shows them again): ${stats.explicitToShowAgain}`,
+            ]
+          : []),
       ];
       if (duplicates.length > 0) {
         const autoMergeable = duplicates.filter((d) => parseFloat(d.similarity) >= AUTO_MERGE_THRESHOLD);
@@ -1644,9 +1783,16 @@ server.registerTool(
 
         if (manualReview.length > 0) {
           lines.push('', 'Needs review:');
-          for (const d of manualReview.slice(0, DUPLICATE_DISPLAY)) {
+          const shown = manualReview.slice(0, DUPLICATE_DISPLAY);
+          const rows = reviewRows(
+            db,
+            shown.flatMap((d) => [d.a.id, d.b.id]),
+          );
+          for (const d of shown) {
             lines.push(
               `  [${d.a.id}] "${truncate(d.a.title, 40)}" <-> [${d.b.id}] "${truncate(d.b.title, 40)}" (${d.similarity})`,
+              `    ${formatReviewSide(rows.get(d.a.id))}`,
+              `    ${formatReviewSide(rows.get(d.b.id))}`,
             );
           }
         }
@@ -1691,8 +1837,8 @@ server.registerTool(
       // preview tells the caller to type next. Before the extraction this block rendered
       // `inj>=8` as a literal while the CLI twin interpolated PINNED_INJ_THRESHOLD.
       const results = runMaintainOps(db, mctx, ops, {
-        retainDays: args.retain_days ?? 30,
-        retainCutoff: Date.now() - (args.retain_days ?? 30) * DAY_MS,
+        retainDays: args.retain_days ?? DEFAULT_RETAIN_DAYS,
+        retainCutoff: Date.now() - (args.retain_days ?? DEFAULT_RETAIN_DAYS) * DAY_MS,
         confirmed: purgeConfirmed,
         mergeGroups: args.merge_ids || null,
         mergeIdsProvided: Boolean(args.merge_ids),
@@ -1703,10 +1849,13 @@ server.registerTool(
             'purge_stale preview (confirm=false):',
             `  Candidates (pending-purge, older than ${retainDays}d): ${previewRow.candidates}`,
           ];
-          if (previewRow.candidates > 0) {
-            lines.push(`  Oldest: ${new Date(previewRow.oldest).toISOString().slice(0, 10)}`);
-            lines.push(`  Newest: ${new Date(previewRow.newest).toISOString().slice(0, 10)}`);
+          if (previewRow.candidates === 0) {
+            // D#468: a confirm of 0 rows deletes nothing, so there is nothing to invite.
+            lines.push('  Nothing to delete.');
+            return lines.join('\n');
           }
+          lines.push(`  Oldest: ${new Date(previewRow.oldest).toISOString().slice(0, 10)}`);
+          lines.push(`  Newest: ${new Date(previewRow.newest).toISOString().slice(0, 10)}`);
           lines.push('  Nothing was deleted. To delete, re-run with confirm=true:');
           lines.push(
             `  mem_maintain(action="execute", operations=${JSON.stringify(ops)}, confirm=true${args.retain_days ? `, retain_days=${args.retain_days}` : ''}${args.project ? `, project="${args.project}"` : ''})`,
@@ -1735,6 +1884,7 @@ server.registerTool(
   },
   safeHandler(async (args) => {
     const action = args.action || 'preview';
+    if (args.project) args = { ...args, project: resolveProject(args.project) };
 
     if (action === 'preview') {
       const preview = optimizePreview(db, { project: args.project, detail: args.detail === true });
@@ -1858,18 +2008,17 @@ async function runExport(db, args) {
   // with mem-cli.mjs cmdExport. This face THROWS where the CLI prints a usage message -
   // T3-P1-A: surface invalid dates instead of silently dropping the filter (mirrors
   // mem_search). A dropped filter can quietly expand the export blast radius.
-  let fromEpoch = null;
-  let toEpoch = null;
-  if (args.date_from) {
-    fromEpoch = new Date(args.date_from).getTime();
-    if (isNaN(fromEpoch))
-      throw new Error(`Invalid date_from: "${args.date_from}" (use ISO 8601 or YYYY-MM-DD)`);
+  //
+  // A bare YYYY-MM-DD is the user's LOCAL calendar day, through the same parseDateBounds that
+  // mem_search uses; export read it as a UTC day, so one date matched a row on search and
+  // dropped it from the export (E2E 2026-10-16).
+  const bounds = parseDateBounds(args.date_from, args.date_to);
+  if (!bounds.ok) {
+    const name = bounds.bad === 'from' ? 'date_from' : 'date_to';
+    throw new Error(`Invalid ${name}: "${bounds.value}" (use ISO 8601 or YYYY-MM-DD)`);
   }
-  if (args.date_to) {
-    const d = args.date_to.length === 10 ? args.date_to + 'T23:59:59.999Z' : args.date_to;
-    toEpoch = new Date(d).getTime();
-    if (isNaN(toEpoch)) throw new Error(`Invalid date_to: "${args.date_to}" (use ISO 8601 or YYYY-MM-DD)`);
-  }
+  const fromEpoch = bounds.epochFrom;
+  const toEpoch = bounds.epochTo;
   // Same policy as the two date checks: refuse rather than silently drop a filter.
   //
   // This replaces a `_resolveProjectShared(db, x) || x` fallback that could not do what
@@ -1940,7 +2089,14 @@ async function runExport(db, args) {
       `\nFor a complete backup, write it to a FILE instead of pulling it through this conversation: \`${CLI_INVOKE} export --format jsonl > backup.jsonl\` (the CLI exports the complete set by default). Narrowing with date_from/date_to also works.` +
       `\nRaising \`limit\` here is the last resort, not the first: this result is model context, so all ${total} rows would be loaded into the transcript.`;
   }
-  return { content: [{ type: 'text', text: `Exported ${rows.length} observations:${cap}\n${output}` }] };
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `Exported ${rows.length} observations:${cap}\nNote: ${EXPORT_FIDELITY_NOTE}\n${output}`,
+      },
+    ],
+  };
 }
 
 server.registerTool(
@@ -1997,7 +2153,8 @@ server.registerTool(
 // Handler extracted to server/fts-check.mjs (v2.41 split).
 import { handleMemFtsCheck } from './server/fts-check.mjs';
 
-import { DAY_MS, DB_BUSY_TIMEOUT_MS } from './lib/time-constants.mjs';
+import { DAY_MS, DB_BUSY_TIMEOUT_MS, SERVER_OPEN_BUSY_RETRY_MS } from './lib/time-constants.mjs';
+import { isDbBusyError } from './lib/db-busy.mjs';
 server.registerTool(
   'mem_fts_check',
   {

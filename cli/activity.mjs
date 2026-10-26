@@ -9,20 +9,30 @@
 // events_fts via triggers.
 
 import { inferProject } from '../utils.mjs';
-import { resolveProject } from '../project-utils.mjs';
+import { resolveProject, checkWriteProject } from '../project-utils.mjs';
 import { resolveCliProject as cliProject } from '../lib/cli-project.mjs';
 import { parseArgs, out, fail, rejectBareStringFlags } from './common.mjs';
 import { parseIntFlag, isNumericToken } from '../lib/cli-flags.mjs';
+import { snapshotDb } from '../lib/db-backup.mjs';
+import { isBlankText } from '../lib/blank-text.mjs';
+import { CLI_INVOKE } from '../cli-path.mjs';
 
 function formatActivityResults(rows) {
   if (!rows || rows.length === 0) return '(no events)';
   return rows.map((r) => `#${r.id} [${r.event_type}] ${r.title}`).join('\n');
 }
 
+/** An event id as typed: N, #N or E#N (the form search and get print), else null. */
+function eventIdOf(token) {
+  const m = /^(?:[Ee]#?|#)?(\d+)$/.exec(String(token).trim());
+  const n = m ? Number(m[1]) : NaN;
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
 export async function cmdActivity(db, args) {
   const sub = args[0];
   if (!sub) {
-    fail('[mem] Usage: qwen-mem-lite activity <save|search|recent|show|delete|promote> ...');
+    fail(`[mem] Usage: ${CLI_INVOKE} activity <save|search|recent|show|delete|promote> ...`);
     return;
   }
 
@@ -33,9 +43,11 @@ export async function cmdActivity(db, args) {
   // `save` CREATES a row, so it keeps plain inferProject(): the DB-aware fallback is a read
   // affordance, and applying it to a write absorbs a not-yet-born subproject's first event
   // into the enclosing repo (pre-tag review, reproduced). Every other subcommand reads or
-  // operates on rows that already exist, where falling back is what finds them.
+  // operates on rows that already exist, where falling back is what finds them. A named
+  // project is resolved for `save` the way `save` and `defer add` resolve theirs: exact
+  // matching only, then checkWriteProject below.
   const project = flags.project
-    ? resolveProject(db, flags.project)
+    ? resolveProject(db, flags.project, sub === 'save' ? { mode: 'write' } : undefined)
     : sub === 'save'
       ? inferProject()
       : cliProject(db);
@@ -50,7 +62,7 @@ export async function cmdActivity(db, args) {
       return;
     }
     const title = flags.title || positional.join(' ').trim();
-    if (!title) {
+    if (isBlankText(title)) {
       fail('[mem] activity save: --title or positional text required');
       return;
     }
@@ -77,6 +89,13 @@ export async function cmdActivity(db, args) {
       fail(`[mem] Invalid importance "${flags.importance}". Must be 1, 2, or 3.`);
       return;
     }
+    // A near miss of an existing project is refused, a new name is noted: the check `save` and
+    // `defer add` make (pre-tag review 2026-10-16 P3-4). stdout stays the JSON line.
+    const projectCheck = flags.project ? checkWriteProject(db, project) : { ok: true, note: '' };
+    if (!projectCheck.ok) {
+      fail(`[mem] ${projectCheck.message}`);
+      return;
+    }
     const id = saveEvent(db, {
       project,
       event_type: type,
@@ -86,6 +105,7 @@ export async function cmdActivity(db, args) {
       file_paths,
     });
     out(JSON.stringify({ ok: true, id }));
+    if (projectCheck.note) process.stderr.write(`[mem] Saved event E#${id}${projectCheck.note}\n`);
     return;
   }
 
@@ -126,9 +146,11 @@ export async function cmdActivity(db, args) {
   }
 
   if (sub === 'show') {
-    const id = positional.length > 0 ? parseInt(positional[0], 10) : NaN;
-    if (!Number.isFinite(id)) {
-      fail('[mem] activity show: numeric id required');
+    const id = positional.length > 0 ? eventIdOf(positional[0]) : null;
+    if (id === null) {
+      fail(
+        `[mem] activity show: an event id is required (N, #N or E#N)${positional[0] ? `, got "${positional[0]}"` : ''}`,
+      );
       return;
     }
     const row = getEvent(db, id);
@@ -150,15 +172,23 @@ export async function cmdActivity(db, args) {
     // This command lets users prune them by ID without dropping to raw SQL.
     const idStr = positional.join(',').trim();
     if (!idStr) {
-      fail('[mem] Usage: qwen-mem-lite activity delete <id1,id2,...> [--confirm]');
+      fail(`[mem] Usage: ${CLI_INVOKE} activity delete <id1,id2,...> [--confirm]`);
       return;
     }
-    const ids = idStr
+    const tokens = idStr
       .split(',')
       .map((s) => s.trim())
-      .filter(Boolean)
-      .map((s) => parseInt(s, 10))
-      .filter((n) => Number.isInteger(n) && n > 0);
+      .filter(Boolean);
+    // Every token must be an id, or nothing is deleted: `2x` used to parseInt to 2 and delete
+    // a row the caller never named (E2E 2026-10-16).
+    const bad = tokens.filter((t) => eventIdOf(t) === null);
+    if (bad.length > 0) {
+      fail(
+        `[mem] activity delete: not an event id: ${bad.join(', ')} (use N, #N or E#N) — nothing was deleted`,
+      );
+      return;
+    }
+    const ids = [...new Set(tokens.map(eventIdOf))];
     if (ids.length === 0) {
       fail('[mem] activity delete: no valid IDs provided (must be positive integers)');
       return;
@@ -188,16 +218,23 @@ export async function cmdActivity(db, args) {
       return;
     }
 
+    // A pre-image first, as deleteObservations takes for observations (E2E 2026-10-16 round 2:
+    // this hard delete had none). Best-effort; outside the transaction (VACUUM INTO).
+    snapshotDb(db, { tag: 'pre-delete' });
     // The opt-in search telemetry keeps a title per returned result; an explicit delete drops the
     // deleted events' titles, as lib/delete-core.mjs does for observations (D#245 N6).
-    const result = db.transaction(() => {
-      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'search_results'").get()) {
-        db.prepare(
-          `UPDATE search_results SET snapshot_label = NULL WHERE source = 'event' AND result_id IN (${placeholders})`,
-        ).run(...ids);
-      }
-      return db.prepare(`DELETE FROM events WHERE id IN (${placeholders})`).run(...ids);
-    })();
+    const result = db
+      .transaction(() => {
+        if (
+          db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'search_results'").get()
+        ) {
+          db.prepare(
+            `UPDATE search_results SET snapshot_label = NULL WHERE source = 'event' AND result_id IN (${placeholders})`,
+          ).run(...ids);
+        }
+        return db.prepare(`DELETE FROM events WHERE id IN (${placeholders})`).run(...ids);
+      })
+      .immediate(); // IMMEDIATE: it starts with a read (E2E 2026-10-16 round 3; see delete-core)
     out(`[mem] Deleted ${result.changes} event(s).`);
     return;
   }
@@ -206,7 +243,9 @@ export async function cmdActivity(db, args) {
     // P2(b): promote insight-bearing events (body present, importance>=N) into
     // searchable observations. Preview by default; --execute applies. One-time
     // backfill — the source events are marked promoted (idempotent re-runs).
-    const minImp = flags['min-importance'] !== undefined ? parseInt(flags['min-importance'], 10) : 2;
+    // Whole digits only: a bare parseInt read `2x` as 2.
+    const rawMin = flags['min-importance'];
+    const minImp = rawMin === undefined ? 2 : /^\d+$/.test(String(rawMin)) ? Number(rawMin) : NaN;
     if (isNaN(minImp) || minImp < 1 || minImp > 3) {
       fail('[mem] activity promote: --min-importance must be 1, 2, or 3.');
       return;

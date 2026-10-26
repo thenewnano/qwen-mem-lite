@@ -4,6 +4,7 @@
 import { z } from 'zod';
 import { CLI_INVOKE } from './cli-path.mjs';
 import { OBS_TYPES } from './lib/obs-types.mjs';
+import { isBlankText } from './lib/blank-text.mjs';
 
 export const OBS_TYPE_ENUM = z.enum([...OBS_TYPES]);
 
@@ -57,12 +58,13 @@ const coerceBool = z.preprocess(
 // maxItems entirely — which on mem_delete, a DESTRUCTIVE tool, published "any number of
 // ids" against an enforced 1..50.
 const wholeIntOrRaw = (s) => (/^\d+$/.test(s) ? parseInt(s, 10) : s);
+// `#N` too, and the JSON-array string every other id list takes: mem_delete was the one that
+// refused both, so an id copied from a listing cost a -32602 round trip (E2E 2026-10-16 round 3).
+const obsIdOrRaw = (s) => (/^#?\d+$/.test(s) ? parseInt(s.replace(/^#/, ''), 10) : s);
 const boundedIntArray = (bounded) =>
-  z.preprocess((v) => {
-    if (Array.isArray(v)) return v.map((x) => (typeof x === 'string' ? wholeIntOrRaw(x.trim()) : x));
-    if (typeof v === 'number') return [v];
-    if (typeof v === 'string') return v.split(',').map((s) => wholeIntOrRaw(s.trim()));
-    return v;
+  z.preprocess((raw) => {
+    const v = asArrayOrRaw(raw);
+    return Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? obsIdOrRaw(x.trim()) : x)) : v;
   }, bounded);
 
 // Coerce string arrays: accept array, comma-separated string, JSON-array string, or bare string.
@@ -89,6 +91,47 @@ const stringArrayOrRaw = (v) => {
   return v;
 };
 const coerceStringArray = z.preprocess(stringArrayOrRaw, z.array(z.string()));
+
+// The same serialised shapes for an array whose ELEMENTS a field maps itself (ids that may be
+// numbers, enum members): a JSON-array string, a comma string, or one scalar. Elements pass
+// through untouched. supersedes / closes_deferred / operations / tasks rejected these shapes
+// while files / ids / fields took them, so one call worked and the next did not (E2E 2026-10-16).
+const asArrayOrRaw = (v) => {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'number') return [v];
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (s.startsWith('[') && s.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(s);
+        // An empty one stays a string, like a blank string below: `tasks: "[]"` ran every
+        // optimize task (E2E 2026-10-16 round 3).
+        if (Array.isArray(parsed)) return parsed.length > 0 ? parsed : v;
+      } catch {
+        /* fall through to comma-split */
+      }
+    }
+    const parts = s
+      .split(',')
+      .map((x) => x.trim())
+      .filter((x) => x.length > 0);
+    // A blank string stays a string, so the schema refuses it: read as [], `tasks: ""` ran
+    // every optimize task, since an empty list means all of them (E2E round 2, data R3).
+    return parts.length > 0 ? parts : v;
+  }
+  return v;
+};
+
+// asArrayOrRaw keeps a blank or `"[]"` string as a string so the schema refuses it; without this
+// the refusal read "expected array, received string", which names the wrong problem: the caller
+// sent the shape the field takes, only empty (E2E 2026-10-16 round 4, data R-1). Error text is
+// not part of the advertised JSON schema, so the schemas stay byte-identical.
+const emptyListError = (whenEmpty) => (iss) =>
+  typeof iss.input === 'string' && /^\s*(\[\s*\])?\s*$/.test(iss.input) ? whenEmpty : undefined;
+const MUST_NOT_BE_EMPTY = emptyListError('must not be empty: pass a non-empty list, or omit the field');
+// A required list cannot be omitted: mem_delete's ids advised it, and omitting it is the
+// required-field error (pre-tag review 2026-10-16 P3-9).
+const REQUIRED_MUST_NOT_BE_EMPTY = emptyListError('must not be empty: pass a non-empty list');
 
 // Coerce mixed ID tokens (#N / P#N / S#N / D#N / bare N) for mem_get. Accepts:
 //   - native arrays: [1, "P#2", "#3"]
@@ -129,7 +172,12 @@ const coerceMixedIdTokens = z.preprocess(
 );
 
 export const memSearchSchema = {
-  query: z.string().optional().describe('Search query (FTS5 syntax supported)'),
+  query: z
+    .string()
+    .optional()
+    .describe(
+      'Search keywords; every word must match (see `or`). Operators and quotes are ignored: NOT, -term, prefix*, column:, "phrase"',
+    ),
   type: z
     .enum(['observations', 'sessions', 'prompts', 'events'])
     .optional()
@@ -253,6 +301,9 @@ const coerceAnchor = z.preprocess(
 );
 
 export const memTimelineSchema = {
+  // `id` is the name a caller reaches for after mem_get; dropped as an unknown key, it returned
+  // the most recent rows with no hint the anchor was ignored (D#367, E2E 2026-10-16).
+  id: coerceAnchor.optional().describe('Alias for `anchor`'),
   anchor: coerceAnchor
     .optional()
     .describe(
@@ -293,7 +344,7 @@ export const memDeleteSchema = {
   // toJSONSchema({io:'input'}) reads a ZodPipe's input side as accepting `undefined` and
   // drops the key, so the advertised contract said optional while the server said required.
   // See tests/tool-schemas.test.mjs, which grades every field against runtime ground truth.
-  ids: boundedIntArray(z.array(z.number().int()).min(1).max(50))
+  ids: boundedIntArray(z.array(z.number().int(), { error: REQUIRED_MUST_NOT_BE_EMPTY }).min(1).max(50))
     .nonoptional()
     .describe('Observation IDs to delete'),
   confirm: coerceBool.describe('false=preview what will be deleted, true=execute deletion'),
@@ -304,7 +355,8 @@ export const memDeleteSchema = {
 // bridges that JSON-stringify ints don't drop them); D#-prefixed strings stay
 // strings for the resolver. Other string shapes reject early at schema layer.
 const coerceDeferredTokens = z.preprocess(
-  (v) => {
+  (raw) => {
+    const v = asArrayOrRaw(raw);
     if (Array.isArray(v)) {
       return v.map((x) => {
         if (typeof x === 'number') return x;
@@ -324,6 +376,7 @@ const coerceDeferredTokens = z.preprocess(
         z.number().int().positive(),
         z.string().regex(/^D#\d+$/, 'expected D#N (raw id) or positive integer (ordinal)'),
       ]),
+      { error: MUST_NOT_BE_EMPTY },
     )
     .min(1)
     .max(20),
@@ -336,16 +389,22 @@ const coerceDeferredTokens = z.preprocess(
 // a number here would lose the only thing that says which table it names.
 // Empty/other shapes reject.
 const coerceSupersedes = z.preprocess(
-  (v) =>
-    Array.isArray(v)
-      ? v.map((x) => (typeof x === 'string' && /^\d+$/.test(x.trim()) ? parseInt(x.trim(), 10) : x))
-      : v,
+  (raw) => {
+    const v = asArrayOrRaw(raw);
+    // `#N` too: it is how every listing prints an observation id (E2E round 2, data N3).
+    return Array.isArray(v)
+      ? v.map((x) =>
+          typeof x === 'string' && /^#?\d+$/.test(x.trim()) ? parseInt(x.trim().replace(/^#/, ''), 10) : x,
+        )
+      : v;
+  },
   z
     .array(
       z.union([
         z.number().int().positive(),
         z.string().regex(/^[Ee]#?\d+$/, 'expected a positive observation id or E#<n> for an event'),
       ]),
+      { error: MUST_NOT_BE_EMPTY },
     )
     .min(1)
     .max(20),
@@ -376,6 +435,10 @@ export const memSaveSchema = {
     .max(500)
     .optional()
     .describe('Key lesson or takeaway, ≤500 chars (for bugfix: root cause & fix; for decision: rationale)'),
+  // Alias, as obs_type is for `type`: the description prints the CLI's `--lesson`, and this
+  // non-strict schema dropped an unknown key, so `mem_save(lesson: …)` saved the row without
+  // its lesson and the save-time enricher wrote one in its place (D#367, E2E 2026-10-16).
+  lesson: z.string().max(500).optional().describe('Alias for `lesson_learned` (CLI `save --lesson`)'),
   closes_deferred: coerceDeferredTokens
     .optional()
     .describe(
@@ -418,7 +481,12 @@ export const memOptimizeSchema = {
     .default('preview')
     .describe('preview=scan candidates, run=execute with limits, run_all=bypass gates'),
   tasks: z
-    .array(z.enum(['re-enrich', 'normalize', 'cluster-merge', 'smart-compress']))
+    .preprocess(
+      asArrayOrRaw,
+      z.array(z.enum(['re-enrich', 'normalize', 'cluster-merge', 'smart-compress']), {
+        error: emptyListError('must not be empty: pass a non-empty list, or omit tasks to run every task'),
+      }),
+    )
     .optional()
     .describe('Which optimization tasks to run (default: all)'),
   max_items: boundedInt(z.number().int().min(1).max(100))
@@ -446,18 +514,32 @@ export const memOptimizeSchema = {
 export const memMaintainSchema = {
   action: z.enum(['scan', 'execute']).describe('scan=analyze candidates, execute=apply changes'),
   operations: z
-    .array(z.enum(['dedup', 'decay', 'cleanup', 'boost', 'demote_pinned', 'purge_stale', 'vacuum']))
+    .preprocess(
+      asArrayOrRaw,
+      z.array(z.enum(['dedup', 'decay', 'cleanup', 'boost', 'demote_pinned', 'purge_stale', 'vacuum']), {
+        // The handler's own sentence for a native []; the default set is not named here, since
+        // importing it would pull lib/maintain-core.mjs's load graph into every schema reader.
+        error: emptyListError(
+          'operations array is empty. Pass a non-empty list or omit operations to use the default set.',
+        ),
+      }),
+    )
     .optional()
     .describe(
       'Operations: dedup=find/merge duplicate observations, decay=reduce importance of old low-value obs, cleanup=remove orphaned records, boost=promote frequently-accessed obs, demote_pinned=floor importance for obs injected>=8 times but never cited — to 1 with no lesson_learned, to 2 with one (v3.76.1: a lesson-bearing row keeps eligibility on every importance>=2 injection face) (clears pinned noise the decay op cannot reach; in the default set since v3.76.0 and ordered after boost, since boost would otherwise raise the row straight back — set QWEN_MEM_SKIP_DEMOTE_PINNED=1 to drop it from the DEFAULT set only), purge_stale=DELETE pending-purge obs older than retain_days (requires confirm=true; first call previews), vacuum=reclaim freelist dead space (whole-DB)',
     ),
   merge_ids: z
     .preprocess(
-      (v) =>
-        Array.isArray(v)
-          ? v.map((g) => (Array.isArray(g) ? g.map((x) => (typeof x === 'string' ? parseInt(x, 10) : x)) : g))
-          : v,
-      z.array(z.array(z.number().int()).min(2)),
+      (raw) => {
+        // A JSON-array string as well, like every other array argument (E2E round 2, data S5).
+        const v = asArrayOrRaw(raw);
+        return Array.isArray(v)
+          ? v.map((g) =>
+              Array.isArray(g) ? g.map((x) => (typeof x === 'string' ? wholeIntOrRaw(x.trim()) : x)) : g,
+            )
+          : v;
+      },
+      z.array(z.array(z.number().int()).min(2), { error: MUST_NOT_BE_EMPTY }),
     )
     .optional()
     .describe('For dedup: [[keepId, removeId1, removeId2], ...] — first ID in each group is kept'),
@@ -479,7 +561,7 @@ export const memUpdateSchema = {
   // in every listing — reject here like the CLI does, instead of persisting it.
   title: z
     .string()
-    .refine((s) => s.trim() !== '', 'title cannot be empty')
+    .refine((s) => !isBlankText(s), 'title cannot be empty')
     .optional()
     .describe('New title'),
   // Reject empty content fields (parity with `title` above + cmdUpdate): an explicit
@@ -571,7 +653,7 @@ export const memDeferSchema = {
     .string()
     .min(1)
     .max(200)
-    .refine((s) => s.trim() !== '', 'title cannot be empty')
+    .refine((s) => !isBlankText(s), 'title cannot be empty')
     .describe('One-line subject of the deferred item'),
   priority: boundedInt(z.number().int().min(1).max(3))
     .optional()
@@ -676,7 +758,7 @@ export const tools = [
       'List the most recent observations for the current project, newest first.\n' +
       '\n' +
       'DO NOT use when:\n' +
-      '  - You are searching for a topic (use mem_search — this tool does no filtering)\n' +
+      '  - You are searching for a topic (use mem_search — this tool filters by type and date, not by words)\n' +
       '  - SessionStart already printed a recent-activity block (it is the same data)\n' +
       '  - You need details for a specific ID (use mem_get)\n' +
       '\n' +
@@ -698,7 +780,7 @@ export const tools = [
       '\n' +
       'DO NOT use when:\n' +
       '  - You only want one record (use mem_get)\n' +
-      '  - You have no anchor in mind and are just browsing (use mem_recent or mem_browse)\n' +
+      '  - You have no anchor in mind and are just browsing (use mem_recent)\n' +
       '  - The sequence is obvious from commit history (use git log)\n' +
       '  - You want "recent activity around X" (use mem_recent or mem_search sort="time")\n' +
       '\n' +
@@ -720,12 +802,12 @@ export const tools = [
       'DO NOT use when:\n' +
       '  - You have not seen the ID referenced anywhere (use mem_search first)\n' +
       '  - You only need title/type — that is already in the search result line\n' +
-      '  - You are speculatively paging through IDs (use mem_recent / mem_browse)\n' +
+      '  - You are speculatively paging through IDs (use mem_recent)\n' +
       '\n' +
       'USE when:\n' +
       '  - Hook-injected context shows #NN and you need the full narrative/lesson\n' +
       '  - A mem_search hit looks relevant and you need the supporting detail\n' +
-      '  - For session (S#) or prompt (P#) hits, pass source="session" or "prompt"\n' +
+      '  - Pass ids as printed (#N, E#N, S#N, P#N, D#N); each prefix routes itself, so source is rarely needed\n' +
       '\n' +
       'On miss, response includes "Try: …" hint listing other sources the ID lives in.\n' +
       '\n' +
@@ -990,7 +1072,7 @@ export const tools = [
       '\n' +
       'DO NOT use when:\n' +
       '  - The SessionStart `### Deferred Work` block already shows the items (reuse that — same data)\n' +
-      '  - You only need one item by id (use mem_get on the obs that closed it, or look up the row directly)\n' +
+      '  - You need one item\'s full detail (use mem_get ids=["D#N"])\n' +
       '\n' +
       'USE when:\n' +
       '  - User asks "what was on the deferred list" / "what did I leave for next time"\n' +

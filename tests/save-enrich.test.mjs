@@ -8,10 +8,18 @@
 // Historical failure class this guards: empty-overwrite / preserve-on-empty
 // (R4/R1 audits) — enrichment must NEVER replace content the caller (or a
 // concurrent optimize pass) already wrote.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { createTestDb } from './test-helpers.mjs';
 import { saveObservation } from '../lib/save-observation.mjs';
-import { shouldQueueSaveEnrich, executeSaveEnrich, ENRICH_OBLIGATED_TYPES } from '../lib/save-enrich.mjs';
+import {
+  shouldQueueSaveEnrich,
+  saveEnrichNote,
+  executeSaveEnrich,
+  ENRICH_OBLIGATED_TYPES,
+} from '../lib/save-enrich.mjs';
 
 const PROJECT = 'enrich--test';
 
@@ -45,6 +53,45 @@ describe('shouldQueueSaveEnrich (trigger predicate)', () => {
   it('never queues dedup hits or missing results', () => {
     expect(shouldQueueSaveEnrich({ kind: 'dedup', id: 1 }, {})).toBe(false);
     expect(shouldQueueSaveEnrich(null, {})).toBe(false);
+  });
+});
+
+// E2E 2026-10-16 round 3 (NEW-5): under a project-level plugin disable the worker exits at once
+// (hook.mjs pluginDisabledHere reads the cwd project it inherits), yet both save faces printed
+// "(background enrichment queued)".
+describe('saveEnrichNote (what a save face says about enrichment)', () => {
+  const saved = { kind: 'saved', id: 7, type: 'bugfix', lessonCaptured: false };
+  let root;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'save-enrich-note-'));
+    mkdirSync(join(root, 'cfg'), { recursive: true });
+    mkdirSync(join(root, 'proj', '.claude'), { recursive: true });
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, 'cfg'));
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const env = () => ({ CLAUDE_PROJECT_DIR: join(root, 'proj') });
+
+  it('a project-level disable queues nothing and says so', () => {
+    writeFileSync(
+      join(root, 'proj', '.claude', 'settings.local.json'),
+      JSON.stringify({ enabledPlugins: { 'qwen-mem-lite@thenewnano': false } }),
+    );
+    const queued = [];
+    const note = saveEnrichNote(saved, env(), (id) => queued.push(id));
+    expect(queued).toEqual([]);
+    expect(note).not.toMatch(/queued/);
+    expect(note).toMatch(/disabled for this project/);
+  });
+  it('control: enabled, it queues and says queued', () => {
+    const queued = [];
+    expect(saveEnrichNote(saved, env(), (id) => queued.push(id) > 0)).toMatch(/background enrichment queued/);
+    expect(queued).toEqual([7]);
+  });
+  it('a gated save says nothing', () => {
+    expect(saveEnrichNote(saved, { ...env(), VITEST: 'true' }, () => true)).toBe('');
   });
 });
 
@@ -200,5 +247,41 @@ describe('executeSaveEnrich (fill-only-empty worker)', () => {
     expect(o.type).toBe(before.type);
     expect(o.importance).toBe(before.importance);
     db.close();
+  });
+});
+
+// E2E 2026-10-16 (bg P2-2): the save-enrich worker never took an LLM slot, so a burst of saves
+// ran one `claude -p` per save at once (13 concurrent measured), against the README's "limits
+// background workers to 2 concurrent LLM calls". It now takes a slot like every other worker;
+// without one it skips (the daily backfill passes pick the row up) and releases what it took.
+describe('executeSaveEnrich takes an LLM slot', () => {
+  it('skips without calling the model when no slot is free', async () => {
+    const db = createTestDb();
+    const { id } = save(db);
+    let called = false;
+    const r = await executeSaveEnrich(db, id, {
+      callJson: async () => {
+        called = true;
+        return {};
+      },
+      acquire: async () => false,
+      release: () => {},
+    });
+    expect(called).toBe(false);
+    expect(r).toEqual({ enriched: false, reason: 'no-slot' });
+  });
+
+  it('releases the slot it took, also when the model call throws', async () => {
+    const db = createTestDb();
+    const { id } = save(db);
+    let released = 0;
+    await executeSaveEnrich(db, id, {
+      callJson: async () => {
+        throw new Error('overloaded');
+      },
+      acquire: async () => true,
+      release: () => released++,
+    });
+    expect(released).toBe(1);
   });
 });

@@ -56,12 +56,38 @@ const REMOVED_COMMANDS = new Set(['registry', 'import', 'enrich']);
 // died at the call site with "main is not a function". All three are the same fact
 // about the world (this install's files are not intact) and get the same answer.
 // Anything else is rethrown: this is a classifier, not a swallow.
+/** Whether `dir` is the root of a git checkout. node: builtins only — this runs when imports fail. */
+function gitCheckout(dir) {
+  try {
+    return process.getBuiltinModule('node:fs').existsSync(`${dir}/.git`);
+  } catch {
+    return false;
+  }
+}
+
 function explainBrokenInstall(what) {
   const w = (s) => process.stderr.write(`[qwen-mem-lite] ${s}\n`);
   w(`This install is incomplete — ${what}`);
   w('That is why this command cannot run: these files load before any of their code executes.');
-  w('Repair: npm install -g github:thenewnano/qwen-mem-lite --force');
-  w('Or, in Claude Code: /plugin uninstall qwen-mem-lite && /plugin install qwen-mem-lite@thenewnano');
+  // The managed code home (~/.qwen-mem-lite, where settings.json hooks run from) is rebuilt by
+  // the installer run from OUTSIDE it; `npm install -g` installs a separate global package and
+  // left this tree as broken as before (E2E 2026-10-16). Read off import.meta.url: no imports.
+  const here = decodeURIComponent(new URL('.', import.meta.url).pathname);
+  const pluginReinstall = '/plugin uninstall qwen-mem-lite && /plugin install qwen-mem-lite@thenewnano';
+  if (/[\\/]\.qwen-mem-lite[\\/]?$/.test(here)) {
+    w('Repair: npx qwen-mem-lite@latest install   (rebuilds ~/.qwen-mem-lite; your memories are kept)');
+    w(`Or, in Claude Code: ${pluginReinstall}`);
+  } else if (/[\\/]plugins[\\/]cache[\\/]/.test(here)) {
+    // Claude Code's own copy of the plugin: npm -g installs a separate package and repairs
+    // nothing here (E2E 2026-10-16 round 2).
+    w(`Repair, in Claude Code: ${pluginReinstall}`);
+  } else if (gitCheckout(here)) {
+    // A clone: git knows which tracked file went missing; npm -g repaired nothing here either.
+    w(`Repair: git -C ${here} status   (then git restore the missing or damaged file)`);
+  } else {
+    w('Repair: npm install -g qwen-mem-lite@latest --force');
+    w(`Or, in Claude Code: ${pluginReinstall}`);
+  }
   process.exit(1);
 }
 
@@ -104,23 +130,58 @@ async function isDoctorDbMode() {
   }
 }
 
+/** A broken tree's import failure, explained instead of thrown as a stack; other errors rethrow. */
+function explainImportFailure(e) {
+  if (e?.code === 'ERR_MODULE_NOT_FOUND') {
+    explainBrokenInstall(`it is missing: ${fileFromError(e) || 'a module'}`);
+  }
+  // Never reprint the parser's own output: the stack is what this exists to replace.
+  if (e instanceof SyntaxError) {
+    const at = fileFromError(e);
+    // A module cut short before its exports (or an old module under a new importer, which a killed
+    // swap leaves) loads with the export missing; the one file:// URL in that error is the
+    // IMPORTER's, an intact file. Name the module the quoted specifier resolves to (E2E 2026-10-16
+    // round 4, install NEW-2).
+    const lacking = String(e.message).match(
+      /module '(\.{1,2}\/[^']+)' does not provide an export named '([^']+)'/,
+    );
+    if (lacking && at) {
+      const { join, dirname } = process.getBuiltinModule('node:path');
+      explainBrokenInstall(
+        `this file is damaged or truncated: ${join(dirname(at), lacking[1])} (it lacks the export ` +
+          `${lacking[2]} that ${at} imports)`,
+      );
+    }
+    explainBrokenInstall(`this file is damaged or truncated: ${at || 'one of its modules'}`);
+  }
+  throw e;
+}
+
 async function loadInstaller() {
   let mod;
   try {
     mod = await import('./install.mjs');
   } catch (e) {
-    if (e?.code === 'ERR_MODULE_NOT_FOUND') {
-      explainBrokenInstall(`it is missing: ${fileFromError(e) || 'a module'}`);
-    }
-    // Never reprint the parser's own output: the stack is what this exists to replace.
-    if (e instanceof SyntaxError) {
-      const at = fileFromError(e);
-      explainBrokenInstall(`this file is damaged or truncated: ${at || 'one of its modules'}`);
-    }
-    throw e;
+    explainImportFailure(e);
   }
   if (typeof mod?.main !== 'function') {
     explainBrokenInstall('install.mjs loaded but exports no `main` — it is truncated');
+  }
+  return mod;
+}
+
+// The memory commands too: only the install family was explained, and `search`, `save`,
+// `recent` — the commands run every day — printed a raw ERR_MODULE_NOT_FOUND stack on a tree
+// missing a module (E2E 2026-10-16 round 3).
+async function loadMemCli() {
+  let mod;
+  try {
+    mod = await import('./mem-cli.mjs');
+  } catch (e) {
+    explainImportFailure(e);
+  }
+  if (typeof mod?.run !== 'function') {
+    explainBrokenInstall('mem-cli.mjs loaded but exports no `run` — it is truncated');
   }
   return mod;
 }
@@ -190,7 +251,7 @@ if (cmd === '--version' || cmd === '-v' || cmd === '-V' || cmd === 'version') {
   const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'package.json'), 'utf8'));
   process.stdout.write(`qwen-mem-lite v${pkg.version}\n`);
 } else if (cmd === '--help' || cmd === '-h') {
-  const { run } = await import('./mem-cli.mjs');
+  const { run } = await loadMemCli();
   await run(['help']);
 } else if (cmd === 'doctor' && (await isDoctorDbMode())) {
   // Per #8217: the DB-layer doctor modes (--benchmark / --metrics / --session-audit,
@@ -202,23 +263,28 @@ if (cmd === '--version' || cmd === '-v' || cmd === '-V' || cmd === 'version') {
   // and rejected by cli/doctor.mjs. Gating on the three DB-layer flags keeps --json
   // (and any future install-doctor flag) on the install path. Adding a NEW DB-layer
   // mode requires extending this list — a deliberate trade for a working --json.
-  const { run } = await import('./mem-cli.mjs');
+  const { run } = await loadMemCli();
   await run(process.argv.slice(2));
 } else if (CLI_COMMANDS.has(cmd)) {
-  const { run } = await import('./mem-cli.mjs');
+  const { run } = await loadMemCli();
   await run(process.argv.slice(2));
 } else if (!cmd) {
-  // No command: show CLI help if installed, install help if not
+  // No command: show CLI help if installed, install help if not — except under npx, where a
+  // bare `npx qwen-mem-lite` is the documented install / reinstall. Printing help there
+  // whenever a database existed made the reinstall a no-op on exactly the machines that need
+  // it (memories kept, code home damaged or uninstalled; E2E 2026-10-16).
   const { existsSync } = await import('fs');
-  const { join } = await import('path');
+  const { dirname, join } = await import('path');
+  const { fileURLToPath } = await import('url');
+  const { isNpxRun } = await import('./lib/npx-run.mjs');
   // D#29: honor QWEN_MEM_DIR so the install-vs-CLI help routing is correct on
   // relocated installs (matches schema.mjs DB_DIR via the shared resolver, which
   // also fixes the HOME-unset relative-path fallback this branch used to have).
   const { resolveDataDir } = await import('./lib/resolve-data-dir.mjs');
   const dataDir = resolveDataDir(process.env.QWEN_MEM_DIR);
   const dbPath = join(dataDir, 'qwen-mem-lite.db');
-  if (existsSync(dbPath)) {
-    const { run } = await import('./mem-cli.mjs');
+  if (existsSync(dbPath) && !isNpxRun(dirname(fileURLToPath(import.meta.url)))) {
+    const { run } = await loadMemCli();
     await run(['help']);
   } else {
     const { main } = await loadInstaller();
@@ -272,8 +338,12 @@ if (cmd === '--version' || cmd === '-v' || cmd === '-V' || cmd === 'version') {
   if (best && bestDist <= 2) {
     process.stderr.write(`[mem] Did you mean: ${best}?\n`);
   } else {
+    // By path (D#462: the bare name is on PATH only after a global npm install). Imported here,
+    // not at the top: this entry takes no static local imports (D#26), and a module it cannot
+    // load leaves the old wording rather than no hint.
+    const { CLI_INVOKE } = await import('./cli-path.mjs').catch(() => ({ CLI_INVOKE: 'qwen-mem-lite' }));
     process.stderr.write(
-      '[mem] Run "qwen-mem-lite help" for CLI commands or "qwen-mem-lite install" for setup\n',
+      `[mem] Run "${CLI_INVOKE} help" for CLI commands or "${CLI_INVOKE} install" for setup\n`,
     );
   }
   process.exitCode = 1;
