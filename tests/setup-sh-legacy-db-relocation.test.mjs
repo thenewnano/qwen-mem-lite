@@ -23,8 +23,10 @@
 // clock to tick between runs, and a guard that has to sleep to say NO is a slow guard.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import Database from 'better-sqlite3';
 import { spawnSync } from 'child_process';
 import {
+  chmodSync,
   mkdtempSync,
   mkdirSync,
   writeFileSync,
@@ -33,6 +35,8 @@ import {
   readFileSync,
   rmSync,
   copyFileSync,
+  symlinkSync,
+  utimesSync,
 } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -40,6 +44,7 @@ import { fileURLToPath } from 'url';
 import { resolveDataDir } from '../lib/resolve-data-dir.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
+const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
 const SETUP_SH = join(REPO_ROOT, 'scripts', 'setup.sh');
 
 let sandbox;
@@ -71,9 +76,51 @@ function runSetup({ home, dataDir }) {
   });
 }
 
+/** setup.sh with `tool` on PATH replaced by a bash wrapper whose first lines are `body`. */
+function runSetupWithWrapper({ home, tool, body }) {
+  const bin = join(sandbox, 'bin');
+  mkdirSync(bin, { recursive: true });
+  const real = spawnSync('bash', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
+  writeFileSync(join(bin, tool), `#!/bin/bash\n${body}\nexec ${real} "$@"\n`, { mode: 0o755 });
+  return spawnSync('bash', [SETUP_SH], {
+    encoding: 'utf8',
+    timeout: 60_000,
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH}`,
+      HOME: home,
+      CLAUDE_PLUGIN_ROOT: makeHealthyRoot(),
+      QWEN_MEM_DIR: '',
+      QWEN_MEM_RUNTIME_DIR: '',
+      MEM_NO_AUTO_ADOPT: '1',
+    },
+  });
+}
+
 function legacyBackups(dir) {
   if (!existsSync(dir)) return [];
   return readdirSync(dir).filter((f) => f.startsWith('qwen-mem-lite.db.legacy-backup-'));
+}
+
+/** The main file of each backup, without its log: `qwen-mem-lite.db.legacy-backup-<s>`. */
+function mainBackups(dir) {
+  return legacyBackups(dir).filter((f) => /^qwen-mem-lite\.db\.legacy-backup-\d+$/.test(f));
+}
+
+/** An original claude-mem store whose 40 rows are only in its -wal, copied while the writer holds them. */
+function plantWalOnlyClaudeMem(home) {
+  const dir = join(home, '.claude-mem');
+  mkdirSync(dir, { recursive: true });
+  const db = new Database(join(sandbox, 'live.db'));
+  db.pragma('journal_mode = WAL');
+  db.pragma('wal_autocheckpoint = 0');
+  db.exec('CREATE TABLE t (x)');
+  db.pragma('wal_checkpoint(TRUNCATE)');
+  const insert = db.prepare('INSERT INTO t VALUES (?)');
+  for (let i = 0; i < 40; i++) insert.run(i);
+  copyFileSync(join(sandbox, 'live.db'), join(dir, 'claude-mem.db'));
+  copyFileSync(join(sandbox, 'live.db-wal'), join(dir, 'claude-mem.db-wal'));
+  db.close();
 }
 
 /** A legacy claude-mem install sitting in the home directory, as a real one would. */
@@ -115,6 +162,204 @@ describe('setup.sh database migrations under QWEN_MEM_DIR', () => {
 
     expect(r.status, `setup.sh stderr: ${r.stderr}`).toBe(0);
     expect(legacyBackups(join(home, '.qwen-mem-lite'))).toHaveLength(0);
+  });
+
+  it('a backup it already made closes the guard while no database exists yet (D#573)', () => {
+    // While every open failed before creating the database (D#569: the unhidden-dir move threw
+    // EXDEV), the "no database yet" guard never closed and each session start added another full
+    // copy of the claude-mem store. The backup is this block's own output, so it closes it too.
+    const home = join(sandbox, 'home');
+    const dataDir = join(home, '.qwen-mem-lite');
+    mkdirSync(dataDir, { recursive: true });
+    plantLegacyClaudeMem(home);
+    writeFileSync(join(dataDir, 'qwen-mem-lite.db.legacy-backup-1700000000'), 'LEGACY-DB-BYTES');
+
+    const r = runSetup({ home, dataDir: undefined });
+
+    expect(r.status, `setup.sh stderr: ${r.stderr}`).toBe(0);
+    expect(legacyBackups(dataDir)).toEqual(['qwen-mem-lite.db.legacy-backup-1700000000']);
+  });
+
+  // A data dir whose path holds glob characters: the guard matched its backups as a pattern, so a
+  // `[1]` in the path never matched its own backup and the copy repeated (v6.30.7 r1 defects P3-2).
+  it('a backup it already made closes the guard under a data dir named with brackets', () => {
+    const home = join(sandbox, 'home');
+    const relocated = join(sandbox, 'data[1]');
+    mkdirSync(home, { recursive: true });
+    mkdirSync(relocated, { recursive: true });
+    plantLegacyClaudeMem(home);
+    writeFileSync(join(relocated, 'qwen-mem-lite.db.legacy-backup-1700000000'), 'LEGACY-DB-BYTES');
+
+    const r = runSetup({ home, dataDir: relocated });
+
+    expect(r.status, `setup.sh stderr: ${r.stderr}`).toBe(0);
+    expect(legacyBackups(relocated)).toEqual(['qwen-mem-lite.db.legacy-backup-1700000000']);
+  });
+
+  // D#584: the copy took the database without its -wal, so the backup lacked the rows only in the
+  // log, and a later install across filesystems skipped its own copy because this one was there.
+  it('the backup takes the log under the name SQLite pairs with it, and reads the rows only in it', () => {
+    const home = join(sandbox, 'home');
+    const dataDir = join(home, '.qwen-mem-lite');
+    plantWalOnlyClaudeMem(home);
+
+    const r = runSetup({ home, dataDir: undefined });
+
+    expect(r.status, `setup.sh stderr: ${r.stderr}`).toBe(0);
+    const [main, ...more] = mainBackups(dataDir);
+    expect(more).toEqual([]);
+    expect(
+      readdirSync(dataDir)
+        .filter((f) => f.includes('legacy-backup'))
+        .sort(),
+    ).toEqual([main, `${main}-wal`]);
+    const db = new Database(join(dataDir, main), { readonly: true });
+    try {
+      expect(db.prepare('SELECT count(*) FROM t').pluck().get()).toBe(40);
+    } finally {
+      db.close();
+    }
+    expect(existsSync(join(home, '.claude-mem', 'claude-mem.db-wal')), 'the source stays').toBe(true);
+  });
+
+  // A copy killed between placing the log and placing the database leaves the log alone; it
+  // starts with the backup's own name.
+  it('a backup log without its database does not close the guard', () => {
+    const home = join(sandbox, 'home');
+    const dataDir = join(home, '.qwen-mem-lite');
+    mkdirSync(dataDir, { recursive: true });
+    plantLegacyClaudeMem(home);
+    writeFileSync(join(dataDir, 'qwen-mem-lite.db.legacy-backup-1700000000-wal'), 'a log alone');
+
+    const r = runSetup({ home, dataDir: undefined });
+
+    expect(r.status, `setup.sh stderr: ${r.stderr}`).toBe(0);
+    expect(mainBackups(dataDir)).toHaveLength(1);
+  });
+
+  // A session start is killed at 30 s, so a private file not written for ten minutes is left by a
+  // copy that is no longer running. install's private files are install's to remove (before a copy
+  // of its own, under its lock). Nine and eleven minutes pin the threshold; a data dir that is a
+  // symlink is swept too (v6.30.8 r2 F-1: find does not follow a starting point that is a link).
+  it.each([['a directory'], ['a symlink to a directory']])(
+    "removes its own private files once ten minutes old, keeps younger ones, and leaves install's, in %s",
+    (kind) => {
+      const home = join(sandbox, 'home');
+      const dataDir = join(home, '.qwen-mem-lite');
+      mkdirSync(home, { recursive: true });
+      if (kind === 'a directory') mkdirSync(dataDir);
+      else {
+        mkdirSync(join(sandbox, 'real-data'));
+        symlinkSync(join(sandbox, 'real-data'), dataDir);
+      }
+      writeFileSync(join(dataDir, 'qwen-mem-lite.db'), 'CURRENT');
+      const old = '.legacy-backup-setup-1234-1600000000';
+      const young = '.legacy-backup-setup-5678-1600000001';
+      const installs = `.legacy-backup-copy-${spawnSync(process.execPath, ['-e', '']).pid}-1600000000000`;
+      const ago = (min) => Date.now() / 1000 - min * 60;
+      for (const [n, min] of [
+        [old, 11],
+        [`${old}-wal`, 11],
+        [young, 9],
+        [installs, 60],
+      ]) {
+        writeFileSync(join(dataDir, n), 'part of a copy');
+        utimesSync(join(dataDir, n), ago(min), ago(min));
+      }
+
+      const r = runSetup({ home, dataDir: undefined });
+
+      expect(r.status, `setup.sh stderr: ${r.stderr}`).toBe(0);
+      expect(
+        readdirSync(dataDir)
+          .filter((f) => f.startsWith('.legacy-backup-'))
+          .sort(),
+      ).toEqual([young, installs].sort());
+    },
+  );
+
+  // v6.30.8 r1 defects F-3: under `set -e`, a private file the sweep could not remove ended the
+  // session-start script before its later steps.
+  it.skipIf(isRoot)('a private file it cannot remove does not stop the session start', () => {
+    const home = join(sandbox, 'home');
+    const dataDir = join(home, '.qwen-mem-lite');
+    mkdirSync(join(dataDir, 'runtime'), { recursive: true });
+    writeFileSync(join(dataDir, 'qwen-mem-lite.db'), 'CURRENT');
+    const hourAgo = Date.now() / 1000 - 3600;
+    const dead = spawnSync(process.execPath, ['-e', '']).pid;
+    for (const n of [`.legacy-backup-setup-${dead}-1600000000`, `.legacy-backup-copy-${dead}-1600000000`]) {
+      writeFileSync(join(dataDir, n), 'part of a copy');
+      utimesSync(join(dataDir, n), hourAgo, hourAgo);
+    }
+    chmodSync(dataDir, 0o555);
+    let r;
+    try {
+      r = runSetup({ home, dataDir: undefined });
+    } finally {
+      chmodSync(dataDir, 0o755);
+    }
+
+    expect(r.status, `setup.sh stderr: ${r.stderr}`).toBe(0);
+  });
+
+  // v6.30.8 r1 defects F-1: whether to place the log was read from whether its private copy existed
+  // at that moment, so a private log copy that went away was not missed, and the database was placed
+  // without it, closing the guard.
+  it('a private log copy that goes away before it is placed: no backup database is placed', () => {
+    const home = join(sandbox, 'home');
+    const dataDir = join(home, '.qwen-mem-lite');
+    plantWalOnlyClaudeMem(home);
+
+    const r = runSetupWithWrapper({
+      home,
+      tool: 'cp',
+      body: 'if [[ "$1" =~ /claude-mem\\.db$ ]]; then rm -f "${@: -1}-wal"; fi',
+    });
+
+    expect(r.status, `setup.sh stderr: ${r.stderr}`).toBe(0);
+    expect(mainBackups(dataDir)).toEqual([]);
+  });
+
+  // A session start killed partway (the hook's 30 s cap) must leave no backup, or the guard closes
+  // on a partial one for good: killed while copying the database, before placing its log, and
+  // between placing the log and placing the database. The next session start copies again while
+  // no database has been created yet (the guard's other condition). Copying straight to the
+  // backup name, or placing the database before its log, leaves a backup it does not redo.
+  it.each([
+    ['while copying the database', 'cp', '"$1"', '/claude-mem\\.db$'],
+    ['before placing the log', 'mv', '"${@: -1}"', '-wal$'],
+    [
+      'between placing the log and the database',
+      'mv',
+      '"${@: -1}"',
+      '/qwen-mem-lite\\.db\\.legacy-backup-[0-9]+$',
+    ],
+  ])('a session start killed %s leaves no backup, and the next one makes it whole', (_l, tool, arg, re) => {
+    const home = join(sandbox, 'home');
+    const dataDir = join(home, '.qwen-mem-lite');
+    plantWalOnlyClaudeMem(home);
+    // The wrapper stands in for the hook runner's kill: it kills the script that called it, a copy
+    // after writing part of the file, a rename before renaming.
+    const partial = tool === 'cp' ? 'head -c 100 "$1" > "${@: -1}"; ' : '';
+    const killed = runSetupWithWrapper({
+      home,
+      tool,
+      body: `if [[ ${arg} =~ ${re} ]]; then ${partial}kill -9 $PPID; exit 1; fi`,
+    });
+    expect(killed.signal, 'premise: the session start was killed').toBe('SIGKILL');
+    expect(mainBackups(dataDir)).toEqual([]);
+
+    const r = runSetup({ home, dataDir: undefined });
+
+    expect(r.status, `setup.sh stderr: ${r.stderr}`).toBe(0);
+    const [main, ...more] = mainBackups(dataDir);
+    expect(more).toEqual([]);
+    const db = new Database(join(dataDir, main), { readonly: true });
+    try {
+      expect(db.prepare('SELECT count(*) FROM t').pluck().get()).toBe(40);
+    } finally {
+      db.close();
+    }
   });
 
   it('writes no legacy backup when the RELOCATED dir already holds a database', () => {

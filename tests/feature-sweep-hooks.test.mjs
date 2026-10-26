@@ -235,6 +235,23 @@ function withDb(fn) {
     }
   }
 }
+/**
+ * Re-attribute a project's rows to a machine writer. The idle GC passes skip explicit saves
+ * (E2E 2026-10-16), and these sweeps seed through `save`, so the GC cases hand their rows to
+ * the population GC exists for: rows a hook or worker wrote.
+ */
+function asMachineWritten(project) {
+  return withDb((db) => {
+    const sid = `hook-sweep-${project}`;
+    db.prepare(
+      `INSERT OR IGNORE INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+       VALUES (?, ?, ?, ?, ?, 'active')`,
+    ).run(sid, sid, project, new Date().toISOString(), Date.now());
+    return db.prepare('UPDATE observations SET memory_session_id = ? WHERE project = ?').run(sid, project)
+      .changes;
+  });
+}
+
 /** Backdate a project's rows so the age-gated workers (compress / maintain) engage. */
 function ageProject(project, days) {
   return withDb((db) => {
@@ -487,9 +504,15 @@ describe('hook feature sweep: hook.mjs foreground events', () => {
       '--lesson',
       'Invalidate the widget cache on write, never on read',
     ]);
-    await cli(
-      ['activity', 'save', '--type', 'lesson', 'Session start sweep event', '--body', 'event body'],
-      cwd,
+    // A recent, unconsumed exit handoff for THIS project: the dashboard's DB-backed,
+    // project-scoped line (its events count, the old probe, left in injection budget C6).
+    withDb((db) =>
+      db
+        .prepare(
+          `INSERT INTO session_handoffs (project, type, session_id, working_on, created_at_epoch)
+           VALUES (?, 'exit', 'cc-earlier-session', 'sweep handoff', ?)`,
+        )
+        .run(project, Date.now() - 60_000),
     );
 
     const r = await hookEvent('session-start', {
@@ -503,11 +526,11 @@ describe('hook feature sweep: hook.mjs foreground events', () => {
       plainAllowed: false,
       label: 'hook.mjs session-start',
     });
-    // The startup dashboard rides the JSON channel and must name the one event seeded above
-    // (a dashboard computed over the wrong project — or over the live DB — says "0 entries"
-    // or nothing at all).
+    // The startup dashboard rides the JSON channel and must point at the handoff seeded above
+    // (a dashboard computed over the wrong project — or over the live DB — has no such line).
     expect(envelopes).toHaveLength(1);
-    expect(envelopes[0].hookSpecificOutput.additionalContext).toContain('mem events: 1 entries');
+    expect(envelopes[0].hookSpecificOutput.additionalContext).toContain('🔄 Continuation available');
+    expect(envelopes[0].hookSpecificOutput.additionalContext).not.toContain('mem events');
     expect(envelopes[0].suppressOutput).toBe(true);
     // …and the context block rides the SAME envelope, carrying the seeded memory.
     // Asserted against additionalContext, not against raw stdout: `stdout` contains
@@ -517,7 +540,7 @@ describe('hook feature sweep: hook.mjs foreground events', () => {
     const ctx = envelopes[0].hookSpecificOutput.additionalContext;
     expect(ctx).toContain('<qwen-mem-context>');
     expect(ctx).toContain('</qwen-mem-context>');
-    expect(ctx).toContain('Session start sweep event');
+    expect(ctx).not.toContain('Session start sweep event');
     expect(ctx).toContain('Fixed the widget cache invalidation race');
     // Nothing may ride outside the envelope on this surface.
     expect(
@@ -1371,6 +1394,22 @@ describe('hook feature sweep: hook.mjs background workers', () => {
     ])
       await cli(['save', text, '--importance', '1', '--project', P], cwd);
     expect(ageProject(P, 90)).toBe(3);
+    // The worker leaves explicit saves alone (E2E 2026-10-16 round 2), so the rows move to a
+    // hook writer's session, whose rows it folds; the session id cascades to the rows.
+    expect(
+      withDb((db) => {
+        db.pragma('foreign_keys = ON');
+        const sid = db
+          .prepare('SELECT memory_session_id AS s FROM observations WHERE project = ? LIMIT 1')
+          .get(P).s;
+        db.prepare(
+          "UPDATE sdk_sessions SET memory_session_id = 'hook-sweep-compress' WHERE memory_session_id = ?",
+        ).run(sid);
+        return db
+          .prepare("SELECT COUNT(*) AS n FROM observations WHERE memory_session_id = 'hook-sweep-compress'")
+          .get().n;
+      }),
+    ).toBe(3);
 
     const r = await hookEvent('auto-compress', { cwd, stdin: '', env: BG, timeout: 60000 });
     expectSilentWorker('hook.mjs auto-compress', r);
@@ -1403,6 +1442,7 @@ describe('hook feature sweep: hook.mjs background workers', () => {
       P,
     ]);
     expect(ageProject(P, 90)).toBe(1);
+    expect(asMachineWritten(P)).toBe(1);
 
     const r = await hookEvent('auto-maintain', { cwd, stdin: '', env: BG, timeout: 60000 });
     expectSilentWorker('hook.mjs auto-maintain', r);

@@ -282,6 +282,58 @@ describe('plugin-cache-guard', () => {
       }
     });
 
+    // v6.28.0 pre-tag review, install P3-6: the gate looked for `.qwen-mem-lite/` in the
+    // serialised hooks, and a Windows settings path carries backslashes, so the SessionStart
+    // self-heal never ran there (install.mjs's own ownership test said true for the same entry).
+    it('sees a Windows install path, and says NO when that path is gone', () => {
+      const home = makeHome();
+      try {
+        writeSettings(
+          home,
+          'node "C:\\Users\\u\\.qwen-mem-lite\\scripts\\hook-launcher.mjs" hook.mjs session-start',
+        );
+        expect(hasInstallManagedHooks({ home })).toBe(true);
+        // No C:\ here: a dead entry, which must not authorise clearing the plugin manifest.
+        expect(hasLiveInstallManagedHooks({ home })).toBe(false);
+        writeSettings(home, 'node "C:\\Users\\u\\qwen-mem-lite\\hook.mjs" stop'); // pre-2.0.0 unhidden dir
+        expect(hasInstallManagedHooks({ home })).toBe(true);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it('takes a backslash-separated install path that exists as live', () => {
+      const home = makeHome();
+      try {
+        // A Windows path cannot exist on this machine; a file whose NAME carries the backslashes
+        // stands in for one, so the separator rule meets an existing path.
+        const launcher = join(home, '.qwen-mem-lite\\scripts\\hook-launcher.mjs');
+        writeFileSync(launcher, '// installed\n');
+        writeSettings(home, `node "${launcher}" hook.mjs session-start`);
+        expect(hasLiveInstallManagedHooks({ home })).toBe(true);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    // Pre-tag review 2026-10-17 P1-1: the rule ran over the SERIALISED hooks, where a quote is
+    // written \", so a user command quoting a path that ends in the plugin name passed the
+    // trailing [/\\] test, no path of it was "ours" to check, and the self-heal emptied a
+    // plugin-only user's manifest.
+    it.each(['cd "/home/u/src/qwen-mem-lite" && npm run lint', 'rsync -a "$HOME/.qwen-mem-lite" /backup/'])(
+      'says NO for a user command quoting a path that ends in the plugin name: %s',
+      (command) => {
+        const home = makeHome();
+        try {
+          writeSettings(home, command);
+          expect(hasInstallManagedHooks({ home })).toBe(false);
+          expect(hasLiveInstallManagedHooks({ home })).toBe(false);
+        } finally {
+          rmSync(home, { recursive: true, force: true });
+        }
+      },
+    );
+
     it('stays false on a plugin-only install (nothing of ours in settings.json)', () => {
       const home = makeHome();
       try {

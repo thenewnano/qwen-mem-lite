@@ -14,6 +14,8 @@ import {
   memOptimizeSchema,
   memRecallSchema,
   memBrowseSchema,
+  memUpdateSchema,
+  memDeferSchema,
 } from '../tool-schemas.mjs';
 
 // Helper: parse object against schema (Zod object from flat dict)
@@ -466,6 +468,25 @@ describe('mem_maintain schema', () => {
       parseSchema(memMaintainSchema, { action: 'execute', operations: ['dedup'], merge_ids: [[1]] }).success,
     ).toBe(false);
   });
+
+  // E2E 2026-10-16 (MCP P2-7): string ids went through parseInt, so "10.9" merged #10 and
+  // "1e1" merged #1 — an unrelated row folded away. Whole-number strings still coerce.
+  it('coerces whole-number string ids and rejects any other string', () => {
+    const ok = parseSchema(memMaintainSchema, {
+      action: 'execute',
+      operations: ['dedup'],
+      merge_ids: [['9', ' 10 ']],
+    });
+    expect(ok.success).toBe(true);
+    expect(ok.data.merge_ids).toEqual([[9, 10]]);
+    for (const bad of ['10.9', '1e1', '7abc']) {
+      expect(
+        parseSchema(memMaintainSchema, { action: 'execute', operations: ['dedup'], merge_ids: [['9', bad]] })
+          .success,
+        bad,
+      ).toBe(false);
+    }
+  });
 });
 
 // ─── memBrowseSchema ─────────────────────────────────────────────────────────
@@ -703,5 +724,146 @@ describe('output format contracts', () => {
   it('error text starts with "Error:"', () => {
     const errorText = 'Error: Invalid date_from: not-a-date';
     expect(errorText.startsWith('Error:')).toBe(true);
+  });
+});
+
+// E2E 2026-10-16 (MCP P2-16): MCP bridges JSON-stringify complex args, and files / ids /
+// fields already tolerated that. supersedes, closes_deferred, operations and tasks rejected the
+// same shapes ("expected array, received string"), so one tool call worked and the next did not.
+describe('array fields accept the serialised shapes their siblings accept', () => {
+  it('supersedes: JSON-array string, single number, comma string', () => {
+    expect(parseSchema(memSaveSchema, { content: 'x', supersedes: '[5]' }).data.supersedes).toEqual([5]);
+    expect(parseSchema(memSaveSchema, { content: 'x', supersedes: 5 }).data.supersedes).toEqual([5]);
+    expect(parseSchema(memSaveSchema, { content: 'x', supersedes: '5, E#7' }).data.supersedes).toEqual([
+      5,
+      'E#7',
+    ]);
+    expect(parseSchema(memSaveSchema, { content: 'x', supersedes: '1.5' }).success).toBe(false);
+  });
+  it('closes_deferred: single number and JSON-array string', () => {
+    expect(parseSchema(memSaveSchema, { content: 'x', closes_deferred: 1 }).data.closes_deferred).toEqual([
+      1,
+    ]);
+    expect(
+      parseSchema(memSaveSchema, { content: 'x', closes_deferred: '["D#4", 2]' }).data.closes_deferred,
+    ).toEqual(['D#4', 2]);
+  });
+  it('operations and tasks: a bare string and a JSON-array string', () => {
+    expect(
+      parseSchema(memMaintainSchema, { action: 'execute', operations: 'decay' }).data.operations,
+    ).toEqual(['decay']);
+    expect(
+      parseSchema(memMaintainSchema, { action: 'execute', operations: '["decay","boost"]' }).data.operations,
+    ).toEqual(['decay', 'boost']);
+    expect(parseSchema(memMaintainSchema, { action: 'execute', operations: 'nope' }).success).toBe(false);
+    expect(parseSchema(memOptimizeSchema, { action: 'run', tasks: 're-enrich' }).data.tasks).toEqual([
+      're-enrich',
+    ]);
+  });
+  // E2E 2026-10-16 round 2 (data R3): the coercion read "" as [], and an empty task list means
+  // EVERY task in optimizeRun, so `tasks: ""` ran all four LLM passes where it was refused.
+  it('an empty or blank string is still refused, not read as an empty list', () => {
+    for (const blank of ['', '  ', ',', ' , ']) {
+      expect(
+        parseSchema(memOptimizeSchema, { action: 'run', tasks: blank }).success,
+        `tasks ${JSON.stringify(blank)}`,
+      ).toBe(false);
+      expect(
+        parseSchema(memMaintainSchema, { action: 'execute', operations: blank }).success,
+        `operations ${JSON.stringify(blank)}`,
+      ).toBe(false);
+      expect(parseSchema(memSaveSchema, { content: 'x', supersedes: blank }).success).toBe(false);
+    }
+  });
+  // Round 3 (data SB-1): a JSON-array string that parses to [] went the JSON branch and came
+  // back [], which for tasks means every task; main refused it.
+  it('a JSON string of an empty array is refused too', () => {
+    for (const empty of ['[]', ' [ ] ']) {
+      expect(parseSchema(memOptimizeSchema, { action: 'run', tasks: empty }).success).toBe(false);
+      expect(
+        parseSchema(memMaintainSchema, { action: 'execute', operations: ['dedup'], merge_ids: empty })
+          .success,
+      ).toBe(false);
+    }
+  });
+  // Round 4 (data R-1): the refusal read "expected array, received string", which names the wrong
+  // problem — the caller sent the JSON-array shape the field takes, only empty.
+  it('an empty list string is refused as empty, not as the wrong type', () => {
+    const msg = (schema, args) =>
+      parseSchema(schema, args)
+        .error.issues.map((i) => i.message)
+        .join(' | ');
+    for (const empty of ['[]', ' [ ] ', '']) {
+      expect(msg(memMaintainSchema, { action: 'execute', operations: empty })).toMatch(
+        /operations array is empty/,
+      );
+      expect(msg(memOptimizeSchema, { action: 'run', tasks: empty })).toMatch(/must not be empty/);
+      expect(msg(memMaintainSchema, { action: 'execute', merge_ids: empty })).toMatch(/must not be empty/);
+      expect(msg(memDeleteSchema, { ids: empty, confirm: true })).toMatch(/must not be empty/);
+      expect(msg(memSaveSchema, { content: 'x', supersedes: empty })).toMatch(/must not be empty/);
+      expect(msg(memSaveSchema, { content: 'x', closes_deferred: empty })).toMatch(/must not be empty/);
+    }
+    // A string of the wrong kind keeps the type error.
+    expect(msg(memOptimizeSchema, { action: 'run', tasks: 7 })).toMatch(/invalid|expected/i);
+    expect(msg(memOptimizeSchema, { action: 'run', tasks: 7 })).not.toMatch(/must not be empty/);
+  });
+  // Pre-tag review 2026-10-16 P3-9: mem_delete's ids is required, and its empty-list refusal
+  // advised "or omit the field" — which is the required-field error.
+  it("mem_delete's empty-list refusal does not advise omitting the required ids", () => {
+    const msg = (args) =>
+      parseSchema(memDeleteSchema, args)
+        .error.issues.map((i) => i.message)
+        .join(' | ');
+    for (const empty of ['[]', ' [ ] ', '']) {
+      expect(msg({ ids: empty, confirm: true })).toMatch(/must not be empty/);
+      expect(msg({ ids: empty, confirm: true })).not.toMatch(/omit/);
+    }
+    // The optional lists keep the omit advice.
+    expect(
+      parseSchema(memSaveSchema, { content: 'x', supersedes: '[]' })
+        .error.issues.map((i) => i.message)
+        .join(' | '),
+    ).toMatch(/or omit the field/);
+  });
+  // Round 3 (data NEW-4): mem_delete took digits only, the one id-list argument without #N or a
+  // JSON-array string.
+  it('mem_delete ids: #N and a JSON-array string', () => {
+    expect(parseSchema(memDeleteSchema, { ids: ['#2'], confirm: true }).data.ids).toEqual([2]);
+    expect(parseSchema(memDeleteSchema, { ids: '#2', confirm: true }).data.ids).toEqual([2]);
+    expect(parseSchema(memDeleteSchema, { ids: '[2,"#3"]', confirm: true }).data.ids).toEqual([2, 3]);
+    expect(parseSchema(memDeleteSchema, { ids: ['1.5'], confirm: true }).success).toBe(false);
+    expect(parseSchema(memDeleteSchema, { ids: '', confirm: true }).success).toBe(false);
+  });
+  // Round 3 (data SB-3): `trim() !== ''` let a zero-width title through.
+  it('mem_update and mem_defer refuse an invisible title', () => {
+    // Round 4 (data S-1): the first list was hand-drawn; bidi controls, the Hangul filler,
+    // variation selectors and tag characters still passed.
+    for (const t of ['\u200b', '\u00ad', ' \ufeff ', '\u202e', '\u2066', '\u3164', '\ufe0f', '\u{E0041}']) {
+      expect(parseSchema(memUpdateSchema, { id: 1, title: t }).success, JSON.stringify(t)).toBe(false);
+      expect(parseSchema(memDeferSchema, { title: t }).success, JSON.stringify(t)).toBe(false);
+    }
+    expect(parseSchema(memDeferSchema, { title: 'real' }).success).toBe(true);
+  });
+  // Round 2 (data S5): merge_ids was the one array argument left out.
+  it('merge_ids: a JSON-array string', () => {
+    const r = parseSchema(memMaintainSchema, {
+      action: 'execute',
+      operations: ['dedup'],
+      merge_ids: '[[3,"4"]]',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data.merge_ids).toEqual([[3, 4]]);
+    expect(
+      parseSchema(memMaintainSchema, { action: 'execute', operations: ['dedup'], merge_ids: '[[3]]' })
+        .success,
+    ).toBe(false);
+  });
+  // Round 2 (data N3): the id form every listing prints.
+  it('supersedes: #N is an observation id', () => {
+    expect(parseSchema(memSaveSchema, { content: 'x', supersedes: ['#5', 'E#7'] }).data.supersedes).toEqual([
+      5,
+      'E#7',
+    ]);
+    expect(parseSchema(memSaveSchema, { content: 'x', supersedes: '#5' }).data.supersedes).toEqual([5]);
   });
 });

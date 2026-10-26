@@ -1,3 +1,4 @@
+| 2026-10-26 | `faa0d33e`..`25e21f26` (506 commits, v6.26.0-v6.30.8) | 1+2+3 | merged to branch, ready for review | [2026-10-26-v6.30.8-sync.md](2026-10-26-v6.30.8-sync.md) |
 # Upstream port ledger
 
 One committed record per pull from `sdsrss/claude-mem-lite` (upstream) into this

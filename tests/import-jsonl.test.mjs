@@ -7,6 +7,7 @@ import { tmpdir } from 'os';
 import { createTestDb } from './test-helpers.mjs';
 import { importJsonl, MAX_IMPORT_BYTES } from '../lib/import-jsonl.mjs';
 import { recallByFile } from '../lib/recall-core.mjs';
+import { CLI_INVOKE } from '../cli-path.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(__dirname, 'fixtures/sample-claude-jsonl/sample.jsonl');
@@ -42,6 +43,53 @@ describe('importJsonl — fixture', () => {
     await importJsonl(db, FIXTURE, { project: 'proj' });
     const cnt = db.prepare('SELECT COUNT(*) AS n FROM observations').get();
     expect(cnt.n).toBe(2);
+  });
+
+  // E2E 2026-10-16 (cli F9): a line without `timestamp` was stored with the import's wall clock,
+  // which is part of both dedup keys, so every re-run duplicated its prompts and observations.
+  it('stays idempotent for lines without a timestamp, and keeps a repeated prompt', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'import-nots-'));
+    try {
+      const file = join(dir, 'nots.jsonl');
+      const lines = [
+        {
+          type: 'user',
+          sessionId: 's-no-ts',
+          message: { role: 'user', content: 'how do I rotate the signing key?' },
+        },
+        {
+          type: 'assistant',
+          sessionId: 's-no-ts',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls keys/' } }],
+          },
+        },
+        {
+          type: 'user',
+          sessionId: 's-no-ts',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 't1', content: 'a.pem b.pem' }],
+          },
+        },
+        { type: 'user', sessionId: 's-no-ts', message: { role: 'user', content: 'yes' } },
+        { type: 'user', sessionId: 's-no-ts', message: { role: 'user', content: 'yes' } },
+      ];
+      writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+      const first = await importJsonl(db, file, { project: 'proj' });
+      expect(first.prompts).toBe(3);
+      expect(first.observations).toBe(1);
+      for (let i = 0; i < 2; i++) {
+        const again = await importJsonl(db, file, { project: 'proj' });
+        expect(again.prompts, `run ${i + 2}`).toBe(0);
+        expect(again.observations, `run ${i + 2}`).toBe(0);
+      }
+      expect(db.prepare('SELECT COUNT(*) AS n FROM user_prompts').get().n).toBe(3);
+      expect(db.prepare('SELECT COUNT(*) AS n FROM observations').get().n).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   // recognized > 0 on a valid transcript even when fully deduped — this is the
@@ -260,7 +308,7 @@ describe('import-jsonl — the CLI summary reports what was written', () => {
     expect(out).toMatch(/\+1 observations \(1 from unpaired tool_use\)/);
     expect(out).not.toMatch(/\+0 observations/);
     // The "something landed, go look" hint must fire — an orphan-only import is not a no-op.
-    expect(out).toMatch(/Try: qwen-mem-lite recent/);
+    expect(out).toContain(`Try: ${CLI_INVOKE} recent`);
     expect(out).not.toMatch(/Nothing new/);
   });
 
@@ -277,7 +325,7 @@ describe('import-jsonl — the CLI summary reports what was written', () => {
     );
     const out = execFileSync(process.execPath, [CLI, 'import-jsonl', file], { env, encoding: 'utf8' });
     expect(out).toMatch(/0 prompts, 1 observations \(1 from unpaired tool_use\)/);
-    expect(out).toMatch(/Try: qwen-mem-lite recent/);
+    expect(out).toContain(`Try: ${CLI_INVOKE} recent`);
     expect(out).not.toMatch(/Nothing new/);
   });
 
@@ -290,7 +338,7 @@ describe('import-jsonl — the CLI summary reports what was written', () => {
     execFileSync(process.execPath, [CLI, 'import-jsonl', file], { env, encoding: 'utf8' });
     const second = execFileSync(process.execPath, [CLI, 'import-jsonl', file], { env, encoding: 'utf8' });
     expect(second).toMatch(/Nothing new/);
-    expect(second).not.toMatch(/Try: qwen-mem-lite recent/);
+    expect(second).not.toContain(`Try: ${CLI_INVOKE} recent`);
   });
 });
 
@@ -467,5 +515,59 @@ describe('importJsonl — file edges reach the recall path', () => {
     const second = await importJsonl(db, join(dir, 'fe.jsonl'), { project: 'proj' });
     expect(second.observations, 'a widened title on only one site would re-import forever').toBe(0);
     expect(db.prepare('SELECT COUNT(*) AS n FROM observations').get().n).toBe(2);
+  });
+});
+
+// E2E 2026-10-16 (cli F2): `.slice(0, 4000)` bound only to the array branch of the tool-result
+// ternary, so a STRING tool_result (what Bash and Read return in real transcripts) was stored
+// whole, twice (narrative and text): a 200 000-char Read became a ~100 000-token row.
+describe('importJsonl — tool output is capped whatever its shape', () => {
+  it('a string tool_result is capped like an array one', async () => {
+    const db = createTestDb();
+    const dir = mkdtempSync(join(tmpdir(), 'mem-import-cap-'));
+    try {
+      const sid = '22222222-3333-4444-5555-666666666666';
+      const big = 'x'.repeat(200000);
+      const lines = [
+        {
+          type: 'assistant',
+          sessionId: sid,
+          timestamp: '2026-10-10T08:00:05.000Z',
+          message: {
+            role: 'assistant',
+            content: [
+              { type: 'tool_use', id: 's1', name: 'Read', input: { file_path: '/repo/a.ts' } },
+              { type: 'tool_use', id: 'a1', name: 'Read', input: { file_path: '/repo/b.ts' } },
+            ],
+          },
+        },
+        {
+          type: 'user',
+          sessionId: sid,
+          timestamp: '2026-10-10T08:00:06.000Z',
+          message: {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: 's1', content: big },
+              { type: 'tool_result', tool_use_id: 'a1', content: [{ type: 'text', text: big }] },
+            ],
+          },
+        },
+      ];
+      const f = join(dir, 'cap.jsonl');
+      writeFileSync(f, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+      await importJsonl(db, f, { project: 'proj' });
+      const rows = db
+        .prepare('SELECT title, length(narrative) AS n, length(text) AS t FROM observations')
+        .all();
+      expect(rows).toHaveLength(2);
+      for (const r of rows) {
+        expect(r.n, r.title).toBeLessThan(5000);
+        expect(r.t, r.title).toBeLessThan(5000);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      db.close();
+    }
   });
 });

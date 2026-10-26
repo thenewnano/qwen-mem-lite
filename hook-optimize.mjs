@@ -14,11 +14,12 @@ import {
   debugCatch,
   COMPRESSED_AUTO,
   NOT_COMPRESSION_KEEPER_SQL,
+  NOT_EXPLICIT_SAVE_SQL,
   computeMinHash,
   estimateJaccardFromMinHash,
   jaccardSimilarity,
   clampImportance,
-  cjkBigrams,
+  cjkIndexTerms,
   notLowSignalTitleClause,
   scrubSecrets,
   getCurrentBranch,
@@ -33,7 +34,8 @@ import { normalizeScope, SCOPE_PROMPT_LEGEND, insertObservationRow } from './lib
 import { liveObsFilterSql } from './lib/inject-search-core.mjs';
 import { resolveRuntimeDir } from './lib/resolve-data-dir.mjs';
 import { MEMORY_INPUT_GUARD } from './lib/memory-input-guard.mjs';
-import { MANUAL_SESSION_ID_PREFIX, writerSessionId } from './lib/provenance.mjs';
+import { MANUAL_SESSION_ID_PREFIX, markAutoLesson, writerSessionId } from './lib/provenance.mjs';
+import { ENRICH_OBLIGATED_TYPES } from './lib/save-enrich.mjs';
 
 import { DAY_MS } from './lib/time-constants.mjs';
 // P1-14: same resolver as hook-shared.mjs — this was the second module that had never
@@ -325,15 +327,18 @@ scope: ${SCOPE_PROMPT_LEGEND}`;
         // concepts/facts (empty on manual saves → would drop the original
         // narrative terms and regress recall) and never touch the user's curated
         // title / narrative / lesson / type / importance.
-        const aliasPrompt = `Generate alternative search terms so this memory is findable by paraphrase, synonym, or cross-language queries. Return ONLY valid JSON, no markdown fences.
-
-Title: ${truncate(cand.title || '(untitled)', 200)}
-Narrative: ${truncate(cand.narrative || '(no narrative)', 500)}
+        // Instructions and the guard in `system`, the stored row in `user` (D#375, as D367 did
+        // for the general prompt): the aliases are appended to the FTS text, so a narrative
+        // that names its own search terms would otherwise choose what the row is found by.
+        const system = `Generate alternative search terms so this memory is findable by paraphrase, synonym, or cross-language queries. Return ONLY valid JSON, no markdown fences.
 
 JSON: {"search_aliases":["alt phrasing","synonym","spelled-out jargon","CJK term if the domain word has one"],"scope":"file|module|project|environment"}
 Give 3-6 aliases: words a user might search for the SAME concept but that are NOT already in the title (synonyms, the spelled-out form of an acronym, the jargon term for a described symptom, a CJK translation of a key domain term).
-scope: ${SCOPE_PROMPT_LEGEND}`;
-        const parsed = await callModelJSONAsync(aliasPrompt, 'haiku', {
+scope: ${SCOPE_PROMPT_LEGEND}
+${MEMORY_INPUT_GUARD}`;
+        const user = `Title: ${truncate(cand.title || '(untitled)', 200)}
+Narrative: ${truncate(cand.narrative || '(no narrative)', 500)}`;
+        const parsed = await callModelJSONAsync({ system, user }, 'haiku', {
           timeout: BG_LLM_TIMEOUT_MS,
           maxTokens: 300,
         });
@@ -346,7 +351,7 @@ scope: ${SCOPE_PROMPT_LEGEND}`;
           continue;
         }
         const searchAliases = aliasArr.slice(0, 6).join(' ');
-        const aliasBigrams = cjkBigrams(searchAliases);
+        const aliasBigrams = cjkIndexTerms(searchAliases);
         const appendedText = [cand.text || '', searchAliases, aliasBigrams].filter(Boolean).join(' ');
         const safe = scrubRecord('observations', { text: appendedText, search_aliases: searchAliases });
         // scope rides this call for free (D#135 P3). COALESCE, not a plain set:
@@ -392,15 +397,17 @@ scope: ${SCOPE_PROMPT_LEGEND}`;
         // regresses recall. Never touches the user's curated title / narrative / lesson /
         // type / importance, and never stamps optimized_at, so the wide pass keeps its
         // own candidates exactly as the alias and scopes passes leave them.
-        const conceptsPrompt = `Extract search concepts and concrete facts from this coding memory. Return ONLY valid JSON, no markdown fences.
-
-Title: ${truncate(cand.title || '(untitled)', 200)}
-Narrative: ${truncate(cand.narrative || '(no narrative)', 500)}
+        // Instructions and the guard in `system`, the stored row in `user` (D#375; the alias
+        // branch above says why — concepts and facts are appended to the FTS text too).
+        const system = `Extract search concepts and concrete facts from this coding memory. Return ONLY valid JSON, no markdown fences.
 
 JSON: {"concepts":["kw1","kw2"],"facts":["specific fact 1","specific fact 2"]}
 concepts: 3-8 short keyword phrases naming what this memory is ABOUT (systems, components, error classes, techniques).
-facts: 1-4 specific, checkable statements the narrative actually asserts. Omit rather than invent.`;
-        const parsed = await callModelJSONAsync(conceptsPrompt, 'haiku', {
+facts: 1-4 specific, checkable statements the narrative actually asserts. Omit rather than invent.
+${MEMORY_INPUT_GUARD}`;
+        const user = `Title: ${truncate(cand.title || '(untitled)', 200)}
+Narrative: ${truncate(cand.narrative || '(no narrative)', 500)}`;
+        const parsed = await callModelJSONAsync({ system, user }, 'haiku', {
           timeout: BG_LLM_TIMEOUT_MS,
           maxTokens: 300,
         });
@@ -425,7 +432,7 @@ facts: 1-4 specific, checkable statements the narrative actually asserts. Omit r
           cand.text || '',
           conceptsOnly,
           factsOnly,
-          cjkBigrams(`${conceptsOnly} ${factsOnly}`),
+          cjkIndexTerms(`${conceptsOnly} ${factsOnly}`),
         ]
           .filter(Boolean)
           .join(' ');
@@ -455,19 +462,21 @@ facts: 1-4 specific, checkable statements the narrative actually asserts. Omit r
         processed++;
         continue;
       }
-      const prompt = `Re-enrich this observation with structured metadata. Return ONLY valid JSON, no markdown fences.
-
-Title: ${truncate(cand.title || '(untitled)', 200)}
-Narrative: ${truncate(cand.narrative || '(no narrative)', 500)}
-Type: ${cand.type || 'change'}
+      // Narrow and wide share this prompt. Instructions and the guard in `system`, the stored
+      // row in `user` (D367; the cluster-merge prompt says why).
+      const system = `Re-enrich this observation with structured metadata. Return ONLY valid JSON, no markdown fences.
 
 JSON: {"type":"decision|bugfix|feature|refactor|discovery|change","title":"improved ≤120 char title","narrative":"improved 2-3 sentence narrative","concepts":["kw1","kw2"],"facts":["specific fact 1","specific fact 2"],"importance":1,"lesson_learned":"non-obvious insight or 'none' if routine","search_aliases":["alt query 1","alt query 2"],"scope":"file|module|project|environment"}
 importance: 0=no value, 1=routine, 2=notable non-obvious insight, 3=critical. Default 1.
 lesson_learned: State what was learned. If routine, write "none".
 search_aliases: 2-6 alternative search terms (include CJK if applicable).
-scope: ${SCOPE_PROMPT_LEGEND}`;
+scope: ${SCOPE_PROMPT_LEGEND}
+${MEMORY_INPUT_GUARD}`;
+      const user = `Title: ${truncate(cand.title || '(untitled)', 200)}
+Narrative: ${truncate(cand.narrative || '(no narrative)', 500)}
+Type: ${cand.type || 'change'}`;
 
-      const parsed = await callModelJSONAsync(prompt, 'haiku', {
+      const parsed = await callModelJSONAsync({ system, user }, 'haiku', {
         timeout: BG_LLM_TIMEOUT_MS,
         maxTokens: 500,
       });
@@ -494,8 +503,15 @@ scope: ${SCOPE_PROMPT_LEGEND}`;
       const humanSet =
         (db.prepare('SELECT importance_set_at FROM observations WHERE id = ?').get(cand.id)
           ?.importance_set_at ?? null) !== null;
+      // An explicit save is a person's text too: narrow neither hides it on a model's 0 nor
+      // replaces its title and narrative (keepStoredText below). Its save-time enrich failing is
+      // what put it in this pool, and the rewrite had no snapshot (E2E 2026-10-16).
+      const manualSave = !!db
+        .prepare('SELECT memory_session_id FROM observations WHERE id = ?')
+        .get(cand.id)
+        ?.memory_session_id?.startsWith(MANUAL_SESSION_ID_PREFIX);
       const scoredZero = parsed.importance === 0 || parsed.importance === '0';
-      if (scoredZero && scope !== 'wide' && !isKeeper && !humanSet) {
+      if (scoredZero && scope !== 'wide' && !isKeeper && !humanSet && !manualSave) {
         // D#12, and this one is not a stale-write guard — it is a POINTER guard.
         // `compressed_into` is the child -> keeper link, and COMPRESSED_AUTO is -1. If a
         // concurrent cluster-merge or smart-compress adopts this row during the 45 s Haiku
@@ -548,6 +564,11 @@ scope: ${SCOPE_PROMPT_LEGEND}`;
       // 'change' (lower TYPE_QUALITY + faster decay); keep the stored type on that downgrade.
       let type = validTypes.has(parsed.type) ? parsed.type : cand.type || 'change';
       if (type === 'change' && cand.type && cand.type !== 'change') type = cand.type;
+      // An explicit save gets what its failed save-time enrichment would have written and no
+      // more (lib/save-enrich.mjs): its own type and importance, a lesson only for a type that
+      // obligates one (in narrow; wide backfills lessons by design), and the side fields. A discovery at importance 1 came back a decision at
+      // importance 3 with a lesson the person never wrote, under their name (E2E round 2).
+      if (manualSave && cand.type) type = cand.type;
       const concepts = Array.isArray(parsed.concepts) ? parsed.concepts.slice(0, 10) : [];
       const facts = Array.isArray(parsed.facts) ? parsed.facts.slice(0, 10) : [];
       // Preserve-on-empty: wide-scope candidates can already carry concepts/facts/aliases
@@ -561,12 +582,18 @@ scope: ${SCOPE_PROMPT_LEGEND}`;
       // Scrub BEFORE truncate so a secret straddling the cut can't leave a sub-6-char
       // head that scrubSecrets's value-length floor no longer matches (the scrubRecord
       // below would then miss it too). Mirrors the hook-llm save-path fix.
-      const lessonLearned =
+      let lessonLearned =
+        // Wide is the lesson backfill for substantive rows, explicit saves included; narrow
+        // retries a failed save-time enrichment, which writes a lesson for these types only (E2E
+        // 2026-10-16 round 3: applied to wide too, explicit feature/refactor saves lost it).
+        (!manualSave || scope === 'wide' || ENRICH_OBLIGATED_TYPES.has(type)) &&
         typeof parsed.lesson_learned === 'string' &&
         parsed.lesson_learned.toLowerCase() !== 'none' &&
         parsed.lesson_learned.trim().length > 0
           ? scrubSecrets(parsed.lesson_learned).slice(0, 500)
           : null;
+      // On an explicit save the lesson says that a model wrote it (D#380, lib/provenance.mjs).
+      if (manualSave) lessonLearned = markAutoLesson(lessonLearned);
       const searchAliases =
         Array.isArray(parsed.search_aliases) && parsed.search_aliases.length
           ? parsed.search_aliases.slice(0, 6).join(' ')
@@ -584,7 +611,7 @@ scope: ${SCOPE_PROMPT_LEGEND}`;
       // fallback — truncating the row's own stored narrative to buy nothing was the same
       // bug in miniature.
       const isWide = scope === 'wide';
-      const keepStoredText = isWide;
+      const keepStoredText = isWide || manualSave;
       const title = keepStoredText ? cand.title : truncate(scrubSecrets(parsed.title || ''), 120);
       const narrative = keepStoredText
         ? cand.narrative
@@ -593,13 +620,20 @@ scope: ${SCOPE_PROMPT_LEGEND}`;
           : cand.narrative || '';
       // Floor at the stored importance: re-enrich adds a lesson, it must never silently downgrade
       // a user-set/promoted importance (the UPDATE also sets optimized_at → the loss is permanent).
-      // Upgrades are still honored — except over an importance a person set (D10), which stays.
+      // Upgrades are still honored, up to 2 — except over an importance a person set (D10), which
+      // stays. Never to 3 (D#376): stored text can talk the model into it (2/12 replies to a hostile
+      // row before MEMORY_INPUT_GUARD), 3 is Key Context's top tier, and benign rows never got it
+      // (0/40 replies; their raises were all to 2). A stored 3 survives through the floor.
       // Decided in the UPDATE itself, on the row as it is then: the candidate's importance was read
       // before the model call, and writing it back undid a person's change made during the call
       // (D#206).
-      const modelImportance = clampImportance(parsed.importance);
+      // 0 keeps the stored value in the MAX below (an explicit save's own, see `type` above).
+      const modelImportance = manualSave ? 0 : Math.min(clampImportance(parsed.importance), 2);
 
-      const bigramText = cjkBigrams((title || '') + ' ' + (narrative || ''));
+      // The side fields' CJK too (D#374; hook-llm buildFtsTextField says why).
+      const bigramText = cjkIndexTerms(
+        [title, narrative, conceptsText, factsText, lessonLearned, searchAliases].filter(Boolean).join(' '),
+      );
       const textField = [conceptsText, factsText, searchAliases || '', bigramText].filter(Boolean).join(' ');
       const minhashSig = computeMinHash((title || '') + ' ' + (narrative || ''));
 
@@ -628,27 +662,10 @@ scope: ${SCOPE_PROMPT_LEGEND}`;
       // (tests/verify-reenrich-race.test.mjs). It also stops two overlapping runs rewriting a
       // row twice.
       //
-      // Narrow replaces title and narrative with model text, so an explicit save it rewrites (one
-      // whose save-time enrich failed) moves to the re-enrich writer's id, as a cluster-merge
-      // keeper does (D#146, D#138). Wide keeps the stored title and narrative (it fills the lesson
-      // and the side fields), so the row stays an explicit save; a narrow 0 reply never gets here.
-      // The writer's session row is best-effort.
-      let rewriteSessionId = null;
-      if (!keepStoredText) {
-        const cur = db.prepare('SELECT memory_session_id FROM observations WHERE id = ?').get(cand.id);
-        if (cur?.memory_session_id?.startsWith(MANUAL_SESSION_ID_PREFIX)) {
-          const enrichSessionId = writerSessionId('enrich-', cand.project);
-          try {
-            db.prepare(
-              `INSERT OR IGNORE INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
-               VALUES (?, ?, ?, ?, ?, 'active')`,
-            ).run(enrichSessionId, enrichSessionId, cand.project, new Date().toISOString(), Date.now());
-            rewriteSessionId = enrichSessionId;
-          } catch (e) {
-            debugCatch(e, 'reenrich writer session');
-          }
-        }
-      }
+      // An explicit save keeps its own title and narrative here (keepStoredText), so it stays the
+      // person's save; only machine-written rows get model text, and they are already attributed to
+      // a machine writer. (Before E2E 2026-10-16 narrow rewrote explicit saves and moved them to the
+      // re-enrich writer's id, D#146.)
       const res = db
         .prepare(
           `
@@ -657,7 +674,7 @@ scope: ${SCOPE_PROMPT_LEGEND}`;
           importance = CASE WHEN importance_set_at IS NOT NULL THEN importance
                             ELSE MAX(?, COALESCE(NULLIF(importance, 0), 1)) END,
           lesson_learned=?, search_aliases=?, minhash_sig=?, optimized_at=?,
-          scope=COALESCE(?, scope), memory_session_id = COALESCE(?, memory_session_id)
+          scope=COALESCE(?, scope)
         WHERE id = ? AND ${liveObsFilterSql('')} AND optimized_at IS NULL
       `,
         )
@@ -677,7 +694,6 @@ scope: ${SCOPE_PROMPT_LEGEND}`;
           // scope, or emits an off-enum value, must never blank an existing label —
           // and THIS update stamps optimized_at, so the loss would be permanent.
           normalizeScope(parsed.scope),
-          rewriteSessionId,
           cand.id,
         );
       if (res.changes === 0) {
@@ -1234,6 +1250,17 @@ export function findMergeCandidates(db, maxClusters = 5, { project } = {}) {
 export async function executeMergeCluster(db, cluster) {
   if (cluster.length < 2) return { merged: false };
 
+  // The members' own lessons become the keeper's, joined (below). When they do not fit in one
+  // lesson together, the cut fell mid-word on the last member's specifics, and the member it
+  // came from is hidden by the merge (E2E 2026-10-16 round 2). Rows holding that much distinct
+  // lesson text are not duplicates; leave them, and ask the model nothing.
+  const memberLessons = [
+    ...new Set(
+      cluster.map((o) => (o.lesson_learned || '').trim()).filter((l) => l && l.toLowerCase() !== 'none'),
+    ),
+  ];
+  if (scrubSecrets(memberLessons.join(' — ')).length > 500) return { merged: false };
+
   const gotSlot = await acquireLLMSlot();
   if (!gotSlot) return { merged: false };
 
@@ -1245,20 +1272,26 @@ export async function executeMergeCluster(db, cluster) {
       )
       .join('\n');
 
-    const prompt = `These observations from a code memory database may be about the same topic. Should they be merged into a single observation?
-
-Observations:
-${obsDescriptions}
+    // Instructions and the guard in `system`, the stored rows in `user` (D367, E2E 2026-10-16
+    // P1-3): a member's narrative can quote a README or tool output that addresses "AI
+    // assistants", and as one string it sat inside the instructions. Same split as
+    // identifySynonymGroups and hook-llm's episode / summary prompts; the CLI leg renders it
+    // with a per-call boundary marker (haiku-client.mjs flattenForCLI).
+    const system = `These observations from a code memory database may be about the same topic. Should they be merged into a single observation?
 
 Return ONLY valid JSON:
 - If they should NOT be merged: {"should_merge":false}
-- If they SHOULD be merged: {"should_merge":true,"merged_title":"≤120 char comprehensive title","merged_narrative":"comprehensive ≤800 char summary preserving all key details","merged_concepts":["kw1","kw2"],"merged_facts":["specific fact 1"],"merged_lesson":"synthesized non-obvious lesson or null","importance":2}`;
+- If they SHOULD be merged: {"should_merge":true,"merged_title":"≤120 char comprehensive title","merged_narrative":"comprehensive ≤800 char summary preserving all key details","merged_concepts":["kw1","kw2"],"merged_facts":["specific fact 1"],"merged_lesson":"synthesized non-obvious lesson or null","importance":2}
+${MEMORY_INPUT_GUARD}`;
+    const user = `Observations:
+${obsDescriptions}`;
 
-    const parsed = await callModelJSONAsync(prompt, 'sonnet', {
+    const parsed = await callModelJSONAsync({ system, user }, 'sonnet', {
       timeout: BG_LLM_TIMEOUT_MS,
       maxTokens: 1000,
     });
-    if (!parsed || !parsed.should_merge) return { merged: false };
+    // Only the boolean true consents: the string "false" is truthy (round-2 pre-tag review).
+    if (parsed?.should_merge !== true) return { merged: false };
 
     // Keeper = highest importance, then highest access_count, then highest id. Previously
     // access_count alone, so a critical (importance=3) but never-accessed observation lost
@@ -1308,28 +1341,37 @@ Return ONLY valid JSON:
     // which recoverBuriedLessons (compressed_into=0 only) skips. So use the LLM's synthesized
     // lesson when non-empty, else fall back to the union of the members' own non-empty lessons.
     // findMergeCandidates filters superseded_at IS NULL, so the union pulls only LIVE members
-    // (a tombstoned/retired lesson can't resurrect onto the keeper). The union is scrubbed then
-    // capped at 500 chars like a single lesson, so an unusually long union may truncate trailing
-    // members — still strictly better than the prior unconditional null (partial > total loss).
-    let lessonLearned =
-      typeof parsed.merged_lesson === 'string' && parsed.merged_lesson.trim().length > 0
-        ? scrubSecrets(parsed.merged_lesson).slice(0, 500)
-        : null;
-    if (!lessonLearned) {
-      const memberLessons = [
-        ...new Set(
-          cluster.map((o) => (o.lesson_learned || '').trim()).filter((l) => l && l.toLowerCase() !== 'none'),
-        ),
-      ];
-      if (memberLessons.length) lessonLearned = scrubSecrets(memberLessons.join(' — ')).slice(0, 500);
+    // (a tombstoned/retired lesson can't resurrect onto the keeper). The union is scrubbed, and
+    // fits in 500 chars like a single lesson: a cluster whose union would not is never merged
+    // (checked before the model call, at the top).
+    //
+    // Members' own lessons WIN over the model's (E2E 2026-10-16). The prompt above shows the
+    // model titles and narratives only, so its merged_lesson is written without the lessons it
+    // replaced: two importance-3 explicit saves lost "clockTolerance: 300" and "token_version"
+    // to one generic sentence in the unattended daily pass. The model's lesson fills a cluster
+    // whose members have none.
+    let lessonLearned = memberLessons.length ? scrubSecrets(memberLessons.join(' — ')) : null;
+    if (
+      !lessonLearned &&
+      typeof parsed.merged_lesson === 'string' &&
+      parsed.merged_lesson.trim().length > 0
+    ) {
+      lessonLearned = scrubSecrets(parsed.merged_lesson).slice(0, 500);
     }
 
-    const bigramText = cjkBigrams((title || '') + ' ' + (narrative || ''));
+    // The side fields' CJK too (D#374; hook-llm buildFtsTextField says why).
+    const bigramText = cjkIndexTerms(
+      [title, narrative, conceptsText, factsText, lessonLearned].filter(Boolean).join(' '),
+    );
     const textField = [conceptsText, factsText, bigramText].filter(Boolean).join(' ');
     const minhashSig = computeMinHash((title || '') + ' ' + (narrative || ''));
     // An importance a person set on the keeper stays (D10); the UPDATE decides that on the row as
     // it is then, since a person can set it while this call waits on the model (D#198).
-    const importance = Math.max(clampImportance(parsed.importance || 2), maxClusterImportance);
+    //
+    // The cluster max, never the model's number: max(model, cluster max) let stored text that
+    // talked the model into "importance": 3 turn two importance-1 rows into a critical Key
+    // Context row (E2E 2026-10-16). A merge combines rows; it has no new evidence of importance.
+    const importance = maxClusterImportance;
 
     // Scrub LLM-output cluster-merge text fields at the UPDATE boundary.
     // importance is numeric; minhash_sig is hash bytes.
@@ -1341,104 +1383,106 @@ Return ONLY valid JSON:
       text: textField,
       lesson_learned: lessonLearned,
     });
-    const mergeApplied = db.transaction(() => {
-      // Re-check the keeper's liveness INSIDE the transaction (audit 2026-09-02 P0-3).
-      // findMergeCandidates selected live rows, but a Sonnet round-trip sits between that
-      // SELECT and this write (:617, BG_LLM_TIMEOUT_MS), and a concurrent SessionStart
-      // auto-dedup or `save --supersedes` can tombstone the keeper in that window. Pointing
-      // the other members at a tombstoned keeper is precisely the "buried behind a hidden
-      // parent" loss that mergeDuplicates' docblock enumerates (lib/maintain-core.mjs), and
-      // it is what that function's own isLive gate exists to prevent. Same predicate here.
-      const keeperLive = db
-        .prepare(`SELECT 1 FROM observations WHERE id = ? AND ${liveObsFilterSql('')}`)
-        .get(keeper.id);
-      if (!keeperLive) return false;
-      // findMergeCandidates selects only live rows with optimized_at NULL. A member stamped
-      // since then was edited through /verify (or rewritten by another pass) during the model
-      // call; a member no longer live was retired or replaced (a /verify retire or replace
-      // supersedes the original without stamping it), or superseded by another writer. The
-      // merged text was written from all of them as they were, so folding it in would bring
-      // a withdrawn claim back inside the keeper (tests/verify-reenrich-race.test.mjs).
-      // Abort the whole cluster rather than merge part.
-      const clusterIds = cluster.map((o) => o.id);
-      const unchanged = db
-        .prepare(
-          `SELECT COUNT(*) AS n FROM observations WHERE id IN (${clusterIds.map(() => '?').join(',')}) AND optimized_at IS NULL AND ${liveObsFilterSql('')}`,
-        )
-        .get(...clusterIds).n;
-      if (unchanged !== clusterIds.length) return false;
+    const mergeApplied = db
+      .transaction(() => {
+        // Re-check the keeper's liveness INSIDE the transaction (audit 2026-09-02 P0-3).
+        // findMergeCandidates selected live rows, but a Sonnet round-trip sits between that
+        // SELECT and this write (:617, BG_LLM_TIMEOUT_MS), and a concurrent SessionStart
+        // auto-dedup or `save --supersedes` can tombstone the keeper in that window. Pointing
+        // the other members at a tombstoned keeper is precisely the "buried behind a hidden
+        // parent" loss that mergeDuplicates' docblock enumerates (lib/maintain-core.mjs), and
+        // it is what that function's own isLive gate exists to prevent. Same predicate here.
+        const keeperLive = db
+          .prepare(`SELECT 1 FROM observations WHERE id = ? AND ${liveObsFilterSql('')}`)
+          .get(keeper.id);
+        if (!keeperLive) return false;
+        // findMergeCandidates selects only live rows with optimized_at NULL. A member stamped
+        // since then was edited through /verify (or rewritten by another pass) during the model
+        // call; a member no longer live was retired or replaced (a /verify retire or replace
+        // supersedes the original without stamping it), or superseded by another writer. The
+        // merged text was written from all of them as they were, so folding it in would bring
+        // a withdrawn claim back inside the keeper (tests/verify-reenrich-race.test.mjs).
+        // Abort the whole cluster rather than merge part.
+        const clusterIds = cluster.map((o) => o.id);
+        const unchanged = db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM observations WHERE id IN (${clusterIds.map(() => '?').join(',')}) AND optimized_at IS NULL AND ${liveObsFilterSql('')}`,
+          )
+          .get(...clusterIds).n;
+        if (unchanged !== clusterIds.length) return false;
 
-      // Snapshot the keeper's pre-merge row BEFORE overwriting it, so its original
-      // full text survives as a recoverable compressed_into child (mirroring
-      // compressGroup / recoverChildrenOf). The keeper is the cluster's most-
-      // important member; an in-place overwrite by the LLM's ≤800-char summary
-      // would otherwise destroy its original text irreversibly (HIGH-3 data loss).
-      // Column list is derived from the live schema (minus id/compressed_into) so
-      // it stays correct as migrations add columns; names are internal identifiers.
-      const snapCols = db
-        .prepare(`PRAGMA table_info(observations)`)
-        .all()
-        .map((c) => c.name)
-        .filter((c) => c !== 'id' && c !== 'compressed_into');
-      const snapColList = snapCols.join(', ');
-      db.prepare(
-        `INSERT INTO observations (${snapColList}, compressed_into)
+        // Snapshot the keeper's pre-merge row BEFORE overwriting it, so its original
+        // full text survives as a recoverable compressed_into child (mirroring
+        // compressGroup / recoverChildrenOf). The keeper is the cluster's most-
+        // important member; an in-place overwrite by the LLM's ≤800-char summary
+        // would otherwise destroy its original text irreversibly (HIGH-3 data loss).
+        // Column list is derived from the live schema (minus id/compressed_into) so
+        // it stays correct as migrations add columns; names are internal identifiers.
+        const snapCols = db
+          .prepare(`PRAGMA table_info(observations)`)
+          .all()
+          .map((c) => c.name)
+          .filter((c) => c !== 'id' && c !== 'compressed_into');
+        const snapColList = snapCols.join(', ');
+        db.prepare(
+          `INSERT INTO observations (${snapColList}, compressed_into)
          SELECT ${snapColList}, ? FROM observations WHERE id = ?`,
-      ).run(keeper.id, keeper.id);
+        ).run(keeper.id, keeper.id);
 
-      // The keeper now holds model text. Search reads authorship from memory_session_id, so an
-      // explicit save's `manual-` id would mark it as one (D#138); it moves to the compression
-      // writer's id. A machine-written keeper keeps its id, and so does the snapshot above, which
-      // is the original save. writerSessionId keeps the id out of the uuid shape sdk_sessions
-      // refuses (D#147); the row stays best-effort, so no refusal can fail the merge (v6.19.1
-      // pre-tag F5a).
-      let rewriteSessionId = null;
-      const keeperSession = db
-        .prepare('SELECT memory_session_id FROM observations WHERE id = ?')
-        .get(keeper.id);
-      if (keeperSession?.memory_session_id?.startsWith(MANUAL_SESSION_ID_PREFIX)) {
-        const compressSessionId = writerSessionId('compress-', keeper.project);
-        try {
-          db.prepare(
-            `INSERT OR IGNORE INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+        // The keeper now holds model text. Search reads authorship from memory_session_id, so an
+        // explicit save's `manual-` id would mark it as one (D#138); it moves to the compression
+        // writer's id. A machine-written keeper keeps its id, and so does the snapshot above, which
+        // is the original save. writerSessionId keeps the id out of the uuid shape sdk_sessions
+        // refuses (D#147); the row stays best-effort, so no refusal can fail the merge (v6.19.1
+        // pre-tag F5a).
+        let rewriteSessionId = null;
+        const keeperSession = db
+          .prepare('SELECT memory_session_id FROM observations WHERE id = ?')
+          .get(keeper.id);
+        if (keeperSession?.memory_session_id?.startsWith(MANUAL_SESSION_ID_PREFIX)) {
+          const compressSessionId = writerSessionId('compress-', keeper.project);
+          try {
+            db.prepare(
+              `INSERT OR IGNORE INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
              VALUES (?, ?, ?, ?, ?, 'active')`,
-          ).run(compressSessionId, compressSessionId, keeper.project, new Date().toISOString(), Date.now());
-          rewriteSessionId = compressSessionId;
-        } catch (e) {
-          debugCatch(e, 'cluster-merge writer session');
+            ).run(compressSessionId, compressSessionId, keeper.project, new Date().toISOString(), Date.now());
+            rewriteSessionId = compressSessionId;
+          } catch (e) {
+            debugCatch(e, 'cluster-merge writer session');
+          }
         }
-      }
-      db.prepare(
-        `
+        db.prepare(
+          `
         UPDATE observations SET title=?, narrative=?, concepts=?, facts=?, text=?,
           importance = CASE WHEN importance_set_at IS NOT NULL THEN importance ELSE ? END,
           lesson_learned=?, minhash_sig=?, optimized_at=?,
           memory_session_id = COALESCE(?, memory_session_id)
         WHERE id = ?
       `,
-      ).run(
-        safe.title,
-        safe.narrative,
-        safe.concepts,
-        safe.facts,
-        safe.text,
-        importance,
-        safe.lesson_learned,
-        minhashSig,
-        Date.now(),
-        rewriteSessionId,
-        keeper.id,
-      );
+        ).run(
+          safe.title,
+          safe.narrative,
+          safe.concepts,
+          safe.facts,
+          safe.text,
+          importance,
+          safe.lesson_learned,
+          minhashSig,
+          Date.now(),
+          rewriteSessionId,
+          keeper.id,
+        );
 
-      const otherIds = others.map((o) => o.id);
-      const ph = otherIds.map(() => '?').join(',');
-      // Live guard on the members too: one already compressed into ANOTHER summary S during
-      // the LLM window would be re-pointed here, silently dropping a row out of S's child set.
-      db.prepare(
-        `UPDATE observations SET compressed_into = ? WHERE id IN (${ph}) AND ${liveObsFilterSql('')}`,
-      ).run(keeper.id, ...otherIds);
-      return true;
-    })();
+        const otherIds = others.map((o) => o.id);
+        const ph = otherIds.map(() => '?').join(',');
+        // Live guard on the members too: one already compressed into ANOTHER summary S during
+        // the LLM window would be re-pointed here, silently dropping a row out of S's child set.
+        db.prepare(
+          `UPDATE observations SET compressed_into = ? WHERE id IN (${ph}) AND ${liveObsFilterSql('')}`,
+        ).run(keeper.id, ...otherIds);
+        return true;
+      })
+      .immediate();
     if (!mergeApplied) {
       debugLog(
         'DEBUG',
@@ -1496,6 +1540,9 @@ export function findSmartCompressCandidates(db, ageDays = 30, { project } = {}) 
       -- canonical compress sibling selectCompressionCandidates (compress-core.mjs) —
       -- "lessons never auto-GC" (also enforced in decayAndMarkIdle, maintain-core.mjs).
       AND (lesson_learned IS NULL OR lesson_learned = '' OR lesson_learned = 'none')
+      -- An explicit save is a person's text: an unattended summary dropped its specifics
+      -- (E2E 2026-10-16 round 2; the idle passes skip it for the same reason).
+      AND ${NOT_EXPLICIT_SAVE_SQL}
       AND created_at_epoch < ?
       ${projectClause}
     ORDER BY project, created_at_epoch, id
@@ -1549,8 +1596,8 @@ export function clusterForCompression(candidates) {
 /**
  * The smart-compress prompt. Exported so a RULER can measure the shipped text.
  *
- * Extracted for benchmark/compress-veto-rate.mjs (D#10). It has to be one string in one
- * place: a ruler that retypes the prompt measures its own copy, which is exactly how
+ * Extracted for benchmark/compress-veto-rate.mjs (D#10). It has to be built in one place:
+ * a ruler that retypes the prompt measures its own copy, which is exactly how
  * tests/handoff-simulation.test.mjs came to assert on a re-implementation while the real
  * hook emitted a block no user had ever seen.
  *
@@ -1571,8 +1618,12 @@ export function clusterForCompression(candidates) {
  * on. This veto is therefore the ONLY thing standing between the heuristic and an
  * unattended write that hides real rows.
  *
+ * D#375: instructions, the veto and MEMORY_INPUT_GUARD in `system`, the members in `user`
+ * (the cluster-merge prompt says why). A member's narrative is the one input that could
+ * talk the veto out of refusing, so it must not travel in the instruction channel.
+ *
  * @param {Array<object>} observations cluster members
- * @returns {string}
+ * @returns {{ system: string, user: string }}
  */
 export function buildCompressPrompt(observations) {
   const obsDescriptions = observations
@@ -1582,14 +1633,15 @@ export function buildCompressPrompt(observations) {
     )
     .join('\n');
 
-  return `These code memory observations were grouped by a heuristic that may be wrong. FIRST decide whether they are one story worth collapsing into a single memory. Return ONLY valid JSON.
-
-Observations:
-${obsDescriptions}
+  const system = `These code memory observations were grouped by a heuristic that may be wrong. FIRST decide whether they are one story worth collapsing into a single memory. Return ONLY valid JSON.
 
 JSON: {"should_compress":true,"title":"descriptive summary ≤120 chars","narrative":"comprehensive summary ≤800 chars preserving key decisions and lessons","concepts":["kw1","kw2"],"facts":["all specific facts preserved"],"lesson_learned":"most important synthesized lesson or 'none'","search_aliases":["alt search 1","alt search 2"]}
 should_compress: false when these are about unrelated systems, files or problems, or when a merged summary would lose more than it saves. Compressing HIDES the originals from search, so refuse when in doubt. When false, the other fields are ignored.
-When true: preserve all important decisions, lessons, and specific facts.`;
+When true: preserve all important decisions, lessons, and specific facts.
+${MEMORY_INPUT_GUARD}`;
+  const user = `Observations:
+${obsDescriptions}`;
+  return { system, user };
 }
 
 export async function executeSmartCompressCluster(db, observations, project) {
@@ -1599,9 +1651,9 @@ export async function executeSmartCompressCluster(db, observations, project) {
   if (!gotSlot) return { compressed: false };
 
   try {
-    const prompt = buildCompressPrompt(observations);
+    const { system, user } = buildCompressPrompt(observations);
 
-    const parsed = await callModelJSONAsync(prompt, 'sonnet', {
+    const parsed = await callModelJSONAsync({ system, user }, 'sonnet', {
       timeout: BG_LLM_TIMEOUT_MS,
       maxTokens: 1000,
     });
@@ -1609,7 +1661,8 @@ export async function executeSmartCompressCluster(db, observations, project) {
     // failure directions are not symmetric — refusing wrongly means a compression did not
     // happen, proceeding wrongly means unrelated observations were hidden from every
     // surface. On a path that hides its inputs, silence is not consent.
-    if (!parsed || !parsed.should_compress) return { compressed: false };
+    // Only the boolean true consents: the string "false" is truthy (round-2 pre-tag review).
+    if (parsed?.should_compress !== true) return { compressed: false };
     if (!parsed.title) return { compressed: false };
 
     // Scrub BEFORE truncate (see re-enrich note): boundary cut on scrubbed text.
@@ -1629,103 +1682,108 @@ export async function executeSmartCompressCluster(db, observations, project) {
       ? parsed.search_aliases.slice(0, 6).join(' ')
       : null;
 
-    const bigramText = cjkBigrams((title || '') + ' ' + (narrative || ''));
+    // The side fields' CJK too (D#374; hook-llm buildFtsTextField says why).
+    const bigramText = cjkIndexTerms(
+      [title, narrative, conceptsText, factsText, lessonLearned, searchAliases].filter(Boolean).join(' '),
+    );
     const textField = [conceptsText, factsText, searchAliases || '', bigramText].filter(Boolean).join(' ');
 
     const epochs = observations.map((o) => o.created_at_epoch).sort((a, b) => a - b);
     const medianEpoch = epochs[Math.floor(epochs.length / 2)];
 
-    const summaryId = db.transaction(() => {
-      // The summary was written from the members as they were BEFORE the Sonnet call. A member
-      // whose stamp changed since was edited through /verify (or rewritten by another pass);
-      // a member no longer live was retired or replaced (neither stamps the original) or
-      // superseded by another writer. A summary of their earlier text would put the withdrawn
-      // claim back as a live row and hide the rest behind it (pre-ship review of 9786874,
-      // P2-1; delta review of the first repair). Abort the whole cluster, as cluster-merge does.
-      // Callers pass rows as findSmartCompressCandidates selects them, optimized_at included:
-      // a row without the column reads as unstamped, so a stamped member would abort (safe).
-      const nowRow = db.prepare(
-        `SELECT optimized_at FROM observations WHERE id = ? AND ${liveObsFilterSql('')}`,
-      );
-      if (
-        observations.some((o) => {
-          const cur = nowRow.get(o.id);
-          return !cur || (cur.optimized_at ?? null) !== (o.optimized_at ?? null);
-        })
-      ) {
-        return null;
-      }
-      const sessionId = writerSessionId('compress-', project);
-      const now = new Date();
-      db.prepare(
-        `INSERT OR IGNORE INTO sdk_sessions
+    const summaryId = db
+      .transaction(() => {
+        // The summary was written from the members as they were BEFORE the Sonnet call. A member
+        // whose stamp changed since was edited through /verify (or rewritten by another pass);
+        // a member no longer live was retired or replaced (neither stamps the original) or
+        // superseded by another writer. A summary of their earlier text would put the withdrawn
+        // claim back as a live row and hide the rest behind it (pre-ship review of 9786874,
+        // P2-1; delta review of the first repair). Abort the whole cluster, as cluster-merge does.
+        // Callers pass rows as findSmartCompressCandidates selects them, optimized_at included:
+        // a row without the column reads as unstamped, so a stamped member would abort (safe).
+        const nowRow = db.prepare(
+          `SELECT optimized_at FROM observations WHERE id = ? AND ${liveObsFilterSql('')}`,
+        );
+        if (
+          observations.some((o) => {
+            const cur = nowRow.get(o.id);
+            return !cur || (cur.optimized_at ?? null) !== (o.optimized_at ?? null);
+          })
+        ) {
+          return null;
+        }
+        const sessionId = writerSessionId('compress-', project);
+        const now = new Date();
+        db.prepare(
+          `INSERT OR IGNORE INTO sdk_sessions
         (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
         VALUES (?,?,?,?,?,'active')`,
-      ).run(sessionId, sessionId, project, now.toISOString(), now.getTime());
+        ).run(sessionId, sessionId, project, now.toISOString(), now.getTime());
 
-      // Defense-in-depth: title/narrative/etc. are LLM-generated compression
-      // output; scrub at the persistence boundary regardless of upstream trust.
-      const safe = scrubRecord('observations', {
-        text: textField,
-        title,
-        narrative,
-        concepts: conceptsText,
-        facts: factsText,
-        lesson_learned: lessonLearned,
-        search_aliases: searchAliases,
-      });
-      // R10 P3-8: through the shared writer, not a fourth hand-spelled INSERT. The copy
-      // this replaces had already drifted from OBS_COLUMNS in three ways — no minhash_sig
-      // (so the summary was invisible to the MinHash prefilter that findDuplicates and
-      // selectFuzzyDedupeIds run, and could never be deduplicated against anything), no
-      // branch, and subtitle written as '' instead of the schema's NULL. That is exactly
-      // the drift lib/observation-write.mjs's docblock says the shared column list exists
-      // to make impossible.
-      //
-      // optimized_at is not in OBS_COLUMNS, so it stays a separate UPDATE below — the
-      // summary must be marked processed so the re-enrich pools do not pick it up.
-      //
-      // R11 C-P3-2 read the three-item list above as a completeness claim and asked why
-      // the fourth OBS_COLUMNS entry, `scope`, is absent. It is absent on purpose: the
-      // merge prompt does not ask for one, so there is no value to pass, and NULL is the
-      // `scopes` backfill pool's own predicate (findReenrichCandidates, scope==='scopes')
-      // — which is deliberately NOT gated on optimized_at, so stamping this row processed
-      // does not evict it. Writing a guessed scope here would.
-      const newId = insertObservationRow(db, {
-        memory_session_id: sessionId,
-        project,
-        text: safe.text,
-        type: 'discovery',
-        title: safe.title,
-        narrative: safe.narrative,
-        concepts: safe.concepts,
-        facts: safe.facts,
-        importance: 2,
-        minhash_sig: computeMinHash(`${title || ''} ${narrative || ''}`),
-        lesson_learned: safe.lesson_learned,
-        search_aliases: safe.search_aliases,
-        branch: getCurrentBranch(),
-        created_at: new Date(medianEpoch).toISOString(),
-        created_at_epoch: medianEpoch,
-      });
-      db.prepare('UPDATE observations SET optimized_at = ? WHERE id = ?').run(Date.now(), newId);
-      const result = { lastInsertRowid: newId };
+        // Defense-in-depth: title/narrative/etc. are LLM-generated compression
+        // output; scrub at the persistence boundary regardless of upstream trust.
+        const safe = scrubRecord('observations', {
+          text: textField,
+          title,
+          narrative,
+          concepts: conceptsText,
+          facts: factsText,
+          lesson_learned: lessonLearned,
+          search_aliases: searchAliases,
+        });
+        // R10 P3-8: through the shared writer, not a fourth hand-spelled INSERT. The copy
+        // this replaces had already drifted from OBS_COLUMNS in three ways — no minhash_sig
+        // (so the summary was invisible to the MinHash prefilter that findDuplicates and
+        // selectFuzzyDedupeIds run, and could never be deduplicated against anything), no
+        // branch, and subtitle written as '' instead of the schema's NULL. That is exactly
+        // the drift lib/observation-write.mjs's docblock says the shared column list exists
+        // to make impossible.
+        //
+        // optimized_at is not in OBS_COLUMNS, so it stays a separate UPDATE below — the
+        // summary must be marked processed so the re-enrich pools do not pick it up.
+        //
+        // R11 C-P3-2 read the three-item list above as a completeness claim and asked why
+        // the fourth OBS_COLUMNS entry, `scope`, is absent. It is absent on purpose: the
+        // merge prompt does not ask for one, so there is no value to pass, and NULL is the
+        // `scopes` backfill pool's own predicate (findReenrichCandidates, scope==='scopes')
+        // — which is deliberately NOT gated on optimized_at, so stamping this row processed
+        // does not evict it. Writing a guessed scope here would.
+        const newId = insertObservationRow(db, {
+          memory_session_id: sessionId,
+          project,
+          text: safe.text,
+          type: 'discovery',
+          title: safe.title,
+          narrative: safe.narrative,
+          concepts: safe.concepts,
+          facts: safe.facts,
+          importance: 2,
+          minhash_sig: computeMinHash(`${title || ''} ${narrative || ''}`),
+          lesson_learned: safe.lesson_learned,
+          search_aliases: safe.search_aliases,
+          branch: getCurrentBranch(),
+          created_at: new Date(medianEpoch).toISOString(),
+          created_at_epoch: medianEpoch,
+        });
+        db.prepare('UPDATE observations SET optimized_at = ? WHERE id = ?').run(Date.now(), newId);
+        const result = { lastInsertRowid: newId };
 
-      const sId = Number(result.lastInsertRowid);
+        const sId = Number(result.lastInsertRowid);
 
-      const obsIds = observations.map((o) => o.id);
-      const ph = obsIds.map(() => '?').join(',');
-      // Live guard (audit 2026-09-02 P0-3): the candidate SELECT is separated from this write
-      // by a Sonnet round-trip, so a member may already be compressed into another summary or
-      // tombstoned. Re-pointing it here would silently remove a row from that summary's child
-      // set. The check at the top of this transaction now aborts in that case; the guard stays
-      // so this UPDATE can never re-point a dead row on its own.
-      db.prepare(
-        `UPDATE observations SET compressed_into = ? WHERE id IN (${ph}) AND ${liveObsFilterSql('')}`,
-      ).run(sId, ...obsIds);
+        const obsIds = observations.map((o) => o.id);
+        const ph = obsIds.map(() => '?').join(',');
+        // Live guard (audit 2026-09-02 P0-3): the candidate SELECT is separated from this write
+        // by a Sonnet round-trip, so a member may already be compressed into another summary or
+        // tombstoned. Re-pointing it here would silently remove a row from that summary's child
+        // set. The check at the top of this transaction now aborts in that case; the guard stays
+        // so this UPDATE can never re-point a dead row on its own.
+        db.prepare(
+          `UPDATE observations SET compressed_into = ? WHERE id IN (${ph}) AND ${liveObsFilterSql('')}`,
+        ).run(sId, ...obsIds);
 
-      return sId;
-    })();
+        return sId;
+      })
+      .immediate();
 
     if (summaryId === null) {
       debugLog('DEBUG', 'llm-optimize', 'smart-compress aborted: a member changed during the call');

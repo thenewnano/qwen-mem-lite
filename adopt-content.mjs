@@ -22,7 +22,7 @@ export const CURRENT_SENTINEL_VERSION = 'v1';
 
 // The CLI name as written into the user's project tree - deliberately NOT `CLI_INVOKE`
 // (audit R7 P2-1). CLI_INVOKE resolves to an absolute, VERSION-PINNED path
-// (`node /home/<user>/.claude/plugins/cache/sdsrss/qwen-mem-lite/<version>/cli.mjs`), and
+// (`node /home/<user>/.claude/plugins/cache/thenewnano/qwen-mem-lite/<version>/cli.mjs`), and
 // both generators below write files the user may commit: the managed block lands in
 // <cwd>/CLAUDE.md and the detail doc in <cwd>/.claude/, which is the standard home for
 // project-scoped settings/commands/agents and is commonly tracked. Embedding the resolved
@@ -73,7 +73,6 @@ export function getDetailDoc() {
 
 > 由 \`${CLI} adopt\` 生成、随版本自动刷新；卸载用 \`${CLI} unadopt\`。
 > 精炼触发表由 SessionStart 注入会话上下文（显式 \`${CLI} adopt\` 过的项目则写在 \`CLAUDE.md\` 的 \`qwen-mem-lite\` 托管块里）；本文件是其展开。
-> 设计背景见 docs/CLAUDE-MD-STEERING-PLAN.md。
 
 > **本文下方所有命令写作 \`${CLI} <cmd>\`。** 该名字只在全局装过
 > （\`npm i -g qwen-mem-lite\`）时才在 PATH 上；否则用等价的
@@ -159,7 +158,7 @@ PreToolUse hook 在你 Read / Edit / Write 文件前已自动 \`mem_recall\` 该
 
 | 场景 | CLI |
 |------|-----|
-| 清理过期记忆 | \`${CLI} maintain scan --ops purge_stale\` → \`maintain execute --ops purge_stale --confirm\`（删行必须 \`--confirm\`） |
+| 清理过期记忆 | \`${CLI} maintain scan\` 预览；清理本身交给用户启动的 \`/qwen-mem-lite:update\` |
 | 深度优化（Haiku） | \`${CLI} optimize\`（默认 preview；\`--run\` 执行，\`--task re-enrich,normalize,cluster-merge,smart-compress\`） |
 | 压缩旧条目 | \`${CLI} compress\`（默认 preview；\`--execute\` 执行，\`--age-days N\`） |
 | FTS5 索引检查 / 重建 | \`${CLI} fts-check <check\\|rebuild>\` |

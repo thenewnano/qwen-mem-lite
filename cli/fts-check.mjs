@@ -1,14 +1,15 @@
 // cli/fts-check.mjs — `qwen-mem-lite fts-check <check|rebuild>`.
 // Extracted from mem-cli.mjs (v2.41, god-module split).
 
-import { checkFTSIntegrity, rebuildFTS } from '../schema.mjs';
+import { checkFTSIntegrity, rebuildIndexes } from '../schema.mjs';
 import { parseArgs, out, fail } from './common.mjs';
+import { CLI_INVOKE } from '../cli-path.mjs';
 
 export function cmdFtsCheck(db, args) {
   const { positional } = parseArgs(args);
   const action = positional[0];
   if (!action) {
-    fail('[mem] Usage: qwen-mem-lite fts-check <check|rebuild>');
+    fail(`[mem] Usage: ${CLI_INVOKE} fts-check <check|rebuild>`);
     return;
   }
   if (!['check', 'rebuild'].includes(action)) {
@@ -32,6 +33,12 @@ export function cmdFtsCheck(db, args) {
     const result = checkFTSIntegrity(db);
     if (result.healthy) {
       out('[mem] FTS5 indexes are healthy - all integrity checks passed.');
+    } else if (result.busy) {
+      // Not a finding: "issues found" invited a rebuild of a healthy store, a long write that
+      // blocks the live hooks (E2E 2026-10-16 round 2). Exit 1 all the same: nothing was checked.
+      out('[mem] FTS5 check not run - the database is in use by another process. This is not');
+      out('  corruption; do not rebuild. Run the check again when the store is idle.');
+      process.exitCode = 1;
     } else {
       out(`[mem] FTS5 issues found:`);
       for (const d of result.details) out(`  ${d}`);
@@ -41,7 +48,9 @@ export function cmdFtsCheck(db, args) {
   }
 
   if (action === 'rebuild') {
-    const result = rebuildFTS(db);
+    // The FTS5 indexes, then every other index (REINDEX): the last step of doctor's restore
+    // command, which the restore check ran on its copy (D#558).
+    const result = rebuildIndexes(db);
     if (result.errors.length > 0) {
       // Partial success is a failure of the requested operation: the caller asked
       // for a rebuild and at least one index still is not rebuilt.

@@ -3,7 +3,7 @@
 //   qwen-mem-lite unadopt [--all] [--force] [--dry-run] [--status]
 //
 // adopt   = write the managed block into <cwd>/CLAUDE.md + drop
-//           <cwd>/.claude/plugin_claude_mem_lite.md, and migrate this project's
+//           <cwd>/.claude/plugin_qwen_mem_lite.md, and migrate this project's
 //           legacy memory-dir sentinel away.
 // unadopt = remove the CLAUDE.md block + detail doc (and clean any legacy residue).
 //
@@ -23,6 +23,7 @@ import {
   writeFileSync,
   unlinkSync,
   readFileSync,
+  realpathSync,
 } from 'fs';
 import { claudeConfigDir, claudeStatePath } from './lib/data-paths.mjs';
 import { join, isAbsolute, relative, dirname } from 'path';
@@ -49,7 +50,8 @@ import {
   claudeMdPath,
   detailDocPath,
   addAgentsImports,
-  holdsOnlyOwnLines,
+  holdsOnlyPluginLines,
+  straySentinelLines,
 } from './claudemd.mjs';
 import { PLUGIN_SLUG, CURRENT_SENTINEL_VERSION, buildClaudeMdBlock, getDetailDoc } from './adopt-content.mjs';
 import {
@@ -75,7 +77,9 @@ import {
   isSharedAncestor,
   samePath,
   localFileLinked,
+  userInstructionFiles,
 } from './lib/local-steering.mjs';
+import { CLI_INVOKE } from './cli-path.mjs';
 
 /**
  * Remove the auto-written local block (CLAUDE.local.md, or the D#212 rules file) for the project at
@@ -100,8 +104,23 @@ function log(msg) {
   console.log(msg);
 }
 
-function detectCwd() {
-  return process.env.CLAUDE_PROJECT_DIR || process.env.PWD || process.cwd();
+// $PWD keeps a symlinked project's logical spelling (the one Claude Code's CLAUDE_PROJECT_DIR
+// uses), but only when it names the directory this process is in: a program that spawns `adopt`
+// with `cwd` set leaves its OWN PWD in the env, and adopt wrote into the caller's directory
+// instead of the one it ran in (E2E 2026-10-16).
+/** @public install.mjs reads it through a dynamic-import namespace (`adopt.detectCwd?.()`). */
+export function detectCwd() {
+  if (process.env.CLAUDE_PROJECT_DIR) return process.env.CLAUDE_PROJECT_DIR;
+  const cwd = process.cwd();
+  const pwd = process.env.PWD;
+  if (pwd) {
+    try {
+      if (realpathSync(pwd) === realpathSync(cwd)) return pwd;
+    } catch {
+      /* PWD names nothing that exists: use the real cwd */
+    }
+  }
+  return cwd;
 }
 
 function projectsRoot() {
@@ -182,6 +201,18 @@ function adoptOne(cwd, { force, dryRun }) {
   const block = buildClaudeMdBlock();
   const doc = getDetailDoc();
   const version = CURRENT_SENTINEL_VERSION;
+  // A damaged sentinel line pairs with no block, so writing would add a second block beside it
+  // (E2E 2026-10-16 round 2, B14). Which lines are the block is the user's call: refuse first.
+  const stray = straySentinelLines(claudeMdPath(cwd), PLUGIN_SLUG);
+  if (stray.length > 0) {
+    log(`[adopt] ${cwd} → refused, nothing was written:`);
+    for (const s of stray) log(`  ${claudeMdPath(cwd)} line ${s.line}: ${s.text}`);
+    log(
+      `  ${stray.length === 1 ? 'This sentinel line pairs' : 'These sentinel lines pair'} with no well-formed block, so adopt would add a second one. Make the block's first line exactly \`<!-- ${PLUGIN_SLUG}:begin ${version} -->\` and its last \`<!-- ${PLUGIN_SLUG}:end -->\`, each on a line of its own, or delete the marker lines and the text between them; then run adopt again.`,
+    );
+    process.exitCode = 1;
+    return { action: 'refused' };
+  }
   // Claude Code stops reading AGENTS.md once a CLAUDE.md exists: the one written here imports
   // the AGENTS.md files beside it and names the ones it cannot import.
   const agents = agentsMdForNewClaudeMd(cwd, PLUGIN_SLUG);
@@ -197,7 +228,7 @@ function adoptOne(cwd, { force, dryRun }) {
   const sharedNote = (verb) =>
     switchesOffBelow
       ? [
-          `  ⚠ ${claudeMdPath(cwd)} ${verb} Claude Code reading the AGENTS.md of every project below ${cwd} that has one; to steer one project, run adopt inside it instead${verb === 'stops' ? ' (`qwen-mem-lite unadopt` here takes this back)' : ''}, or set Project instructions to claude-md-and-agents-md in /config`,
+          `  ⚠ ${claudeMdPath(cwd)} ${verb} Claude Code reading the AGENTS.md of every project below ${cwd} that has one; to steer one project, run adopt inside it instead${verb === 'stops' ? ` (\`${CLI_INVOKE} unadopt\` here takes this back)` : ''}, or set Project instructions to claude-md-and-agents-md in /config`,
         ]
       : [];
 
@@ -233,7 +264,12 @@ function adoptOne(cwd, { force, dryRun }) {
           : local.action === 'failed'
             ? ` (could not remove the block from ${local.path}, so sessions here load it twice)`
             : ` (+removed the block from ${local.path})`;
-    log(`[adopt] ${cwd} → ${r.action}${migNote}${localNote}${importNote}`);
+    // The block's disposition alone read "unchanged" over a rewritten detail doc (D#470).
+    const docNote =
+      r.action === 'unchanged' && r.docAction !== 'unchanged'
+        ? ` (+${r.docAction === 'created' ? 'wrote' : 'refreshed'} detail doc)`
+        : '';
+    log(`[adopt] ${cwd} → ${r.action}${docNote}${migNote}${localNote}${importNote}`);
     for (const line of elsewhere('stops')) log(line);
     for (const line of sharedNote('stops')) log(line);
     // The copy that could not come out loads beside CLAUDE.md: said, and not a success (R3-4).
@@ -333,7 +369,7 @@ export function silentAutoAdopt({ cwd, markerDir, markerKey }) {
 
     // Report §9-A (docs/audits/20260929-sandbox-usage-eval.md): a project with NO managed
     // block is no longer written into. The first SessionStart used to add CLAUDE.md and
-    // .claude/plugin_claude_mem_lite.md to every repository the user opened - 4 of 4 sandbox
+    // .claude/plugin_qwen_mem_lite.md to every repository the user opened - 4 of 4 sandbox
     // repos, swept into the next `git add -A` - and the startup dashboard then reported them
     // as the user's uncommitted work. The same text now rides SessionStart context
     // ('inject'); only an explicit `adopt` writes files. A project that already carries the
@@ -344,16 +380,31 @@ export function silentAutoAdopt({ cwd, markerDir, markerKey }) {
     // cost most of the proactive memory writes (1.5 vs 5.25 per trajectory) and never reached
     // subagents (0/12). Inside a git work tree the block now goes to CLAUDE.local.md, which the
     // host loads like CLAUDE.md and info/exclude keeps out of commits (5.25 writes, 12/12).
-    const hasBlock = blockIn(cwd);
+    // managed-only loads no project CLAUDE.md either (code.claude.com/docs/en/memory): a block in
+    // one steers nothing, so the session goes on to the refused local file and injects, and the
+    // file stays as it is (v6.30.0 pre-tag defects review P2-2).
+    const managedOnly = userInstructionFiles() === 'managed-only';
+    const hasBlock = !managedOnly && blockIn(cwd);
     if (!hasBlock) {
       if (markerDir && markerKey) writeMarker(markerDir, markerKey);
+      // A damaged sentinel line (`… --> (team note)`) leaves the block's text in CLAUDE.md, which
+      // the host loads, while the block no longer parses: a copy written to CLAUDE.local.md or
+      // injected here was a second one. Neither; `adopt` names the line and the fix (D#369 B14).
+      const stray = managedOnly ? [] : straySentinelLines(claudeMdPath(cwd), PLUGIN_SLUG);
+      if (stray.length > 0) return { ok: true, action: 'damaged', reason: 'stray-sentinel', lines: stray };
       const root = localSteeringRoot(cwd);
       if (root) {
         // A session started below the top-level (pre-tag claims review P2-3, P1-4): the host
         // loads the root's CLAUDE.md as an ancestor, so a block there already steers this
         // session; and an opt-out recorded for the root covers the file that lives there.
         if (!samePath(root, cwd)) {
-          if (blockIn(root)) return { ok: true, action: 'already-adopted', reason: 'root-claude-md' };
+          const above = managedOnly ? null : blockAbove(cwd, root);
+          if (above)
+            return {
+              ok: true,
+              action: 'already-adopted',
+              reason: samePath(above, root) ? 'root-claude-md' : 'ancestor-claude-md',
+            };
           // Off for the project means off here too: no file, no injected copy, no /adopt offer
           // (delta review P2-2; lib/quiet-scope.mjs mirrors it).
           if (isAutoAdoptDisabledFor(root)) return { ok: true, action: 'disabled', reason: 'root-disabled' };
@@ -387,7 +438,11 @@ export function silentAutoAdopt({ cwd, markerDir, markerKey }) {
           agentsMd: r.agentsMd,
         };
       }
-      return { ok: true, action: 'inject' };
+      // managed-only loads no project CLAUDE.md, so the hook does not offer /adopt (v6.30.0 pre-tag
+      // claims review P2-5; inside a git work tree the reason is local-managed-only).
+      return managedOnly
+        ? { ok: true, action: 'inject', reason: 'managed-only' }
+        : { ok: true, action: 'inject' };
     }
     dropLocalSteering(cwd, { atRootOnly: true, keepTracked: true });
     let action = 'already-adopted';
@@ -428,8 +483,8 @@ function syncAgentsImports(cwd) {
   // project below it, each asking to approve an import from outside its directory.
   if (isSharedAncestor(cwd)) return null;
   // The cheap check first: most CLAUDE.md files hold the user's own lines, and the full answer
-  // asks git.
-  if (!holdsOnlyOwnLines(claudeMdPath(cwd), PLUGIN_SLUG)) return null;
+  // asks git. Another plugin's managed block counts as plugin text, not the user's (D#220).
+  if (!holdsOnlyPluginLines(claudeMdPath(cwd), PLUGIN_SLUG)) return null;
   const agents = agentsMdForNewClaudeMd(cwd, PLUGIN_SLUG);
   if (!agents) return null;
   const imported =
@@ -464,6 +519,16 @@ function blockIn(dir) {
     return readBlock(dir, PLUGIN_SLUG).body !== null;
   } catch {
     return false;
+  }
+}
+
+// The nearest directory above `cwd`, up to and including `root`, whose CLAUDE.md carries the block:
+// the host loads it as an ancestor. `adopt` run in packages/ and a session in packages/web/src got a
+// root CLAUDE.local.md on top of packages/CLAUDE.md, the block twice (D#177(2)).
+function blockAbove(cwd, root) {
+  for (let d = dirname(cwd); ; d = dirname(d)) {
+    if (blockIn(d)) return d;
+    if (samePath(d, root) || dirname(d) === d) return null;
   }
 }
 
@@ -586,9 +651,11 @@ function cmdEnable(args) {
 function localSteeringStatus(cwd) {
   const root = localSteeringRoot(cwd);
   const runs = autoAdoptRuns(cwd, root);
-  // CLAUDE.md first: where it carries the block, no local file is written and nothing is injected,
-  // in a git work tree or not (pre-tag delta review of the D#212 repairs, D11).
-  if (blockIn(cwd) || (root && blockIn(root))) {
+  // CLAUDE.md first: where it carries the block, no local file is written, in a git work tree or not
+  // (pre-tag delta review of the D#212 repairs, D11).
+  if (blockIn(cwd) || (root && !samePath(root, cwd) && blockAbove(cwd, root))) {
+    if (userInstructionFiles() === 'managed-only')
+      return '⚠ CLAUDE.md carries the block, but Project instructions is set to managed-only, which does not load it';
     const cur = root ? readLocalSteering(root, PLUGIN_SLUG) : null;
     if (cur === null || cur.body === null) return '- none: CLAUDE.md carries the block';
     const kept = localFileLinked(root, cur.path)
@@ -608,7 +675,7 @@ function localSteeringStatus(cwd) {
   }
   // Before "not a git work tree": with auto-adopt off nothing is injected either (R3-13).
   if (isAutoAdoptDisabledFor(cwd) || (root && isAutoAdoptDisabledFor(root)))
-    return '- none: auto-adopt is off for this project (`qwen-mem-lite adopt --enable` turns it back on)';
+    return `- none: auto-adopt is off for this project (\`${CLI_INVOKE} adopt --enable\` turns it back on)`;
   if (process.env.MEM_NO_AUTO_ADOPT === '1')
     return '- none: MEM_NO_AUTO_ADOPT=1, so no local file is written';
   if (!root)
@@ -622,10 +689,10 @@ function localSteeringStatus(cwd) {
     const plan = planLocalSteering(root, PLUGIN_SLUG, cwd);
     const beside = plan.agentsMd ?? 'the AGENTS.md';
     if (plan.file === RULES_MD && plan.refusal === 'off')
-      return `${removed}; beside ${beside} a file comes back only with QWEN_MEM_RULES_STEERING=1 and then \`qwen-mem-lite adopt --enable\``;
+      return `${removed}; beside ${beside} a file comes back only with QWEN_MEM_RULES_STEERING=1 and then \`${CLI_INVOKE} adopt --enable\``;
     if (plan.file === RULES_MD && plan.refusal)
       return `${removed}; beside ${beside}, ${rulesWhy(plan.refusal)}`;
-    return `${removed}; after \`qwen-mem-lite adopt --enable\` the next session may write it again`;
+    return `${removed}; after \`${CLI_INVOKE} adopt --enable\` the next session may write it again`;
   }
   const plan = planLocalSteering(root, PLUGIN_SLUG, cwd);
   if (!plan.refusal)
@@ -637,7 +704,7 @@ function localSteeringStatus(cwd) {
     ways.settingGivesFile
       ? 'set Project instructions to claude-md-and-agents-md in /config and CLAUDE.local.md is written instead'
       : null,
-    ways.adoptImports ? 'run `qwen-mem-lite adopt`, whose CLAUDE.md imports AGENTS.md' : null,
+    ways.adoptImports ? `run \`${CLI_INVOKE} adopt\`, whose CLAUDE.md imports AGENTS.md` : null,
   ].filter(Boolean);
   return `✗ not written: Claude Code stops reading ${plan.agentsMd ?? 'the AGENTS.md'} once a CLAUDE.local.md exists, and ${rulesWhy(plan.refusal)} (steering is injected at session start${alt.length ? `; ${alt.join(', or ')}` : ''})`;
 }
@@ -651,6 +718,9 @@ function currentLocalLine(root, cwd, cur, runs) {
     return `✓ ${cur.path} (behind a symbolic link; the plugin leaves it as it is)`;
   if (trackedByGit(root, rel)) return `✓ ${cur.path} (tracked by git; the plugin leaves it as it is)`;
   const plan = runs ? planLocalSteering(root, PLUGIN_SLUG, cwd) : null;
+  // Left in place under managed-only (writeLocalSteering, D#219), not removed.
+  if (plan?.refusal === 'managed-only')
+    return `⚠ ${cur.path} (auto-written, but CLAUDE.local.md ${LOCAL_REFUSAL_TEXT['managed-only']}; the steering is injected, and the file stays for when the setting changes)`;
   if (plan?.refusal) {
     const why =
       plan.file === LOCAL_MD
@@ -730,7 +800,7 @@ function statusAll() {
     `[adopt --status] scanned ${dirs.length} memdir(s): ${legacy} with legacy sentinel (await migration), ${disabled} auto-adopt-disabled.`,
   );
   if (legacy > 0)
-    log('[adopt --status] run `qwen-mem-lite adopt --all` to sweep legacy memory-dir sentinels now.');
+    log(`[adopt --status] run \`${CLI_INVOKE} adopt --all\` to sweep legacy memory-dir sentinels now.`);
 
   const known = listKnownProjectDirs();
   let adoptedCount = 0;
@@ -739,7 +809,7 @@ function statusAll() {
     `[adopt --status] known projects (~/.claude.json): ${known.length} scanned, ${adoptedCount} with a CLAUDE.md managed block or partial residue (detail doc/state).`,
   );
   if (adoptedCount > 0)
-    log('[adopt --status] run `qwen-mem-lite unadopt --all` to remove every CLAUDE.md block.');
+    log(`[adopt --status] run \`${CLI_INVOKE} unadopt --all\` to remove every CLAUDE.md block.`);
 
   const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ? 'set' : 'unset';
   const noAutoAdopt = process.env.MEM_NO_AUTO_ADOPT === '1' ? '1 (opt-out)' : 'unset';
@@ -749,7 +819,7 @@ function statusAll() {
     `  CLAUDE_PLUGIN_ROOT  = ${pluginRoot}  (any install path is consent; gate is the per-project opt-out below)`,
   );
   log(`  MEM_NO_AUTO_ADOPT   = ${noAutoAdopt}  (global escape hatch)`);
-  log('Per-project opt-out: `qwen-mem-lite adopt --disable` (run --enable to re-arm).');
+  log(`Per-project opt-out: \`${CLI_INVOKE} adopt --disable\` (run --enable to re-arm).`);
 }
 
 /**
@@ -818,7 +888,7 @@ function unadoptAll(args) {
   if (failures > 0) process.exitCode = 1;
   if (projectDirs.length === 0) {
     log(
-      '[unadopt --all] no known projects found in ~/.claude.json - if a project was adopted but never opened in Claude Code, run `qwen-mem-lite unadopt` from inside it.',
+      `[unadopt --all] no known projects found in ~/.claude.json — if a project was adopted but never opened in Claude Code, run \`${CLI_INVOKE} unadopt\` from inside it.`,
     );
   }
 }

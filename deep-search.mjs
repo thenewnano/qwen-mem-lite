@@ -32,7 +32,7 @@
 // provider is pulled in lazily on first real call).
 
 import { searchObservationsHybrid } from './search-engine.mjs';
-import { sanitizeFtsQuery } from './utils.mjs';
+import { sanitizeFtsQuery, scrubSecrets } from './utils.mjs';
 import { RRF_K, rrfAccumulate } from './lib/rrf.mjs';
 import { llmRerankOrder, defaultRerankLLM } from './rerank.mjs';
 import { liveObsFilterSql } from './lib/inject-search-core.mjs';
@@ -282,6 +282,23 @@ export const REWRITE_SYSTEM =
   INJECTION_GUARD;
 
 /**
+ * The rewrite's output as a structured-output schema. Sent only to models that get the
+ * strict body (haiku-client's STRICT_BODY_MODELS / _SLUGS): with thinking off, Claude
+ * Haiku 5.5's answer gave fewer than two variants on 7 of 72 replays (the ones printed were
+ * prose questions about a bare one-word query, "React"), and on 0 of 72 with this schema
+ * (2026-10-15, docs/audits/20261015-v6.26.0-replays.md).
+ */
+export const REWRITE_JSON_SCHEMA = {
+  name: 'rewrite_variants',
+  schema: {
+    type: 'object',
+    properties: { variants: { type: 'array', items: { type: 'string' } } },
+    required: ['variants'],
+    additionalProperties: false,
+  },
+};
+
+/**
  * Build the split-form rewrite prompt. The constant instructions live in the
  * system slot; the untrusted query goes verbatim into the user/data slot so an
  * injection inside it can never be read as an instruction.
@@ -289,7 +306,9 @@ export const REWRITE_SYSTEM =
  * @returns {{system: string, user: string}}
  */
 export function buildRewritePrompt(query) {
-  return { system: REWRITE_SYSTEM, user: String(query ?? '') };
+  // Scrubbed: a secret typed into a query went to the provider verbatim, on the automatic
+  // escalation path too (E2E 2026-10-16). The local search still runs the query as typed.
+  return { system: REWRITE_SYSTEM, user: scrubSecrets(String(query ?? '')) };
 }
 
 /**
@@ -384,7 +403,7 @@ export function makeThrottled(llm, { intervalMs = AUTO_DEEP_THROTTLE_MS } = {}) 
 // never load the LLM client.
 async function callRewriteLLM(prompt, { timeout }) {
   const { callModelJSONAsync } = await import('./haiku-client.mjs');
-  return callModelJSONAsync(prompt, 'haiku', { timeout, maxTokens: 400 });
+  return callModelJSONAsync(prompt, 'haiku', { timeout, maxTokens: 400, jsonSchema: REWRITE_JSON_SCHEMA });
 }
 
 // Default (explicit deep=true) provider: patient timeout, no throttle/cache.
@@ -480,7 +499,12 @@ function buildHybridCtx(query, params) {
 }
 
 function defaultSearchFn(db, query, params) {
-  return searchObservationsHybrid(db, buildHybridCtx(query, params));
+  const ctx = buildHybridCtx(query, params);
+  // A variant that sanitises to nothing (operators, punctuation) would run as the engine's
+  // listing of recent rows, and deep search handed those back as matches: `***` returned the
+  // whole store (E2E 2026-10-16 round 2).
+  if (!ctx.ftsQuery) return [];
+  return searchObservationsHybrid(db, ctx);
 }
 
 /**

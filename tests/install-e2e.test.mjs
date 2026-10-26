@@ -10,10 +10,32 @@
 
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { execFileSync } from 'child_process';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, symlinkSync } from 'fs';
-import { join, resolve } from 'path';
+import {
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  existsSync,
+  rmSync,
+  symlinkSync,
+  readlinkSync,
+  lstatSync,
+  chmodSync,
+} from 'fs';
+import { join, resolve, dirname } from 'path';
 import { tmpdir } from 'os';
+import Database from 'better-sqlite3';
+import { initSchema, CURRENT_SCHEMA_VERSION } from '../schema.mjs';
+
+// Hermetic PATH: a maintainer box may carry a global qwen-mem-lite (this repo installed at
+// ~/.local/bin). The on-PATH / off-PATH assertions below model a machine WITHOUT one, so the
+// ambient directories that hold it are dropped from the PATH each case builds.
+const AMBIENT_PATH = (process.env.PATH || '')
+  .split(':')
+  .filter((d) => d && !existsSync(join(d, 'qwen-mem-lite')))
+  .join(':');
 import { randomUUID } from 'crypto';
+import { createRequire } from 'module';
 import { makeFixtureTracker } from './test-helpers.mjs';
 
 const INSTALL_PATH = resolve('install.mjs');
@@ -215,8 +237,14 @@ describe('E2E: Plugin install mode', () => {
       const pluginRoot = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite');
       mkdirSync(dataDir, { recursive: true });
       mkdirSync(pluginRoot, { recursive: true });
-      // Pre-create node_modules symlink (simulating previous install)
-      symlinkSync(resolve('node_modules'), join(dataDir, 'node_modules'));
+      // Pre-create node_modules symlink (simulating previous install). The node_modules Node loads
+      // better-sqlite3 from, not `resolve('node_modules')`: relative to the working directory that
+      // one dangled in a checkout without its own (a fresh worktree), and setup.sh then ran a real
+      // `npm install` (D#408).
+      const nodeModules = dirname(
+        dirname(createRequire(import.meta.url).resolve('better-sqlite3/package.json')),
+      );
+      symlinkSync(nodeModules, join(dataDir, 'node_modules'));
 
       // Stale global MCP that setup should clean
       writeFileSync(
@@ -225,18 +253,35 @@ describe('E2E: Plugin install mode', () => {
           {
             // A legacy registration of OUR server; a foreign `mem` survives
             // (tests/mcp-legacy-name-ownership.test.mjs).
-            mcpServers: { mem: { command: 'node', args: [join(home, '.claude-mem-lite', 'server.mjs')] } },
+            mcpServers: { mem: { command: 'node', args: [join(home, '.qwen-mem-lite', 'server.mjs')] } },
           },
           null,
           2,
         ),
       );
 
+      // An npm first on PATH that records its calls: setup.sh's slow path runs `npm install`, which
+      // in a checkout without node_modules rewrote the repository's lockfile (D#408).
+      const binDir = join(home, 'bin');
+      const npmCalls = join(home, 'npm-calls');
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(
+        join(binDir, 'npm'),
+        `#!/usr/bin/env bash\necho "$*" >> ${JSON.stringify(npmCalls)}\nexit 1\n`,
+      );
+      chmodSync(join(binDir, 'npm'), 0o755);
+
       execFileSync('bash', [SETUP_PATH], {
         encoding: 'utf8',
-        env: { ...process.env, HOME: home, CLAUDE_PLUGIN_ROOT: pluginRoot },
+        env: {
+          ...process.env,
+          HOME: home,
+          CLAUDE_PLUGIN_ROOT: pluginRoot,
+          PATH: `${binDir}:${AMBIENT_PATH}`,
+        },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
+      expect(existsSync(npmCalls) ? readFileSync(npmCalls, 'utf8') : '', 'setup.sh ran npm').toBe('');
 
       // node_modules symlinked from plugin cache to data dir
       expect(existsSync(join(pluginRoot, 'node_modules'))).toBe(true);
@@ -265,7 +310,7 @@ describe('E2E: Direct install mode (git clone / npx)', () => {
   });
 
   it('install creates data directory and deploys source files', () => {
-    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
+    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
 
     const dataDir = join(home, '.qwen-mem-lite');
     expect(existsSync(dataDir)).toBe(true);
@@ -289,8 +334,38 @@ describe('E2E: Direct install mode (git clone / npx)', () => {
     expect(existsSync(join(dataDir, 'scripts', 'prompt-search-utils.mjs'))).toBe(true);
   });
 
+  // E2E 2026-10-16 (install P2-1): every README git-clone install has the thenewnano remote, so the
+  // dogfood auto-adopt fired for it, and cmdAdopt targets the directory install is RUN from:
+  // run from the user's own repo, the block landed in their committed CLAUDE.md. It now adopts
+  // the clone itself only. MEM_NO_AUTO_ADOPT is deliberately unset here (the branch must run);
+  // cwd and PWD both point into the sandbox, so a regression writes there, not into this repo.
+  it('the dogfood auto-adopt does not write into the repo install is run from', () => {
+    const other = join(home, 'work', 'app');
+    mkdirSync(join(other, '.git'), { recursive: true });
+    writeFileSync(join(other, 'CLAUDE.md'), '# Team rules\n');
+    const env = {
+      ...process.env,
+      HOME: home,
+      PWD: other,
+      QWEN_MEM_SKIP_REPOS: '1',
+      PATH: `${binDir}:${AMBIENT_PATH}`,
+    };
+    delete env.MEM_NO_AUTO_ADOPT;
+    delete env.CLAUDE_PROJECT_DIR;
+    const out = execFileSync(process.execPath, [INSTALL_PATH, 'install', '--dev', '--skip-repos'], {
+      cwd: other,
+      env,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 30000,
+    });
+    expect(out).not.toMatch(/auto-adopt for qwen-mem-lite dogfood repo/);
+    expect(readFileSync(join(other, 'CLAUDE.md'), 'utf8')).toBe('# Team rules\n');
+    expect(existsSync(join(other, '.claude'))).toBe(false);
+  });
+
   it('install registers hooks in settings.json with all 5 events', () => {
-    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
+    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
 
     const settings = readJson(join(home, '.claude', 'settings.json'));
 
@@ -327,7 +402,7 @@ describe('E2E: Direct install mode (git clone / npx)', () => {
   });
 
   it('install registers MCP server via fake claude binary', () => {
-    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
+    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
 
     const statePath = join(home, '.claude', 'mcp-state.txt');
     const state = readFileSync(statePath, 'utf8');
@@ -335,7 +410,7 @@ describe('E2E: Direct install mode (git clone / npx)', () => {
   });
 
   it('install hook paths point to ~/.qwen-mem-lite/ data directory', () => {
-    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
+    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
 
     const settings = readJson(join(home, '.claude', 'settings.json'));
     const dataDir = join(home, '.qwen-mem-lite');
@@ -392,7 +467,7 @@ describe('E2E: Direct install mode (git clone / npx)', () => {
       );
     }
 
-    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
+    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
 
     for (const ver of ['2.28.1', '2.30.0']) {
       const cleared = readJson(join(cacheBase, ver, 'hooks', 'hooks.json'));
@@ -401,21 +476,151 @@ describe('E2E: Direct install mode (git clone / npx)', () => {
     }
   });
 
+  // D#368 (E2E 2026-10-16 install P1-4): install also EMPTIED the marketplace clone's tracked
+  // hooks/hooks.json. Claude Code updates the marketplace by pulling that clone, so the edit made
+  // the pull fail on any upstream commit touching hooks.json and the plugin stopped updating.
+  describe('the marketplace clone is never written', () => {
+    const cloneManifest = () =>
+      join(home, '.claude', 'plugins', 'marketplaces', 'thenewnano', 'hooks', 'hooks.json');
+    const UPSTREAM =
+      JSON.stringify({ description: 'upstream', hooks: { Stop: [{ hooks: [] }] } }, null, 2) + '\n';
+    const git = (...args) =>
+      execFileSync('git', ['-C', dirname(dirname(cloneManifest())), ...args], {
+        encoding: 'utf8',
+        env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+      });
+    function seedClone() {
+      mkdirSync(dirname(cloneManifest()), { recursive: true });
+      writeFileSync(cloneManifest(), UPSTREAM);
+      git('init', '-q');
+      git('add', 'hooks/hooks.json');
+      git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'upstream');
+    }
+
+    it('install leaves a clean clone clean', () => {
+      seedClone();
+      runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
+      expect(readFileSync(cloneManifest(), 'utf8')).toBe(UPSTREAM);
+      expect(git('status', '--porcelain')).toBe('');
+    });
+
+    it("install puts back an earlier install's emptied manifest", () => {
+      seedClone();
+      writeFileSync(
+        cloneManifest(),
+        JSON.stringify(
+          {
+            description: 'upstream',
+            _note: 'Hooks managed by install.mjs in settings.json — this file cleared to prevent duplicates',
+            hooks: {},
+          },
+          null,
+          2,
+        ) + '\n',
+      );
+      expect(git('status', '--porcelain')).not.toBe('');
+      runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
+      expect(readFileSync(cloneManifest(), 'utf8')).toBe(UPSTREAM);
+      expect(git('status', '--porcelain')).toBe('');
+    });
+
+    it('doctor names an earlier install as the cause of a dirty clone, with the fix', () => {
+      seedClone();
+      writeFileSync(
+        cloneManifest(),
+        JSON.stringify(
+          {
+            _note: 'Hooks managed by install.mjs in settings.json — this file cleared to prevent duplicates',
+            hooks: {},
+          },
+          null,
+          2,
+        ) + '\n',
+      );
+      let out;
+      try {
+        out = runInstall('doctor', home, [], { PATH: `${binDir}:${AMBIENT_PATH}` });
+      } catch (e) {
+        out = `${e.stdout}${e.stderr}`;
+      }
+      expect(out).toMatch(/Marketplace clone: 1 uncommitted change/);
+      expect(out).toMatch(/emptied by an earlier install of qwen-mem-lite/);
+      expect(out).toMatch(/checkout -- hooks\/hooks\.json/);
+    });
+
+    it('an edit that is not ours stays', () => {
+      seedClone();
+      const theirs = JSON.stringify({ description: 'mine', hooks: {} }, null, 2) + '\n';
+      writeFileSync(cloneManifest(), theirs);
+      runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
+      expect(readFileSync(cloneManifest(), 'utf8')).toBe(theirs);
+    });
+
+    // v6.28.0 pre-tag review, install P3-5 (home M): on a plugin + direct machine whose clone an
+    // earlier install emptied, cleanup-hooks removed the settings.json hooks, left the clone
+    // emptied, and told the user to reinstall the plugin, skipping the restore install does.
+    it("cleanup-hooks puts back an earlier install's emptied clone manifest and names the copy", () => {
+      seedClone();
+      writeFileSync(
+        cloneManifest(),
+        JSON.stringify(
+          {
+            _note: 'Hooks managed by install.mjs in settings.json — this file cleared to prevent duplicates',
+            hooks: {},
+          },
+          null,
+          2,
+        ) + '\n',
+      );
+      const cache = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', '6.27.0');
+      mkdirSync(join(cache, 'hooks'), { recursive: true });
+      mkdirSync(join(cache, 'scripts'), { recursive: true });
+      writeFileSync(join(cache, 'scripts', 'launch.mjs'), '// launcher\n');
+      writeFileSync(join(cache, 'package.json'), '{"name":"qwen-mem-lite","version":"6.27.0"}');
+      writeFileSync(join(cache, 'hooks', 'hooks.json'), JSON.stringify({ hooks: {} }));
+      writeFileSync(
+        join(home, '.claude', 'plugins', 'installed_plugins.json'),
+        JSON.stringify({
+          version: 2,
+          plugins: { 'qwen-mem-lite@thenewnano': [{ installPath: cache, version: '6.27.0' }] },
+        }),
+      );
+      const ours = `node "${join(home, '.qwen-mem-lite', 'scripts', 'hook-launcher.mjs')}" hook.mjs stop`;
+      writeFileSync(
+        join(home, '.claude', 'settings.json'),
+        JSON.stringify({
+          enabledPlugins: { 'qwen-mem-lite@thenewnano': true },
+          hooks: { Stop: [{ matcher: '*', hooks: [{ type: 'command', command: ours }] }] },
+        }),
+      );
+      const out = runInstall('cleanup-hooks', home, [], { PATH: `${binDir}:${AMBIENT_PATH}` });
+      expect(out).toMatch(/Removed 1 qwen-mem-lite hook configuration/);
+      expect(readFileSync(cloneManifest(), 'utf8')).toBe(UPSTREAM);
+      expect(git('status', '--porcelain')).toBe('');
+      expect(out).toMatch(/put back hooks\/hooks\.json/);
+      expect(out).toMatch(/every hook is now unregistered/);
+      expect(out).toMatch(
+        /Repair: cp .*marketplaces\/thenewnano\/hooks\/hooks\.json .*6\.27\.0\/hooks\/hooks\.json/,
+      );
+      expect(out).not.toMatch(/reinstall the plugin/);
+    });
+  });
+
   it('status shows MCP registered and hooks configured', () => {
-    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
-    const output = runInstall('status', home, [], { PATH: `${binDir}:${process.env.PATH}` });
+    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
+    const output = runInstall('status', home, [], { PATH: `${binDir}:${AMBIENT_PATH}` });
 
     expect(output).toContain('MCP server: registered');
     expect(output).toContain('Hooks:');
   });
 
   it('uninstall removes hooks and MCP but preserves data', () => {
-    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
+    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
 
     const dataDir = join(home, '.qwen-mem-lite');
     expect(existsSync(dataDir)).toBe(true);
 
-    runInstall('uninstall', home, [], { PATH: `${binDir}:${process.env.PATH}` });
+    runInstall('uninstall', home, [], { PATH: `${binDir}:${AMBIENT_PATH}` });
 
     // Hooks should be removed from settings
     const settings = readJson(join(home, '.claude', 'settings.json'));
@@ -426,13 +631,425 @@ describe('E2E: Direct install mode (git clone / npx)', () => {
     expect(existsSync(dataDir)).toBe(true);
   });
 
+  // E2E 2026-10-16 (install P2-8): with npm's prefix at ~/.local, `npm i -g qwen-mem-lite`
+  // owns ~/.local/bin/qwen-mem-lite. install repointed that link at the managed install and
+  // uninstall deleted it, so the global command was gone while its package stayed installed.
+  it('install and uninstall leave a qwen-mem-lite command they do not own', () => {
+    const pkgCli = join(home, '.local', 'lib', 'node_modules', 'qwen-mem-lite', 'cli.mjs');
+    mkdirSync(dirname(pkgCli), { recursive: true });
+    writeFileSync(pkgCli, '#!/usr/bin/env node\n');
+    const link = join(home, '.local', 'bin', 'qwen-mem-lite');
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync('../lib/node_modules/qwen-mem-lite/cli.mjs', link);
+
+    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
+    expect(readlinkSync(link)).toBe('../lib/node_modules/qwen-mem-lite/cli.mjs');
+    runInstall('uninstall', home, [], { PATH: `${binDir}:${AMBIENT_PATH}` });
+    expect(readlinkSync(link)).toBe('../lib/node_modules/qwen-mem-lite/cli.mjs');
+  });
+
+  it('uninstall removes the CLI link install created', () => {
+    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
+    const link = join(home, '.local', 'bin', 'qwen-mem-lite');
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    runInstall('uninstall', home, [], { PATH: `${binDir}:${AMBIENT_PATH}` });
+    expect(existsSync(link)).toBe(false);
+  });
+
+  // E2E 2026-10-16 (install P2-3): with no `claude` on PATH (Claude Code reached through a shell
+  // alias, say) the removal threw ENOENT, the catch swallowed it, and uninstall reported "MCP
+  // server not found or already removed" while ~/.claude.json still registered it.
+  it('uninstall says it could not run claude, instead of "not found"', () => {
+    const nodeOnly = join(home, 'node-only-bin');
+    mkdirSync(nodeOnly, { recursive: true });
+    symlinkSync(process.execPath, join(nodeOnly, 'node'));
+    const out = runInstall('uninstall', home, [], { PATH: `${nodeOnly}:/usr/bin:/bin` });
+    expect(out).not.toMatch(/not found or already removed/);
+    expect(out).toMatch(/could not run `claude`/);
+    // Nothing is registered in this home, so there is no removal command to give (pre-tag review
+    // 2026-10-17 P3-4); the registered case below asserts it.
+  });
+
+  // E2E 2026-10-16 round 2 (install B8): with no `claude` on PATH install printed "✗ MCP
+  // registration failed: spawnSync claude ENOENT", then "Done!", and exited 0 — no mem_* tools,
+  // and nothing a script or a skimming reader could catch.
+  it('install ends on a failed MCP registration and exits non-zero', () => {
+    const nodeOnly = join(home, 'node-only-bin');
+    mkdirSync(nodeOnly, { recursive: true });
+    symlinkSync(process.execPath, join(nodeOnly, 'node'));
+    let stdout;
+    let status = 0;
+    try {
+      stdout = runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${nodeOnly}:/usr/bin:/bin` });
+    } catch (e) {
+      status = e.status;
+      stdout = e.stdout || '';
+    }
+    expect(stdout).toMatch(/MCP registration failed/);
+    // Its own code, so repair can tell "installed, MCP not registered" from a failed install.
+    expect(status).toBe(3);
+    expect(stdout).not.toMatch(/Done! Restart Claude Code/);
+    expect(stdout.trim().split('\n').pop()).toMatch(/MCP server is NOT registered/);
+  });
+
+  // repair re-runs a verified release's install; with B8's exit code that read as "Repair failed"
+  // (and the manual curl fallback) for a resync that worked, on a machine whose hook env cannot
+  // run `claude`.
+  it('repair takes "installed, MCP not registered" as a resync with a warning', async () => {
+    const { runRepairInstaller, EXIT_MCP_UNREGISTERED } = await import('../install.mjs');
+    const fail = (status) => () => {
+      throw Object.assign(new Error(`exit ${status}`), { status });
+    };
+    expect(runRepairInstaller('/x/install.mjs', () => {})).toEqual({ mcpRegistered: true });
+    expect(runRepairInstaller('/x/install.mjs', fail(EXIT_MCP_UNREGISTERED))).toEqual({
+      mcpRegistered: false,
+    });
+    expect(() => runRepairInstaller('/x/install.mjs', fail(1))).toThrow(/exit 1/);
+  });
+
+  // The same failure over a registration that already runs this install's server leaves the
+  // install whole (`claude` reached through a shell alias, re-running install): not a failure.
+  it('install keeps a registration that already runs its server when claude cannot run', () => {
+    const nodeOnly = join(home, 'node-only-bin');
+    mkdirSync(nodeOnly, { recursive: true });
+    symlinkSync(process.execPath, join(nodeOnly, 'node'));
+    const server = join(home, '.qwen-mem-lite', 'server.mjs');
+    writeFileSync(
+      join(home, '.claude.json'),
+      JSON.stringify({ mcpServers: { 'mem-lite': { type: 'stdio', command: 'node', args: [server] } } }),
+    );
+    const stdout = runInstall('install', home, ['--dev', '--skip-repos'], {
+      PATH: `${nodeOnly}:/usr/bin:/bin`,
+    });
+    expect(stdout).toMatch(/already registered/);
+    expect(stdout).toMatch(/Done! Restart Claude Code/);
+  });
+
+  // E2E 2026-10-16 (install P2-9): the note named only the CLAUDE.md block an explicit adopt
+  // writes; the CLAUDE.local.md block every session writes went unmentioned.
+  it('uninstall names the CLAUDE.local.md blocks it leaves behind', () => {
+    const out = runInstall('uninstall', home, [], { PATH: `${binDir}:${AMBIENT_PATH}` });
+    expect(out).toMatch(/CLAUDE\.local\.md/);
+    expect(out).toMatch(/unadopt --all/);
+  });
+
+  // E2E 2026-10-16 (install P2-5): install read the row count and printed "✓ Database
+  // accessible" over a store written by a NEWER release, which nothing it installed can open
+  // (the rollback path: `git checkout vX && node install.mjs install`).
+  it('install warns over a database a newer release wrote', () => {
+    const dataDir = join(home, '.qwen-mem-lite');
+    mkdirSync(dataDir, { recursive: true });
+    const db = new Database(join(dataDir, 'qwen-mem-lite.db'));
+    initSchema(db);
+    db.prepare('UPDATE schema_version SET version = ?').run(CURRENT_SCHEMA_VERSION + 1);
+    db.close();
+    const out = runInstall('install', home, ['--dev', '--skip-repos'], {
+      PATH: `${binDir}:${AMBIENT_PATH}`,
+    });
+    expect(out).toMatch(/written by a newer qwen-mem-lite/);
+    expect(out).not.toMatch(/✓ Database accessible/);
+  });
+
+  // E2E 2026-10-16 (install P2-4): a root-owned ~/.claude (after a `sudo claude` run) let install
+  // copy files, run npm and register MCP, then die on the settings.json write with a raw stack.
+  it.skipIf(process.getuid?.() === 0)('install refuses an unwritable ~/.claude before doing anything', () => {
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    chmodSync(join(home, '.claude'), 0o555);
+    try {
+      let out = '';
+      let status = 0;
+      try {
+        out = runInstall('install', home, ['--dev', '--skip-repos'], {
+          PATH: `${binDir}:${AMBIENT_PATH}`,
+        });
+      } catch (e) {
+        status = e.status;
+        out = `${e.stdout || ''}${e.stderr || ''}`;
+      }
+      expect(status).toBe(1);
+      expect(out).toMatch(/is not writable .* nothing was done/);
+      expect(out).not.toMatch(/\n\s+at /); // no stack
+      expect(existsSync(join(home, '.qwen-mem-lite', 'server.mjs'))).toBe(false);
+    } finally {
+      chmodSync(join(home, '.claude'), 0o755);
+    }
+  });
+
+  // v6.28.0 pre-tag review, install P3-2: an ABSENT config home passed the precheck (ENOENT reads
+  // as usable), so with its parent read-only install copied files, linked the CLI, tried MCP, then
+  // died creating the directory with a raw EACCES stack.
+  it.skipIf(process.getuid?.() === 0)(
+    'install refuses an absent config home whose parent it cannot write, before doing anything',
+    () => {
+      const ro = join(home, 'ro');
+      mkdirSync(ro, { recursive: true });
+      chmodSync(ro, 0o555);
+      try {
+        let out = '';
+        let status = 0;
+        try {
+          out = runInstall('install', home, ['--dev', '--skip-repos'], {
+            PATH: `${binDir}:${AMBIENT_PATH}`,
+            CLAUDE_CONFIG_DIR: join(ro, 'claude'),
+          });
+        } catch (e) {
+          status = e.status;
+          out = `${e.stdout || ''}${e.stderr || ''}`;
+        }
+        expect(status, out).toBe(1);
+        expect(out).toMatch(/ro is not writable .*ro\/claude cannot be created .* nothing was done/);
+        expect(out).not.toMatch(/\n\s+at /); // no stack
+        expect(existsSync(join(home, '.qwen-mem-lite', 'server.mjs'))).toBe(false);
+        expect(existsSync(join(home, '.local', 'bin', 'qwen-mem-lite'))).toBe(false);
+      } finally {
+        chmodSync(ro, 0o755);
+      }
+    },
+  );
+
+  // Round 2 (install B7): the precheck covered install only. uninstall removed the MCP server and
+  // the CLI link, then died on the settings.json write with a raw EACCES stack — every hook still
+  // registered and firing; cleanup-hooks printed the stack straight away.
+  for (const cmd of ['uninstall', 'cleanup-hooks']) {
+    it.skipIf(process.getuid?.() === 0)(
+      `${cmd} refuses an unwritable ~/.claude before doing anything`,
+      () => {
+        runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
+        const settingsBefore = readFileSync(join(home, '.claude', 'settings.json'), 'utf8');
+        const mcpBefore = readFileSync(join(home, '.claude', 'mcp-state.txt'), 'utf8');
+        chmodSync(join(home, '.claude'), 0o555);
+        try {
+          let out = '';
+          let status = 0;
+          try {
+            out = runInstall(cmd, home, [], { PATH: `${binDir}:${AMBIENT_PATH}` });
+          } catch (e) {
+            status = e.status;
+            out = `${e.stdout || ''}${e.stderr || ''}`;
+          }
+          expect(status).toBe(1);
+          expect(out).toMatch(/is not writable .* nothing was done/);
+          expect(out).not.toMatch(/\n\s+at /);
+        } finally {
+          chmodSync(join(home, '.claude'), 0o755);
+        }
+        expect(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')).toBe(settingsBefore);
+        expect(readFileSync(join(home, '.claude', 'mcp-state.txt'), 'utf8')).toBe(mcpBefore);
+      },
+    );
+  }
+
+  // Round 3 (install STILL-BROKEN-3): settings.json may be a symlink (dotfiles, Nix home-manager),
+  // and the atomic write puts its temp file beside the TARGET; a read-only target directory got
+  // the half-done uninstall and the raw stack back.
+  it.skipIf(process.getuid?.() === 0)(
+    'uninstall refuses when a symlinked settings.json points into a read-only directory',
+    () => {
+      const store = join(home, 'ro-store');
+      mkdirSync(store, { recursive: true });
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      writeFileSync(join(store, 'settings.json'), '{}');
+      symlinkSync(join(store, 'settings.json'), join(home, '.claude', 'settings.json'));
+      runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
+      const mcpBefore = readFileSync(join(home, '.claude', 'mcp-state.txt'), 'utf8');
+      chmodSync(store, 0o555);
+      try {
+        let out = '';
+        let status = 0;
+        try {
+          out = runInstall('uninstall', home, [], { PATH: `${binDir}:${AMBIENT_PATH}` });
+        } catch (e) {
+          status = e.status;
+          out = `${e.stdout || ''}${e.stderr || ''}`;
+        }
+        expect(status).toBe(1);
+        expect(out).toMatch(/ro-store is not writable .* nothing was done/);
+        expect(out).not.toMatch(/\n\s+at /);
+      } finally {
+        chmodSync(store, 0o755);
+      }
+      expect(readFileSync(join(home, '.claude', 'mcp-state.txt'), 'utf8')).toBe(mcpBefore);
+    },
+  );
+
+  // Round 3 (install NEW-6): status and doctor read the user scope only, so in a project whose
+  // .claude/settings(.local).json overrides it they reported the opposite of what the hooks do.
+  it('status and doctor name a project-scope override of the plugin switch', () => {
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(
+      join(home, '.claude', 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'qwen-mem-lite@thenewnano': false } }),
+    );
+    const proj = join(home, 'work', 'app');
+    mkdirSync(join(proj, '.claude'), { recursive: true });
+    writeFileSync(
+      join(proj, '.claude', 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'qwen-mem-lite@thenewnano': true } }),
+    );
+    for (const cmd of ['status', 'doctor']) {
+      let out;
+      try {
+        out = execFileSync(process.execPath, [INSTALL_PATH, cmd], {
+          encoding: 'utf8',
+          cwd: proj,
+          env: {
+            ...process.env,
+            HOME: home,
+            QWEN_MEM_SKIP_REPOS: '1',
+            MEM_NO_AUTO_ADOPT: '1',
+            CLAUDE_PROJECT_DIR: proj,
+          },
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: 60000,
+        });
+      } catch (e) {
+        out = `${e.stdout || ''}${e.stderr || ''}`;
+      }
+      expect(out, cmd).toMatch(/enabled in this project/);
+    }
+  });
+
+  // Round 2 (install B8): any failure of `claude mcp remove` but ENOENT read as "not found or
+  // already removed" while ~/.claude.json still registered the server.
+  it('uninstall names a registration `claude mcp remove` failed to remove', () => {
+    const failBin = join(home, 'failbin');
+    mkdirSync(failBin, { recursive: true });
+    writeFileSync(join(failBin, 'claude'), '#!/usr/bin/env bash\necho "boom" >&2\nexit 1\n');
+    chmodSync(join(failBin, 'claude'), 0o755);
+    writeFileSync(
+      join(home, '.claude.json'),
+      JSON.stringify({ mcpServers: { 'mem-lite': { command: 'node', args: ['/x/server.mjs'] } } }),
+    );
+    let out;
+    let status = 0;
+    try {
+      out = runInstall('uninstall', home, [], { PATH: `${failBin}:${AMBIENT_PATH}` });
+    } catch (e) {
+      status = e.status;
+      out = e.stdout || '';
+    }
+    expect(out).not.toMatch(/not found or already removed/);
+    expect(out).toMatch(/still registered/);
+    expect(out).toMatch(/claude mcp remove -s user mem-lite/);
+    // v6.28.0 pre-tag review, install P3-3: and exited 0 after "Done!", the leftover read as success.
+    expect(status).toBe(3);
+    expect(out.trim().split('\n').pop()).toMatch(/MCP server is still registered/);
+  });
+
+  // v6.28.0 pre-tag review, install P3-3: with no `claude` on PATH uninstall warned, printed
+  // "Done!" and exited 0 while ~/.claude.json still registered mem-lite, so `uninstall && …` read
+  // the leftover as success. install exits 3 for the mirror case.
+  it('uninstall exits 3 when claude cannot run and the registration is still there', () => {
+    const nodeOnly = join(home, 'node-only-bin');
+    mkdirSync(nodeOnly, { recursive: true });
+    symlinkSync(process.execPath, join(nodeOnly, 'node'));
+    writeFileSync(
+      join(home, '.claude.json'),
+      JSON.stringify({ mcpServers: { 'mem-lite': { command: 'node', args: ['/x/server.mjs'] } } }),
+    );
+    let out;
+    let status = 0;
+    try {
+      out = runInstall('uninstall', home, [], { PATH: `${nodeOnly}:/usr/bin:/bin` });
+    } catch (e) {
+      status = e.status;
+      out = e.stdout || '';
+    }
+    expect(out).toMatch(/could not run `claude`/);
+    expect(out).toMatch(/claude mcp remove -s user mem-lite/);
+    expect(status).toBe(3);
+    expect(out).not.toMatch(/Done!/);
+    expect(out.trim().split('\n').pop()).toMatch(/MCP server is still registered/);
+  });
+
+  // Pre-tag review 2026-10-17 P3-4: two uninstall states printed lines that contradict each other.
+  it('uninstall with no `claude` and nothing registered gives no removal command to run', () => {
+    const nodeOnly = join(home, 'node-only-bin-2');
+    mkdirSync(nodeOnly, { recursive: true });
+    symlinkSync(process.execPath, join(nodeOnly, 'node'));
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: {} }));
+    const out = runInstall('uninstall', home, [], { PATH: `${nodeOnly}:/usr/bin:/bin` });
+    expect(out).not.toMatch(/claude mcp remove -s user/);
+    expect(out).not.toMatch(/was not removed/);
+    expect(out).toMatch(/could not run `claude`/);
+    expect(out).toMatch(/Done!/);
+  });
+
+  it('uninstall does not report a removal `claude` exited 0 on while the entry stayed', () => {
+    const liarBin = join(home, 'liarbin');
+    mkdirSync(liarBin, { recursive: true });
+    writeFileSync(join(liarBin, 'claude'), '#!/usr/bin/env bash\nexit 0\n');
+    chmodSync(join(liarBin, 'claude'), 0o755);
+    writeFileSync(
+      join(home, '.claude.json'),
+      JSON.stringify({ mcpServers: { 'mem-lite': { command: 'node', args: ['/x/server.mjs'] } } }),
+    );
+    let out;
+    let status = 0;
+    try {
+      out = runInstall('uninstall', home, [], { PATH: `${liarBin}:${AMBIENT_PATH}` });
+    } catch (e) {
+      status = e.status;
+      out = e.stdout || '';
+    }
+    expect(out).not.toMatch(/MCP server removed: mem-lite/);
+    expect(out).toMatch(/still registered/);
+    expect(status).toBe(3);
+  });
+
+  // Round 2 (install B15): install printed "✓ CLI: ~/.local/bin/qwen-mem-lite → …" with that
+  // directory off PATH, so the command it announced was not found; only `status` said so.
+  it('install says when the directory it linked the CLI into is not on PATH', () => {
+    const localBin = join(home, '.local', 'bin');
+    const off = runInstall('install', home, ['--dev', '--skip-repos'], {
+      PATH: `${binDir}:${AMBIENT_PATH}`,
+    });
+    expect(off).toMatch(/CLI: .*qwen-mem-lite →/);
+    expect(off).toMatch(/not on PATH/);
+    const on = runInstall('install', home, ['--dev', '--skip-repos'], {
+      PATH: `${localBin}:${binDir}:${AMBIENT_PATH}`,
+    });
+    expect(on).toMatch(/CLI: .*qwen-mem-lite →/);
+    expect(on).not.toMatch(/\.local\/bin is not on PATH/);
+    // Round 3 (install NEW-7): a quoted `export PATH="~/.local/bin:$PATH"` leaves a literal ~,
+    // which bash expands at lookup; it was called off PATH.
+    const tilde = runInstall('install', home, ['--dev', '--skip-repos'], {
+      PATH: `~/.local/bin:${binDir}:${AMBIENT_PATH}`,
+    });
+    expect(tilde).not.toMatch(/\.local\/bin is not on PATH/);
+    // Round 4 (install STILL-BROKEN-1): status asked the same question through its own lookup.
+    const status = runInstall('status', home, [], { PATH: `~/.local/bin:${binDir}:${AMBIENT_PATH}` });
+    expect(status).not.toMatch(/\.local\/bin is not on PATH/);
+    expect(status).toMatch(/literal ~/);
+  });
+
+  // v6.28.0 pre-tag review, install P3-4: the PATH check compared spellings, so with ~/.local a
+  // symlink and PATH holding its target, install said "not on PATH" about a command that resolved.
+  it('install and status find the CLI directory on PATH through a symlinked ~/.local', () => {
+    mkdirSync(join(home, 'real-local'), { recursive: true });
+    symlinkSync(join(home, 'real-local'), join(home, '.local'));
+    const real = runInstall('install', home, ['--dev', '--skip-repos'], {
+      PATH: `${join(home, 'real-local', 'bin')}:${binDir}:${AMBIENT_PATH}`,
+    });
+    expect(real).toMatch(/CLI: .*qwen-mem-lite →/);
+    expect(real).not.toMatch(/\.local\/bin is not on PATH/);
+    // The literal-~ spelling of the target (bash expands it at lookup) is the same directory too.
+    const tilde = runInstall('install', home, ['--dev', '--skip-repos'], {
+      PATH: `~/real-local/bin:${binDir}:${AMBIENT_PATH}`,
+    });
+    expect(tilde).not.toMatch(/\.local\/bin is not on PATH/);
+    const status = runInstall('status', home, [], { PATH: `~/real-local/bin:${binDir}:${AMBIENT_PATH}` });
+    expect(status).not.toMatch(/\.local\/bin is not on PATH/);
+    expect(status).toMatch(/literal ~/);
+  });
+
   it('uninstall --purge removes data directory', () => {
-    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
+    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
 
     const dataDir = join(home, '.qwen-mem-lite');
     expect(existsSync(dataDir)).toBe(true);
 
-    runInstall('uninstall', home, ['--purge'], { PATH: `${binDir}:${process.env.PATH}` });
+    runInstall('uninstall', home, ['--purge'], { PATH: `${binDir}:${AMBIENT_PATH}` });
 
     expect(existsSync(dataDir)).toBe(false);
   });
@@ -453,7 +1070,7 @@ describe('E2E: Dev install mode (git clone --dev)', () => {
   });
 
   it('--dev creates symlinks instead of copies', () => {
-    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
+    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
 
     const dataDir = join(home, '.qwen-mem-lite');
 
@@ -465,13 +1082,15 @@ describe('E2E: Dev install mode (git clone --dev)', () => {
     const scriptsLink = join(dataDir, 'scripts');
     expect(existsSync(scriptsLink)).toBe(true);
 
-    // node_modules should be a symlink
+    // node_modules should be a symlink, to a tree that holds the dependencies: in a worktree nested
+    // in the main checkout, with no node_modules of its own, it dangled (D#489).
     const nmLink = join(dataDir, 'node_modules');
     expect(existsSync(nmLink)).toBe(true);
+    expect(existsSync(join(nmLink, 'better-sqlite3', 'package.json'))).toBe(true);
   });
 
   it('--dev hooks point to ~/.qwen-mem-lite/ (via symlinks)', () => {
-    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
+    runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
 
     const settings = readJson(join(home, '.claude', 'settings.json'));
     const dataDir = join(home, '.qwen-mem-lite');
@@ -507,7 +1126,7 @@ describe('E2E: Smart invocation scripts deployed', () => {
     const home = makeTmpDir();
     const binDir = makeFakeClaudeBin(home);
     try {
-      runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${process.env.PATH}` });
+      runInstall('install', home, ['--dev', '--skip-repos'], { PATH: `${binDir}:${AMBIENT_PATH}` });
 
       const dataDir = join(home, '.qwen-mem-lite');
       // --dev mode creates a scripts symlink → all scripts accessible
@@ -711,7 +1330,7 @@ describe('E2E: Migration from older versions', () => {
       writeFileSync(join(oldDir, 'claude-mem.db'), 'fake-legacy-db');
 
       const output = runInstall('install', home, ['--dev', '--skip-repos'], {
-        PATH: `${binDir}:${process.env.PATH}`,
+        PATH: `${binDir}:${AMBIENT_PATH}`,
       });
       expect(output).toMatch(/backed up|backup/i);
 
@@ -739,7 +1358,7 @@ describe('E2E: Migration from older versions', () => {
       writeFileSync(join(dataDir, 'claude-mem.db'), 'old-name-db');
 
       const output = runInstall('install', home, ['--dev', '--skip-repos'], {
-        PATH: `${binDir}:${process.env.PATH}`,
+        PATH: `${binDir}:${AMBIENT_PATH}`,
       });
       expect(output).toContain('renamed');
 

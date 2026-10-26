@@ -3,15 +3,14 @@ name: bug
 description: "Use when: logging a known bug + repro steps you can't fix right now. Writes a searchable observation (findable via mem_search + surfaced by recall hooks; still NOT memdir). Skip for bugs you're actively fixing in the current turn — just fix them."
 ---
 
-# /bug
+# /qwen-mem-lite:bug
 
 Record a known bug + reproduction steps. Writes a searchable **observation**
 (`type=bugfix`, description in `lesson_learned`) so future sessions can find it
 via `mem_search` and the PreToolUse recall hooks warn when the affected files
 are edited. Does NOT touch memdir. Useful for bugs you can't fix immediately
 but want future sessions (or yourself after `/clear`) to know about and avoid
-re-investigating. (Redirected v3.39: was the `events` table, which `mem_search`
-never read.)
+re-investigating.
 
 ## When to use
 
@@ -60,5 +59,5 @@ Confirm to user with: `Bug logged: #<id>`.
 
 ## Examples
 
-- `/bug intermittent test flake when DB is under load --repro "run pnpm test -- --retry=0; fails ~1 in 20 runs when CPU is busy"`.
-- `/bug --file src/auth.mjs --severity high "session refresh drops the X-Forwarded-For header"` — no repro steps, just a high-severity note.
+- `/qwen-mem-lite:bug intermittent test flake when DB is under load --repro "run pnpm test -- --retry=0; fails ~1 in 20 runs when CPU is busy"`.
+- `/qwen-mem-lite:bug --file src/auth.mjs --severity high "session refresh drops the X-Forwarded-For header"` — no repro steps, just a high-severity note.

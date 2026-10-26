@@ -1,6 +1,7 @@
 ---
 name: update
 description: "Use when: search results seem noisy or for periodic memory maintenance"
+disable-model-invocation: true
 ---
 
 # Memory Maintenance
@@ -9,23 +10,25 @@ Run intelligent maintenance on the memory database.
 
 ## Usage
 
-- `/mem:update` — Run full maintenance cycle
+- `/qwen-mem-lite:update` — Run full maintenance cycle
 
 ## Instructions
 
-When the user invokes `/mem:update`, perform the following maintenance cycle:
+When the user invokes `/qwen-mem-lite:update`, perform the following maintenance cycle:
 
 ### Phase 1: Memory Maintenance
 
-1. Call `mem_maintain(action="scan")` to analyze maintenance candidates
+Run each command below via Bash; the CLI reaches the maintenance operations whether or not their MCP tools are in your tool list.
+
+1. Run `node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" maintain scan` to analyze maintenance candidates
 2. Report scan results to the user (duplicates, stale items, broken items, boostable items, **pending purge** items)
-3. Call `mem_maintain(action="execute", operations=["cleanup","decay","boost"])` to apply safe automatic changes
-4. If duplicates were found in scan, review them and call `mem_maintain(action="execute", operations=["dedup"], merge_ids=[[keepId, removeId1, ...], ...])` — keep the more important/recent observation in each pair
-5. Run `mem_compress(preview=false)` for old low-value observations
-6. **If pending purge items > 0**: Report the count to the user and ask for confirmation. If confirmed, call `mem_maintain(action="execute", operations=["purge_stale"], confirm=true)`. **`confirm=true` is required:** without it the call returns a dry-run preview and deletes nothing while still succeeding, so you would report a purge that never happened. User may optionally specify `retain_days` (default 30, allowed range 7–365) to control how many days of data to keep. Do NOT purge without explicit user confirmation.
+3. **If pending purge items > 0**: first run the purge command below without `--confirm`: it prints how many rows it would delete and deletes nothing. If that count is 0, tell the user nothing is old enough to purge yet and go on to the next step. Otherwise report that count to the user and ask for confirmation. If confirmed, run `node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" maintain execute --ops purge_stale --confirm`. **`--confirm` is required:** without it the command prints a dry-run preview and deletes nothing while still succeeding, so you would report a purge that never happened. User may optionally add `--retain-days N` (default 30, allowed range 7–365) to both runs to control how many days of data to keep; the CLI rejects a value outside that range, so tell the user instead of substituting the default. Do NOT purge without explicit user confirmation. The purge comes before the next step on purpose: decay there queues more rows for purge, and those wait for a later run instead of joining the purge the user approved.
+4. Run `node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" maintain execute` to apply safe automatic changes — with no `--ops` it runs the default set: cleanup, decay, boost, then demote_pinned (left out when `QWEN_MEM_SKIP_DEMOTE_PINNED=1`)
+5. If duplicates were found in scan, review them and run `node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" maintain execute --ops dedup --merge-ids keepId:removeId,...` — keep the more important/recent observation in each pair. Groups are comma-separated and the first id in each is kept (`10:11,20:21:22`). For pairs similar enough to merge without review the scan prints a ready-to-run command after `Ready-to-use:`; run it as printed. Judge each pair under `Needs review:` from the two lines the scan prints below it; do not read them with `get`: that counts as an access and can raise a row's importance
+6. Run `node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" compress --execute` for old low-value observations (without `--execute` it only previews)
 
 ### Phase 2: Summary
 
-Summarize all maintenance actions taken in zh-CN:
-- Memory: observations cleaned, decayed, boosted, deduplicated, compressed
+Summarize all maintenance actions taken in the user's language:
+- Memory: observations cleaned, decayed, boosted, demoted, deduplicated, compressed
 - Overall health assessment

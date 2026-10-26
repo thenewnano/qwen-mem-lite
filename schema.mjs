@@ -7,6 +7,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, chmodSync } from 'fs';
 import { OBS_FTS_COLUMNS, debugCatch } from './utils.mjs';
+import { eventSearchTerms, missingCjkIndexTerms } from './nlp.mjs';
 // Imported, never re-declared: a hand-copied marker string is this repo's twin-drift
 // class, and every consumer of the forward-incompat throw keys on this exact value.
 // schema-skew.mjs imports nothing local, so this closes no cycle.
@@ -22,7 +23,9 @@ import { isFtsCorruptionError } from './lib/db-unusable.mjs';
 // See lib/data-paths.mjs and tests/repair-path-no-native-dep.test.mjs.
 import { DB_DIR, DB_PATH, CODE_DIR } from './lib/data-paths.mjs';
 import { DB_BUSY_TIMEOUT_MS } from './lib/time-constants.mjs';
+import { isDbBusyError } from './lib/db-busy.mjs';
 import { workerDirGone } from './lib/worker-data-dir.mjs';
+import { looksAlreadyDerived } from './lib/observation-write.mjs';
 export { DB_DIR, DB_PATH, CODE_DIR };
 
 // Increment when schema changes (tables, columns, indexes, FTS, migrations)
@@ -205,6 +208,10 @@ const LATEST_MIGRATION_COLUMNS = [
   { table: 'observations', column: 'importance_set_at' },
   // D12, same again (tests/maintain-hide-then-purge.test.mjs).
   { table: 'observations', column: 'hidden_at' },
+  // d366, no bump either. Keyed on the INDEX column rather than events.search_terms: the pass
+  // must also run when the column exists but events_fts is still (or again) the 4-column shape
+  // (tests/events-cjk-search.test.mjs pins the upgrade).
+  { table: 'events_fts', column: 'search_terms' },
   { table: 'observations', column: 'last_access_session_id' }, // v48
   { table: 'observations', column: 'decay_seen_at_first_cite' }, // v46
   { table: 'citation_surface_log', column: 'surface' }, // v45
@@ -829,7 +836,8 @@ export function initSchema(db) {
       accessed_count       INTEGER NOT NULL DEFAULT 0,
       last_accessed_epoch  INTEGER,
       superseded_at_epoch  INTEGER,
-      superseded_by_id     INTEGER REFERENCES events(id)
+      superseded_by_id     INTEGER REFERENCES events(id),
+      search_terms         TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_events_project ON events(project);
     CREATE INDEX IF NOT EXISTS idx_events_type    ON events(event_type);
@@ -837,37 +845,33 @@ export function initSchema(db) {
     -- T7 compound: supports recentEvents() ORDER BY created_at_epoch DESC filtered by project (index-only sort, avoids temp B-tree).
     CREATE INDEX IF NOT EXISTS idx_events_project_created
       ON events(project, created_at_epoch DESC);
-
-    CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
-      title, body, event_type UNINDEXED, project UNINDEXED,
-      content='events', content_rowid='id',
-      tokenize="unicode61 remove_diacritics 2 tokenchars '_-'"
-    );
-
-    CREATE TRIGGER IF NOT EXISTS events_fts_ai AFTER INSERT ON events BEGIN
-      INSERT INTO events_fts(rowid, title, body, event_type, project)
-      VALUES (new.id, COALESCE(new.title,''), COALESCE(new.body,''), new.event_type, new.project);
-    END;
-
-    CREATE TRIGGER IF NOT EXISTS events_fts_ad AFTER DELETE ON events BEGIN
-      INSERT INTO events_fts(events_fts, rowid, title, body, event_type, project)
-      VALUES ('delete', old.id, COALESCE(old.title,''), COALESCE(old.body,''), old.event_type, old.project);
-    END;
-
-    -- v36: scoped to title, body (the FTS-indexed columns) so non-indexed bumps
-    -- (importance / accessed_count / citation-decay) no longer thrash events_fts.
-    CREATE TRIGGER IF NOT EXISTS events_fts_au AFTER UPDATE OF title, body ON events BEGIN
-      INSERT INTO events_fts(events_fts, rowid, title, body, event_type, project)
-      VALUES ('delete', old.id, COALESCE(old.title,''), COALESCE(old.body,''), old.event_type, old.project);
-      INSERT INTO events_fts(rowid, title, body, event_type, project)
-      VALUES (new.id, COALESCE(new.title,''), COALESCE(new.body,''), new.event_type, new.project);
-    END;
   `);
 
+  // d366: events.search_terms — the CJK segmentation (nlp.mjs eventSearchTerms) events_fts
+  // indexes as its fifth column, so a CJK substring or title query can match an event. The
+  // CREATE above carries it for a fresh DB; an existing one gets the ALTER here, and
+  // ensureEventsFTS below recreates the drifted (4-column) index with it. The rows written before
+  // it keep NULL (indexed as nothing, so found as 6.27.0 found them), and so does every event an
+  // older build writes later; every open fills a budget's worth of them from a partial index of
+  // exactly those rows (backfillEventSearchTerms, from ensureDb). Filled here, inside this
+  // one transaction, the pass took 12.6–25.5 s on a CJK-heavy 200,000-event store, a 5 s hook
+  // opening it first was killed with nothing committed, every time, and any process opening it
+  // meanwhile got SQLITE_BUSY (round-3 pre-tag review, 2026-10-17). Additive + nullable, no
+  // CURRENT_SCHEMA_VERSION bump — an older build opening this DB keeps writing events (the
+  // triggers index '' for its missing value). Not wrapped in a swallowing catch, unlike the ALTERs
+  // above: ensureEventsFTS installs triggers that read new.search_terms, so carrying on without
+  // the column would fail every event write. A throw here rolls the whole pass back and the next
+  // open retries it.
+  const eventCols = db
+    .prepare(`PRAGMA table_info(events)`)
+    .all()
+    .map((c) => c.name);
+  if (!eventCols.includes('search_terms')) db.exec(`ALTER TABLE events ADD COLUMN search_terms TEXT`);
+
   // v42: column-aware self-heal for events_fts (the one FTS table the generic ensureFTS can't
-  // manage - UNINDEXED cols + custom tokenizer + events_fts_* triggers). The CREATE ... IF NOT
-  // EXISTS above never widens a drifted (older, narrower) events_fts; this drops+recreates it on
-  // column drift and repopulates. No-op on a healthy DB.
+  // manage — UNINDEXED cols + custom tokenizer + events_fts_* triggers). Creates events_fts and its
+  // triggers on a fresh DB, and drops+recreates+repopulates a drifted (older, narrower) one. The
+  // DDL lives only there since d366: two hand-kept copies of it had to stay byte-identical.
   ensureEventsFTS(db);
 
   // Observation files junction table for normalized file lookups (replaces LIKE scans on files_modified JSON)
@@ -1245,7 +1249,302 @@ const DEFERRED_CLEANUPS = [
       }
     },
   },
+  {
+    // The observations written before the writers appended every CJK index term: d366 added the
+    // ASCII runs glued to CJK (`修复了redis连接池泄漏` yields `redis`; unicode61 indexes the mixed
+    // run as one token), and D#374 the CJK bigrams of lesson_learned / facts / concepts /
+    // search_aliases (the writers segmented title + narrative only). backfillObservationIndexTerms
+    // appends what each row lacks, a budget's worth per open; the marker is set once it reports
+    // done. It replaces `backfill-glued-ascii-runs`, which segmented every observation in one
+    // transaction on the first open (D#395) and could append twice under two openers (P3-1); a new
+    // name, so a store that finished that one runs this wider pass too. Events are
+    // backfillEventSearchTerms's.
+    name: 'backfill-cjk-index-terms',
+    run: (db) => {
+      // The old pass is marked done too: a 6.28.x opener of the same store (a global CLI beside
+      // the plugin, or the previous release's files mid-swap) would otherwise run it, unguarded,
+      // and append the glued runs a second time to rows this pass already filled (pre-tag review
+      // 2026-10-17 F1: 450 of 37,500 rows doubled).
+      db.prepare(
+        `INSERT OR IGNORE INTO migration_cleanups (name, done_at_epoch) VALUES ('backfill-glued-ascii-runs', ?)`,
+      ).run(Date.now());
+      return backfillObservationIndexTerms(db).done;
+    },
+  },
 ];
+
+/** Per-open budget of backfillObservationIndexTerms, checked after each row; the events fill's. */
+const OBS_TERMS_BUDGET_MS = 250;
+/** Rows read per batch; a batch is cut short where the budget runs out. */
+const OBS_TERMS_BATCH = 250;
+const OBS_TERMS_CURSOR = 'backfill-cjk-index-terms';
+const OBS_DOC_SQL = OBS_FTS_COLUMNS.map((c) => `COALESCE(${c}, '')`).join(` || ' ' || `);
+
+/**
+ * Append to each observation's `text` the CJK index terms (nlp.mjs missingCjkIndexTerms) that no
+ * column of the row carries as a standalone token yet, newest rows first. Rows are segmented one
+ * at a time outside any transaction until `budgetMs` has passed, and each batch is written in its
+ * own short IMMEDIATE transaction that does not wait for another writer: under a held lock this
+ * stops and leaves the rest to a later open, like backfillEventSearchTerms. Progress is a cursor
+ * (the id the walk continues below) in `migration_cursors`, created by the first batch, and
+ * written in the same transaction as the batch, so a killed process loses at most the batch it
+ * was segmenting and the next open resumes below the last one committed. The walk covers the rows
+ * that existed when it started; later rows come from the current writers. Inside the write
+ * transaction the batch re-checks the cursor (another opener wrote it meanwhile: skip it and
+ * continue below theirs) and each row's text (rewritten meanwhile: segment the row again), so two
+ * openers never append the same terms twice (CLI pre-tag review 2026-10-16 P3-1), and the append
+ * is done in SQL so a concurrent rewrite is never replaced by a stale copy. Not liveness-filtered:
+ * an index term on a hidden row is inert, and a row restored later is then already right. A row
+ * the update's repair would move into its narrative — a blank narrative (JS trim) and a `text`
+ * looksAlreadyDerived does not read as derived — is left alone, or the terms appended here would
+ * go with it into a visible field (pre-tag reviews 2026-10-17: R1 F3, a body imported before
+ * v3.69.0; round-2 P2-2, a hook-written blob whose file-name fallback terms that test misses,
+ * which an earlier draft here moved into the narrative itself). Returns how many rows it
+ * appended to and whether the walk is finished.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {{ budgetMs?: number, batchSize?: number, cursor?: string }} [opts] `cursor`: the name of
+ *   the walk's row in migration_cursors (recheckObservationIndexTerms walks on its own)
+ * @returns {{ appended: number, done: boolean }}
+ */
+export function backfillObservationIndexTerms(
+  db,
+  { budgetMs = OBS_TERMS_BUDGET_MS, batchSize = OBS_TERMS_BATCH, cursor = OBS_TERMS_CURSOR } = {},
+) {
+  const start = performance.now();
+  const prior = db.pragma('busy_timeout', { simple: true });
+  db.pragma('busy_timeout = 0');
+  try {
+    const cursorNow = () => {
+      const table = db
+        .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'migration_cursors'`)
+        .get();
+      const row = table && db.prepare(`SELECT below_id FROM migration_cursors WHERE name = ?`).get(cursor);
+      return row ? row.below_id : Number.MAX_SAFE_INTEGER;
+    };
+    const pick = db.prepare(
+      `SELECT id, ${OBS_DOC_SQL} AS doc FROM observations WHERE id < ? ORDER BY id DESC LIMIT ?`,
+    );
+    const docOf = db.prepare(`SELECT narrative, ${OBS_DOC_SQL} AS doc FROM observations WHERE id = ?`);
+    const fieldsOf = db.prepare(
+      `SELECT title, subtitle, concepts, facts, lesson_learned, search_aliases, text FROM observations WHERE id = ?`,
+    );
+    // The update repair's own condition (lib/observation-write.mjs rebuildObservationDerived), asked
+    // of the text as it would be after the append: decided on the text before it, an appended
+    // spelling the case-exact known set lacks made a derived blob read as a body (round-3 pre-tag
+    // review, 2026-10-17). A text that is no body before the append is none after it either.
+    const repairWouldMove = (id, narrative, terms) => {
+      if (String(narrative ?? '').trim()) return false;
+      const row = fieldsOf.get(id);
+      return !looksAlreadyDerived({ ...row, text: `${row.text ?? ''} ${terms}` });
+    };
+    const append = db.prepare(`UPDATE observations SET text = COALESCE(text, '') || ? WHERE id = ?`);
+    const write = db.transaction((rows, from, below) => {
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS migration_cursors (name TEXT PRIMARY KEY, below_id INTEGER NOT NULL)`,
+      );
+      if (cursorNow() !== from) return 0;
+      let n = 0;
+      for (const r of rows) {
+        const now = docOf.get(r.id);
+        if (!now) continue; // deleted meanwhile
+        const terms = now.doc === r.doc ? r.terms : missingCjkIndexTerms(now.doc);
+        // Decided here, under the write lock, on the row as it is now.
+        if (!terms || repairWouldMove(r.id, now.narrative, terms)) continue;
+        n += append.run(` ${terms}`, r.id).changes;
+      }
+      db.prepare(
+        `INSERT INTO migration_cursors (name, below_id) VALUES (?, ?)
+           ON CONFLICT(name) DO UPDATE SET below_id = excluded.below_id`,
+      ).run(cursor, below);
+      return n;
+    });
+    let appended = 0;
+    for (;;) {
+      const from = cursorNow();
+      const batch = pick.all(from, batchSize);
+      if (batch.length === 0) return { appended, done: true };
+      const rows = [];
+      let below = from;
+      for (const r of batch) {
+        const terms = missingCjkIndexTerms(r.doc);
+        if (terms) rows.push({ id: r.id, doc: r.doc, terms });
+        below = r.id;
+        if (performance.now() - start >= budgetMs) break;
+      }
+      try {
+        appended += write.immediate(rows, from, below);
+      } catch (e) {
+        if (isDbBusyError(e)) return { appended, done: false };
+        throw e;
+      }
+      if (performance.now() - start >= budgetMs) return { appended, done: false };
+    }
+  } finally {
+    db.pragma(`busy_timeout = ${Number.isInteger(prior) ? prior : DB_BUSY_TIMEOUT_MS}`);
+  }
+}
+
+/** How long recheckObservationIndexTerms keeps walking after its first run (D#413). */
+const OBS_TERMS_RECHECK_WINDOW_MS = 7 * 24 * 3600 * 1000;
+/** Its budget per run: the maintain worker has no host deadline, and its lock goes stale at 10 min. */
+const OBS_TERMS_RECHECK_BUDGET_MS = 30_000;
+/** Its cursor and done marker; the window's start is stored as `<name>-opened`. */
+const OBS_TERMS_RECHECK = 'recheck-cjk-index-terms';
+
+/**
+ * Walk the observations again for the CJK index terms an older build left out (D#413), once a day
+ * from the auto-maintain worker, for OBS_TERMS_RECHECK_WINDOW_MS from this function's first run on
+ * the store, then mark itself done. The open-time pass is marked done once, but an older build can
+ * go on writing the store for as long as a session started before the update lives: it inserts
+ * rows without these terms (live store 2026-10-17: 8 of the 36 rows its 6.27.0 code wrote after
+ * the fill) and rewrites a filled row's text without them (6.28.x mem_update), and no column says
+ * which rows a writer touched. The window starts at the first run, not at the open-time pass's
+ * marker, so a store whose pass finished long before this build arrived still gets a whole walk.
+ * Waits for the open-time pass to be done, so the two never walk at once. The walk is
+ * backfillObservationIndexTerms on a cursor of its own: a finished walk drops the cursor, so the
+ * next run starts from the top again; one cut short by its budget or another writer's lock keeps
+ * it, and the next run continues below it. Returns how many rows it appended to and whether it
+ * walked.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {{ now?: number, budgetMs?: number }} [opts]
+ * @returns {{ appended: number, ran: boolean }}
+ */
+export function recheckObservationIndexTerms(
+  db,
+  { now = Date.now(), budgetMs = OBS_TERMS_RECHECK_BUDGET_MS } = {},
+) {
+  const doneAt = db.prepare(`SELECT done_at_epoch FROM migration_cleanups WHERE name = ?`).pluck();
+  const mark = db.prepare(`INSERT OR IGNORE INTO migration_cleanups (name, done_at_epoch) VALUES (?, ?)`);
+  // 'backfill-cjk-index-terms' is the open-time pass's marker (DEFERRED_CLEANUPS).
+  if (doneAt.get('backfill-cjk-index-terms') === undefined || doneAt.get(OBS_TERMS_RECHECK) !== undefined)
+    return { appended: 0, ran: false };
+  mark.run(`${OBS_TERMS_RECHECK}-opened`, now);
+  if (now - doneAt.get(`${OBS_TERMS_RECHECK}-opened`) >= OBS_TERMS_RECHECK_WINDOW_MS) {
+    mark.run(OBS_TERMS_RECHECK, now);
+    return { appended: 0, ran: false };
+  }
+  const { appended, done } = backfillObservationIndexTerms(db, { budgetMs, cursor: OBS_TERMS_RECHECK });
+  const cursors = db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'migration_cursors'`)
+    .get();
+  if (done && cursors) db.prepare(`DELETE FROM migration_cursors WHERE name = ?`).run(OBS_TERMS_RECHECK);
+  return { appended, ran: true };
+}
+
+/**
+ * How long backfillEventSearchTerms runs per open, checked after each row it segments (its reads,
+ * segmentation and the writes before; the last batch's write comes on top):
+ * scripts/user-prompt-search.js opens under a 2 s host timeout.
+ */
+const EVENT_TERMS_BUDGET_MS = 250;
+/** Rows read per batch; a batch is cut short where the budget runs out. */
+const EVENT_TERMS_BATCH = 250;
+/**
+ * How long a batch write waits for another writer, and how many batches apart ensureDb starts
+ * openers (by pid): D#396, measured together (either alone gained nothing), see
+ * backfillEventSearchTerms.
+ */
+const EVENT_TERMS_WRITE_WAIT_MS = 100;
+const EVENT_TERMS_SPREAD = 4;
+
+/**
+ * Fill events.search_terms for the rows that have none, newest first, the most likely to be
+ * searched. They are read from idx_events_terms_pending, a partial index of exactly those rows,
+ * created here when missing, and named in the query: statistics sampled while many rows were
+ * pending (the MCP server's startup refreshPlannerStats) turned the planner to a rowid scan of
+ * every filled row, about 41 ms per open at 200,000 events once the fill was done (review,
+ * 2026-10-17). Rows are segmented one at a time until `budgetMs` has passed, outside any
+ * transaction, and each batch is written in its own short IMMEDIATE transaction that waits at most
+ * `writeWaitMs` for another writer: if one holds the lock longer this stops and leaves the rest
+ * to a later open, so a hook under a long lock is held here for that wait at most (it may still
+ * spend the budget segmenting first), and with nothing to fill an open only reads the empty index.
+ * Keyed on the rows rather than a done marker, so an event an older build writes later is filled
+ * by the next open too. The UPDATE re-checks NULL, so terms another writer stored meanwhile are
+ * kept, and only rows it changed are counted. The index trigger re-indexes each filled row.
+ *
+ * Openers started together (UserPromptSubmit always runs two) used to segment the same newest rows
+ * and all but one stopped at their first write (D#396). ensureDb now starts each process
+ * `startBatch` batches below the newest pending rows (its pid modulo EVENT_TERMS_SPREAD), going
+ * back up for the rows above once it reaches the end, and a batch write waits for another opener's
+ * short write: three openers released together filled 12.4% more rows per round on a synthetic
+ * store of 200,000 CJK events (30 rounds each, order rotated, 22 of 30 ahead; 2026-10-17, load
+ * average 24-30), while the start alone or the wait alone gained nothing measurable and one opener
+ * alone was unchanged. Returns how many rows it filled and whether none is left.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {{ budgetMs?: number, batchSize?: number, startBatch?: number, writeWaitMs?: number }} [opts]
+ * @returns {{ filled: number, done: boolean }}
+ */
+export function backfillEventSearchTerms(
+  db,
+  {
+    budgetMs = EVENT_TERMS_BUDGET_MS,
+    batchSize = EVENT_TERMS_BATCH,
+    startBatch = 0,
+    writeWaitMs = EVENT_TERMS_WRITE_WAIT_MS,
+  } = {},
+) {
+  const start = performance.now();
+  const prior = db.pragma('busy_timeout', { simple: true });
+  db.pragma('busy_timeout = 0');
+  try {
+    const hasIndex = db
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_events_terms_pending'`)
+      .get();
+    if (!hasIndex) {
+      try {
+        db.exec(
+          `CREATE INDEX IF NOT EXISTS idx_events_terms_pending ON events(id) WHERE search_terms IS NULL`,
+        );
+      } catch (e) {
+        if (isDbBusyError(e)) return { filled: 0, done: false };
+        throw e;
+      }
+    }
+    const pick = db.prepare(
+      `SELECT id, title, body FROM events INDEXED BY idx_events_terms_pending
+        WHERE search_terms IS NULL AND id < ? ORDER BY id DESC LIMIT ? OFFSET ?`,
+    );
+    const fill = db.prepare(`UPDATE events SET search_terms = ? WHERE id = ? AND search_terms IS NULL`);
+    const write = db.transaction((rows) => rows.reduce((n, r) => n + fill.run(r.terms, r.id).changes, 0));
+    let filled = 0;
+    let cursor = Number.MAX_SAFE_INTEGER;
+    let skip = startBatch * batchSize;
+    for (;;) {
+      const batch = pick.all(cursor, batchSize, skip);
+      if (batch.length === 0) {
+        if (cursor === Number.MAX_SAFE_INTEGER && skip === 0) return { filled, done: true };
+        // Started below the newest rows, or fewer were pending than the start: go back up.
+        cursor = Number.MAX_SAFE_INTEGER;
+        skip = 0;
+        continue;
+      }
+      skip = 0;
+      // Row by row, so a batch of long bodies stops at the budget instead of after 250 of them
+      // (4000-character CJK bodies: 2098 ms per 250, round-4 review).
+      const rows = [];
+      for (const e of batch) {
+        rows.push({ id: e.id, terms: eventSearchTerms(e.title, e.body) });
+        if (performance.now() - start >= budgetMs) break;
+      }
+      db.pragma(`busy_timeout = ${writeWaitMs}`);
+      try {
+        filled += write.immediate(rows);
+      } catch (e) {
+        if (isDbBusyError(e)) return { filled, done: false };
+        throw e;
+      } finally {
+        db.pragma('busy_timeout = 0');
+      }
+      cursor = rows.at(-1).id;
+      if (performance.now() - start >= budgetMs) return { filled, done: false };
+    }
+  } finally {
+    db.pragma(`busy_timeout = ${Number.isInteger(prior) ? prior : DB_BUSY_TIMEOUT_MS}`);
+  }
+}
 
 /**
  * Run registered one-shot data cleanups that haven't completed yet. Each is
@@ -1269,7 +1568,8 @@ export function runDeferredCleanups(db) {
   for (const { name, run } of DEFERRED_CLEANUPS) {
     if (done.has(name)) continue;
     try {
-      run(db);
+      // A cleanup that works across opens returns false until it has finished.
+      if (run(db) === false) continue;
       mark.run(name, Date.now());
     } catch (e) {
       // Leave the marker unset → retried next open. Surface for observability.
@@ -1278,10 +1578,115 @@ export function runDeferredCleanups(db) {
   }
 }
 
+// The epoch (ms, on this process's own timeline: performance.timeOrigin + performance.now()) until
+// which a statement on a connection ensureDb opens may wait for another writer, or null: each
+// statement waits up to its connection's busy_timeout (DB_BUSY_TIMEOUT_MS unless set otherwise).
+// Set by hook-shared's setHookDbDeadline, for the hooks the host kills at a fixed timeout.
+let busyDeadline = null;
+
+/**
+ * Bound every busy wait of the connections ensureDb opens from now on in this process by one
+ * deadline (null lifts it). D#394: a hook's deadline used to be applied once, as each connection
+ * was handed out, so ensureDb's own statements (a first open's migration, a pending one-shot
+ * cleanup) waited DB_BUSY_TIMEOUT_MS before it, and busy_timeout applies per statement, so a
+ * statement meeting a lock after another one had waited could wait the whole handed-out value
+ * again (demo: +6888 ms against a 3500 ms deadline in a hook the host kills at 5 s).
+ *
+ * @param {number|null} epochMs
+ */
+export function setBusyDeadline(epochMs) {
+  busyDeadline = epochMs;
+}
+
+/** The time left until busyDeadline, in whole ms, never below 0; no deadline leaves no limit. */
+function busyLeftMs() {
+  if (busyDeadline === null) return Infinity;
+  return Math.max(0, Math.floor(busyDeadline - (performance.timeOrigin + performance.now())));
+}
+
+/**
+ * Cap each statement's busy wait on `db` at the time left until busyDeadline, set just before the
+ * statement runs; SQLite has one busy_timeout per connection and no deadline of its own, and
+ * better-sqlite3 exposes no busy handler. Every way a statement runs is wrapped on this
+ * connection: prepare's run/get/all/iterate, exec, pragma and transaction (whose BEGIN
+ * IMMEDIATE is prepared out of reach of prepare). A busy_timeout the code sets (0 to stop
+ * waiting, a prior value put back) is kept as the ceiling, so the cap only ever lowers it.
+ * iterate is capped when it is called, not at each step: better-sqlite3 refuses any other
+ * statement, the PRAGMA included, while an iterator is open. A write through iterate takes its
+ * lock at the first step and may wait out the value set at the call (review 2026-10-17 F5); every
+ * iterate in this codebase reads, and a WAL reader does not wait for a writer.
+ *
+ * @param {import('better-sqlite3').Database} db
+ */
+function capBusyWaits(db) {
+  const { exec, prepare, pragma, transaction } = Database.prototype;
+  let ceiling = pragma.call(db, 'busy_timeout', { simple: true });
+  let applied = ceiling;
+  const cap = () => {
+    const want = Math.min(ceiling, busyLeftMs());
+    if (want !== applied) {
+      pragma.call(db, `busy_timeout = ${want}`);
+      applied = want;
+    }
+  };
+  const capped = (fn) =>
+    function (...args) {
+      cap();
+      return fn.apply(this, args);
+    };
+  db.pragma = function (source, options) {
+    const set = /^\s*busy_timeout\s*=\s*(\d+)\s*$/i.exec(source);
+    if (!set) return capped(pragma).call(this, source, options);
+    ceiling = Number(set[1]);
+    applied = Math.min(ceiling, busyLeftMs());
+    return pragma.call(this, `busy_timeout = ${applied}`, options);
+  };
+  db.exec = capped(exec);
+  db.prepare = function (sql) {
+    const stmt = prepare.call(this, sql);
+    for (const name of ['run', 'get', 'all', 'iterate']) stmt[name] = capped(stmt[name]);
+    return stmt;
+  };
+  db.transaction = function (fn) {
+    const txn = transaction.call(this, fn);
+    const out = capped(txn);
+    for (const kind of ['deferred', 'immediate', 'exclusive']) out[kind] = capped(txn[kind]);
+    out.default = out;
+    out.database = this;
+    return out;
+  };
+}
+
+/**
+ * Move a store left in the unhidden data dir of versions before the first release (2.0.0),
+ * ~/qwen-mem-lite/, into DB_DIR. Only the store's own files move (the database, then its -wal
+ * and -shm, under the same name; ensureDb then renames claude-mem.db), and only into a DB_DIR
+ * holding no file of a store's family: a database, a log, a snapshot or a kept copy. install's
+ * backup of an original claude-mem store (migrateLegacyClaudeMemData, `.legacy-backup-<ms>` and
+ * its `-wal` and `-shm`) is not one. Nothing is removed. It used to rename the whole directory over
+ * a DB_DIR it first removed when DB_DIR held no `*.db` name (D#561): after the set-aside command
+ * that took the kept file, DB_DIR is also the code dir of a direct install, and a git clone of
+ * this repository made in ~ is at that path.
+ */
+function migrateUnhiddenStore() {
+  const oldDir = join(homedir(), 'qwen-mem-lite');
+  const name = ['qwen-mem-lite.db', 'claude-mem.db'].find((n) => existsSync(join(oldDir, n)));
+  if (!name) return;
+  const storeFile = (f) =>
+    (f.startsWith('qwen-mem-lite.db') || f.startsWith('claude-mem.db')) &&
+    !/\.legacy-backup-\d+(-wal|-shm)?$/.test(f);
+  if (existsSync(DB_DIR) && readdirSync(DB_DIR).some(storeFile)) return;
+  mkdirSync(DB_DIR, { recursive: true, mode: 0o700 });
+  for (const ext of ['', '-wal', '-shm']) {
+    if (existsSync(join(oldDir, name + ext))) renameSync(join(oldDir, name + ext), join(DB_DIR, name + ext));
+  }
+}
+
 /**
  * Ensure DB directory, database file, and all tables exist.
  * Safe to call from any process (hook or server). Idempotent.
- * Returns an opened Database instance with WAL + busy_timeout configured.
+ * Returns an opened Database instance with WAL + busy_timeout configured; under a busy deadline
+ * (setBusyDeadline) every statement on it waits at most the time left.
  */
 export function ensureDb() {
   // A background worker outliving its data dir must not re-create it (D#265): whoever removed
@@ -1291,20 +1696,7 @@ export function ensureDb() {
       code: 'QWEN_MEM_DATA_DIR_GONE',
     });
   }
-  // Auto-migrate unhidden dir (~/claude-mem-lite/ → ~/.qwen-mem-lite/). The source keeps
-  // its pre-v0.5 name: that is the layout the old product shipped, not the current identity.
-  // Check DB_PATH (not DB_DIR) because hook-shared.mjs module-level init may create DB_DIR early
-  const oldUnhidden = join(homedir(), 'claude-mem-lite');
-  if (existsSync(oldUnhidden) && !existsSync(DB_PATH)) {
-    // Remove DB_DIR only if it has no user data (no .db files)
-    if (existsSync(DB_DIR)) {
-      try {
-        const hasDbFiles = readdirSync(DB_DIR).some((f) => f.endsWith('.db'));
-        if (!hasDbFiles) rmSync(DB_DIR, { recursive: true, force: true });
-      } catch {}
-    }
-    if (!existsSync(DB_DIR)) renameSync(oldUnhidden, DB_DIR);
-  }
+  if (!existsSync(DB_PATH)) migrateUnhiddenStore();
 
   if (!existsSync(DB_DIR)) mkdirSync(DB_DIR, { recursive: true, mode: 0o700 });
 
@@ -1321,31 +1713,65 @@ export function ensureDb() {
   }
 
   const db = new Database(DB_PATH);
+  if (busyDeadline !== null) capBusyWaits(db);
   try {
     chmodSync(DB_PATH, 0o600);
   } catch {}
-  db.pragma('journal_mode = WAL');
-  // 5000ms matches the MCP server (server.mjs) - 3000ms wasn't enough under realistic
-  // concurrency (parallel CLI saves + a long-running FTS rebuild can push individual
-  // transactions past 3s, triggering SQLITE_BUSY on the third caller).
-  db.pragma(`busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
-  db.pragma('synchronous = NORMAL');
-  db.pragma('foreign_keys = OFF'); // Enabled after dedup migration
 
+  // The pragmas sit inside the try that closes the handle: `journal_mode = WAL` throws on a
+  // damaged WAL, and a handle leaked there was closed by better-sqlite3 at exit, which wrote the
+  // damaged frame into the main file (D#438, D#506).
   try {
+    db.pragma('journal_mode = WAL');
+    // 5000ms matches the MCP server (server.mjs) — 3000ms wasn't enough under realistic
+    // concurrency (parallel CLI saves + a long-running FTS rebuild can push individual
+    // transactions past 3s, triggering SQLITE_BUSY on the third caller).
+    db.pragma(`busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
+    db.pragma('synchronous = NORMAL');
+    db.pragma('foreign_keys = OFF'); // Enabled after dedup migration
     const ready = initSchema(db);
     // P1-5: sentinel-gated data cleanups must run on EVERY open (schema.mjs:766).
     // They were extracted out of initSchema into runDeferredCleanups but never
     // wired into a production opener - without this call they ran nowhere but
     // tests, silently halting orphan/normalize hygiene. Best-effort: never throws.
     runDeferredCleanups(ready);
+    try {
+      backfillEventSearchTerms(ready, { startBatch: process.pid % EVENT_TERMS_SPREAD });
+    } catch (e) {
+      debugCatch(e, 'event-search-terms-backfill');
+    }
     return ready;
   } catch (e) {
-    try {
-      db.close();
-    } catch {}
+    closeWithoutCheckpoint(db);
     throw e;
   }
+}
+
+/**
+ * Close a connection whose open failed, without letting the close checkpoint. The last connection
+ * to close a WAL database copies the WAL into the main file first and checks no page, so a failed
+ * open over a damaged frame wrote that frame into the main file (D#506). A read-only connection
+ * that has run a statement holds the shared lock, so the close below is not the last, and a
+ * read-only close never checkpoints; one only opened holds nothing. Counts on the corrupt-WAL
+ * fixture: docs/audits/20261021-d506-wal-recovery-experiments.md, Q1. The statement may fail on
+ * the damaged WAL; it takes the lock all the same. With no guard, the close is the plain
+ * one it always was.
+ */
+function closeWithoutCheckpoint(db) {
+  let guard = null;
+  try {
+    guard = new Database(DB_PATH, { readonly: true, fileMustExist: true });
+    if (busyDeadline !== null) capBusyWaits(guard);
+    guard.pragma('schema_version');
+  } catch {
+    /* no guard, or a read that failed on the damaged WAL and took the lock all the same */
+  }
+  try {
+    db.close();
+  } catch {}
+  try {
+    guard?.close();
+  } catch {}
 }
 
 /**
@@ -1400,9 +1826,11 @@ export function refreshPlannerStats(db, { busyTimeoutMs } = {}) {
 
 /**
  * Whether an open/init error carries a genuine corruption signature. WAL-delete
- * recovery is ONLY safe for these: on a transient error (SQLITE_BUSY) or the
+ * recovery runs ONLY for these: on a transient error (SQLITE_BUSY) or the
  * forward-version guard throw, deleting the WAL would discard committed-but-
- * uncheckpointed transactions - silent data loss.
+ * uncheckpointed transactions — silent data loss. A corruption signature does not
+ * make the delete safe either while another connection has the file open (it loses
+ * that connection's commits the same way), so ensureDbWithWalRecovery retries first.
  */
 export function isDbCorruptionError(err) {
   // R10 P3-9: SQLITE_CORRUPT_VTAB is EXCLUDED. It means a damaged FTS5 index over an
@@ -1427,7 +1855,8 @@ export { isFtsCorruptionError };
  * serves all three openers.
  *
  * Non-corruption failure → rethrows the original error, WAL/SHM left intact.
- * Corruption → deletes -wal/-shm, retries once; a still-failing retry rethrows
+ * Corruption → retries once with the files untouched; corruption again → deletes
+ * -wal/-shm, retries once more; a still-failing retry rethrows
  * with `err.walRecoveryAttempted = true` so callers can word their fatal hint
  * accurately (recovery already tried vs WAL deliberately preserved).
  *
@@ -1446,6 +1875,9 @@ export function ensureDbWithWalRecovery({ warn, info } = {}) {
       let raw = null;
       try {
         raw = new Database(DB_PATH);
+        // D#415: otherwise better-sqlite3's 5000 ms per statement, four rebuilds, in a hook
+        // the host kills at 2 s or 5 s.
+        if (busyDeadline !== null) capBusyWaits(raw);
         const { errors } = rebuildFTS(raw);
         if (errors.length) warn?.(`FTS rebuild reported: ${errors.join('; ')}`);
       } catch (rebuildErr) {
@@ -1471,7 +1903,23 @@ export function ensureDbWithWalRecovery({ warn, info } = {}) {
       }
     }
     if (!isDbCorruptionError(firstErr)) throw firstErr;
-    warn?.(`DB corruption detected, attempting WAL recovery: ${firstErr.message}`);
+    // D#427: retry once with the files untouched before deleting anything. A corruption error
+    // that does not come from the file exists (3 of 43 first opens by 6.28.1 of fresh copies of one
+    // intact store threw one on one host, D#424; the other 40 did not), and for it the delete below
+    // is the only thing that loses data: with another connection open (the MCP server keeps one all
+    // session) it can discard what that connection committed since its last checkpoint, and until
+    // it closes the two connections overwrite each other's pages.
+    warn?.(`DB corruption reported, retrying the open with the WAL kept: ${firstErr.message}`);
+    let walErr;
+    try {
+      const db = ensureDb();
+      info?.('DB opened on the retry, WAL kept');
+      return db;
+    } catch (retryErr) {
+      if (!isDbCorruptionError(retryErr)) throw retryErr;
+      walErr = retryErr;
+    }
+    warn?.(`DB corruption detected, attempting WAL recovery: ${walErr.message}`);
     try {
       rmSync(DB_PATH + '-wal', { force: true });
     } catch {
@@ -1503,45 +1951,78 @@ export function ensureDbWithWalRecovery({ warn, info } = {}) {
  */
 /**
  * Rebuild all FTS5 indexes. Use after suspected index corruption (e.g. crash mid-trigger).
- * Safe to call at any time - rebuilds are idempotent.
+ * Safe to call at any time — rebuilds are idempotent.
+ * `codes[i]` is the SQLite code of `errors[i]` (null for a table that is missing), so a caller
+ * can tell its own disk filling up from damage: the restore check does (D#558).
  * @param {Database} db Opened database instance
- * @returns {{rebuilt: string[], errors: string[]}} Results per FTS table
+ * @returns {{rebuilt: string[], errors: string[], codes: (string|null)[]}} Results per FTS table
  */
 export function rebuildFTS(db) {
   const FTS_TABLES = ['observations_fts', 'session_summaries_fts', 'user_prompts_fts', 'events_fts'];
   const idRe = /^[a-z][a-z0-9_]*$/;
   const rebuilt = [];
   const errors = [];
+  const codes = [];
   for (const fts of FTS_TABLES) {
     try {
       if (!idRe.test(fts)) {
         errors.push(`${fts}: invalid identifier`);
+        codes.push(null);
         continue;
       }
       const exists = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(fts);
       if (!exists) {
         errors.push(`${fts}: not found`);
+        codes.push(null);
         continue;
       }
       db.exec(`INSERT INTO ${fts}(${fts}) VALUES('rebuild')`);
       rebuilt.push(fts);
     } catch (e) {
       errors.push(`${fts}: ${e.message}`);
+      codes.push(e.code ?? null);
     }
   }
-  return { rebuilt, errors };
+  return { rebuilt, errors, codes };
+}
+
+/**
+ * Rebuild every index the store derives from its tables: the FTS5 indexes (rebuildFTS), then
+ * every other index (REINDEX). What `fts-check rebuild` runs, and what the restore check runs on
+ * its copy after the open, so the two cannot drift (D#558). REINDEX repairs an index whose entries
+ * no longer match its table, which no FTS rebuild touches and doctor's checks never read (D#562).
+ * @param {Database} db Opened database instance
+ * @returns {{rebuilt: string[], errors: string[], codes: (string|null)[]}} as rebuildFTS, with
+ *   'indexes' standing for the REINDEX
+ */
+export function rebuildIndexes(db) {
+  const result = rebuildFTS(db);
+  try {
+    db.exec('REINDEX');
+    result.rebuilt.push('indexes');
+  } catch (e) {
+    result.errors.push(`indexes: ${e.message}`);
+    result.codes.push(e.code ?? null);
+  }
+  return result;
 }
 
 /**
  * Check FTS5 index integrity. Returns true if all indexes are healthy.
+ *
+ * `busy` = the check could not run because another connection holds the database (a hook in
+ * another session writing). That is not damage: every exception used to read "CORRUPT", so
+ * doctor rebuilt healthy indexes of a store that was merely in use (E2E 2026-10-16). Classified
+ * on err.code; the first busy table ends the check, since the rest would wait on the same lock.
  * @param {Database} db Opened database instance
- * @returns {{healthy: boolean, details: string[]}}
+ * @returns {{healthy: boolean, details: string[], busy: boolean}}
  */
 export function checkFTSIntegrity(db) {
   const FTS_TABLES = ['observations_fts', 'session_summaries_fts', 'user_prompts_fts', 'events_fts'];
   const idRe = /^[a-z][a-z0-9_]*$/;
   const details = [];
   let healthy = true;
+  let busy = false;
   for (const fts of FTS_TABLES) {
     try {
       if (!idRe.test(fts)) {
@@ -1562,11 +2043,16 @@ export function checkFTSIntegrity(db) {
       db.exec(`INSERT INTO ${fts}(${fts}, rank) VALUES('integrity-check', 1)`);
       details.push(`${fts}: ok`);
     } catch (e) {
-      details.push(`${fts}: CORRUPT (${e.message})`);
       healthy = false;
+      if (/^SQLITE_(BUSY|LOCKED)/.test(e?.code ?? '')) {
+        details.push(`${fts}: not checked — the database is in use by another process (${e.message})`);
+        busy = true;
+        break;
+      }
+      details.push(`${fts}: CORRUPT (${e.message})`);
     }
   }
-  return { healthy, details };
+  return { healthy, details, busy };
 }
 
 export function ensureFTS(db, ftsName, tableName, columns) {
@@ -1666,8 +2152,46 @@ export function ensureFTS(db, ftsName, tableName, columns) {
 // F8/P2-4 gap: events_fts was the one FTS table outside self-heal, so a future events column
 // addition would leave a stale narrow index whose (wider) triggers throw "no column" and
 // silently drop event writes. Idempotent: a no-op once the column set matches.
-const EVENTS_FTS_COLUMNS = ['title', 'body', 'event_type', 'project']; // full set (drift check)
+// search_terms (d366) is LAST so the existing columns keep their bm25() weight positions.
+//
+// The work runs inside a savepoint. A 'rebuild' that throws (NOMEM, a damaged events row) rolls
+// back to the index and triggers it found and the pass goes on: the 5-column index is the
+// version fast path's sentinel (LATEST_MIGRATION_COLUMNS), so committing it empty, as this did
+// until the CLI pre-tag review of 2026-10-16 (P3-10), meant no open ever retried, and an
+// external-content index does not repopulate old rows on a later write. Left as it was, the next
+// open runs the migration pass and this rebuild again. A DDL error rolls back the same way and is
+// thrown, as before. If SQLite rolled the enclosing transaction back itself (SQLITE_NOMEM, IOERR
+// and FULL may), nothing of the pass is left to commit, so the error is thrown.
+const EVENTS_FTS_COLUMNS = ['title', 'body', 'event_type', 'project', 'search_terms']; // full set (drift check)
 export function ensureEventsFTS(db) {
+  db.exec('SAVEPOINT events_fts_heal');
+  const undo = () => {
+    db.exec('ROLLBACK TO events_fts_heal');
+    db.exec('RELEASE events_fts_heal');
+  };
+  let recreated;
+  try {
+    recreated = recreateEventsFTS(db);
+  } catch (e) {
+    if (db.inTransaction) undo();
+    throw e;
+  }
+  if (recreated) {
+    try {
+      const cnt = db.prepare(`SELECT COUNT(*) AS c FROM events`).get();
+      if (cnt.c > 0) db.exec(`INSERT INTO events_fts(events_fts) VALUES('rebuild')`);
+    } catch (e) {
+      if (!db.inTransaction) throw e;
+      undo();
+      debugCatch(e, 'events-fts-rebuild');
+      return;
+    }
+  }
+  db.exec('RELEASE events_fts_heal');
+}
+
+/** ensureEventsFTS's DDL: (re)creates the index and its triggers; returns whether it recreated it. */
+function recreateEventsFTS(db) {
   const ftsRow = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='events_fts'`).get();
   let recreated = false;
   if (ftsRow) {
@@ -1694,37 +2218,35 @@ export function ensureEventsFTS(db) {
   if (!ftsRow || recreated) {
     db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
-        title, body, event_type UNINDEXED, project UNINDEXED,
+        title, body, event_type UNINDEXED, project UNINDEXED, search_terms,
         content='events', content_rowid='id',
         tokenize="unicode61 remove_diacritics 2 tokenchars '_-'"
       );
     `);
   }
-  // Triggers reinstated from the canonical template (INSERT all 4 columns; AFTER UPDATE OF the
-  // two INDEXED columns only, so non-indexed bumps don't thrash the index). IF NOT EXISTS so an
-  // unchanged definition is a no-op - byte-identical to the events block in initSchema.
+  // Triggers reinstated from the canonical template (INSERT all 5 columns; AFTER UPDATE OF the
+  // three INDEXED columns only, so non-indexed bumps (importance / accessed_count /
+  // citation-decay, v36) don't thrash the index). IF NOT EXISTS so an unchanged definition is a
+  // no-op. A drifted index drops its triggers above, so a recreated one always gets this body.
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS events_fts_ai AFTER INSERT ON events BEGIN
-      INSERT INTO events_fts(rowid, title, body, event_type, project)
-      VALUES (new.id, COALESCE(new.title,''), COALESCE(new.body,''), new.event_type, new.project);
+      INSERT INTO events_fts(rowid, title, body, event_type, project, search_terms)
+      VALUES (new.id, COALESCE(new.title,''), COALESCE(new.body,''), new.event_type, new.project,
+              COALESCE(new.search_terms,''));
     END;
     CREATE TRIGGER IF NOT EXISTS events_fts_ad AFTER DELETE ON events BEGIN
-      INSERT INTO events_fts(events_fts, rowid, title, body, event_type, project)
-      VALUES ('delete', old.id, COALESCE(old.title,''), COALESCE(old.body,''), old.event_type, old.project);
+      INSERT INTO events_fts(events_fts, rowid, title, body, event_type, project, search_terms)
+      VALUES ('delete', old.id, COALESCE(old.title,''), COALESCE(old.body,''), old.event_type, old.project,
+              COALESCE(old.search_terms,''));
     END;
-    CREATE TRIGGER IF NOT EXISTS events_fts_au AFTER UPDATE OF title, body ON events BEGIN
-      INSERT INTO events_fts(events_fts, rowid, title, body, event_type, project)
-      VALUES ('delete', old.id, COALESCE(old.title,''), COALESCE(old.body,''), old.event_type, old.project);
-      INSERT INTO events_fts(rowid, title, body, event_type, project)
-      VALUES (new.id, COALESCE(new.title,''), COALESCE(new.body,''), new.event_type, new.project);
+    CREATE TRIGGER IF NOT EXISTS events_fts_au AFTER UPDATE OF title, body, search_terms ON events BEGIN
+      INSERT INTO events_fts(events_fts, rowid, title, body, event_type, project, search_terms)
+      VALUES ('delete', old.id, COALESCE(old.title,''), COALESCE(old.body,''), old.event_type, old.project,
+              COALESCE(old.search_terms,''));
+      INSERT INTO events_fts(rowid, title, body, event_type, project, search_terms)
+      VALUES (new.id, COALESCE(new.title,''), COALESCE(new.body,''), new.event_type, new.project,
+              COALESCE(new.search_terms,''));
     END;
   `);
-  if (recreated) {
-    try {
-      const cnt = db.prepare(`SELECT COUNT(*) AS c FROM events`).get();
-      if (cnt.c > 0) db.exec(`INSERT INTO events_fts(events_fts) VALUES('rebuild')`);
-    } catch {
-      /* non-critical - index repopulates lazily on next write */
-    }
-  }
+  return recreated;
 }

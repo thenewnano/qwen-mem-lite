@@ -127,7 +127,7 @@ How qwen-mem-lite differs from the major neighbors in the LLM-memory space (veri
   <br>Original behaviour and the measurements behind it via explicit keywords or FTS5 term overlap. **The `/clear` and `/compact` arm fires since v5.4.0** (R10-P1-1); before that it had never once written a row - `session_handoffs` on the maintainer's install held 4 `exit` rows and **0** `clear` rows. Two host facts settled it, both measured rather than assumed. (1) `Stop` runs at the end of every assistant _turn_, not once per session, and it deleted the session file that SessionStart reads to learn which session just ended - so the branch was unreachable, and mem sessions were minted per turn (58 prompts over 16 host sessions produced 56 mem sessions and 56 summary rows, 2026-09-07). (2) Claude Code **rotates its session id across `/clear`**: of 21 real transcripts, 12 carry a `/clear` command record, and in 12/12 that record's timestamp precedes its own file's first record by ~0.1s - the command is issued in the old session and replayed into a new file under a new id. So `Stop` no longer deletes the file, SessionStart asks the host's `source` (`startup`/`clear`/`compact`/`resume`) instead of guessing from the file, and the handoff's prompt lookup falls back to the unscoped set when the new session's id matches none. Revert path: `QWEN_MEM_LEGACY_STOP_UNLINK=1`
 - **Git-SHA continuation anchor** (v2.31.0) -- Handoff rows include `git_sha_at_handoff`; any handoff matching the current `HEAD` counts as continuation regardless of TTL. Code state is a stronger continuation signal than wall-clock time
 - **Startup dashboard** (v2.31.0) -- SessionStart hook aggregates `git status` + `~/.claude/tasks/*.json` + `~/.claude/plans/*.md` + most-recent exit handoff + recent event count into a single structured block injected via `hookSpecificOutput.additionalContext`
-- **Activity namespace** (v2.31.0) -- Dedicated `events` table + FTS5 for non-memdir types (`bugfix`, `lesson`, `bug`, `discovery`, `refactor`, `feature`, `observation`, `decision`) that don't compete with `WHAT_NOT_TO_SAVE` semantics on the observations table. CLI: `qwen-mem-lite activity save|search|recent|show`. `hook-llm` routes non-memdir summary types through `persistHaikuSummary` so upgrades from observations→events are atomic. (v3.39: the `/lesson` and `/bug` slash commands were redirected from this events table to searchable **observations** - `mem_search` never read the events table, so explicit saves were unfindable; the events table remains the auto-capture activity log.)
+- **Activity namespace** (v2.31.0) -- Dedicated `events` table + FTS5 for non-memdir types (`bugfix`, `lesson`, `bug`, `discovery`, `refactor`, `feature`, `observation`, `decision`) that don't compete with `WHAT_NOT_TO_SAVE` semantics on the observations table. CLI: `qwen-mem-lite activity save|search|recent|show`. `hook-llm` routes non-memdir summary types through `persistHaikuSummary` so upgrades from observations→events are atomic. (v3.39: the `/lesson` and `/qwen-mem-lite:bug` slash commands were redirected from this events table to searchable **observations** - `mem_search` never read the events table, so explicit saves were unfindable; the events table remains the auto-capture activity log.)
 - **In-place observation updates** -- `mem_update` tool modifies existing observations atomically (field update + FTS text rebuild in one transaction), preserving original IDs and references
 - **Bulk export** -- `mem_export` tool exports observations as JSON or JSONL, with project/type/date filtering and 1000-row pagination cap with batch guidance
 - **FTS integrity management** -- `mem_fts_check` tool verifies FTS5 index health or rebuilds indexes on demand, useful after database recovery or when search results seem wrong
@@ -180,7 +180,7 @@ qwen extensions link /path/to/qwen-mem-lite    # instead, to track a working cop
 | Steering block      | Written to **both** `<cwd>/CLAUDE.md` and `<cwd>/QWEN.md`: Qwen Code reads only the latter and Claude Code only the former, and `adopt` cannot tell which host it is running under.                                                                                                                                                                                                                                                                          |
 | Transcript features | Qwen records its transcript as `message.parts`; `lib/transcript-scan.mjs` normalizes that shape, so citation tracking, the unsaved-bugfix nudge and the fast summary keep working.                                                                                                                                                                                                                                                                           |
 | Auto-update         | **On by default**, reading **this fork's own repo** (`thenewnano/qwen-mem-lite`) - never upstream, whose release tarball is the Claude-only build and would revert the Qwen support silently. `QWEN_MEM_SKIP_UPDATE=1` disables the check; `QWEN_MEM_UPDATE_REPO=<owner>/<name>` aims it at a mirror. Installable releases need this fork's own signing key: the install path is fail-closed on release signatures, so an unsigned tag is found but refused. |
-| Slash commands      | `/mem`, `/memory`, `/lesson`, `/bug`, `/adopt`, `/unadopt`, `/update` come from `commands/`.                                                                                                                                                                                                                                                                                                                                                                 |
+| Slash commands      | `/mem`, `/qwen-mem-lite:memory`, `/lesson`, `/qwen-mem-lite:bug`, `/adopt`, `/unadopt`, `/update` come from `commands/`.                                                                                                                                                                                                                                                                                                                                                                 |
 
 > **Heads-up when working _inside this repository_:** Qwen reports `mem-lite` as
 > disconnected there, because the repo root carries a project-scope `.mcp.json` (the Claude
@@ -262,6 +262,28 @@ rm -rf ~/claude-mem-lite/   # pre-v0.5 unhidden (if not auto-moved)
     repos/               # Shallow-cloned source repos
 ```
 
+## Upgrading to 7.3.0 (upstream sync)
+
+**This release folds in everything upstream shipped between v6.26.0 and v6.30.8** (506
+commits). No schema change, no data move and no configuration change.
+
+- **The SessionStart context is leaner.** The `### Recent` table now shows a budgeted number of
+  rows (`QWEN_MEM_STARTUP_RECENT_ROWS`, default 5) and the `💡 mem events` line is off by
+  default (`QWEN_MEM_DASHBOARD_EVENTS=1` restores it). The recall framing line and the full
+  pre-edit directive arrive once per thread rather than on every block
+  (`QWEN_MEM_RECALL_HEADER_ONCE=0` / `QWEN_MEM_DIRECTIVE_ONCE=0` opt back in), and file-intel
+  is opt-in (`QWEN_MEM_FILE_INTEL=1`).
+- **Claude Haiku 5.5 on keyed calls, with a fallback.** Background calls made with an API key
+  use Claude Haiku 5.5, and a keyed reply that is not a whole answer now falls back to the
+  `claude -p` CLI instead of being dropped.
+- **CJK text is searchable** in events, lessons and facts, and the install no longer empties
+  the marketplace clone's `hooks/hooks.json` (it is restored rather than rewritten).
+- **Slash commands are namespaced** where Claude Code has its own: `/qwen-mem-lite:bug` and
+  `/qwen-mem-lite:memory` (the plugin is named `qwen-mem-lite`, so these run this plugin).
+- **Also in this release:** a truncated hook payload is salvaged; a plugin disabled by scope is
+  honoured; `doctor` verifies the backup snapshots before naming a restore; a failed open no
+  longer writes a damaged WAL frame into the database; `ip-address` 10.7.4 and `body-parser`
+  2.4.0. Details in `CHANGELOG.md`.
 ## Upgrading to 7.2.0 (upstream sync)
 
 **This release folds in everything upstream shipped between v6.21.0 and v6.25.3** (154
@@ -522,7 +544,7 @@ have not allowed, and routing the same action through Bash would sidestep it.
 /mem browse                # Tier-grouped memory dashboard
 /mem <query>               # Shorthand for search
 /lesson <text>             # Save a non-obvious lesson to the events table (v2.31.0)
-/bug <text>                # Log a known bug + repro steps to the events table (v2.31.0)
+/qwen-mem-lite:bug <text>                # Log a known bug + repro steps to the events table (v2.31.0)
 ```
 
 ### Efficient Search Workflow
@@ -1104,6 +1126,7 @@ benchmark and A/B harness are calibrated against - changing them invalidates the
 | `QWEN_MEM_RECALL_FRAMING`            | `0` pins the quiet recall framing line; by default the framing line A/Bs once per session.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | _(A/B)_             |
 | `QWEN_MEM_SESSION_EVENTS`            | `1` (or `on`) restores the SessionStart `### Key Events` section - opt-in since upstream v6.13, which measured it accurate at 2/30.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | _(off)_             |
 | `QWEN_MEM_SUMMARY_TAIL`              | `0`/`off` stops Stop from using the head of the final reply (first 120 characters, code blocks and line-leading markers removed) as a session's Completed line; Completed then falls back to observation titles, as before v6.18.0. A line already written gives way to the titles at the session's next turn. A later reply under 400 characters does not replace an earlier one.                                                                                                                                                                                                                                                                                                                                                                                                                                                    | _(on)_              |
+| `QWEN_MEM_UPS_PROMPT_ECHO` | `0` lets the "Past similar questions" fallback show a stored question identical (or nearly) to the prompt just typed, from an earlier session. The current session's own prompts stay excluded either way: showing the prompt just typed was a bug. | `(on)` |
 
 ### Citation tracking and feedback
 
@@ -1150,6 +1173,10 @@ what is already stored - only whether new work runs.
 | `QWEN_MEM_NO_LESSON_RETRY`       | `1` disables the one-shot retry that re-asks for a missing `lesson_learned`.                                                                                                                                                                                                                                                                   | _(retries)_                |
 | `QWEN_MEM_FLUSH_TIMEOUT`         | Seconds the Stop hook waits for pending episode flushes.                                                                                                                                                                                                                                                                                       | `15`                       |
 | `QWEN_MEM_BACKUP_BUDGET_MB`      | Disk budget for backup snapshots; the next maintain/save evicts oldest snapshots past the 7-day undo grace.                                                                                                                                                                                                                                    | `256`                      |
+| `QWEN_MEM_RECALL_HEADER_ONCE` | `0` puts the framing line on every PreToolUse recall block. By default a thread (the main session, or one subagent) gets it on its first block only, and again after `/compact`. | `(on)` |
+| `QWEN_MEM_DIRECTIVE_ONCE` | `0` repeats the full default pre-edit directive on every block. By default a thread gets it in full once (again after `/compact`) and a short form that keeps the `#NN` tag rule after that. The `verdict` / `bind` / `bridge` arms always get their full text. | `(on)` |
+| `QWEN_MEM_STARTUP_RECENT_ROWS` | Rows in the SessionStart `### Recent` table: of the rows the token budget picks, the project's own first and then other projects' (each newest first). `0` hides the table. | `5` |
+| `QWEN_MEM_DASHBOARD_EVENTS` | `1` puts the `💡 mem events: N entries` count back on the SessionStart dashboard (dropped in the injection-budget change: the model never ran `activity` from it on the corpus measured). | `(off)` |
 
 ### Experimental
 

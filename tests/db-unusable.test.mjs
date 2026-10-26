@@ -14,6 +14,7 @@ import {
   DB_UNUSABLE_MARKER_PREFIX,
 } from '../lib/db-unusable.mjs';
 import { shouldRecordOnce, RELOG_INTERVAL_MS } from '../lib/record-once.mjs';
+import { CLI_INVOKE } from '../cli-path.mjs';
 
 const dirs = [];
 const tmp = (prefix) => {
@@ -37,6 +38,9 @@ describe('isDbUnusableError', () => {
     ['SqliteError: file is not a database', true],
     ['database disk image is malformed', true],
     ['DISK IMAGE IS MALFORMED', true],
+    // A damaged sqlite_master row: every statement fails, so memory is as off as with a damaged
+    // header, and it took the silent generic branch (triage 2026-10-20, reproduced).
+    ['malformed database schema (idx_t_a) - incomplete input', true],
   ])('classifies %j as unusable=%s', (msg, expected) => {
     expect(isDbUnusableError(new Error(msg))).toBe(expected);
     expect(isDbUnusableError(msg), 'a bare string reaches recordHookError too').toBe(expected);
@@ -94,35 +98,244 @@ describe('isDbUnusableError', () => {
   });
 });
 
+// The walk takes the snapshot check as `check`, so these cases drive it with a stub and stay fast;
+// tests/snapshot-check.test.mjs runs the real check (a child process per snapshot) and the
+// printed commands in a shell.
+const NOW = Date.UTC(2026, 9, 23, 19, 30, 0, 0);
+const KEPT = (db) => `${db}.corrupt-2026-10-23T19-30-00-000Z`;
+const ok = (observations = 5) => ({ verdict: 'ok', observations, withLog: false });
+const snapshotsAt = (db, names) => {
+  // Distinct mtimes so "newest" is decided by the field the code sorts on, not by luck.
+  const now = Date.now() / 1000;
+  return names.map((n, i) => {
+    const p = `${db}.${n}.bak`;
+    writeFileSync(p, `snapshot ${n}`);
+    utimesSync(p, now - 1000 * (names.length - i), now - 1000 * (names.length - i));
+    return p;
+  });
+};
+const stubCheck = (verdicts) => {
+  const seen = [];
+  const check = (path) => {
+    seen.push(path);
+    return verdicts[path] ?? ok();
+  };
+  return { check, seen };
+};
+
 describe('dbUnusableRemedy', () => {
   it('offers set-aside when no snapshot exists, and says so rather than staying vague', () => {
     const dir = tmp('rem-none-');
     const db = join(dir, 'qwen-mem-lite.db');
     writeFileSync(db, 'garbage');
-    const r = dbUnusableRemedy(db);
+    const r = dbUnusableRemedy(db, undefined, { stampMs: NOW });
     expect(r.kind).toBe('set-aside');
     expect(r.snapshotCount).toBe(0);
-    expect(r.command).toContain(`mv ${shellWord(db)} ${shellWord(`${db}.corrupt`)}`);
-    expect(r.command, 'stale WAL/SHM would resurrect the broken state').toContain(`${db}-wal`);
+    expect(r.keptAs).toBe(KEPT(db));
+    expect(r.command).toContain(`mv ${shellWord(db)} ${shellWord(KEPT(db))}`);
+    // D#539 and the log the old command deleted: the broken file's -wal goes with it, under the
+    // name SQLite looks for beside the kept file.
+    expect(r.command).toContain(`mv ${shellWord(`${db}-wal`)} ${shellWord(`${KEPT(db)}-wal`)}`);
+    expect(r.command).not.toMatch(/rm -f [^&]*-wal/);
+    expect(r.command, 'the -shm is derived state and goes').toContain(`rm -f ${shellWord(`${db}-shm`)}`);
   });
 
-  it('offers restore, naming the NEWEST snapshot, when one exists', () => {
+  it('starts every command with a guard, so running it twice cannot overwrite the first kept copy', () => {
+    const dir = tmp('rem-guard-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'garbage');
+    const setAside = dbUnusableRemedy(db, undefined, { stampMs: NOW });
+    const [restoreSnap] = snapshotsAt(db, ['pre-delete-2026-09-07']);
+    const restore = dbUnusableRemedy(db, undefined, { stampMs: NOW, check: stubCheck({}).check });
+    expect(restore.kind).toBe('restore');
+    const guard = `test ! -e ${shellWord(KEPT(db))} && test ! -e ${shellWord(`${KEPT(db)}-wal`)} && `;
+    expect(setAside.command.startsWith(guard)).toBe(true);
+    // The restore first checks that the snapshot is still there, so nothing moves without it
+    // (D#570, v6.30.6 r1 defects P3-5).
+    expect(restore.command.startsWith(`test -s ${shellWord(restoreSnap)} && ${guard}`)).toBe(true);
+    // Then the snapshot in place, writable, and the reindex the check ran after the product's open,
+    // against this data directory.
+    expect(
+      restore.command.endsWith(
+        `cp ${shellWord(restoreSnap)} ${shellWord(db)} && chmod 600 ${shellWord(db)} && QWEN_MEM_DIR=${shellWord(dir)} ${CLI_INVOKE} fts-check rebuild`,
+      ),
+    ).toBe(true);
+  });
+
+  // doctor --json runs doctor a second time and its lines must match the human face's; and a
+  // user comparing two doctor runs should not see two different commands for one broken file.
+  it('names the kept copy after the broken file, so two runs print one command', () => {
+    const dir = tmp('rem-stamp-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'garbage');
+    utimesSync(db, NOW / 1000, NOW / 1000);
+    const a = dbUnusableRemedy(db);
+    const b = dbUnusableRemedy(db);
+    expect(a.keptAs).toBe(KEPT(db));
+    expect(b.command).toBe(a.command);
+    utimesSync(db, NOW / 1000 + 60, NOW / 1000 + 60);
+    expect(dbUnusableRemedy(db).keptAs, 'a later broken file gets another name').not.toBe(a.keptAs);
+  });
+
+  it('does not say the set-aside file cannot be recovered', () => {
+    const dir = tmp('rem-none-note-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'garbage');
+    const r = dbUnusableRemedy(db, undefined, { stampMs: NOW });
+    expect(r.kind).toBe('set-aside');
+    expect(r.note).toBe(
+      `No backup snapshot exists beside the database. That command moves the broken file and its log aside, as ${KEPT(db)} and ${KEPT(db)}-wal, so a fresh store is created on the next session.`,
+    );
+  });
+
+  // Without a check (the SessionStart notice), no snapshot goes into a command: the check copies
+  // and opens each candidate, which a session start must not pay for while the store is broken.
+  it('names no snapshot in a command when it was not asked to check them, and points at doctor', () => {
+    const dir = tmp('rem-nocheck-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'garbage');
+    snapshotsAt(db, ['pre-maintain-2026-09-01', 'pre-delete-2026-09-07']);
+    const r = dbUnusableRemedy(db, new Error('file is not a database'), { stampMs: NOW });
+    // 'unknown', which every version's doctor renders as its note (r1 defects P3-5).
+    expect(r.kind).toBe('unknown');
+    expect(r.command).toBe('');
+    expect(r.snapshotCount).toBe(2);
+    expect(r.note).toContain('2 backup snapshot(s) exist beside the database');
+    expect(r.note).toContain(`${CLI_INVOKE} doctor`);
+  });
+
+  it('checks newest first, names the newest that restores cleanly, and checks the older ones too', () => {
     const dir = tmp('rem-snap-');
     const db = join(dir, 'qwen-mem-lite.db');
     writeFileSync(db, 'garbage');
-    // Distinct mtimes so "newest" is decided by the field the code sorts on, not by luck.
-    writeFileSync(`${db}.2026-09-01.bak`, 'a');
-    writeFileSync(`${db}.2026-09-07.bak`, 'b');
-    const older = `${db}.2026-09-01.bak`;
-    const newer = `${db}.2026-09-07.bak`;
-    const now = Date.now();
-    utimesSync(older, now / 1000 - 1000, now / 1000 - 1000);
-    utimesSync(newer, now / 1000, now / 1000);
-    const r = dbUnusableRemedy(db);
+    const [older, newer] = snapshotsAt(db, ['pre-maintain-2026-09-01', 'pre-delete-2026-09-07']);
+    const { check, seen } = stubCheck({});
+    const r = dbUnusableRemedy(db, undefined, { stampMs: NOW, check });
     expect(r.kind).toBe('restore');
     expect(r.snapshotCount).toBe(2);
     expect(r.command).toContain(newer);
     expect(r.command).not.toContain(older);
+    // Every older snapshot is checked so each that passes can be listed (D#577).
+    expect(seen).toEqual([newer, older]);
+    expect(r.alternatives.map((x) => x.path)).toEqual([older]);
+    expect(r.found).toMatch(/The newest of the 2 backup snapshot\(s\) beside the database restores cleanly/);
+    expect(r.found).toContain('5 observation(s)');
+  });
+
+  it.each([
+    ['does not open', { verdict: 'bad', why: 'open', reason: 'SQLITE_NOTADB' }],
+    ['fails the integrity check', { verdict: 'bad', why: 'integrity', reason: 'Tree 5 page 5 cell 1: …' }],
+    ['holds no rows', { verdict: 'empty' }],
+  ])('skips a newer snapshot that %s and names the next one', (label, verdict) => {
+    const dir = tmp('rem-skip-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'garbage');
+    const [older, newer] = snapshotsAt(db, ['pre-maintain-2026-09-01', 'pre-delete-2026-09-07']);
+    const { check, seen } = stubCheck({ [newer]: verdict });
+    const r = dbUnusableRemedy(db, undefined, { stampMs: NOW, check });
+    expect(r.kind).toBe('restore');
+    expect(r.command).toContain(older);
+    expect(r.command).not.toContain(newer);
+    expect(seen).toEqual([newer, older]);
+    expect(r.found).toContain(`1 ${label}`);
+  });
+
+  it('counts several passed-over snapshots of one kind in the plural', () => {
+    const dir = tmp('rem-plural-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'garbage');
+    const [older, mid, newer] = snapshotsAt(db, ['a-2026-09-01', 'b-2026-09-04', 'c-2026-09-07']);
+    const bad = { verdict: 'bad', why: 'open', reason: 'SQLITE_NOTADB' };
+    const r = dbUnusableRemedy(db, undefined, {
+      stampMs: NOW,
+      check: stubCheck({ [newer]: bad, [mid]: bad }).check,
+    });
+    expect(r.command).toContain(older);
+    expect(r.found).toContain('the newest 2 do not restore cleanly (2 do not open); the next one does');
+    const none = dbUnusableRemedy(db, undefined, {
+      stampMs: NOW,
+      check: () => ({ verdict: 'bad', why: 'integrity', reason: 'x' }),
+    });
+    expect(none.found).toContain('(3 fail the integrity check)');
+  });
+
+  it("copies the snapshot's own log too when the check restored it with that log", () => {
+    const dir = tmp('rem-log-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'garbage');
+    const [snap] = snapshotsAt(db, ['before-upgrade']);
+    const r = dbUnusableRemedy(db, undefined, {
+      stampMs: NOW,
+      check: () => ({ verdict: 'ok', observations: 60, withLog: true }),
+    });
+    expect(r.command).toContain(`test -s ${shellWord(`${snap}-wal`)} && `);
+    expect(r.command).toContain(
+      `cp ${shellWord(snap)} ${shellWord(db)} && chmod 600 ${shellWord(db)} && cp ${shellWord(`${snap}-wal`)} ${shellWord(`${db}-wal`)} && chmod 600 ${shellWord(`${db}-wal`)} && `,
+    );
+  });
+
+  it('stops at a snapshot it could not check: no command, the reason and the path', () => {
+    const dir = tmp('rem-unchecked-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'garbage');
+    const [older, newer] = snapshotsAt(db, ['pre-maintain-2026-09-01', 'pre-delete-2026-09-07']);
+    const { check, seen } = stubCheck({ [newer]: { verdict: 'unchecked', reason: 'ENOSPC' } });
+    const r = dbUnusableRemedy(db, undefined, { stampMs: NOW, check });
+    expect(r.kind).toBe('unknown');
+    expect(r.command).toBe('');
+    expect(seen, 'an older snapshot named past it could hold less').toEqual([newer]);
+    expect(r.note).toContain('could not be checked (ENOSPC)');
+    expect(r.note).toContain(newer);
+    expect(r.note).not.toContain(older);
+  });
+
+  it('offers set-aside when no snapshot restores cleanly, and says how many it checked', () => {
+    const dir = tmp('rem-nonepass-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'garbage');
+    const [older, newer] = snapshotsAt(db, ['pre-maintain-2026-09-01', 'pre-delete-2026-09-07']);
+    const { check } = stubCheck({
+      [newer]: { verdict: 'bad', why: 'integrity', reason: 'x' },
+      [older]: { verdict: 'empty' },
+    });
+    const r = dbUnusableRemedy(db, undefined, { stampMs: NOW, check });
+    expect(r.kind).toBe('set-aside');
+    expect(r.found).toMatch(/^None of the 2 backup snapshot\(s\) beside the database restores cleanly/);
+    expect(r.found).toContain('1 fails the integrity check');
+    expect(r.found).toContain('1 holds no rows');
+    expect(r.command).not.toContain(newer);
+    expect(r.command).not.toContain(older);
+  });
+
+  // D#551: versions before 6.31.0 left a 0-byte `.bak` when a snapshot of a damaged store
+  // failed, and it was the newest; restoring it emptied the store. It is never checked.
+  it('skips an empty .bak file without checking it, and says so in every sentence', () => {
+    const dir = tmp('rem-empty-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'garbage');
+    const [good] = snapshotsAt(db, ['pre-maintain-2026-09-01']);
+    const empty = `${db}.pre-delete-2026-09-07.bak`;
+    writeFileSync(empty, '');
+    const { check, seen } = stubCheck({});
+    const r = dbUnusableRemedy(db, undefined, { stampMs: NOW, check });
+    expect(r.kind).toBe('restore');
+    expect(r.snapshotCount).toBe(1);
+    expect(r.command).toContain(good);
+    expect(seen).toEqual([good]);
+    expect(r.found).toContain('1 empty .bak file skipped');
+    const unchecked = dbUnusableRemedy(db, undefined, { stampMs: NOW });
+    expect(unchecked.note).toContain('1 empty .bak file skipped');
+  });
+
+  it('offers set-aside when every snapshot is empty, and says they were skipped', () => {
+    const dir = tmp('rem-allempty-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'garbage');
+    writeFileSync(`${db}.pre-delete-2026-09-07.bak`, '');
+    const r = dbUnusableRemedy(db, undefined, { stampMs: NOW });
+    expect(r.kind).toBe('set-aside');
+    expect(r.snapshotCount).toBe(0);
+    expect(r.note).toContain('1 empty .bak file');
   });
 
   // Three outcomes, never two — "there is no backup" and "I could not look" must not print in
@@ -137,6 +350,93 @@ describe('dbUnusableRemedy', () => {
     expect(r.command, 'a command we cannot justify must not be printed').toBe('');
     expect(r.note).toMatch(/Could not read/);
     expect(r.note).not.toMatch(/No backup snapshot exists/);
+  });
+});
+
+// SQLite says "malformed database schema" when it cannot parse a row of sqlite_master. A
+// damaged row is one cause; SQL its parser does not know is another (reasoned, not
+// reproduced), and there restoring a snapshot or setting the file aside is wrong. So this
+// family names the snapshots and gives no command.
+describe('a schema SQLite cannot read', () => {
+  const err = Object.assign(new Error('malformed database schema (idx_t_a) - incomplete input'), {
+    code: 'SQLITE_CORRUPT',
+  });
+
+  it('gives no command, and names the newest snapshot that restores cleanly', () => {
+    const dir = tmp('rem-schema-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'x');
+    const [older, newer] = snapshotsAt(db, ['pre-maintain-2026-09-01', 'pre-delete-2026-09-07']);
+    const r = dbUnusableRemedy(db, err, { stampMs: NOW, check: stubCheck({}).check });
+    expect(r.kind).toBe('schema');
+    expect(r.command).toBe('');
+    expect(r.snapshotCount).toBe(2);
+    expect(r.note).toContain(`It is ${newer}.`);
+    // The older one that passes is listed, as on the restore path (D#577).
+    expect(r.found).toContain(`An older snapshot also restores: ${older}, 5 observation(s).`);
+  });
+
+  it('without a check, counts the snapshots and points at doctor, with no command', () => {
+    const dir = tmp('rem-schema-nocheck-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'x');
+    const [, newer] = snapshotsAt(db, ['pre-maintain-2026-09-01', 'pre-delete-2026-09-07']);
+    const r = dbUnusableRemedy(db, err, { stampMs: NOW });
+    expect(r.kind).toBe('schema');
+    expect(r.command).toBe('');
+    expect(r.note).toContain('2 backup snapshot(s) exist beside the database');
+    expect(r.note).not.toContain(newer);
+  });
+
+  it('gives no command when no snapshot restores cleanly either, or when one could not be checked', () => {
+    const dir = tmp('rem-schema-nonepass-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'x');
+    const [, newer] = snapshotsAt(db, ['pre-maintain-2026-09-01', 'pre-delete-2026-09-07']);
+    const none = dbUnusableRemedy(db, err, { stampMs: NOW, check: () => ({ verdict: 'empty' }) });
+    expect(none.kind).toBe('schema');
+    expect(none.command).toBe('');
+    expect(none.found).toMatch(/^None of the 2 /);
+    const unchecked = dbUnusableRemedy(db, err, {
+      stampMs: NOW,
+      check: () => ({ verdict: 'unchecked', reason: 'EACCES' }),
+    });
+    expect(unchecked.kind).toBe('schema');
+    expect(unchecked.command).toBe('');
+    expect(unchecked.note).toContain(`could not be checked (EACCES): ${newer}`);
+  });
+
+  it('says so when no snapshot exists, still with no command', () => {
+    const dir = tmp('rem-schema-none-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'x');
+    const r = dbUnusableRemedy(db, err);
+    expect(r.kind).toBe('schema');
+    expect(r.command).toBe('');
+    expect(r.note).toMatch(/No backup snapshot exists/);
+  });
+
+  it('keeps the other families on their own remedies', () => {
+    const dir = tmp('rem-schema-ctl-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'x');
+    expect(dbUnusableRemedy(db, new Error('file is not a database')).kind).toBe('set-aside');
+    expect(dbUnusableRemedy(db).kind).toBe('set-aside');
+  });
+
+  it('the human notice says the schema cannot be read, not that the file is not a database', () => {
+    const dir = tmp('rem-schema-notice-');
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'x');
+    const out = formatDbUnusableNotice({ dbPath: db, remedy: dbUnusableRemedy(db, err) });
+    expect(out).toMatch(/Memory is OFF/);
+    expect(out).toMatch(/schema/);
+    expect(out).not.toMatch(/does not recognise it as a database/);
+    // The file opens; its schema is what SQLite cannot read (v6.30.0 review leftover, D#499(5)).
+    expect(out).not.toMatch(/cannot be opened/);
+    expect(out).not.toMatch(/rm -f|\bcp\b|\bmv\b|&&/);
+    // No command here, so nothing for "until then" to wait on (v6.30.0 pre-tag claims review P3-6).
+    expect(out).not.toMatch(/until then/i);
   });
 });
 
@@ -157,6 +457,31 @@ describe('the two notices', () => {
     expect(out).toContain(restore.note);
   });
 
+  // D#534: the command deletes the -wal and -shm, then copies over or moves the database file
+  // under any session still holding it, this one included.
+  it('the human notice says to close every session, this one included, before the command', () => {
+    const dir = tmp('rem-sessions-');
+    const dbp = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(dbp, 'x');
+    const setAside = dbUnusableRemedy(dbp, new Error('file is not a database'));
+    writeFileSync(`${dbp}.2026-09-07.bak`, 'b');
+    const restoreReal = dbUnusableRemedy(dbp, new Error('file is not a database'), { check: () => ok() });
+    expect([setAside.kind, restoreReal.kind]).toEqual(['set-aside', 'restore']);
+    for (const remedy of [setAside, restoreReal]) {
+      const lines = formatDbUnusableNotice({ dbPath: dbp, remedy }).split('\n');
+      const say = lines.findIndex((l) => /every Claude Code session is closed, this one included/.test(l));
+      expect(say, remedy.kind).toBeGreaterThan(-1);
+      expect(say, `${remedy.kind}: before the command`).toBeLessThan(
+        lines.findIndex((l) => l.includes(remedy.command)),
+      );
+    }
+    const none = formatDbUnusableNotice({
+      dbPath: dbp,
+      remedy: { kind: 'unknown', command: '', snapshotCount: 0, note: 'Could not read /tmp/x' },
+    });
+    expect(none).not.toMatch(/session is closed/);
+  });
+
   it('renders without a command when there is none to give', () => {
     const out = formatDbUnusableNotice({
       dbPath: db,
@@ -168,20 +493,20 @@ describe('the two notices', () => {
     expect(out.split('\n').every((l) => l.trim().length > 0)).toBe(true);
   });
 
-  // The model channel gets the FACT, never the command — this family's remedy overwrites the
+  // The model channel gets the FACT, never the command — this family's remedy moves the
   // database, and an agent holding Bash is not the same audience as a human reading a banner.
   // Asserted here as well as end-to-end so the property survives a refactor of either caller.
   it('the model notice contains no shell command at all', () => {
-    const out = formatDbUnusableModelNotice();
+    const out = formatDbUnusableModelNotice(db);
     expect(out).toMatch(/Memory is OFF/);
     expect(out).not.toMatch(/rm -f|\bcp\b|\bmv\b|&&/);
-    expect(out, 'it must still route the user somewhere').toMatch(/qwen-mem-lite doctor/);
+    expect(out, 'it must still route the user somewhere').toContain(`${CLI_INVOKE} doctor`);
   });
 
   it('the two notices are not the same string', () => {
     // The premise for the wiring test: if these ever converged, the end-to-end assertion that
     // the model channel is command-free would be graded against the human one.
-    expect(formatDbUnusableModelNotice()).not.toBe(formatDbUnusableNotice({ dbPath: db, remedy: restore }));
+    expect(formatDbUnusableModelNotice(db)).not.toBe(formatDbUnusableNotice({ dbPath: db, remedy: restore }));
   });
 });
 
@@ -206,6 +531,14 @@ describe('shouldRecordOnce', () => {
     expect(shouldRecordOnce(dir, DB_UNUSABLE_MARKER_PREFIX, 'projA', 'k')).toBe(true);
     expect(shouldRecordOnce(dir, DB_UNUSABLE_MARKER_PREFIX, 'projB', 'k')).toBe(true);
     expect(shouldRecordOnce(dir, DB_UNUSABLE_MARKER_PREFIX, 'projA', 'k')).toBe(false);
+  });
+
+  // E2E 2026-10-16 round 2 (hooks NEW-3): non-ASCII letters became `_`, so `项目--博客` and
+  // `项目--商城` shared one marker and one project's record silenced the other's for an hour.
+  it('keys two non-ASCII projects of the same shape apart', () => {
+    const dir = tmp('once-cjk-');
+    expect(shouldRecordOnce(dir, DB_UNUSABLE_MARKER_PREFIX, '项目--博客', 'k')).toBe(true);
+    expect(shouldRecordOnce(dir, DB_UNUSABLE_MARKER_PREFIX, '项目--商城', 'k')).toBe(true);
   });
 
   it('re-records when the key changes — new information is not the fault already logged', () => {
@@ -285,7 +618,8 @@ describe('shouldRecordOnce', () => {
   it('sanitises the project into a single path segment', () => {
     const dir = tmp('once-path-');
     expect(shouldRecordOnce(dir, DB_UNUSABLE_MARKER_PREFIX, '../../etc/passwd', 'k')).toBe(true);
-    const written = readFileSync(join(dir, `${DB_UNUSABLE_MARKER_PREFIX}.._.._etc_passwd`), 'utf8');
+    // `-`, not `_`, since round 2 (the shared projectFileKey); still one segment, no traversal.
+    const written = readFileSync(join(dir, `${DB_UNUSABLE_MARKER_PREFIX}..-..-etc-passwd`), 'utf8');
     expect(JSON.parse(written).key).toBe('k');
   });
 });

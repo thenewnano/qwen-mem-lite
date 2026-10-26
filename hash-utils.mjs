@@ -8,14 +8,55 @@
  * @returns {number} Similarity score between 0 and 1
  */
 export function jaccardSimilarity(a, b) {
+  return jaccardOfTokens(a, b, false);
+}
+
+const CJK_RUN_RE = /[\u4e00-\u9fff\u3400-\u4dbf]{2,}/g;
+const HAS_CJK_RUN_RE = /[\u4e00-\u9fff\u3400-\u4dbf]{2,}/;
+
+/**
+ * jaccardSimilarity for the save-time near-duplicate window, where a CJK sentence is one or two
+ * whitespace tokens, so one changed character gave 0 and only an identical CJK save was caught
+ * (E2E 2026-10-16, MCP 5 / data S4). Each CJK run also contributes its character bigrams; text
+ * with no CJK scores exactly as jaccardSimilarity. Kept out of the merge and maintain paths, which
+ * act on their own (cluster-merge auto-merges at 0.85 with no model call).
+ */
+export function jaccardSimilarityCjk(a, b) {
+  // The bigrams only stand in for a CJK sentence's words. A Latin identifier or number glued into
+  // it stays one token among them, so 修复了redis连接池泄漏 / 修复了mysql连接池泄漏 read 0.75 and the
+  // second, a different fact, was dropped as a duplicate (pre-tag review 2026-10-16). When the two
+  // texts' Latin runs differ, they are scored as jaccardSimilarity scores them. NFKC folds the
+  // full-width forms an IME types (node２２) into the runs they are.
+  if (a && b && (HAS_CJK_RUN_RE.test(a) || HAS_CJK_RUN_RE.test(b)) && !sameSet(latinRuns(a), latinRuns(b))) {
+    return jaccardOfTokens(a, b, false);
+  }
+  return jaccardOfTokens(a, b, true);
+}
+
+const latinRuns = (s) =>
+  new Set(
+    s
+      .normalize('NFKC')
+      .toLowerCase()
+      .match(/[a-z0-9]+/g) || [],
+  );
+const sameSet = (x, y) => x.size === y.size && [...x].every((v) => y.has(v));
+
+function jaccardOfTokens(a, b, cjk) {
   if (!a || !b) return 0;
   // Strip trailing punctuation from tokens to match MinHash normalization
   // (prevents "server.rs," ≠ "server.rs" dedup failures)
-  const norm = (s) =>
-    s
+  const norm = (s) => {
+    const tokens = s
       .toLowerCase()
       .split(/\s+/)
       .map((t) => t.replace(/[,;:!?]+$/, ''));
+    if (!cjk) return tokens;
+    for (const run of s.match(CJK_RUN_RE) || []) {
+      for (let i = 0; i + 1 < run.length; i++) tokens.push(`\u0000${run[i]}${run[i + 1]}`);
+    }
+    return tokens;
+  };
   const setA = new Set(norm(a));
   const setB = new Set(norm(b));
   let intersection = 0;

@@ -1,9 +1,9 @@
 ---
 name: verify
-description: "Use when: the user explicitly asks to verify, audit or correct their stored memories against the current code (e.g. \"check my memories for stale ones\", /verify). You check each memory with read-only repo tools and propose corrections; nothing is written until the user approves the exact plan. Not for routine recall or saving."
+description: "Use when: the user explicitly asks to verify, audit or correct their stored memories against the current code (e.g. \"check my memories for stale ones\", /qwen-mem-lite:verify). You check each memory with read-only repo tools and propose corrections; nothing is written until the user approves the exact plan. Not for routine recall or saving."
 ---
 
-# /verify — check memories against the code, then correct the stale ones
+# /qwen-mem-lite:verify — check memories against the code, then correct the stale ones
 
 Memories go stale: a bug recorded as open gets fixed, a measurement gets retracted, a
 mechanism is replaced. Measured on 118 live memories across 7 repos, ~10% were STALE and
@@ -11,8 +11,6 @@ mechanism is replaced. Measured on 118 live memories across 7 repos, ~10% were S
 this — cheap single-shot models misjudged it (precision 0.36) and model-written corrections
 were false in 28 of 72 cases. What works is YOU reading the code: you propose, the user
 approves the exact plan, and `verify-apply` is the only thing that writes.
-
-(If another plugin also defines `/verify`, this one is `/claude-mem-lite:verify`.)
 
 ## Arguments
 
@@ -35,7 +33,7 @@ otherwise ask. Always pass that exact name — `export --project` matches loosel
 neighbouring project from a short name.
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" export --project <project> [--from <date>] > <scratch>/memories.json
+node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" export --project=<project> [--from <date>] > <scratch>/memories.json
 ```
 
 Every row carries `id`, `project`, `type`, `title`, `narrative`, `facts`, `lesson_learned`,
@@ -115,7 +113,7 @@ Write `<scratch>/proposals.json` — a JSON array, one entry per memory to chang
 ## Step 4 — Show the plan and get approval
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" verify-apply <scratch>/proposals.json --project <project>
+node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" verify-apply <scratch>/proposals.json --project=<project>
 ```
 
 This is a dry run: it validates every entry against the database, writes nothing, prints each
@@ -132,7 +130,7 @@ the old one will be refused.
 Run exactly the command the dry run printed:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" verify-apply <scratch>/proposals.json --project <project> --apply --digest <digest>
+node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" verify-apply <scratch>/proposals.json --project=<project> --apply --digest <digest>
 ```
 
 It refuses if the proposals or the memories changed since the dry run. Otherwise it backs up

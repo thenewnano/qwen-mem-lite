@@ -22,7 +22,20 @@ afterAll(() => {
   rmSync(home, { recursive: true, force: true });
 });
 
+let lastStatus = null;
 function selfUpdate(extraEnv) {
+  // A failed check exits 1 (E2E 2026-10-16), so read stdout off the thrown error too.
+  try {
+    const out = selfUpdateRaw(extraEnv);
+    lastStatus = 0;
+    return out;
+  } catch (e) {
+    lastStatus = e.status;
+    return e.stdout || '';
+  }
+}
+
+function selfUpdateRaw(extraEnv) {
   return execFileSync(process.execPath, [CLI, 'self-update'], {
     encoding: 'utf8',
     timeout: 30000,
@@ -48,6 +61,8 @@ describe('self-update says why it did not check', () => {
     expect(out).not.toMatch(/up to date/i);
     expect(out).toMatch(/QWEN_MEM_SKIP_UPDATE/);
     expect(out).toMatch(/unset it/i);
+    // Nothing was checked, as in the offline case (E2E round 2, install B12).
+    expect(lastStatus).toBe(1);
   });
 
   it('names a development install instead of claiming it is up to date', () => {
@@ -58,6 +73,7 @@ describe('self-update says why it did not check', () => {
       const out = selfUpdate({ HOME: dev });
       expect(out).not.toMatch(/up to date/i);
       expect(out).toMatch(/development install/);
+      expect(lastStatus).toBe(1);
     } finally {
       rmSync(dev, { recursive: true, force: true });
     }
@@ -72,6 +88,8 @@ describe('self-update says why it did not check', () => {
     expect(out).toMatch(/Checking for updates/);
     expect(out).not.toMatch(/up to date/i);
     expect(out).toMatch(/could not reach GitHub/i);
+    // Nothing was checked or installed: `self-update && …` must not read that as success.
+    expect(lastStatus).toBe(1);
   });
 
   it('prints the updater name in its banner, not the memory editor `update`', () => {

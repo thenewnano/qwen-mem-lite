@@ -9,11 +9,22 @@
 //   • plugin MANIFEST files (commands/*.md)  → literal ${CLAUDE_PLUGIN_ROOT}
 
 import { describe, test, expect } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  mkdtempSync,
+  mkdirSync,
+  copyFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 
-import { CLI_PATH, CLI_INVOKE } from '../cli-path.mjs';
+import { CLI_PATH, CLI_INVOKE, shellWord } from '../cli-path.mjs';
+import { walkShipped } from './shipped-tree.mjs';
 import { tools } from '../tool-schemas.mjs';
 import { buildServerInstructions } from '../search-scoring.mjs';
 import { getDetailDoc, buildClaudeMdBlock } from '../adopt-content.mjs';
@@ -245,5 +256,153 @@ describe('source + manifest guards', () => {
     expect(srcFiles).toContain("'cli-path.mjs'");
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
     expect(pkg.files).toContain('cli-path.mjs');
+  });
+});
+
+// Deferred D#61 (pre-ship review of v6.12.1, P3-4): the remedies doctor, repair and the DB
+// notices print wrapped their paths in DOUBLE quotes. That survives a space and nothing else:
+// inside "…" bash still expands `$NAME` and runs a backtick, and a `"` in the path ends the
+// quote. For `rm -f "<db>-wal"` / `mv "<db>" …` that is a pasted command acting on a
+// DIFFERENT file. shellWord's single-quote form is exact for every byte.
+describe('printed remedies keep a hostile path as one exact word (D#61)', () => {
+  // A path with every character double quotes fail on: `$HOME` (expands to something
+  // non-empty, so the damage is visible), a backtick command, `"`, `'`, a space, a backslash.
+  const HOSTILE = 'sp ace$HOME`echo INJECTED`"dq\'sq\\bs';
+  // Every verb a remedy starts with is shadowed, so evaluating the printed command only
+  // reports the words bash split it into — nothing is removed, moved or installed.
+  const PRELUDE = ['node', 'cd', 'rm', 'mv', 'cp', 'chmod', 'npm', 'restart', 'test', 'touch']
+    .map((v) => `${v}() { printf '%s\\n' "$@"; }`)
+    .join('\n');
+  const words = (cmd) => {
+    const r = spawnSync('bash', ['-c', `${PRELUDE}\neval "$1"`, '_', cmd], { encoding: 'utf8' });
+    return r.stdout.split('\n');
+  };
+  const withHostileDir = (fn) => {
+    const base = mkdtempSync(join(tmpdir(), 'cml-d61-'));
+    const dir = join(base, HOSTILE);
+    mkdirSync(dir);
+    try {
+      return fn(dir);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  };
+
+  test('the harness can say NO: a double-quoted hostile path does not survive', () => {
+    withHostileDir((dir) => {
+      expect(words(`node "${join(dir, 'cli.mjs')}" repair`)).not.toContain(join(dir, 'cli.mjs'));
+      expect(words(`node ${shellWord(join(dir, 'cli.mjs'))} repair`)).toContain(join(dir, 'cli.mjs'));
+    });
+  });
+
+  test('nativeBindingRepairHint: both the CLI command and the npm fallback', async () => {
+    const { nativeBindingRepairHint } = await import('../lib/binding-probe.mjs');
+    withHostileDir((dir) => {
+      expect(words(nativeBindingRepairHint(dir))).toContain(dir); // no cli.mjs: the npm pair alone
+      writeFileSync(join(dir, 'cli.mjs'), '');
+      const [cliCmd, fallback] = nativeBindingRepairHint(dir).split('   (or, without the CLI: ');
+      expect(words(cliCmd)).toContain(join(dir, 'cli.mjs'));
+      expect(words(fallback.replace(/\)$/, ''))).toContain(dir);
+    });
+  });
+
+  test('dbUnusableRemedy: the set-aside and the restore commands', async () => {
+    const { dbUnusableRemedy } = await import('../lib/db-unusable.mjs');
+    withHostileDir((dir) => {
+      const db = join(dir, 'qwen-mem-lite.db');
+      writeFileSync(db, '');
+      const setAside = dbUnusableRemedy(db);
+      expect(setAside.kind).toBe('set-aside');
+      const kept = setAside.keptAs;
+      expect(words(setAside.command)).toEqual(
+        expect.arrayContaining([`${db}-wal`, `${db}-shm`, db, kept, `${kept}-wal`]),
+      );
+      const bak = `${db}.2026-09-25T00-00-00Z.bak`;
+      writeFileSync(bak, 'snapshot'); // an empty one is skipped (D#551)
+      writeFileSync(`${bak}-wal`, 'log');
+      const restore = dbUnusableRemedy(db, undefined, {
+        check: () => ({ verdict: 'ok', observations: 1, withLog: true }),
+      });
+      expect(restore.kind).toBe('restore');
+      expect(words(restore.command)).toEqual(
+        expect.arrayContaining([`${db}-wal`, bak, db, restore.keptAs, `${bak}-wal`, CLI_PATH, 'fts-check']),
+      );
+    });
+  });
+
+  test('hookManifestRepairHint: the cp of the marketplace manifest', async () => {
+    const { hookManifestRepairHint } = await import('../install.mjs');
+    withHostileDir((dir) => {
+      const cache = join(dir, 'cache');
+      const mp = join(dir, 'mp');
+      mkdirSync(join(mp, 'hooks'), { recursive: true });
+      copyFileSync(join(ROOT, 'hooks', 'hooks.json'), join(mp, 'hooks', 'hooks.json'));
+      const hint = hookManifestRepairHint(cache, mp);
+      expect(hint.startsWith('cp '), hint).toBe(true); // premise: the arm that prints a command
+      expect(words(hint)).toEqual(
+        expect.arrayContaining([join(mp, 'hooks', 'hooks.json'), join(cache, 'hooks', 'hooks.json')]),
+      );
+    });
+  });
+
+  // The rest print from entry files or from module-location paths a unit test cannot move,
+  // so they are held by a sweep: no shell verb in a shipped module may be followed by a
+  // double-quoted interpolation. The hook REGISTRATION strings are the exemption — they are
+  // written into settings.json and parsed back by `"…"` regexes (hook-prune's
+  // launcherEntryPath, install.mjs's collectOrphanHookPaths), so their form is a stored
+  // format, not a printed remedy; a format that desyncs from those parsers makes
+  // launcherEntryPath resolve a live hook as missing, and hook-prune then deletes it.
+  // The paths are `<homedir>/.qwen-mem-lite/scripts/*`. Double quotes keep a space, an
+  // apostrophe, a drive-letter Windows path and a `$` before `/`, `.`, a space or the end
+  // intact. They break on a `$` before a name character, a digit, `{`, `(` or a special
+  // parameter (`$$`, `$?`, `$_`, `$-`, …); on a backtick or `"`; and on a backslash before
+  // `$`, a backtick, `"` or `\` — so a UNC home `\\srv` loses a backslash (bash-measured
+  // 2026-09-25, 19 shapes).
+  const VERB_THEN_DQ = /\b(?:node|cd|rm|mv|cp|bash|PATH=)(?:\s[^`]*?)?"(?:\$\{|' \+)/;
+  const REGISTRATION = [
+    'const nodeHook = (entry, ...args) => `node "${LAUNCHER_PATH}"',
+    'command: `bash "${PREFILTER_PATH}"`',
+    'command: `bash "${AGENT_PREFILTER_PATH}"`',
+    'command: `bash "${BASH_RECALL_PREFILTER_PATH}"`',
+  ];
+
+  test('the sweep detector fires on the shapes it exists for', () => {
+    expect(VERB_THEN_DQ.test('const clear = `rm -f "${dbPath}-wal"`;')).toBe(true);
+    expect(VERB_THEN_DQ.test('command: `${clear} && mv ${shellWord(a)} "${b}"`,')).toBe(true);
+    expect(VERB_THEN_DQ.test('`… add it: export PATH="${binDir}:$PATH"`')).toBe(true);
+    expect(VERB_THEN_DQ.test(`warn('… -- node "' + SERVER_PATH + '"');`)).toBe(true);
+    expect(VERB_THEN_DQ.test('const clear = `rm -f ${shellWord(`${dbPath}-wal`)}`;')).toBe(false);
+    expect(VERB_THEN_DQ.test('fail(`[mem] Invalid --type "${type}". Valid: …`);')).toBe(false);
+  });
+
+  test('no shipped module prints a shell command with a double-quoted interpolated path', () => {
+    const offenders = [];
+    const exempted = [];
+    for (const f of walkShipped()) {
+      readFileSync(f, 'utf8')
+        .split('\n')
+        .forEach((line, i) => {
+          if (/^\s*(\/\/|\*)/.test(line) || !VERB_THEN_DQ.test(line)) return;
+          const at = `${f.slice(ROOT.length + 1)}:${i + 1}`;
+          if (REGISTRATION.some((r) => line.includes(r))) exempted.push(at);
+          else offenders.push(`${at}: ${line.trim().slice(0, 100)}`);
+        });
+    }
+    expect(offenders).toEqual([]);
+    // Premise and scope: every exemption is still there, and nothing else rides on it.
+    expect(exempted).toHaveLength(REGISTRATION.length);
+  });
+
+  // The two launchers may import only node: builtins (they must run on a broken install), so
+  // each carries its own copy. A copy that drifts is a quoting rule nobody reviewed.
+  test("the launchers' inline shellWord copies match cli-path.mjs", () => {
+    const def = (rel) => {
+      const m = /const shellWord = (\(s\) => .*);$/m.exec(readFileSync(join(ROOT, rel), 'utf8'));
+      expect(m, `${rel}: shellWord definition not found`).toBeTruthy();
+      return m[1];
+    };
+    for (const rel of ['scripts/hook-launcher.mjs', 'scripts/launch.mjs']) {
+      expect(def(rel), rel).toBe(def('cli-path.mjs'));
+    }
   });
 });

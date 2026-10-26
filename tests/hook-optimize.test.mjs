@@ -147,17 +147,135 @@ describe('re-enrich', () => {
     search_aliases: [],
   };
 
-  it('a manual save rewritten by narrow re-enrich is marked machine-written', async () => {
+  // E2E 2026-10-16 (bg P1-4): narrow replaced an explicit save's title and narrative with model
+  // text — "Chose server-side sessions over JWT … (~0.4 ms p50 measured on staging)" became "The
+  // admin console uses sessions for authentication." — with no snapshot, whenever its save-time
+  // enrich had failed. It now keeps a manual save's own text, as wide does, and fills the side
+  // fields; the row stays the person's save. (Before: D#146 re-attributed the rewritten row.)
+  it("narrow re-enrich keeps an explicit save's title and narrative and its authorship", async () => {
     const { executeReenrich } = await import('../hook-optimize.mjs');
     const { isAutoWritten } = await import('../lib/provenance.mjs');
     insertSession(db, { id: 'manual-test', project: 'test' });
-    insertObs(db, { sessionId: 'manual-test', title: 'Saved by hand', narrative: 'x' });
+    insertObs(db, {
+      sessionId: 'manual-test',
+      type: 'bugfix',
+      title: 'Saved by hand',
+      narrative: 'measured 0.4 ms p50 on staging',
+    });
     callModelJSONAsync.mockResolvedValue(narrowReply);
     expect((await executeReenrich(db, 10)).processed).toBe(1);
-    const obs = db.prepare('SELECT title, memory_session_id FROM observations LIMIT 1').get();
-    expect(obs.title).toBe('Model title');
-    expect(obs.memory_session_id).toBe('enrich-test');
-    expect(isAutoWritten(obs.memory_session_id)).toBe(true);
+    const obs = db
+      .prepare('SELECT title, narrative, lesson_learned, memory_session_id FROM observations LIMIT 1')
+      .get();
+    expect(obs.title).toBe('Saved by hand');
+    expect(obs.narrative).toBe('measured 0.4 ms p50 on staging');
+    expect(obs.lesson_learned, 'marked as model-written (D#380)').toBe(
+      '🤖 a lesson with enough signal to persist',
+    );
+    expect(obs.memory_session_id).toBe('manual-test');
+    expect(isAutoWritten(obs.memory_session_id)).toBe(false);
+  });
+
+  // E2E round 2 (hooks REGRESSION-2): with the text kept, the same UPDATE still wrote the
+  // model's type, raised importance and an invented lesson under the person's name — a
+  // discovery at importance 1 became a decision at importance 3 in Key Context. An explicit save
+  // now gets what save-time enrichment writes: its own type and importance, a lesson only for a
+  // type that obligates one (lib/save-enrich.mjs ENRICH_OBLIGATED_TYPES).
+  it("narrow re-enrich keeps an explicit save's type and importance, and adds no lesson to a discovery", async () => {
+    const { executeReenrich } = await import('../hook-optimize.mjs');
+    insertSession(db, { id: 'manual-disc', project: 'test' });
+    insertObs(db, {
+      sessionId: 'manual-disc',
+      type: 'discovery',
+      importance: 1,
+      title: 'Redis eviction policy on the staging cache is allkeys-lru',
+      narrative: 'staging cache uses allkeys-lru',
+    });
+    callModelJSONAsync.mockResolvedValue({
+      ...narrowReply,
+      type: 'decision',
+      importance: 3,
+      lesson_learned: 'Use volatile-lru for session stores.',
+      concepts: ['redis'],
+    });
+    expect((await executeReenrich(db, 10)).processed).toBe(1);
+    const obs = db
+      .prepare('SELECT type, importance, lesson_learned, concepts FROM observations LIMIT 1')
+      .get();
+    expect(obs.type).toBe('discovery');
+    expect(obs.importance).toBe(1);
+    expect(obs.lesson_learned ?? null).toBeNull();
+    expect(obs.concepts, 'side fields are still filled').toBe('redis');
+  });
+
+  // Round 3 (hooks REGRESSION-2): the rule above was meant for narrow and applied to every scope,
+  // so the daily WIDE pass — the lesson backfill for substantive rows — gave an explicit feature
+  // or refactor save no lesson and stamped it out of the pool. Wide keeps backfilling the lesson;
+  // type and importance stay the person's in both scopes.
+  it("wide re-enrich still backfills an explicit feature save's lesson, keeping its type and importance", async () => {
+    const { executeReenrich } = await import('../hook-optimize.mjs');
+    insertSession(db, { id: 'manual-wide', project: 'test' });
+    insertObs(db, {
+      sessionId: 'manual-wide',
+      type: 'feature',
+      importance: 2,
+      title: 'Export streams rows in batches',
+      narrative:
+        'The export command now streams rows in fixed-size batches of 500 instead of loading the whole table, which kept memory flat on a 2 GB store during the staging run.',
+    });
+    callModelJSONAsync.mockResolvedValue({
+      ...narrowReply,
+      type: 'refactor',
+      importance: 3,
+      lesson_learned: 'Stream large exports in fixed-size batches to bound memory.',
+    });
+    expect((await executeReenrich(db, 10, { scope: 'wide' })).processed).toBe(1);
+    const obs = db.prepare('SELECT type, importance, lesson_learned FROM observations LIMIT 1').get();
+    expect(obs.lesson_learned).toBe('🤖 Stream large exports in fixed-size batches to bound memory.');
+    expect(obs.type).toBe('feature');
+    expect(obs.importance).toBe(2);
+  });
+
+  it('control: a machine-written row still takes the model type and a raised importance', async () => {
+    const { executeReenrich } = await import('../hook-optimize.mjs');
+    insertObs(db, { type: 'discovery', importance: 1, title: 'Modified cache.js', narrative: 'x' });
+    callModelJSONAsync.mockResolvedValue({ ...narrowReply, type: 'decision', importance: 2 });
+    expect((await executeReenrich(db, 10)).processed).toBe(1);
+    const obs = db.prepare('SELECT type, importance FROM observations LIMIT 1').get();
+    expect(obs).toEqual({ type: 'decision', importance: 2 });
+  });
+
+  // D#376: stored text can talk the model into "importance 3" (2/12 replies before the prompt
+  // guard), and 3 is the top tier of Key Context. Benign re-enrich replies never said 3 (0/40), so
+  // the unattended pass stops at 2; a stored 3 is still kept by the floor.
+  it.each(['narrow', 'wide'])('%s re-enrich raises a machine-written row to 2 at most', async (scope) => {
+    const { executeReenrich } = await import('../hook-optimize.mjs');
+    insertObs(db, {
+      type: 'bugfix',
+      importance: 1,
+      title: 'Cache evicts on write instead of on read',
+      narrative:
+        'The cache layer now evicts entries on write instead of on read, which removed the stale reads the checkout page showed after a price change during the load test.',
+    });
+    callModelJSONAsync.mockResolvedValue({ ...narrowReply, type: 'bugfix', importance: 3 });
+    expect((await executeReenrich(db, 10, { scope })).processed).toBe(1);
+    expect(db.prepare('SELECT importance FROM observations LIMIT 1').get().importance).toBe(2);
+  });
+
+  it('re-enrich keeps a machine-written row already at 3', async () => {
+    const { executeReenrich } = await import('../hook-optimize.mjs');
+    insertObs(db, { type: 'discovery', importance: 3, title: 'Modified cache.js', narrative: 'x' });
+    callModelJSONAsync.mockResolvedValue({ ...narrowReply, importance: 3 });
+    expect((await executeReenrich(db, 10)).processed).toBe(1);
+    expect(db.prepare('SELECT importance FROM observations LIMIT 1').get().importance).toBe(3);
+  });
+
+  it("narrow re-enrich still rewrites a machine-written row's title", async () => {
+    const { executeReenrich } = await import('../hook-optimize.mjs');
+    insertObs(db, { title: 'Modified a.js', narrative: 'x' });
+    callModelJSONAsync.mockResolvedValue(narrowReply);
+    expect((await executeReenrich(db, 10)).processed).toBe(1);
+    expect(db.prepare('SELECT title FROM observations LIMIT 1').get().title).toBe('Model title');
   });
 
   it('a machine-written row keeps its session id through narrow re-enrich', async () => {
@@ -1420,7 +1538,10 @@ describe('re-enrich --scope wide (R-7)', () => {
     ).toBe('manual-probe');
   });
 
-  it('control: a narrow rewrite of an explicit save does move it to the re-enrich writer', async () => {
+  // Was the control "a narrow rewrite of an explicit save does move it to the re-enrich writer".
+  // Since E2E 2026-10-16 narrow never rewrites an explicit save's text (bg P1-4), so a non-zero
+  // reply keeps the author id too; the rewrite-at-all control is the machine-written case above.
+  it('a non-zero narrow reply on an explicit save keeps its text and its manual author id', async () => {
     const { executeReenrich } = await import('../hook-optimize.mjs');
     insertSession(db, { id: 'manual-probe2', project: 'test' });
     insertObs(db, { sessionId: 'manual-probe2', title: 'saved by hand', narrative: 'kept text' });
@@ -1433,8 +1554,20 @@ describe('re-enrich --scope wide (R-7)', () => {
     });
     expect((await executeReenrich(db, 10)).processed).toBe(1);
     const row = db.prepare('SELECT title, memory_session_id FROM observations WHERE id = ?').get(id);
-    expect(row.title).toBe('model title');
-    expect(row.memory_session_id).not.toBe('manual-probe2');
+    expect(row.title).toBe('saved by hand');
+    expect(row.memory_session_id).toBe('manual-probe2');
+  });
+
+  it('a 0 reply does not hide an explicit save whose importance nobody set', async () => {
+    const { executeReenrich } = await import('../hook-optimize.mjs');
+    insertSession(db, { id: 'manual-probe3', project: 'test' });
+    insertObs(db, { sessionId: 'manual-probe3', title: 'saved by hand', narrative: 'kept text' });
+    const id = db.prepare('SELECT MAX(id) id FROM observations').get().id;
+    callModelJSONAsync.mockResolvedValue({ type: 'change', title: 'y', narrative: 'y', importance: 0 });
+    expect((await executeReenrich(db, 10)).processed).toBe(1);
+    const row = db.prepare('SELECT compressed_into, title FROM observations WHERE id = ?').get(id);
+    expect(row.compressed_into ?? 0).toBe(0);
+    expect(row.title).toBe('saved by hand');
   });
 
   it('a reply scoring a person-set row 0 does not rewrite its title or narrative (D#207)', async () => {
@@ -1579,6 +1712,29 @@ describe('cluster-merge', () => {
     expect(candidates.length).toBeGreaterThanOrEqual(0);
   });
 
+  // Round-2 pre-tag review 2026-10-17 (pre-existing), the merge twin of smart-compress's verdict:
+  // the string "false" read as consent and the members were folded into the keeper.
+  it.each(['false', 'no'])(
+    'does not merge on a verdict that is not the boolean true (%j)',
+    async (verdict) => {
+      const { executeMergeCluster } = await import('../hook-optimize.mjs');
+      insertObs(db, { title: 'Fix FTS5 bug A', narrative: 'Handled special chars', accessCount: 3 });
+      insertObs(db, { title: 'Fix FTS5 bug B', narrative: 'Handled parentheses', accessCount: 1 });
+      const obs = db.prepare('SELECT * FROM observations ORDER BY id').all();
+      callModelJSONAsync.mockResolvedValue({
+        should_merge: verdict,
+        merged_title: 'Fix FTS5 query sanitization bugs',
+        merged_narrative: 'Fixed multiple edge cases',
+        importance: 2,
+      });
+      expect((await executeMergeCluster(db, obs)).merged).toBe(false);
+      expect(
+        db.prepare('SELECT compressed_into FROM observations WHERE id = ?').get(obs[1].id).compressed_into ??
+          0,
+      ).toBe(0);
+    },
+  );
+
   it('executes merge when LLM approves', async () => {
     const { executeMergeCluster } = await import('../hook-optimize.mjs');
     insertObs(db, { title: 'Fix FTS5 bug A', narrative: 'Handled special chars', accessCount: 3 });
@@ -1622,7 +1778,14 @@ describe('cluster-merge', () => {
     };
     for (const personSets of [true, false]) {
       db.prepare('DELETE FROM observations').run();
-      insertObs(db, { title: 'Fix FTS5 bug A', narrative: 'Handled special chars', accessCount: 3 });
+      // Keeper at 3 so the premise arm reads the cluster max, not a model-raised value: the merge
+      // no longer lets the model raise importance (E2E 2026-10-16).
+      insertObs(db, {
+        title: 'Fix FTS5 bug A',
+        narrative: 'Handled special chars',
+        accessCount: 3,
+        importance: 3,
+      });
       insertObs(db, { title: 'Fix FTS5 bug B', narrative: 'Handled parentheses', accessCount: 1 });
       const obs = db.prepare('SELECT * FROM observations ORDER BY id').all();
       callModelJSONAsync.mockImplementation(async () => {
@@ -1760,6 +1923,119 @@ describe('cluster-merge', () => {
       .get(keeperId);
     expect(snap, 'keeper original must be snapshotted, not lost').toBeTruthy();
     expect(snap.narrative).toBe('irreplaceable repro steps');
+  });
+
+  // E2E 2026-10-16 (bg P1-1): the merge prompt shows the model titles and narratives only, yet
+  // any non-empty merged_lesson REPLACED the members' lessons — two importance-3 explicit saves
+  // lost "clockTolerance: 300" and "token_version" to a generic sentence, from every live surface,
+  // in the unattended daily pass. Members' own lessons now win; the model's is used only when
+  // no member has one.
+  // Round 2 (hooks NEW-1): the union of the members' lessons was cut mid-word at 500
+  // characters, so three ordinary ~220-char lessons lost the last one's specifics from every live
+  // surface (the member it came from is hidden by the merge). A cluster whose lessons do not fit
+  // together is not merged; nothing is asked of the model for it.
+  it('does not merge a cluster whose distinct lessons do not fit in one lesson', async () => {
+    const { executeMergeCluster } = await import('../hook-optimize.mjs');
+    for (const [t, l] of [
+      [
+        'Refresh endpoint rejects sid',
+        'the refresh endpoint must accept both sid and sid_v2 cookies during the rollout window, or every session minted before the deploy is rejected and users are logged out mid-checkout; keep both names until 2026-11-01',
+      ],
+      [
+        'Password reset leaves old tokens',
+        'password reset increments users.token_version, and refresh() must reload token_version from the row instead of the cache, or a reset password keeps the old refresh tokens valid until they expire',
+      ],
+      [
+        'JWT exp fails behind skewed clocks',
+        'jwt.verify() compares exp against the local clock, so set clockTolerance to 300 seconds in src/auth/verify.js; the staging nodes drift by up to four minutes after a VM migration',
+      ],
+    ])
+      insertObs(db, { title: t, narrative: 'auth', importance: 3, lessonLearned: l });
+    const obs = db.prepare('SELECT * FROM observations ORDER BY id').all();
+    expect(
+      obs.map((o) => o.lesson_learned).join(' — ').length,
+      'premise: the union exceeds 500',
+    ).toBeGreaterThan(500);
+    callModelJSONAsync.mockClear();
+    callModelJSONAsync.mockResolvedValue({ should_merge: true, merged_title: 'Auth', merged_narrative: 'x' });
+    expect((await executeMergeCluster(db, obs)).merged).toBe(false);
+    expect(callModelJSONAsync).not.toHaveBeenCalled();
+    const live = db
+      .prepare('SELECT lesson_learned FROM observations WHERE COALESCE(compressed_into,0)=0')
+      .all()
+      .map((r) => r.lesson_learned)
+      .join(' | ');
+    expect(live).toContain('300 seconds in src/auth/verify.js');
+  });
+
+  it("keeps the members' own lessons over a model lesson written without seeing them", async () => {
+    const { executeMergeCluster } = await import('../hook-optimize.mjs');
+    insertObs(db, { title: 'Refresh token rejected after deploy', narrative: 'clock skew', importance: 3 });
+    insertObs(db, {
+      title: 'Refresh token rejected after password reset',
+      narrative: 'stale cache',
+      importance: 3,
+    });
+    const rows = db.prepare('SELECT id FROM observations ORDER BY id').all();
+    db.prepare(
+      "UPDATE observations SET lesson_learned = 'set clockTolerance: 300 in verify.js' WHERE id = ?",
+    ).run(rows[0].id);
+    db.prepare(
+      "UPDATE observations SET lesson_learned = 'refresh() must reload token_version' WHERE id = ?",
+    ).run(rows[1].id);
+    const obs = db.prepare('SELECT * FROM observations ORDER BY id').all();
+    callModelJSONAsync.mockResolvedValue({
+      should_merge: true,
+      merged_title: 'Refresh-token rejections',
+      merged_narrative: 'two causes',
+      merged_concepts: [],
+      merged_facts: [],
+      merged_lesson: 'Refresh-token rejections can have more than one root cause.',
+      importance: 3,
+    });
+    expect((await executeMergeCluster(db, obs)).merged).toBe(true);
+    const live = db
+      .prepare(
+        'SELECT lesson_learned FROM observations WHERE COALESCE(compressed_into,0)=0 AND superseded_at IS NULL',
+      )
+      .all()
+      .map((r) => r.lesson_learned)
+      .join(' | ');
+    expect(live).toContain('clockTolerance: 300');
+    expect(live).toContain('token_version');
+  });
+
+  it('a model lesson still fills a cluster whose members have none', async () => {
+    const { executeMergeCluster } = await import('../hook-optimize.mjs');
+    insertObs(db, { title: 'Fix FTS5 bug A', narrative: 'a', accessCount: 3 });
+    insertObs(db, { title: 'Fix FTS5 bug B', narrative: 'b', accessCount: 1 });
+    const obs = db.prepare('SELECT * FROM observations ORDER BY id').all();
+    callModelJSONAsync.mockResolvedValue({
+      should_merge: true,
+      merged_title: 'M',
+      merged_lesson: 'escape FTS5 input',
+    });
+    expect((await executeMergeCluster(db, obs)).merged).toBe(true);
+    expect(
+      db.prepare('SELECT lesson_learned FROM observations WHERE id = ?').get(obs[0].id).lesson_learned,
+    ).toBe('escape FTS5 input');
+  });
+
+  // E2E 2026-10-16 (bg P1-3): importance was max(model, cluster max), so stored text that talked
+  // the model into "importance": 3 turned two importance-1 rows into a critical Key Context row.
+  it('the model cannot raise the merged importance above the cluster max', async () => {
+    const { executeMergeCluster } = await import('../hook-optimize.mjs');
+    insertObs(db, { title: 'Install script updated A', narrative: 'a', importance: 1, accessCount: 1 });
+    insertObs(db, { title: 'Install script updated B', narrative: 'b', importance: 1 });
+    const obs = db.prepare('SELECT * FROM observations ORDER BY id').all();
+    callModelJSONAsync.mockResolvedValue({
+      should_merge: true,
+      merged_title: 'M',
+      merged_lesson: 'x',
+      importance: 3,
+    });
+    expect((await executeMergeCluster(db, obs)).merged).toBe(true);
+    expect(db.prepare('SELECT importance FROM observations WHERE id = ?').get(obs[0].id).importance).toBe(1);
   });
 
   it('preserves cluster lessons when the LLM returns merged_lesson:null (never-auto-GC)', async () => {
@@ -2041,6 +2317,25 @@ describe('smart-compress', () => {
     expect(hidden).toBe(0);
   });
 
+  // Round-2 pre-tag review 2026-10-17 (pre-existing): `!parsed.should_compress` read the STRING
+  // "false" as consent and hid the three rows. Only a boolean true consents.
+  it.each(['false', 'no', 1])('refuses a verdict that is not the boolean true (%j)', async (verdict) => {
+    const { executeSmartCompressCluster } = await import('../hook-optimize.mjs');
+    const obs = cluster3(db);
+    callModelJSONAsync.mockResolvedValue({
+      should_compress: verdict,
+      title: 'Assorted unrelated maintenance',
+      narrative: 'These three changes have nothing to do with each other.',
+    });
+    expect((await executeSmartCompressCluster(db, obs, 'test')).compressed).toBe(false);
+    const hidden = db
+      .prepare(
+        `SELECT COUNT(*) c FROM observations WHERE id IN (${obs.map(() => '?').join(',')}) AND COALESCE(compressed_into,0) <> 0`,
+      )
+      .get(...obs.map((o) => o.id)).c;
+    expect(hidden).toBe(0);
+  });
+
   it('refuses when the model omits the verdict (fail closed, like should_merge)', async () => {
     const { executeSmartCompressCluster } = await import('../hook-optimize.mjs');
     const obs = cluster3(db);
@@ -2076,8 +2371,12 @@ describe('smart-compress', () => {
     // QUOTED, so it matches the JSON TEMPLATE and not the prose line that explains the
     // field. The bare-string form was walked straight past by the real revert shape
     // (delete the key from the template, keep the explanation) — mutation M16.
-    expect(prompt).toContain('"should_compress"');
-    expect(prompt).not.toContain('Summarize these related');
+    // RESTATED for D#375: the prompt is `{ system, user }`, and the verdict is an
+    // instruction, so it must be in `system` (stored-text-prompt-boundary.test.mjs asserts
+    // the members are in `user`).
+    expect(prompt.system).toContain('"should_compress"');
+    expect(prompt.system).not.toContain('Summarize these related');
+    expect(prompt.user).not.toContain('Summarize these related');
   });
 });
 

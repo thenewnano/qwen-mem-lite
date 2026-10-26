@@ -5,6 +5,7 @@ import { OUR_MCP_SERVER_RE, isOurMcpRegistration } from './lib/mcp-ownership.mjs
 import { execSync, execFileSync } from 'child_process';
 import {
   readFileSync,
+  copyFileSync,
   writeFileSync,
   existsSync,
   rmSync,
@@ -16,9 +17,11 @@ import {
   readdirSync,
   statSync,
   lstatSync,
+  readlinkSync,
+  realpathSync,
   constants as fsConstants,
 } from 'fs';
-import { join, resolve, dirname, basename, sep, relative, isAbsolute } from 'path';
+import { join, resolve, dirname, basename, sep, relative, isAbsolute, delimiter } from 'path';
 import { homedir, tmpdir } from 'os';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
@@ -54,17 +57,26 @@ const OLD_DATA_DIR = join(homedir(), '.claude-mem');
 // a constant's clothes.
 const CLI_BIN_DIRS = [join(homedir(), '.local', 'bin'), '/usr/local/bin'];
 
-// Detect ephemeral context (npx) - files won't persist after exit
-const IS_NPX =
-  process.env.npm_command === 'exec' || PROJECT_DIR.includes('_npx') || PROJECT_DIR.includes('.npm/_');
+// Detect ephemeral context (npx) — files won't persist after exit
+const IS_NPX = isNpxRun(PROJECT_DIR);
+// How a hint names this CLI: by path (the bare name is on PATH only after a global npm install,
+// D#462), or through npx when that is how this run started.
+const CLI_HINT = IS_NPX ? 'npx qwen-mem-lite' : CLI_INVOKE;
 
 // Both modes install to ~/.qwen-mem-lite/ (copies or symlinks)
 const INSTALL_DIR = DATA_DIR;
 const SERVER_PATH = join(INSTALL_DIR, 'server.mjs');
 const HOOK_PATH = join(INSTALL_DIR, 'hook.mjs');
 // P2-7: both constants and the predicate come from lib/plugin-key.mjs, which hook.mjs also
-// imports - this pair used to be typed out in each.
-import { MARKETPLACE_KEY, PLUGIN_KEY, PLUGIN_NAME, isPluginExplicitlyDisabled } from './lib/plugin-key.mjs';
+// imports — this pair used to be typed out in each.
+import {
+  MARKETPLACE_KEY,
+  PLUGIN_KEY,
+  PLUGIN_NAME,
+  isPluginExplicitlyDisabled,
+  pluginSettingsScopes,
+} from './lib/plugin-key.mjs';
+import { isNpxRun } from './lib/npx-run.mjs';
 import { doctorDbModeHint } from './lib/doctor-modes.mjs';
 // Static, matching doctor-modes above. Safe here where it would not be for a heavier
 // module: this one is a leaf over node:fs + node:child_process, so it adds no load graph
@@ -96,8 +108,14 @@ import {
   probeBindingInFreshProcess,
   flattenBindingError,
 } from './lib/binding-probe.mjs';
-import { detectInstallShape, probeRuntimeRoots, hasAnyManagedCode } from './lib/install-shape.mjs';
-import { probeSchemaCompat, schemaSkewRemedy } from './lib/schema-skew.mjs';
+import {
+  detectInstallShape,
+  probeRuntimeRoots,
+  probeRuntimeRootsSdk,
+  isUnprovisionedPluginRoot,
+  hasAnyManagedCode,
+} from './lib/install-shape.mjs';
+import { probeSchemaCompat, probeSchemaCompatInFreshProcess, schemaSkewRemedy } from './lib/schema-skew.mjs';
 import { clearNativeBindingBreakage, readNativeBindingBreakage } from './lib/native-binding-hint.mjs';
 // A namespace, not named imports: a swap renames files one at a time, so for a moment this file can
 // sit over the previous release's lib/proc-lock.mjs, and a named import of an export that release
@@ -113,7 +131,7 @@ const takeLock =
     return release ? { release } : {};
   });
 import { atomicWriteFileSync, atomicCopyFileSync } from './lib/atomic-write.mjs';
-import { shellWord } from './cli-path.mjs';
+import { shellWord, CLI_INVOKE } from './cli-path.mjs';
 import { dirAccessError, walOpenBlocked, dataDirRemedy, WAL_BLOCKED_WHY } from './lib/wal-open-blocked.mjs';
 import {
   claudeConfigDir,
@@ -121,7 +139,14 @@ import {
   claudeStatePath,
   ignoredClaudeConfigDir,
 } from './lib/data-paths.mjs';
-import { isMemHook, isMemHookCommand, stripMemHooks, launcherEntryPath } from './lib/hook-prune.mjs';
+import {
+  isMemHook,
+  isMemHookCommand,
+  stripMemHooks,
+  launcherEntryPath,
+  ourInstallRoots,
+  unconfirmedDeadPrefilters,
+} from './lib/hook-prune.mjs';
 
 // Re-export for backward compatibility - tests/install-hook-scripts.test.mjs
 // and any external consumers still import HOOK_SCRIPT_FILES from install.mjs.
@@ -152,10 +177,18 @@ export function copyHookScripts(srcDir, destDir) {
  * first launch. Backing up rather than copying-as-current lets the new
  * install create a fresh v28 DB while preserving legacy bytes for recovery.
  *
- * Returns: {action: 'noop'|'skip'|'backed-up', backupPath?}
+ * Returns: {action: 'noop'|'skip'|'backed-up'|'copied', backupPath?}
  *   - noop: no legacy DB found
- *   - skip: working `qwen-mem-lite.db` already exists in newDir
- *   - backed-up: legacy files renamed to `<newDir>/qwen-mem-lite.db.legacy-backup-<ts>` etc.
+ *   - skip: working `qwen-mem-lite.db` already exists in newDir, or (across filesystems) a backup
+ *     database is already there (an earlier install's copy, or the plugin's)
+ *   - backed-up: legacy files renamed to `<newDir>/qwen-mem-lite.db.legacy-backup-<ts>` and,
+ *     beside it, that name with `-wal` and `-shm` added, the names SQLite pairs with it (D#584: the
+ *     log was named `qwen-mem-lite.db-wal.legacy-backup-<ts>`, and the backup opened as found
+ *     read none of the rows only in it)
+ *   - copied: newDir is on another filesystem, where a rename fails with EXDEV (D#579): the files
+ *     are copied to those names and the source is left in place, as the plugin's setup.sh does.
+ *     Every file is copied under a private name first and then renamed into place, the store's own
+ *     file last, so a copy killed partway leaves no backup of the store.
  */
 export function migrateLegacyClaudeMemData(oldDir, newDir, opts = {}) {
   const legacyDb = join(oldDir, 'claude-mem.db');
@@ -166,10 +199,25 @@ export function migrateLegacyClaudeMemData(oldDir, newDir, opts = {}) {
   if (!existsSync(newDir)) mkdirSync(newDir, { recursive: true });
   const ts = opts.now ?? Date.now();
   const backupPath = join(newDir, `qwen-mem-lite.db.legacy-backup-${ts}`);
-  renameSync(legacyDb, backupPath);
+  try {
+    renameSync(legacyDb, backupPath);
+  } catch (e) {
+    if (e?.code !== 'EXDEV') throw e;
+    // A copy killed partway left its private files. Only install names files so (the plugin's
+    // session start has its own prefix), and install runs one at a time (install.lock).
+    const names = readdirSync(newDir);
+    for (const n of names) if (n.startsWith('.legacy-backup-copy-')) rmSync(join(newDir, n), { force: true });
+    // The source stays, so a backup of the store here is the copy an earlier install made. Its log
+    // alone is not: a copy killed between the renames below leaves that.
+    if (names.some((n) => /^qwen-mem-lite\.db\.legacy-backup-\d+$/.test(n))) return { action: 'skip' };
+    const exts = ['-wal', '-shm', ''].filter((ext) => existsSync(legacyDb + ext));
+    const tmp = join(newDir, `.legacy-backup-copy-${process.pid}-${ts}`);
+    for (const ext of exts) copyFileSync(legacyDb + ext, tmp + ext);
+    for (const ext of exts) renameSync(tmp + ext, backupPath + ext);
+    return { action: 'copied', backupPath };
+  }
   for (const ext of ['-wal', '-shm']) {
-    const src = legacyDb + ext;
-    if (existsSync(src)) renameSync(src, join(newDir, `qwen-mem-lite.db${ext}.legacy-backup-${ts}`));
+    if (existsSync(legacyDb + ext)) renameSync(legacyDb + ext, backupPath + ext);
   }
   return { action: 'backed-up', backupPath };
 }
@@ -297,7 +345,7 @@ export function hookManifestRepairHint(cacheRoot, marketplaceRoot) {
   const src = join(marketplaceRoot, 'hooks', 'hooks.json');
   const dst = join(cacheRoot, 'hooks', 'hooks.json');
   return pluginCacheHookEvents(marketplaceRoot).ok
-    ? `cp "${src}" "${dst}" && restart Claude Code`
+    ? `cp ${shellWord(src)} ${shellWord(dst)} && restart Claude Code`
     : `no usable marketplace copy to restore from - reinstall the plugin (/plugin uninstall then /plugin install), then restart Claude Code`;
 }
 
@@ -449,21 +497,34 @@ export async function dbCheckRemedy(dbPath, err) {
   // only inside the Database check's catch, so the cost of loading it lazily is paid by
   // the rare failure rather than by every invocation. Same shape as the six dynamic
   // imports doctor already uses.
-  const { isDbUnusableError, dbUnusableRemedy } = await import('./lib/db-unusable.mjs');
+  const { isDbUnusableError, dbUnusableRemedy, checkSnapshot } = await import('./lib/db-unusable.mjs');
   if (!isDbUnusableError(err)) return null;
-  const remedy = dbUnusableRemedy(dbPath);
+  // doctor checks the snapshots (D#558): each is restored into a private copy and opened by the
+  // product's opener in a child process; the command names the newest that passes, and the older
+  // ones that pass are listed with their own commands (D#577). One line per check on stderr: a large
+  // snapshot takes seconds, and stdout may be the --json face.
+  const remedy = dbUnusableRemedy(dbPath, err, {
+    check: (path, { nth, of }) => {
+      process.stderr.write(`  Checking backup snapshot ${nth} of ${of}: ${basename(path)}\n`);
+      return checkSnapshot(path);
+    },
+  });
   if (remedy.kind === 'unknown') return remedy.note;
+  if (remedy.kind === 'schema') return `SQLite cannot read the database's schema. ${remedy.note}`;
+  // Both commands move the database file and its -wal aside and delete the -shm, under any session
+  // still holding the store (D#534). The SessionStart notice says the same before its copy of the
+  // command.
+  const kept = `The broken file and its log are kept as ${remedy.keptAs} and ${remedy.keptAs}-wal.`;
   if (remedy.kind === 'set-aside') {
     return (
-      `No backup snapshot exists beside the database. Set the broken file aside so a fresh ` +
-      `store is created on the next session: ${remedy.command} ` +
-      `- memories in that file are not recoverable without a backup.`
+      `${remedy.found} Once every Claude Code session is closed, set the broken file aside so a fresh ` +
+      `store is created on the next session: ${remedy.command} — ${kept}`
     );
   }
-  return (
-    `Restore the newest of ${remedy.snapshotCount} backup snapshot(s): ${remedy.command} ` +
-    `- move the broken file aside first if you want to keep it for inspection.`
-  );
+  // The older snapshots to choose from (D#577) follow the command they are the alternatives to; the
+  // list with their counts is in `found`, before it.
+  const also = (remedy.alternatives ?? []).map((a) => ` To restore ${a.path} instead: ${a.command}`).join('');
+  return `${remedy.found} Once every Claude Code session is closed, restore it: ${remedy.command} — ${kept}${also}`;
 }
 
 // ─── Install ────────────────────────────────────────────────────────────────
@@ -503,19 +564,12 @@ export async function withSwapBarrier(fn) {
   }
 }
 
-// Creates the data dirs the swap barrier then writes its marker into. The legacy-dir migration
-// here runs only under QWEN_MEM_DIR relocation: in the default shape runLockedInstall's
-// install.lock has created ~/.qwen-mem-lite before install() starts (pre-existing, D#238).
+// Creates the data dirs the swap barrier then writes its marker into. A store left in the
+// unhidden dir of versions before the first release (~/qwen-mem-lite/) is ensureDb's to move
+// (migrateUnhiddenStore). Install no longer renames that directory into the code dir (D#561): it
+// did so only under QWEN_MEM_DIR relocation, where the code dir does not exist yet, and that
+// directory can be a git clone of this repository made in ~.
 function prepareInstallDirs() {
-  // Auto-migrate unhidden dir (~/claude-mem-lite/ → ~/.qwen-mem-lite/). The source keeps
-  // its pre-v0.5 name: that is the layout the old product shipped, not the current identity.
-  const oldUnhidden = join(homedir(), 'claude-mem-lite');
-  if (!existsSync(DATA_DIR) && existsSync(oldUnhidden)) {
-    log('Migrating ~/claude-mem-lite/ → ~/.qwen-mem-lite/...');
-    renameSync(oldUnhidden, DATA_DIR);
-    ok('Directory migrated');
-  }
-
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
   // Under relocation the DB/managed/runtime live here, not in the code dir - create it too.
   if (!existsSync(MEM_DATA_DIR)) mkdirSync(MEM_DATA_DIR, { recursive: true });
@@ -540,6 +594,15 @@ export function deployLockfile(projectDir, dataDir) {
   return shrinkwrap;
 }
 
+function devNodeModules() {
+  try {
+    const pkg = createRequire(join(PROJECT_DIR, 'package.json')).resolve('better-sqlite3/package.json');
+    return dirname(dirname(pkg));
+  } catch {
+    return join(PROJECT_DIR, 'node_modules');
+  }
+}
+
 export function deployCodeTree(IS_DEV) {
   if (IS_DEV) {
     log('Dev mode - creating symlinks in ~/.qwen-mem-lite/...');
@@ -560,10 +623,12 @@ export function deployCodeTree(IS_DEV) {
     const scriptsLink = join(DATA_DIR, 'scripts');
     clearLinkPath(scriptsLink);
     symlinkSync(join(PROJECT_DIR, 'scripts'), scriptsLink);
-    // Symlink node_modules/
+    // Symlink node_modules/: the one this checkout loads its dependencies from. A worktree nested in
+    // the main checkout has none of its own and Node finds the one above it; linking
+    // PROJECT_DIR/node_modules left the link dangling there (D#489).
     const nmLink = join(DATA_DIR, 'node_modules');
     clearLinkPath(nmLink);
-    symlinkSync(join(PROJECT_DIR, 'node_modules'), nmLink);
+    symlinkSync(devNodeModules(), nmLink);
     // R10 P3-28: the registry/ symlink is gone. The directory left with the skill registry
     // in v5.0.0, so the existsSync guard was permanently false and the branch was dead -
     // clearLinkPath still ran, silently removing a stale ~/.qwen-mem-lite/registry link
@@ -671,6 +736,43 @@ async function installDependencies(IS_DEV) {
   }
 }
 
+/**
+ * Whether the `qwen-mem-lite` entry at `p` is OUR link: a symlink to this install's cli.mjs,
+ * or a dangling one (what an earlier install left behind). Anything else belongs to someone
+ * else — npm's global bin link above all: install used to repoint it and uninstall to delete
+ * it, leaving `npm i -g qwen-mem-lite` installed with no command (E2E 2026-10-16).
+ * @param {string} p
+ * @returns {boolean}
+ */
+function isOwnCliLink(p) {
+  let target;
+  try {
+    if (!lstatSync(p).isSymbolicLink()) return false;
+    target = resolve(dirname(p), readlinkSync(p));
+  } catch {
+    return false;
+  }
+  if (!existsSync(target)) return true;
+  return sameDir(target, join(INSTALL_DIR, 'cli.mjs'));
+}
+
+/** A `qwen-mem-lite` entry at `p` that is not ours (see isOwnCliLink), or null. */
+function foreignCliEntry(p) {
+  try {
+    lstatSync(p);
+  } catch {
+    return null;
+  }
+  return isOwnCliLink(p) ? null : p;
+}
+
+/** Whether PATH holds `dir` spelled with a leading literal ~ (bash expands it; Node does not). */
+function pathHoldsTildeFor(dir) {
+  return (process.env.PATH || '')
+    .split(delimiter)
+    .some((d) => /^~(?=$|[\\/])/.test(d) && sameDir(d.replace(/^~/, homedir()), dir));
+}
+
 function createCliSymlink() {
   // 2b. Create global CLI symlink (qwen-mem-lite command)
   const cliSource = join(INSTALL_DIR, 'cli.mjs');
@@ -681,15 +783,31 @@ function createCliSymlink() {
     // Try ~/.local/bin first (user-writable, commonly on PATH)
     const localBin = join(homedir(), '.local', 'bin');
     const cliLink = join(localBin, 'qwen-mem-lite');
+    const foreign = foreignCliEntry(cliLink);
+    if (foreign) {
+      ok(`CLI: ${foreign} is another qwen-mem-lite command (e.g. npm -g) — left in place`);
+      return;
+    }
     try {
       if (!existsSync(localBin)) mkdirSync(localBin, { recursive: true });
       clearLinkPath(cliLink);
       symlinkSync(cliSource, cliLink);
       ok(`CLI: ${cliLink} → ${cliSource}`);
+      // Only `status` said so, and the command this line announces was not found (E2E
+      // 2026-10-16 round 2). Same directory, not same spelling: with ~/.local a symlink and PATH
+      // holding its target the warning was false (v6.28.0 pre-tag review, install P3-4).
+      const onPath = (process.env.PATH || '').split(delimiter).some((d) => d && sameDir(d, localBin));
+      // A leading ~ counts as home: a quoted `export PATH="~/.local/bin:$PATH"` leaves it
+      // literal, and bash expands it at lookup (E2E 2026-10-16 round 3).
+      if (!onPath && !pathHoldsTildeFor(localBin))
+        warn(
+          `${localBin} is not on PATH, so the command is not found yet — add it: export PATH=${shellWord(localBin)}:"$PATH"`,
+        );
     } catch {
       // Fallback: try /usr/local/bin (may need sudo)
       try {
         const globalLink = '/usr/local/bin/qwen-mem-lite';
+        if (foreignCliEntry(globalLink)) throw new Error('not ours');
         clearLinkPath(globalLink);
         symlinkSync(cliSource, globalLink);
         ok(`CLI: ${globalLink} → ${cliSource}`);
@@ -719,6 +837,15 @@ function ownedUserMcpNames() {
   }
   const memIsOurs = isOurMcpRegistration('mem', entry);
   return { names: memIsOurs ? ['mem', 'mem-lite'] : ['mem-lite'], foreignMem: !!entry && !memIsOurs };
+}
+
+/** Whether ~/.claude.json registers `name` at user scope (unreadable → false). */
+function userMcpRegistered(name) {
+  try {
+    return !!JSON.parse(readFileSync(claudeStatePath(), 'utf8'))?.mcpServers?.[name];
+  } catch {
+    return false;
+  }
 }
 
 function noteForeignMem(foreignMem) {
@@ -776,6 +903,19 @@ function warnProjectScopedMcpDuplicate() {
   );
 }
 
+/** Whether ~/.claude.json's user-scope `mem-lite` runs this install's server (unreadable → false). */
+function userMcpRunsOurServer() {
+  try {
+    const entry = JSON.parse(readFileSync(claudeStatePath(), 'utf8'))?.mcpServers?.['mem-lite'];
+    return Array.isArray(entry?.args) && entry.args.includes(SERVER_PATH);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * @returns {boolean} false when the server ends up unregistered: install then fails on it
+ */
 function registerMcpServer() {
   // 3. Register MCP server (skip if plugin system already handles it)
   // Plugin MCP must stay at root .mcp.json so Claude Code registers plugin:*:mem-lite.
@@ -811,6 +951,7 @@ function registerMcpServer() {
         ok(`Removed stale global MCP "${name}"`);
       } catch {}
     }
+    return true;
   } else {
     log('Registering MCP server...');
     try {
@@ -830,10 +971,67 @@ function registerMcpServer() {
         { stdio: 'pipe' },
       );
       ok('MCP server registered: mem-lite');
+      return true;
     } catch (e) {
+      // What failed matters less than what is left: a registration that already runs this
+      // server (`claude` reached through a shell alias, a re-install) keeps the install whole.
+      if (userMcpRunsOurServer()) {
+        warn(
+          `Could not re-register the MCP server (${e.message}) — "mem-lite" is already registered to run it`,
+        );
+        return true;
+      }
       fail('MCP registration failed: ' + e.message);
-      warn('Try manually: claude mcp add -s user -t stdio mem-lite -- node ' + SERVER_PATH);
+      warn(`Try manually: claude mcp add -s user -t stdio mem-lite -- node ${shellWord(SERVER_PATH)}`);
+      return false;
     }
+  }
+}
+
+// The _note an earlier install wrote when it emptied the marketplace clone's hooks.json.
+const CLEARED_CLONE_NOTE =
+  'Hooks managed by install.mjs in settings.json — this file cleared to prevent duplicates';
+
+/** Whether the clone's hooks/hooks.json is exactly the emptied file an earlier install wrote. */
+function cloneManifestEmptiedByUs(cloneDir) {
+  try {
+    const h = JSON.parse(readFileSync(join(cloneDir, 'hooks', 'hooks.json'), 'utf8'));
+    return h?._note === CLEARED_CLONE_NOTE && !!h.hooks && Object.keys(h.hooks).length === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Put back the marketplace clone's tracked hooks/hooks.json when an earlier install emptied it
+ * (see dedupePluginCacheAndHooks). Acts only on a git clone whose file is exactly that edit, so a
+ * change anyone else made is left alone.
+ *
+ * @returns {'absent'|'untouched'|'restored'|{failed: string}}
+ */
+export function restoreMarketplaceHooksManifest(
+  cloneDir,
+  run = (args) => execFileSync('git', args, { encoding: 'utf8', stdio: 'pipe', timeout: 20000 }),
+) {
+  if (!existsSync(join(cloneDir, '.git')) || !existsSync(join(cloneDir, 'hooks', 'hooks.json')))
+    return 'absent';
+  if (!cloneManifestEmptiedByUs(cloneDir)) return 'untouched';
+  try {
+    run(['-C', cloneDir, 'checkout', '--', 'hooks/hooks.json']);
+    return 'restored';
+  } catch (e) {
+    return { failed: e?.code || e?.message || 'git failed' };
+  }
+}
+
+/** restoreMarketplaceHooksManifest, with the line install and cleanup-hooks print for it. */
+function putBackMarketplaceHooksManifest(pluginDir) {
+  const restored = restoreMarketplaceHooksManifest(pluginDir);
+  if (restored === 'restored')
+    ok('Marketplace clone: put back hooks/hooks.json an earlier install had emptied');
+  else if (restored?.failed) {
+    warn(`Marketplace clone: could not put back hooks/hooks.json (${restored.failed})`);
+    warn(`  Run: git -C ${shellWord(pluginDir)} checkout -- hooks/hooks.json`);
   }
 }
 
@@ -847,10 +1045,9 @@ export function dedupePluginCacheAndHooks({ managedHooks, isDev = false } = {}) 
   // Do NOT modify marketplace .mcp.json - it breaks the MCP server registration chain.
   // Dedup is handled by skipping global `claude mcp add` when plugin system is active.
   const pluginDir = join(claudeConfigDir(), 'plugins', 'marketplaces', MARKETPLACE_KEY);
-  const pluginHooksPath = join(pluginDir, 'hooks', 'hooks.json');
 
   // Clearing is a DEDUP, and a dedup with only one registration left is a delete.
-  // Both clearers below empty a file Claude Code reads hooks from; that is correct
+  // The clearer below empties a file Claude Code reads hooks from; that is correct
   // only while settings.json ALSO registers them. On a plugin-only install (no
   // install.mjs-managed entries) the cache manifest is the sole registration, so
   // clearing it silently unregisters all seven events - and status/doctor then read
@@ -867,9 +1064,9 @@ export function dedupePluginCacheAndHooks({ managedHooks, isDev = false } = {}) 
   // for any caller that has not just written settings.json.
   const settingsOwnsHooks = managedHooks ?? hasInstallManagedHooks();
 
-  // Scope note (pre-ship review, finding 2): the gate covers the two hook-CLEARING
-  // blocks only. The launch.mjs / launch-preflight.mjs sync below it is not dedup -
-  // it is issue #15's dev-mode MCP routing fix - and an early return out of the whole
+  // Scope note (pre-ship review, finding 2): the gate covers the hook-CLEARING block
+  // only. The launch.mjs / launch-preflight.mjs sync below it is not dedup —
+  // it is issue #15's dev-mode MCP routing fix — and an early return out of the whole
   // function would silently stop shipping it to plugin-cache users.
   if (!settingsOwnsHooks) {
     log(
@@ -883,34 +1080,14 @@ export function dedupePluginCacheAndHooks({ managedHooks, isDev = false } = {}) 
     // cache .mcp.json to lose the MCP server definition, breaking plugin MCP.
     // Dedup is already handled by skipping global `claude mcp add` above.
 
-    // Clear plugin hooks to prevent double hook execution
-    try {
-      if (settingsOwnsHooks && existsSync(pluginHooksPath)) {
-        const pluginHooks = JSON.parse(readFileSync(pluginHooksPath, 'utf8'));
-        if (pluginHooks.hooks && Object.keys(pluginHooks.hooks).length > 0) {
-          // Atomic (audit 2026-09-02 P1-10): a torn hooks.json is not a fail-open marker -
-          // Claude Code parses it at plugin load, so half a file disables the plugin's hooks
-          // for that install until the next successful write. Same writer settings.json
-          // already uses 1600 lines down.
-          atomicWriteFileSync(
-            pluginHooksPath,
-            JSON.stringify(
-              {
-                description: pluginHooks.description || 'qwen-mem-lite hooks',
-                _note:
-                  'Hooks managed by install.mjs in settings.json - this file cleared to prevent duplicates',
-                hooks: {},
-              },
-              null,
-              2,
-            ) + '\n',
-          );
-          ok('Marketplace plugin: hooks cleared (prevents duplicate)');
-        }
-      }
-    } catch (e) {
-      warn(`Marketplace hooks dedup: ${e.message}`);
-    }
+    // The clone itself is never written (D#368, E2E 2026-10-16 install P1-4). This used to EMPTY
+    // its tracked hooks/hooks.json too; Claude Code updates the marketplace by pulling the clone,
+    // so that edit failed the pull on any upstream commit touching hooks.json and the plugin
+    // stopped updating silently. Claude Code loads hooks from the cache copies, cleared below and
+    // again by hook.mjs's SessionStart self-heal. The cost: a version materialized after that
+    // self-heal ran registers its hooks alongside settings.json for one session.
+    // An earlier install's edit is put back — only when the file is exactly that edit.
+    putBackMarketplaceHooksManifest(pluginDir);
 
     // Sync launch.mjs to plugin cache - ensures MCP server loads dev code via symlink detection.
     // ALSO clear cached hooks.json in every version dir - Claude Code runtime reads hooks from
@@ -1197,9 +1374,14 @@ function configureHooks() {
     UserPromptSubmit: [memUserPrompt],
   };
 
+  // Read before the loop rewrites the events: a dead prefilter is ours only under a root one of
+  // our launcher commands names (lib/hook-prune.mjs ourInstallRoots).
+  const roots = ourInstallRoots(settings);
   for (const [event, configs] of Object.entries(hookConfigs)) {
     // Per entry (stripMemHooks), so a hook the user added under one of our matchers stays.
-    const existing = Array.isArray(settings.hooks[event]) ? stripMemHooks(settings.hooks[event]).kept : [];
+    const existing = Array.isArray(settings.hooks[event])
+      ? stripMemHooks(settings.hooks[event], roots).kept
+      : [];
     settings.hooks[event] = [...existing, ...configs];
   }
 
@@ -1223,8 +1405,9 @@ function backupLegacyClaudeMemData() {
   // so the new install creates a fresh v28 DB.
   try {
     const r = migrateLegacyClaudeMemData(OLD_DATA_DIR, MEM_DATA_DIR);
-    if (r.action === 'backed-up') {
-      ok(`Legacy ~/.claude-mem/ DB backed up to ${r.backupPath}`);
+    if (r.action === 'backed-up' || r.action === 'copied') {
+      ok(`Legacy ~/.claude-mem/ DB ${r.action === 'copied' ? 'copied' : 'backed up'} to ${r.backupPath}`);
+      if (r.action === 'copied') log('~/.claude-mem/ is on another filesystem and is left as it is.');
       log('New v28 DB will be created on first launch (legacy schema is incompatible).');
     }
   } catch (e) {
@@ -1253,7 +1436,19 @@ function verifyDatabase() {
       const db = new Database(DB_PATH, { readonly: true });
       const count = db.prepare('SELECT COUNT(*) as c FROM observations').get();
       db.close();
-      ok(`Database accessible: ${count.c} observations`);
+      // Readable is not usable: a DB written by a NEWER qwen-mem-lite is refused by this
+      // version's schema.mjs, so after a rollback install printed "✓ Database accessible" over a
+      // store no hook or MCP server here could open (E2E 2026-10-16). Asked of the tree just
+      // installed, out of process like doctor's check.
+      const compat = probeSchemaCompatInFreshProcess(INSTALL_DIR, DB_PATH);
+      if (compat.status === 'skew') {
+        warn(
+          `Database: ${count.c} observations, written by a newer qwen-mem-lite (schema v${compat.dbVersion}; this version reads up to v${compat.supported}) — the hooks and the MCP server cannot open it.`,
+        );
+        log('  Install a version that reads it: npx qwen-mem-lite@latest install');
+      } else {
+        ok(`Database accessible: ${count.c} observations`);
+      }
     } catch (e) {
       warn('Database check failed: ' + e.message);
     }
@@ -1282,19 +1477,15 @@ async function dogfoodAutoAdopt() {
         encoding: 'utf8',
         stdio: 'pipe',
       }).trim();
-      // Accepts the fork's slugs AND upstream's, because this answers a lineage question
-      // ("is install.mjs running from the qwen-mem-lite source tree?"), not a provenance
-      // one - where updates come from is hook-update.mjs's question, answered there. A fork
-      // checkout normally keeps `origin` on the upstream repo and adds the fork as a second
-      // remote, so keying on the fork alone switched this branch off in exactly the trees
-      // that run it: this repository's own suite detects the repo by this remote, and a
-      // fresh clone-and-fork (the normal way to work on a fork) would never auto-adopt.
-      const isDogfood = /github\.com[:/](?:thenewnano\/qwen-mem-lite|sdsrss\/qwen-mem-lite)(?:\.git)?$/i.test(
-        remote,
-      );
-      if (isDogfood) {
-        const { cmdAdopt } = await importFromInstall('adopt-cli.mjs');
-        cmdAdopt([]);
+      const isDogfood = /github\.com[:/]thenewnano\/qwen-mem-lite(\.git)?$/i.test(remote);
+      // The clone itself only. cmdAdopt targets the directory it runs in, and every README
+      // git-clone install has this remote: run from the user's own repo (or from a Claude
+      // session, where CLAUDE_PROJECT_DIR names the session's project), the block landed in
+      // THAT committed CLAUDE.md (E2E 2026-10-16).
+      const adopt = isDogfood ? await importFromInstall('adopt-cli.mjs') : null;
+      const target = adopt ? (adopt.detectCwd?.() ?? process.cwd()) : null;
+      if (adopt && sameDir(target, PROJECT_DIR)) {
+        adopt.cmdAdopt([]);
         ok('Invited-memory: auto-adopt for qwen-mem-lite dogfood repo');
       }
     } catch {
@@ -1464,7 +1655,7 @@ async function install() {
     await installDependencies(IS_DEV);
   });
   createCliSymlink();
-  registerMcpServer();
+  const mcpRegistered = registerMcpServer();
   // configureHooks BEFORE dedupe, and its result feeds the dedup gate: dedupe now
   // refuses to clear a hooks manifest unless install.mjs-managed hooks exist in
   // settings.json, and on a first install those entries do not exist until
@@ -1479,14 +1670,124 @@ async function install() {
   disableOldClaudeMemPlugin();
   offerCleanOldVectorDb();
 
+  // A failed registration used to be followed by "Done!" and exit 0 (E2E 2026-10-16 round 2, B8).
+  if (!mcpRegistered) {
+    console.log(
+      '\n  ✗ Installed, but the MCP server is NOT registered: the mem_* tools stay unavailable until the "Try manually" command above runs. Then restart Claude Code.\n',
+    );
+    process.exitCode = EXIT_MCP_UNREGISTERED;
+    return;
+  }
   console.log('\n  Done! Restart Claude Code to activate.\n');
+}
+
+/**
+ * install's exit code when everything was installed except the MCP registration (B8). Its own
+ * code rather than 1, so repair can tell it from an install that failed. uninstall exits with it
+ * when everything but the registration's removal was done.
+ */
+export const EXIT_MCP_UNREGISTERED = 3;
+
+/**
+ * Run a verified release's installer for repair. "Installed, MCP not registered" is a completed
+ * resync there, with a warning: read as a failure it printed "Repair failed" and the manual curl
+ * fallback for files that had been synced (a hook env that cannot run `claude`).
+ * @returns {{mcpRegistered: boolean}}
+ */
+export function runRepairInstaller(
+  installer,
+  run = (args) => execFileSync(process.execPath, args, { stdio: 'inherit', timeout: 300000 }),
+) {
+  try {
+    run([installer, 'install']);
+    return { mcpRegistered: true };
+  } catch (e) {
+    if (e?.status === EXIT_MCP_UNREGISTERED) return { mcpRegistered: false };
+    throw e;
+  }
 }
 
 // ─── Uninstall ──────────────────────────────────────────────────────────────
 
+/**
+ * The plugin switch a project's own settings set where it differs from the user scope, or null.
+ * Claude Code merges enabledPlugins user < project < local, and the hooks follow the merge
+ * (lib/plugin-key.mjs); status and doctor read the user scope, and in such a project reported
+ * the opposite of what the hooks do (E2E 2026-10-16 round 3).
+ *
+ * @param {object|null} userSettings parsed user-scope settings.json
+ * @returns {{enabled: boolean, file: string}|null}
+ */
+function projectPluginOverride(userSettings) {
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const userValue = userSettings?.enabledPlugins?.[PLUGIN_KEY];
+  let found = null;
+  for (const file of pluginSettingsScopes(claudeConfigDir(), projectDir).slice(1)) {
+    try {
+      const v = JSON.parse(readFileSync(file, 'utf8'))?.enabledPlugins?.[PLUGIN_KEY];
+      if (typeof v === 'boolean') found = { enabled: v, file };
+    } catch {
+      /* missing or unparseable: sets nothing */
+    }
+  }
+  if (!found) return null;
+  // The user scope's effective reading: an absent key is enabled unless set false.
+  return found.enabled === (userValue !== false) ? null : found;
+}
+
+/**
+ * Refuse, before any side effect, when the Claude config home cannot be written: every command
+ * that edits settings.json would otherwise act and then die on that write with a raw EACCES
+ * stack — install after copying files and registering MCP, uninstall after removing the MCP
+ * server and the CLI link with every hook still registered (E2E 2026-10-16, rounds 1 and 2).
+ *
+ * @param {string} label the command, for the message
+ * @returns {boolean} true when refused (exit code set)
+ */
+function refuseUnwritableConfigHome(label) {
+  let dir = claudeConfigDir();
+  let denied = dirAccessError(dir);
+  if (!denied && !existsSync(dir)) {
+    // Absent: the first write creates it under its nearest existing ancestor. ENOENT reads as
+    // usable, so a CLAUDE_CONFIG_DIR under a read-only parent got the half install and the raw
+    // EACCES stack back (v6.28.0 pre-tag review, install P3-2).
+    let parent = dirname(dir);
+    while (!existsSync(parent) && dirname(parent) !== parent) parent = dirname(parent);
+    const parentDenied = dirAccessError(parent, fsConstants.W_OK | fsConstants.X_OK);
+    if (parentDenied) {
+      console.error(
+        `[${label}] ${parent} is not writable (${parentDenied}), so ${dir} cannot be created — nothing was done. Fix: ${dataDirRemedy(parentDenied, parent)}`,
+      );
+      process.exitCode = 1;
+      return true;
+    }
+  }
+  if (!denied) {
+    // settings.json may be a symlink (dotfiles, Nix home-manager), and the atomic write puts its
+    // temp file beside the TARGET: a read-only target directory got the same half-done run and
+    // raw stack back (E2E 2026-10-16 round 3).
+    try {
+      const target = dirname(realpathSync(SETTINGS_PATH));
+      if (target !== dir) {
+        denied = dirAccessError(target);
+        if (denied) dir = target;
+      }
+    } catch {
+      /* no settings.json yet: the config home is where it will be written */
+    }
+  }
+  if (!denied) return false;
+  console.error(
+    `[${label}] ${dir} is not writable (${denied}) — nothing was done. Fix: ${dataDirRemedy(denied, dir)}`,
+  );
+  process.exitCode = 1;
+  return true;
+}
+
 async function uninstall() {
   console.log('\nqwen-mem-lite uninstaller\n');
-  readSettings(); // before any side effect - see install()
+  readSettings(); // before any side effect — see install()
+  if (refuseUnwritableConfigHome('uninstall')) return;
 
   // 1. Remove MCP (legacy hook-based install).
   // Try both the legacy "mem" (pre-v2.78) and current "mem-lite" names so a user
@@ -1494,26 +1795,56 @@ async function uninstall() {
   let removedAny = false;
   const owned = ownedUserMcpNames();
   noteForeignMem(owned.foreignMem);
+  // Three outcomes, not two: "could not run claude" is not "not registered" (E2E 2026-10-16 —
+  // with no `claude` on PATH the ENOENT was swallowed and uninstall said "not found" while the
+  // registration stayed, pointing at a server --purge was about to delete).
+  let claudeMissing = false;
+  const removed = [];
   for (const name of owned.names) {
     try {
       execFileSync('claude', ['mcp', 'remove', '-s', 'user', name], { stdio: 'pipe' });
-      ok(`MCP server removed: ${name}`);
-      removedAny = true;
-    } catch {}
+      removed.push(name);
+    } catch (e) {
+      if (e?.code === 'ENOENT') {
+        claudeMissing = true;
+        break;
+      }
+    }
   }
-  if (!removedAny) warn('MCP server not found or already removed');
+  // A failed `claude mcp remove` is "not registered" only when ~/.claude.json agrees: any other
+  // failure read as "not found or already removed" with the server still registered (E2E
+  // 2026-10-16 round 2). Asked when `claude` could not run too: it decides the exit code below.
+  // A removal is reported only when ~/.claude.json agrees too: `claude` exiting 0 with the entry
+  // still there printed "✓ removed" above "still registered" (pre-tag review 2026-10-17 P3-4).
+  const stillRegistered = owned.names.filter((name) => userMcpRegistered(name));
+  for (const name of removed) {
+    if (stillRegistered.includes(name)) continue;
+    ok(`MCP server removed: ${name}`);
+    removedAny = true;
+  }
+  if (claudeMissing && stillRegistered.length === 0) {
+    // Nothing to remove: a command to run here contradicted the "Done!" below (same review).
+    warn('MCP server: could not run `claude` (not on PATH); ~/.claude.json registers none of ours.');
+  } else if (claudeMissing) {
+    warn('MCP server: could not run `claude` (not on PATH), so its registration was not removed. Run:');
+    for (const name of stillRegistered) log(`    claude mcp remove -s user ${name}`);
+  } else if (stillRegistered.length > 0) {
+    warn('MCP server: still registered in ~/.claude.json after `claude mcp remove`. Run:');
+    for (const name of stillRegistered) log(`    claude mcp remove -s user ${name}`);
+  } else if (!removedAny) warn('MCP server not found or already removed');
 
   // 1b. Remove CLI symlink
   for (const binDir of CLI_BIN_DIRS) {
     const cliLink = join(binDir, 'qwen-mem-lite');
     // No try/catch: clearLinkPath swallows a permissions failure and returns false, so the
     // wrapper this used to have was unreachable once the existsSync gate moved inside it.
-    if (clearLinkPath(cliLink)) ok(`CLI symlink removed: ${cliLink}`);
+    if (foreignCliEntry(cliLink)) log(`  CLI: ${cliLink} is not this install's link — left in place`);
+    else if (clearLinkPath(cliLink)) ok(`CLI symlink removed: ${cliLink}`);
   }
 
   // 2. Remove hooks from settings.json (match both npx and git-clone install paths)
   const settings = readSettings();
-  cleanupMemHooksFromSettings(settings);
+  const removedHooks = cleanupMemHooksFromSettings(settings);
 
   // 2b. Uninstall does NOT auto-unadopt - an adopted project may be in active use
   // in other Claude Code sessions, and adoption lives in EACH project's own
@@ -1527,8 +1858,13 @@ async function uninstall() {
     !flags.has('--purge') && existsSync(keptCli)
       ? `node ${shellWord(keptCli)} unadopt --all`
       : 'npx qwen-mem-lite unadopt --all';
-  log('Invited-memory: project adoption left in place (each adopted project keeps its');
-  log('  CLAUDE.md managed block + .claude/plugin_qwen_mem_lite.md). To remove it from');
+  // Most projects never ran `adopt`: since v6.20 the block a session writes goes to
+  // CLAUDE.local.md (or .claude/rules/), and the old note named only the CLAUDE.md copy, so a
+  // user who never adopted read it as "nothing to do" (E2E 2026-10-16).
+  log('Invited-memory: project steering left in place — every git repository a session ran in');
+  log('  keeps its block in CLAUDE.local.md (or .claude/rules/qwen-mem-lite.md), and a project');
+  log('  you ran adopt in keeps its CLAUDE.md block + .claude/plugin_qwen_mem_lite.md. Those');
+  log('  still tell Claude to call memory tools that are now gone. To remove them from');
   log(`  every known project: ${unadoptCmd}`);
   log('  A project Claude Code never opened is not in the known list - run unadopt from');
   log('  inside it.');
@@ -1566,6 +1902,7 @@ async function uninstall() {
   }
   writeSettings(settings);
   ok('Hooks and plugin settings cleaned');
+  for (const h of removedHooks) log(`  removed hook ${h}`);
 
   // 5. Clean plugin system registry files (only if no other marketplace plugins remain)
   const marketplaceDir = join(pluginsDir, 'marketplaces', marketplaceKey);
@@ -1656,6 +1993,15 @@ async function uninstall() {
     log('  `uninstall --purge` removes the directory, memories included');
   }
 
+  // "Done!" and exit 0 followed a registration left in ~/.claude.json, so `uninstall && …` read
+  // it as success (v6.28.0 pre-tag review, install P3-3). install's code for the mirror case.
+  if (stillRegistered.length > 0) {
+    console.log(
+      '\n  ✗ Uninstalled, but the MCP server is still registered: run the "claude mcp remove" command above, then restart Claude Code.\n',
+    );
+    process.exitCode = EXIT_MCP_UNREGISTERED;
+    return;
+  }
   console.log('\n  Done!\n');
 }
 
@@ -1723,14 +2069,25 @@ async function cleanupHooks() {
   console.log('\nqwen-mem-lite cleanup-hooks\n');
 
   const settings = readSettings();
-  const removed = cleanupMemHooksFromSettings(settings);
+  if (refuseUnwritableConfigHome('cleanup-hooks')) return;
+  const removedHooks = cleanupMemHooksFromSettings(settings);
+  const removed = removedHooks.length;
 
   if (removed > 0) {
     writeSettings(settings);
-    ok(`Removed ${removed} qwen-mem-lite hook configuration${removed === 1 ? '' : 's'} from settings.json`);
+    ok(`Removed ${removed} qwen-mem-lite hook configuration${removed === 1 ? '' : 's'} from settings.json:`);
+    // Named, not counted: a user hook taken for ours went unnoticed behind the count (E2E
+    // 2026-10-16 round 2, B16).
+    for (const h of removedHooks) log(`  ${h}`);
   } else {
     ok('No qwen-mem-lite hooks found in settings.json');
   }
+
+  // The clone's hooks.json an earlier install emptied is put back here too, as install does:
+  // without it the repair below had no copy to name and sent the user to reinstall the plugin
+  // (v6.28.0 pre-tag review, install P3-5).
+  const marketplaceDir = join(claudeConfigDir(), 'plugins', 'marketplaces', MARKETPLACE_KEY);
+  if (existsSync(marketplaceDir)) putBackMarketplaceHooksManifest(marketplaceDir);
 
   // With the plugin enabled, a direct `install` empties the plugin's hooks.json (the dedup in
   // dedupePluginCacheAndHooks), so the settings.json entries just removed were the only
@@ -1743,7 +2100,7 @@ async function cleanupHooks() {
       warn(
         `The enabled plugin's hooks/hooks.json registers none - every hook is now unregistered (an earlier ` +
           `direct install emptied it to avoid duplicates). Repair: ` +
-          hookManifestRepairHint(root, join(claudeConfigDir(), 'plugins', 'marketplaces', MARKETPLACE_KEY)),
+          hookManifestRepairHint(root, marketplaceDir),
       );
     }
   }
@@ -1824,6 +2181,14 @@ async function status() {
   else if (pluginDisabled)
     push('warn', 'plugin', 'Plugin: disabled in settings', { enabled: false, disabled: true });
   else push('warn', 'plugin', 'Plugin: not present in enabledPlugins', { enabled: false, disabled: false });
+  const override = projectPluginOverride(settings);
+  if (override)
+    push(
+      'warn',
+      'plugin-project',
+      `Plugin: ${override.enabled ? 'enabled' : 'disabled'} in this project by ${override.file} — the hooks here follow that, not the line above`,
+      { projectEnabled: override.enabled, file: override.file },
+    );
 
   if (hasHooks && pluginDisabled) {
     push(
@@ -2008,11 +2373,20 @@ async function status() {
         }
       };
       const binDir = CLI_BIN_DIRS.find(isLinkedCli);
-      if (binDir) {
+      if (binDir && pathHoldsTildeFor(binDir)) {
+        // A quoted `export PATH="~/.local/bin:$PATH"` leaves a literal ~: bash expands it at
+        // lookup and finds the command; this process's lookup does not (E2E 2026-10-16 round 4).
         push(
           'warn',
           'cli',
-          `CLI: installed at ${join(binDir, 'qwen-mem-lite')} but ${binDir} is not on PATH - add it: export PATH="${binDir}:$PATH"`,
+          `CLI: installed at ${join(binDir, 'qwen-mem-lite')}; PATH holds that directory as a literal ~, which bash expands and other shells and programs may not — write it as $HOME: export PATH=${shellWord(binDir)}:"$PATH"`,
+          { available: false, linked: join(binDir, 'qwen-mem-lite') },
+        );
+      } else if (binDir) {
+        push(
+          'warn',
+          'cli',
+          `CLI: installed at ${join(binDir, 'qwen-mem-lite')} but ${binDir} is not on PATH - add it: export PATH=${shellWord(binDir)}:"$PATH"`,
           { available: false, linked: join(binDir, 'qwen-mem-lite') },
         );
       } else {
@@ -2207,7 +2581,11 @@ async function doctor() {
   // (which reuses these results) honest rather than answering from a poisoned
   // process.
   const rootProbes = probeRuntimeRoots(shape.runtimeRoots);
-  const brokenRoots = rootProbes.filter((r) => !r.ok);
+  // A plugin cache version not yet provisioned is not broken (lib/install-shape.mjs
+  // isUnprovisionedPluginRoot): said once, below, and kept out of the ✗ lines and the
+  // rebuild-binding remedy.
+  const pendingRoots = rootProbes.filter((r) => !r.ok && isUnprovisionedPluginRoot(r.root));
+  const brokenRoots = rootProbes.filter((r) => !r.ok && !isUnprovisionedPluginRoot(r.root));
   // Database and DB stats below open the store IN this process, through the better-sqlite3 the
   // running CLI's tree resolves. When the out-of-process probe of that tree has already failed,
   // loading it here is not just pointless: a truncated prebuild raises SIGBUS in dlopen, which
@@ -2220,9 +2598,15 @@ async function doctor() {
     fail('better-sqlite3: no install on this machine owns a native binding - nothing here can open the DB');
     issues++;
   } else if (brokenRoots.length === 0) {
-    ok(
-      `better-sqlite3: verified in ${rootProbes.length} install${rootProbes.length === 1 ? '' : 's'} (${rootProbes.map((r) => r.label).join('; ')})`,
-    );
+    const verified = rootProbes.filter((r) => r.ok);
+    if (verified.length > 0)
+      ok(
+        `better-sqlite3: verified in ${verified.length} install${verified.length === 1 ? '' : 's'} (${verified.map((r) => r.label).join('; ')})`,
+      );
+    for (const p of pendingRoots)
+      dwarn(
+        `better-sqlite3: not installed yet in ${p.label} — its MCP server installs its dependencies on first start`,
+      );
   } else {
     // Name the ROOT, not just the fault: the repair is per-tree, and pointing a
     // user at the wrong `cd` is how `rebuild-binding` used to report success
@@ -2342,12 +2726,36 @@ async function doctor() {
     }
   }
 
-  try {
-    await import('@modelcontextprotocol/sdk/server/mcp.js');
-    ok('@modelcontextprotocol/sdk: verified (import OK)');
-  } catch (e) {
-    fail(`@modelcontextprotocol/sdk: import failed (${e.message})`);
-    issues++;
+  // Per runtime root, like the binding check: importing the SDK into THIS process answered for
+  // the tree doctor runs from, not the one the MCP server starts from (E2E 2026-10-16).
+  const sdkProbes = probeRuntimeRootsSdk(shape.runtimeRoots);
+  const brokenSdk = sdkProbes.filter((r) => !r.ok && !r.pending);
+  for (const p of sdkProbes.filter((r) => r.pending)) {
+    dwarn(
+      `@modelcontextprotocol/sdk: not installed yet in ${p.label} — its MCP server installs its dependencies on first start`,
+    );
+  }
+  if (sdkProbes.length === 0) {
+    // No runtime root at all: the better-sqlite3 line above already failed; ask this tree.
+    try {
+      await import('@modelcontextprotocol/sdk/server/mcp.js');
+      ok('@modelcontextprotocol/sdk: verified (import OK)');
+    } catch (e) {
+      fail(`@modelcontextprotocol/sdk: import failed (${e.message})`);
+      issues++;
+    }
+  } else if (brokenSdk.length === 0) {
+    const verified = sdkProbes.filter((r) => r.ok);
+    if (verified.length > 0)
+      ok(
+        `@modelcontextprotocol/sdk: verified in ${verified.length} install${verified.length === 1 ? '' : 's'} (${verified.map((r) => r.label).join('; ')})`,
+      );
+  } else {
+    for (const b of brokenSdk) {
+      fail(`@modelcontextprotocol/sdk unusable in ${b.label}: ${b.error} — its MCP server cannot start`);
+      log(`    repair: ${b.repair}`);
+      issues++;
+    }
   }
 
   // Entry points. These live in ~/.qwen-mem-lite ONLY in the install.mjs-managed
@@ -2444,6 +2852,9 @@ async function doctor() {
     dwarn(
       `Native DB binding: not checked - ${why}${breakage ? `; a fire failed ${breakageSeen(breakage)}` : ''}`,
     );
+  } else if (rootProbes.every((r) => !r.ok)) {
+    // Every root is a plugin cache version not yet provisioned (pendingRoots): no binding to load.
+    dwarn('Native DB binding: not checked — no install is provisioned yet (first MCP start installs it)');
   } else if (breakageUnread) {
     notCheckedDenied(`Native DB binding: loadable on Node ${process.version}, past failures`);
   } else if (breakage) {
@@ -2511,6 +2922,12 @@ async function doctor() {
   }
   const hasHooks = settings !== null && hasMemHooksConfigured(settings);
   const pluginDisabled = settings !== null && isPluginExplicitlyDisabled(settings);
+  const projectOverride = settings === null ? null : projectPluginOverride(settings);
+  if (projectOverride) {
+    dwarn(
+      `Plugin: ${projectOverride.enabled ? 'enabled' : 'disabled'} in this project by ${projectOverride.file} — the hooks here follow that; the lifecycle line reads the user scope`,
+    );
+  }
   if (settings === null) {
     dwarn('Plugin lifecycle: not checked (settings.json unreadable)');
   } else if (pluginDisabled && hasHooks) {
@@ -2540,6 +2957,14 @@ async function doctor() {
       );
       issues++;
     }
+  } else if (shape.managed) {
+    // A direct install with no plugin and no hook entries captures nothing — the state a
+    // two-step orphan repair left when its second step was skipped, which doctor reported with
+    // no remedy (E2E 2026-10-16 round 2).
+    dwarn(`Plugin lifecycle: hooks not configured — the direct install at ${INSTALL_DIR} captures nothing`);
+    log(
+      `    Repair: node ${shellWord(join(INSTALL_DIR, 'install.mjs'))} install    # writes its hook entries`,
+    );
   } else {
     dwarn('Plugin lifecycle: hooks not configured');
   }
@@ -2568,10 +2993,40 @@ async function doctor() {
     );
     for (const p of orphanPaths.slice(0, 5)) log(`    missing: ${p}`);
     if (orphanPaths.length > 5) log(`    ... +${orphanPaths.length - 5} more`);
-    log(`    Repair: node ${join(PROJECT_DIR, 'install.mjs')} uninstall    # removes the dead hook entries`);
+    // cleanup-hooks, not uninstall: uninstall also removes the MCP registration and, on a machine
+    // that moved to the plugin, the working plugin itself (E2E 2026-10-16). cleanup-hooks touches
+    // settings.json hook entries only, which is all an orphan is.
+    if (shape.managed && !shape.activePluginVersion) {
+      // No plugin: `install` alone strips the dead entries and writes its own. The two steps
+      // left the install hookless whenever the second was skipped (round 2).
+      log(
+        `    Repair: node ${shellWord(join(INSTALL_DIR, 'install.mjs'))} install    # rewrites its hook entries, dropping the dead ones`,
+      );
+    } else {
+      log(
+        `    Repair: node ${shellWord(join(PROJECT_DIR, 'install.mjs'))} cleanup-hooks    # removes qwen-mem-lite's settings.json hook entries; the plugin and your memories stay`,
+      );
+      if (existsSync(join(INSTALL_DIR, 'scripts', 'hook-launcher.mjs'))) {
+        log(
+          `    Then, if you use the direct install at ${INSTALL_DIR}: node ${shellWord(join(INSTALL_DIR, 'install.mjs'))} install    # writes its hook entries again`,
+        );
+      }
+    }
     issues++;
   } else if (hasHooks) {
-    ok('Orphan hooks: none (all hook targets present)');
+    ok("Orphan hooks: none (all of qwen-mem-lite's hook targets present)");
+  }
+  // Hooks named like our prefilters whose script is gone and that no install root vouches for:
+  // not removed (a user's own hook can look the same), so said here rather than passed as
+  // "all hook targets present" (E2E 2026-10-16 round 4).
+  const unconfirmed = settings === null ? [] : unconfirmedDeadPrefilters(settings);
+  if (unconfirmed.length > 0) {
+    dwarn(
+      `Hooks named like qwen-mem-lite's point at missing files (not confirmed ours, so left alone): ${unconfirmed.join(', ')}`,
+    );
+    log(
+      '    Each fails on every fire. If they are from an old install of qwen-mem-lite, delete them from settings.json.',
+    );
   }
 
   // MCP registration. This lives in doctor, not status: `claude mcp list` health-checks -
@@ -2630,7 +3085,13 @@ async function doctor() {
     log(
       '    the plugin then stops updating silently, which is how a machine ends up running code older than its DB.',
     );
-    log(`    Inspect: git -C ${marketplaceClone} status`);
+    // The commonest cause was this installer's own edit (D#368): say so, with the fix.
+    if (cloneManifestEmptiedByUs(marketplaceClone)) {
+      log('    Cause: hooks/hooks.json was emptied by an earlier install of qwen-mem-lite.');
+      log(`    Fix: git -C ${shellWord(marketplaceClone)} checkout -- hooks/hooks.json`);
+    } else {
+      log(`    Inspect: git -C ${marketplaceClone} status`);
+    }
   } else if (clone.kind === 'unknown') {
     dwarn(`Marketplace clone: could not check ${marketplaceClone} (${clone.reason}) - not checked`);
   } else if (clone.kind === 'clean') {
@@ -2639,7 +3100,41 @@ async function doctor() {
   // 'absent' / 'not-git' are silent: an npm-channel or npx user has no marketplace clone,
   // and a check that reports on a thing you do not have is noise.
 
+  // A damaged marker line in this project's CLAUDE.md: SessionStart now stays out of it (a
+  // second copy would load beside the block's text), so nothing else says the block stopped
+  // being kept in sync (D#369 B14). Silent when the file is fine or absent. Dynamic import:
+  // claudemd.mjs is not on the installer's load graph.
+  try {
+    const { straySentinelLines, claudeMdPath } = await import('./claudemd.mjs');
+    const md = claudeMdPath(process.env.CLAUDE_PROJECT_DIR || process.cwd());
+    const stray = straySentinelLines(md, 'qwen-mem-lite');
+    if (stray.length > 0) {
+      dwarn(
+        `Project steering: ${md} has a damaged qwen-mem-lite marker line, so its block is not kept in sync`,
+      );
+      for (const line of stray) log(`    line ${line.line}: ${line.text}`);
+      log(
+        `    Fix: make the marker lines exact (\`${CLI_HINT} adopt\` prints the expected lines), or delete`,
+      );
+      log('    them and the text between them; then run adopt again.');
+    }
+  } catch (e) {
+    // straySentinelLines already reads an unreadable file as "nothing to report"; this is the
+    // module itself failing to load, which must not read as a passed check.
+    dwarn(`Project steering: not checked (${e?.code || e?.message || 'claudemd.mjs failed to load'})`);
+  }
+
   // Database
+  // A check of a backup snapshot that was interrupted (Ctrl-C, SIGTERM) leaves its private copy in
+  // the data directory; sweep it before the check below, healthy store or not (D#558).
+  if (!dataDirUnreadable) {
+    try {
+      const { sweepSnapshotChecks } = await import('./lib/db-unusable.mjs');
+      sweepSnapshotChecks(dirname(DB_PATH));
+    } catch {
+      /* a sweep is housekeeping: it never takes the run */
+    }
+  }
   if (dataDirUnreadable) {
     notCheckedDenied('Database');
   } else if (existsSync(DB_PATH) && bindingBrokenHere) {
@@ -2674,9 +3169,15 @@ async function doctor() {
             const rwDb = new Database(DB_PATH);
             rwDb.pragma('busy_timeout = 3000');
             try {
-              const { healthy, details } = checkFTSIntegrity(rwDb);
+              const { healthy, details, busy } = checkFTSIntegrity(rwDb);
               if (healthy) {
                 ok('FTS5 integrity: all indexes healthy');
+              } else if (busy) {
+                // In use is not damage: no rebuild, which would be a long write under the
+                // live hooks' feet (or fail on the same lock).
+                dwarn(
+                  'FTS5 integrity: not checked — the database is in use by another process (a hook or session writing). Run doctor again in a moment.',
+                );
               } else {
                 dwarn('FTS5 integrity issues detected:');
                 for (const d of details) log(`    ${d}`);
@@ -2981,9 +3482,9 @@ async function doctor() {
           ? `Managed files: no qwen-mem-lite code is deployed in ${INSTALL_DIR} (${r.missingCount} ` +
               `file(s) absent, none present) - this is a data directory with no install behind it, not ` +
               `a damaged one. Fix: ${installRemedy}`
-          : `Managed files: ${r.missingCount} missing (${parts.join('; ')}) - a copy install resolves ` +
-              `imports against the install dir, so these throw at hook time. Fix: qwen-mem-lite self-update ` +
-              `(or: node ${join(INSTALL_DIR, 'cli.mjs')} repair)`,
+          : `Managed files: ${r.missingCount} missing (${parts.join('; ')}) — a copy install resolves ` +
+              `imports against the install dir, so these throw at hook time. Fix: node ${shellWord(join(INSTALL_DIR, 'cli.mjs'))} self-update ` +
+              `(or: node ${shellWord(join(INSTALL_DIR, 'cli.mjs'))} repair)`,
       );
     }
     // Complete copy install: no message - drift is a dev-install concern.
@@ -3011,7 +3512,7 @@ async function doctor() {
     // `noCodeInstall` above: the `repair` route runs from an entry point that is itself absent.
     const scriptRemedy = noCodeInstall
       ? installRemedy
-      : `qwen-mem-lite self-update (or: node ${join(INSTALL_DIR, 'cli.mjs')} repair)`;
+      : `node ${shellWord(join(INSTALL_DIR, 'cli.mjs'))} self-update (or: node ${shellWord(join(INSTALL_DIR, 'cli.mjs'))} repair)`;
     if (skipScripts) {
       ok('Hook scripts: n/a (plugin-only install - hooks run from the plugin cache)');
     } else if (codeDirDenied) {
@@ -3248,9 +3749,7 @@ async function doctor() {
     // contract `qwen-mem-lite doctor || alert` depends on is untouched.
     // Phrased as prose, not as `doctor a | b | c`: a line that looks like a command gets
     // copy-pasted, and `|` is a shell pipe. See doctorDbModeHint()'s note.
-    console.log(
-      `  Deeper checks (database layer): run \`qwen-mem-lite doctor\` with ${doctorDbModeHint()}\n`,
-    );
+    console.log(`  Deeper checks (database layer): run \`${CLI_HINT} doctor\` with ${doctorDbModeHint()}\n`);
   }
   // Diagnostic-tool exit-code contract: any ✗-level finding must propagate non-zero
   // so CI / wrapper scripts (`qwen-mem-lite doctor || alert`) actually trip. Keeps
@@ -3320,6 +3819,7 @@ function hookTargetState(p) {
  */
 export function collectOrphanHookPaths(settings, installDir = INSTALL_DIR, unreadable = null) {
   if (!settings?.hooks) return [];
+  const roots = ourInstallRoots(settings);
   const out = [];
   const judge = (p) => {
     if (out.includes(p) || unreadable?.includes(p)) return;
@@ -3330,10 +3830,10 @@ export function collectOrphanHookPaths(settings, installDir = INSTALL_DIR, unrea
   for (const configs of Object.values(settings.hooks)) {
     if (!Array.isArray(configs)) continue;
     for (const cfg of configs) {
-      if (!isMemHook(cfg)) continue;
+      if (!isMemHook(cfg, roots)) continue;
       for (const h of cfg.hooks || []) {
         // A user's own entry inside one of our groups is not ours to call an orphan.
-        if (!isMemHookCommand(h?.command)) continue;
+        if (!isMemHookCommand(h?.command, roots)) continue;
         const cmd = h.command || '';
         if (cmd.includes('${CLAUDE_PLUGIN_ROOT}')) continue;
         // The launcher's entry argument, which is unquoted and so invisible to the
@@ -3449,14 +3949,16 @@ export function clearPluginDisabledMarkerForDirectInstall(settings) {
   return true;
 }
 
+/** @returns {string[]} `<event>: <command>` of each hook entry removed */
 function cleanupMemHooksFromSettings(settings) {
-  if (!settings?.hooks) return 0;
+  if (!settings?.hooks) return [];
 
-  let removed = 0;
+  const removed = [];
+  const roots = ourInstallRoots(settings);
   for (const [event, configs] of Object.entries(settings.hooks)) {
     if (!Array.isArray(configs)) continue;
-    const { kept, removed: n } = stripMemHooks(configs);
-    removed += n;
+    const { kept, commands } = stripMemHooks(configs, roots);
+    for (const c of commands) removed.push(`${event}: ${c}`);
     if (kept.length > 0) settings.hooks[event] = kept;
     else delete settings.hooks[event];
   }
@@ -3770,12 +4272,15 @@ async function manualUpdate() {
   if (disabled === 'QWEN_MEM_SKIP_UPDATE') {
     warn('Not checked: QWEN_MEM_SKIP_UPDATE is set, which turns off update checks and installs.');
     log('  Unset it and run this command again to update.');
+    // Nothing was checked, as in the offline arm below (E2E 2026-10-16 round 2).
+    process.exitCode = 1;
     console.log('');
     return;
   }
   if (disabled === 'dev-install') {
     warn(`Not checked: ${INSTALL_DIR} is a development install (a git checkout or symlinks).`);
     log('  Update the checkout it points to with git instead.');
+    process.exitCode = 1;
     console.log('');
     return;
   }
@@ -3798,6 +4303,9 @@ async function manualUpdate() {
         ? 'Not checked: GitHub is rate-limiting requests from this address. Try again later.'
         : 'Not checked: could not reach GitHub Releases (network, proxy or DNS). Nothing was installed.',
     );
+    // Nothing was checked or installed; `self-update && …` must not read that as success
+    // (repair already exits 1 for the same condition).
+    process.exitCode = 1;
   } else if (result?.updated) {
     ok(`Updated: v${result.from} → v${result.to}`);
   } else if (result?.updateAvailable && result?.installDeferred) {
@@ -3806,7 +4314,9 @@ async function manualUpdate() {
     log('    /plugin marketplace update thenewnano');
     log('    /plugin install qwen-mem-lite@thenewnano');
   } else if (result?.updateAvailable) {
-    warn(`v${result.to} available but install failed - try: node install.mjs install`);
+    // `node install.mjs install` named a relative path the user is rarely standing next to.
+    warn(`v${result.to} available but install failed — try: npx qwen-mem-lite@latest install`);
+    process.exitCode = 1;
   } else {
     const ver = getCurrentVersion();
     ok(`Already up to date (v${ver})`);
@@ -3910,8 +4420,9 @@ async function repair() {
     const tarballInstaller = join(stagingDir, 'install.mjs');
     if (!existsSync(tarballInstaller)) throw new Error('verified tarball missing install.mjs');
     log('Re-running install from the verified release sources...');
-    execFileSync(process.execPath, [tarballInstaller, 'install'], { stdio: 'inherit', timeout: 300000 });
-    ok(`Repair complete - resynced from verified release v${rel.version}`);
+    const { mcpRegistered } = runRepairInstaller(tarballInstaller);
+    ok(`Repair complete — resynced from verified release v${rel.version}`);
+    if (!mcpRegistered) warn('The MCP server is still not registered: run the "Try manually" command above.');
   } catch (e) {
     fail(`Repair failed: ${e.message}`);
     console.log('');
@@ -4208,6 +4719,11 @@ async function runLockedInstall() {
     process.exitCode = 1;
     return;
   }
+  // Claude Code's config home gets settings.json and the MCP registration. A root-owned one (a
+  // `sudo claude` run) let install copy files, run npm and register MCP, then die on the
+  // settings.json write with a raw EACCES stack: half installed (E2E 2026-10-16). Absent is fine
+  // when its nearest existing ancestor can be written.
+  if (refuseUnwritableConfigHome('install')) return;
   const { release, error: blocked } = takeLock(INSTALL_LOCK_PATH);
   if (!release) {
     if (blocked) {

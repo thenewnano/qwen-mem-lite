@@ -3,7 +3,7 @@
 // Runs as UserPromptSubmit hook — injects relevant memories before Claude sees the prompt
 // Lightweight: only imports schema.mjs and utils.mjs, no MCP SDK
 
-import { ensureDb, DB_DIR } from '../schema.mjs';
+import { ensureDb, setBusyDeadline, DB_DIR } from '../schema.mjs';
 import {
   relaxFtsQueryToOr,
   truncate,
@@ -40,13 +40,15 @@ import {
   extractDeferredRefs,
   DEDUP_STALE_MS,
   detectMemOverride,
+  isPromptEcho,
 } from './prompt-search-utils.mjs';
 import { injectedIdsFileName, mergeInjectedMarker } from '../lib/injected-ids.mjs';
 import { getDeferredByIds } from '../lib/deferred-work.mjs';
 import { recordHookError } from '../lib/hook-telemetry.mjs';
 import { isSchemaSkewError, schemaSkewFromError, shouldRecordSkew } from '../lib/schema-skew.mjs';
 
-import { DAY_MS } from '../lib/time-constants.mjs';
+import { DAY_MS, UPS_DB_BUSY_TIMEOUT_MS, UPS_DB_DEADLINE_MS } from '../lib/time-constants.mjs';
+import { isDbBusyError } from '../lib/db-busy.mjs';
 import { envNumber } from '../lib/env-number.mjs';
 import { writePlainHookText, resetPlainHookText, idsShownWhole } from '../lib/hook-text-cap.mjs';
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -566,7 +568,13 @@ function searchByFile(db, files, project, limit) {
 // ranking with no scoring multipliers and no top-|rel| gate (prompts are
 // sparser and more surface-form than observations; the gate would rarely
 // fire and mostly kill real hits).
-function searchByUserPrompts(db, queryText, project, limit) {
+//
+// Injection budget C5: a prompt from THIS Claude Code session is already in the context, and the
+// current prompt itself can be in the table (hook.mjs user-prompt writes it in parallel with this
+// search) — so rows of the current session are excluded in SQL, and a row that is an echo of the
+// current prompt (isPromptEcho) in JS. Rows written before cc_session_id existed (NULL) stay
+// eligible.
+function searchByUserPrompts(db, queryText, project, limit, ccSessionId = null) {
   const ftsQuery = upsFtsQuery(queryText);
   if (!ftsQuery) return [];
 
@@ -584,6 +592,7 @@ function searchByUserPrompts(db, queryText, project, limit) {
       AND s.project = ?
       AND up.created_at_epoch > ?
       AND up.prompt_text NOT LIKE '<task-notification>%'
+      AND (? IS NULL OR up.cc_session_id IS NULL OR up.cc_session_id != ?)
     ORDER BY relevance
     LIMIT ?
   `;
@@ -596,13 +605,23 @@ function searchByUserPrompts(db, queryText, project, limit) {
   // filter, then take `limit` — same ORDER BY, so the old result is a prefix of this
   // one and a row can only be added, never displaced by something worse.
   const poolLimit = Math.min(limit * PROMPT_FALLBACK_POOL_FACTOR, PROMPT_FALLBACK_POOL_MAX);
-  let rows = db.prepare(sql).all(ftsQuery, project, cutoff, poolLimit);
+  const session = typeof ccSessionId === 'string' && ccSessionId ? ccSessionId : null;
+  // The echo filter runs BEFORE the OR relaxation decides: the current prompt matches every one
+  // of its own AND terms, so an echo is often the AND query's only row — filtering it after
+  // would leave nothing and never try the OR pool (the LIMIT-upstream-of-a-JS-filter shape).
+  // QWEN_MEM_UPS_PROMPT_ECHO=0 keeps echoes from EARLIER sessions (the pre-change behaviour);
+  // the current session's rows stay excluded in SQL either way — that half is the bug fix.
+  const echoFilterOn = !['0', 'off', 'false', 'no'].includes(
+    String(process.env.QWEN_MEM_UPS_PROMPT_ECHO || '').toLowerCase(),
+  );
+  const notEcho = (rs) => (echoFilterOn ? rs.filter((r) => !isPromptEcho(r.prompt_text, queryText)) : rs);
+  let rows = notEcho(db.prepare(sql).all(ftsQuery, project, cutoff, session, session, poolLimit));
 
   if (rows.length === 0) {
     const orQuery = relaxFtsQueryToOr(ftsQuery);
     if (orQuery) {
       try {
-        rows = db.prepare(sql).all(orQuery, project, cutoff, poolLimit);
+        rows = notEcho(db.prepare(sql).all(orQuery, project, cutoff, session, session, poolLimit));
       } catch {}
     }
   }
@@ -707,6 +726,8 @@ async function main() {
   resetPlainHookText();
   // Prevent recursion from background claude -p calls
   if (process.env.QWEN_MEM_HOOK_RUNNING) return;
+  // Every DB wait from here on, ensureDb's own included, ends by this deadline (UPS_DB_DEADLINE_MS).
+  setBusyDeadline(performance.timeOrigin + UPS_DB_DEADLINE_MS);
 
   // Both swallows below record first. They were this file's only silent ones, and
   // they sit on the *entry* of the face: past MAX_UPS_PROMPT_BYTES the read hands
@@ -1092,7 +1113,7 @@ async function main() {
     // single highest-noise UPS path. Restored when REQUIRE_SIGNAL=0.
     let promptRows = [];
     if (rows.length === 0 && (!REQUIRE_EXPLICIT_SIGNAL || signalPresent)) {
-      promptRows = searchByUserPrompts(db, promptText, project, PROMPT_FALLBACK_LIMIT);
+      promptRows = searchByUserPrompts(db, promptText, project, PROMPT_FALLBACK_LIMIT, hookData.session_id);
     }
 
     const candidateIds = rows.length > 0 ? rows.map((r) => r.id) : promptRows.map((r) => `P${r.id}`);
@@ -1133,9 +1154,12 @@ async function main() {
       // rows have "P<id>" string IDs; skip those — they live in user_prompts).
       // Per-row try/catch: observations_au trigger reinserts FTS on any UPDATE
       // (project_non_obvious.md); an FTS corruption on one row must not abort
-      // counter bumps for other rows.
+      // counter bumps for other rows. A lock held by another process is different: it holds
+      // for every row, and this hook's host timeout is 2 s, so the bumps wait
+      // UPS_DB_BUSY_TIMEOUT_MS, and the first one that runs out ends them (F9).
       if (bookedRows.length > 0) {
         try {
+          db.pragma(`busy_timeout = ${UPS_DB_BUSY_TIMEOUT_MS}`);
           const now = Date.now();
           const bumpStmt = db.prepare(
             'UPDATE observations SET injection_count = COALESCE(injection_count, 0) + 1, last_injected_at = ? WHERE id = ?',
@@ -1143,7 +1167,9 @@ async function main() {
           for (const r of bookedRows) {
             try {
               bumpStmt.run(now, r.id);
-            } catch {}
+            } catch (e) {
+              if (isDbBusyError(e)) break;
+            }
           }
         } catch {}
       }

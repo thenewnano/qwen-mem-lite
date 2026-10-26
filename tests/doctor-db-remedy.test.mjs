@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dbCheckRemedy } from '../install.mjs';
 import { readSnapshots } from '../lib/db-backup.mjs';
-import { makeFixtureTracker } from './test-helpers.mjs';
+import { makeFixtureTracker, writeStoreSnapshot } from './test-helpers.mjs';
 
 const fixtures = makeFixtureTracker();
 afterAll(() => fixtures.disposeAll());
@@ -32,7 +32,8 @@ function withDb(snapshotNames = []) {
   let t = 1_700_000_000;
   for (const n of snapshotNames) {
     const p = join(dir, n);
-    writeFileSync(p, 'snap');
+    // A real snapshot: since D#558 the restore command names only one that passes doctor's check.
+    writeStoreSnapshot(p);
     // Deterministic ordering: the newest snapshot is the one the remedy must name, and
     // two files written in the same millisecond would make "newest" arbitrary (D#9).
     utimesSync(p, t, t);
@@ -66,8 +67,11 @@ describe('dbCheckRemedy', () => {
       'qwen-mem-lite.db.pre-maintain-2026-09-06T00-00-00-000Z-1-1.bak',
     ]);
     const out = await dbCheckRemedy(db, corrupt());
-    expect(out).toContain('2026-09-06T00-00-00-000Z');
-    expect(out).not.toContain('2026-09-01T00-00-00-000Z');
+    // The command restores the newest; the older one comes only as the alternative after it (D#577).
+    const command = out.slice(out.indexOf('restore it: '), out.indexOf(' — '));
+    expect(command).toContain('2026-09-06T00-00-00-000Z');
+    expect(command).not.toContain('2026-09-01T00-00-00-000Z');
+    expect(out).toMatch(/ To restore \S+2026-09-01T00-00-00-000Z-1-1\.bak instead: test -s /);
     expect(out).toContain('cp ');
     // The stale WAL/SHM must go first or the restored file is corrupted again by replay.
     expect(out).toContain('-wal');
@@ -77,9 +81,26 @@ describe('dbCheckRemedy', () => {
   it('says so plainly when no snapshot exists, and does not offer a restore', async () => {
     const { db } = withDb();
     const out = await dbCheckRemedy(db, corrupt());
-    expect(out).toMatch(/no backup snapshot/i);
+    expect(out).toMatch(/No backup snapshot exists beside the database/);
     expect(out).not.toContain('cp ');
     expect(out).toContain('mv ');
+    // D#554: a store whose damage is in its log can read most of its rows once the log is gone.
+    expect(out).not.toMatch(/not recoverable/);
+  });
+
+  // D#551: an empty .bak (what a failed snapshot of a damaged store left before 6.30.4) is
+  // skipped, so the set-aside arm runs with a .bak beside the database; it is not "none exists".
+  it('does not say no snapshot exists when it skipped an empty one', async () => {
+    const dir = dataDir();
+    const db = join(dir, 'qwen-mem-lite.db');
+    writeFileSync(db, 'not actually sqlite');
+    writeFileSync(join(dir, 'qwen-mem-lite.db.pre-delete-2026-09-07T00-00-00-000Z-1-0.bak'), '');
+    const out = await dbCheckRemedy(db, corrupt());
+    expect(out).toContain('mv ');
+    expect(out).not.toMatch(/No backup snapshot exists/);
+    expect(out).toMatch(
+      /No backup snapshot beside the database holds any data \(1 empty \.bak file skipped\)/,
+    );
   });
 
   it('distinguishes "could not look" from "there are none"', async () => {
@@ -90,7 +111,7 @@ describe('dbCheckRemedy', () => {
     expect(out).toMatch(/could not read/i);
     expect(out).toContain('ENOTDIR');
     // The whole point of the third outcome: it must NOT assert the absence it never checked.
-    expect(out).not.toMatch(/no backup snapshot/i);
+    expect(out).not.toMatch(/no (non-empty )?backup snapshot/i);
   });
 
   it('hands a native-binding failure the binding repair chain, not a backup', async () => {
@@ -108,10 +129,41 @@ describe('dbCheckRemedy', () => {
     expect(await dbCheckRemedy(db, new Error('EACCES: permission denied, open'))).toBeNull();
   });
 
+  // A schema row SQLite cannot parse: name the snapshots, run nothing (lib/db-unusable.mjs).
+  it('names the newest snapshot for an unreadable schema, with no command', async () => {
+    const { db } = withDb([
+      'qwen-mem-lite.db.pre-maintain-2026-09-01T00-00-00-000Z-1-1.bak',
+      'qwen-mem-lite.db.pre-maintain-2026-09-06T00-00-00-000Z-1-1.bak',
+    ]);
+    const err = Object.assign(new Error('malformed database schema (idx_t_a) - incomplete input'), {
+      code: 'SQLITE_CORRUPT',
+    });
+    const out = await dbCheckRemedy(db, err);
+    expect(out).toMatch(/schema/);
+    expect(out).toContain('2026-09-06T00-00-00-000Z');
+    expect(out).not.toMatch(/rm -f|\bcp\b|\bmv\b|&&/);
+  });
+
+  // D#534: both commands start by deleting the -wal and -shm and then replace or move the
+  // database file, under any session still holding the store.
+  it('says to close every Claude Code session before the restore or set-aside command', async () => {
+    const snap = withDb(['qwen-mem-lite.db.pre-maintain-2026-09-06T00-00-00-000Z-1-1.bak']).db;
+    for (const [what, out] of [
+      ['restore', await dbCheckRemedy(snap, corrupt())],
+      ['set-aside', await dbCheckRemedy(withDb().db, corrupt())],
+    ]) {
+      const at = out.indexOf('every Claude Code session is closed');
+      expect(at, what).toBeGreaterThan(-1);
+      expect(at, `${what}: before the command`).toBeLessThan(out.indexOf('test ! -e'));
+    }
+  });
+
   it('accepts the other spellings SQLite uses for a damaged file', async () => {
     const { db } = withDb();
     for (const msg of ['database disk image is malformed', 'file is encrypted or is not a database']) {
-      expect(await dbCheckRemedy(db, new Error(msg)), msg).toMatch(/no backup snapshot/i);
+      expect(await dbCheckRemedy(db, new Error(msg)), msg).toMatch(
+        /No backup snapshot exists beside the database/,
+      );
     }
   });
 });
@@ -157,7 +209,7 @@ describe('doctor prints the remedy it computes', () => {
       'qwen-mem-lite.db.pre-maintain-2026-09-06T00-00-00-000Z-1-1.bak',
     ]);
     const out = runDoctor(dir).stdout;
-    expect(out).toMatch(/Restore the newest of 2 backup snapshot\(s\)/);
+    expect(out).toMatch(/The newest of the 2 backup snapshot\(s\) beside the database restores cleanly/);
     expect(out).toContain('2026-09-06T00-00-00-000Z');
   });
 
@@ -172,8 +224,8 @@ describe('doctor prints the remedy it computes', () => {
     // first draft of this control matched that unrelated line and failed. A control that
     // greps too widely reports the wrong thing as a regression.
     expect(out).toMatch(/Database: not found/);
-    expect(out).not.toMatch(/No backup snapshot exists beside the database/);
-    expect(out).not.toMatch(/Restore the newest of/);
+    expect(out).not.toMatch(/No (non-empty )?backup snapshot exists beside the database/);
+    expect(out).not.toMatch(/Restore the newest of|restores cleanly/);
     expect(out).not.toMatch(/Could not read .* to look for a backup snapshot/);
   });
 });

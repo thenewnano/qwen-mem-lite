@@ -102,7 +102,7 @@ describe('cmdAdopt / cmdUnadopt (current project, CLAUDE.md scheme)', () => {
     expect(memdirIsAdopted(memdirPath(fakeCwd), PLUGIN_SLUG)).toBe(true);
     cmdAdopt([]);
     expect(memdirIsAdopted(memdirPath(fakeCwd), PLUGIN_SLUG)).toBe(false);
-    expect(existsSync(join(memdirPath(fakeCwd), 'plugin_claude_mem_lite.md'))).toBe(false);
+    expect(existsSync(join(memdirPath(fakeCwd), 'plugin_qwen_mem_lite.md'))).toBe(false);
     expect(existsSync(claudeMd(fakeCwd))).toBe(true);
   });
 
@@ -223,7 +223,7 @@ describe('cmdAdopt --all (legacy-cleanup sweep)', () => {
     cmdAdopt(['--all']);
     expect(readFileSync(join(a, 'MEMORY.md'), 'utf8')).not.toContain(`${PLUGIN_SLUG}:begin`);
     expect(readFileSync(join(b, 'MEMORY.md'), 'utf8')).not.toContain(`${PLUGIN_SLUG}:begin`);
-    expect(existsSync(join(a, 'plugin_claude_mem_lite.md'))).toBe(false);
+    expect(existsSync(join(a, 'plugin_qwen_mem_lite.md'))).toBe(false);
     expect(logs.some((l) => l.includes('legacy memory-dir cleanup'))).toBe(true);
     expect(logs.some((l) => l.includes('per-project'))).toBe(true);
   });
@@ -273,7 +273,7 @@ describe('silentAutoAdopt (SessionStart sync)', () => {
   });
 
   // Report §9-A (docs/audits/20260929-sandbox-usage-eval.md): the first SessionStart used to
-  // write CLAUDE.md + .claude/plugin_claude_mem_lite.md into every project, unasked — 4 of 4
+  // write CLAUDE.md + .claude/plugin_qwen_mem_lite.md into every project, unasked — 4 of 4
   // sandbox repos, swept into the next `git add -A`. The steering now rides SessionStart
   // context (action 'inject'); only an explicit `adopt` writes files.
   it('first call on an unadopted project: migrates, writes NOTHING under cwd, returns inject', () => {
@@ -285,6 +285,24 @@ describe('silentAutoAdopt (SessionStart sync)', () => {
     expect(existsSync(claudeMd(fakeCwd))).toBe(false);
     expect(existsSync(join(fakeCwd, '.claude'))).toBe(false);
     expect(memdirIsAdopted(memdirPath(fakeCwd), PLUGIN_SLUG)).toBe(false); // legacy migrated
+  });
+
+  // D#369 B14 follow-up: a CLAUDE.md whose begin line was edited (`… --> (team note)`) holds the
+  // block's text, which the host loads, but the block no longer parses, so SessionStart took the
+  // project for unadopted and injected (or wrote to CLAUDE.local.md) a second copy.
+  it('a CLAUDE.md with a damaged sentinel line: no copy written or injected', () => {
+    cmdAdopt([]);
+    const md = claudeMd(fakeCwd);
+    writeFileSync(
+      md,
+      readFileSync(md, 'utf8').replace(/(<!-- qwen-mem-lite:begin v\d+ -->)\n/, '$1 (team note)\n'),
+    );
+    const before = readFileSync(md, 'utf8');
+    const r = silentAutoAdopt({ cwd: fakeCwd, markerDir, markerKey: 'proj-x' });
+    expect(r.action).toBe('damaged');
+    expect(r.lines.map((l) => l.text).join('\n')).toMatch(/\(team note\)/);
+    expect(readFileSync(md, 'utf8')).toBe(before);
+    expect(existsSync(join(fakeCwd, 'CLAUDE.local.md'))).toBe(false);
   });
 
   it('a project adopted explicitly is kept in sync: already-adopted, CLAUDE.md unchanged', () => {
@@ -619,6 +637,34 @@ describe('adopt next to an AGENTS.md', () => {
     const again = silentAutoAdopt({ cwd: fakeCwd });
     expect(again.agents).toBeUndefined();
     expect(body()).toBe(after);
+  });
+
+  // D#220(b): another plugin's managed block beside ours is plugin text too. Claude Code stops
+  // reading AGENTS.md all the same, and with only this plugin's block counted the import was
+  // never added, so the user's AGENTS.md stayed unloaded.
+  const otherPluginBlock =
+    '<!-- code-graph-mcp:begin v2 -->\n## Code Graph\nIndex notes.\n<!-- code-graph-mcp:end -->\n';
+  it("session start adds the import to a CLAUDE.md that holds this block and another plugin's", () => {
+    cmdAdopt([]);
+    appendFileSync(claudeMd(fakeCwd), `\n${otherPluginBlock}`);
+    agentsMd(fakeCwd);
+    const r = silentAutoAdopt({ cwd: fakeCwd });
+    expect(r.agents).toEqual({ imported: ['AGENTS.md'], elsewhere: [] });
+    expect(body().startsWith(`${MARKER}\n@AGENTS.md\n\n${BEGIN}`)).toBe(true);
+    expect(body()).toContain(otherPluginBlock);
+  });
+
+  // The other plugin's block is not ours to delete: unadopt takes our block and our import, and
+  // the file stays with the other block in it.
+  it("unadopt keeps the other plugin's block, and the file", () => {
+    cmdAdopt([]);
+    appendFileSync(claudeMd(fakeCwd), `\n${otherPluginBlock}`);
+    agentsMd(fakeCwd);
+    silentAutoAdopt({ cwd: fakeCwd });
+    cmdUnadopt([]);
+    expect(existsSync(claudeMd(fakeCwd))).toBe(true);
+    expect(body()).toContain(otherPluginBlock);
+    expect(body()).not.toContain(BEGIN);
   });
 
   it('session start adds no import once the user has written into CLAUDE.md', () => {

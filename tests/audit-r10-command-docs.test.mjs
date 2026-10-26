@@ -1,35 +1,84 @@
 // R10 P2-4 — commands/*.md are read by the MODEL, so a wrong instruction there is a wrong
-// behaviour, not a typo. Both files told the agent to run
-// `mem_maintain(action="execute", operations=["purge_stale"])` with no `confirm`. That call
-// does not purge: server.mjs treats an unconfirmed purge_stale as a dry-run PREVIEW and
-// returns normally. So the documented flow asks the user for permission, gets it, runs a
-// call that deletes nothing, and reports success — the worst of the three possible
-// outcomes, because the user now believes the cleanup happened.
+// behaviour, not a typo. Both files told the agent to purge with no confirmation. That call
+// does not purge: an unconfirmed purge_stale is a dry-run PREVIEW that returns normally. So
+// the documented flow asks the user for permission, gets it, runs a call that deletes nothing,
+// and reports success — the worst of the three possible outcomes, because the user now believes
+// the cleanup happened.
 //
 // The `/mem cleanup Nd` mapping had a second problem: it advertised an arbitrary N while
-// the schema floors retain_days at 7, so `/mem cleanup 3d` is rejected by zod.
+// the retain days are floored at 7, so `/mem cleanup 3d` is rejected.
 //
-// Guarded by reading the schema, not by restating the numbers here — a guard that hardcodes
-// 7 and 365 goes stale the same way the docs did.
+// Both commands now purge through the CLI (`maintain execute --ops purge_stale`), because
+// mem_maintain is left out of tools/list unless QWEN_MEM_ALL_TOOLS=1
+// (tests/audit-prompts-20261019.test.mjs). So this guard reads the CLI: its confirm flag is
+// `--confirm`, and the range the docs must state is whatever `--retain-days` accepts when
+// probed, since a guard that only restates 7 and 365 goes stale the same way the docs did
+// (the 7/365 pins below are the premise the earlier guard kept, checked against the probe).
+//
+// /update also has to purge BEFORE its `maintain execute` step: decay there queues more rows,
+// and a purge run afterwards deletes them too, so the user would approve one count and lose
+// more (lib/maintain-core.mjs runs purge first inside one execute for the same reason).
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { z } from 'zod';
-import { memMaintainSchema } from '../tool-schemas.mjs';
+import { createTestDb, insertSession, insertObs } from './test-helpers.mjs';
+import { COMPRESSED_PENDING_PURGE } from '../utils.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (rel) => readFileSync(join(REPO, rel), 'utf8');
 
-/** The retain_days bounds, read out of the schema by probing it. */
-function retainDaysBounds() {
-  const schema = z.object(memMaintainSchema);
-  const ok = (n) => schema.safeParse({ action: 'execute', retain_days: n }).success;
+let testDb;
+
+// Stub EVERY opener mem-cli reaches, not just one: an unstubbed opener silently escapes to
+// the REAL store (tests/audit-fixes.test.mjs records a run that purged a live DB that way).
+vi.mock('../schema.mjs', async (importOriginal) => {
+  const original = await importOriginal();
+  const stub = () => new Proxy(testDb, { get: (t, p) => (p === 'close' ? () => {} : t[p]) });
+  return { ...original, ensureDb: stub, ensureDbWithWalRecovery: stub };
+});
+
+const { run } = await import('../mem-cli.mjs');
+
+/** Runs one CLI command in-process; returns what it printed and whether it failed. */
+async function cli(argv) {
+  let output = '';
+  const origOut = process.stdout.write;
+  const origErr = process.stderr.write;
+  process.stdout.write = process.stderr.write = (s) => {
+    output += s;
+    return true;
+  };
+  process.exitCode = undefined;
+  try {
+    await run(argv);
+  } finally {
+    process.stdout.write = origOut;
+    process.stderr.write = origErr;
+  }
+  const failed = Boolean(process.exitCode);
+  process.exitCode = undefined;
+  return { output, failed };
+}
+
+/** The --retain-days bounds, read out of the CLI by probing it. */
+async function retainDaysBounds() {
   let min = null;
   let max = null;
   for (let n = 1; n <= 400; n++) {
-    if (ok(n)) {
+    const { output, failed } = await cli([
+      'maintain',
+      'execute',
+      '--ops',
+      'purge_stale',
+      '--retain-days',
+      `${n}`,
+    ]);
+    const previewed = output.includes('purge_stale preview (no --confirm)');
+    // Each probe has to land on exactly one side, or it is reading something else.
+    expect(previewed !== failed, `--retain-days ${n} neither previewed nor failed: ${output}`).toBe(true);
+    if (previewed) {
       if (min === null) min = n;
       max = n;
     }
@@ -37,37 +86,126 @@ function retainDaysBounds() {
   return { min, max };
 }
 
+/** Inline code spans, so two commands on one line are checked one by one. */
+const codeSpans = (line) => line.split('`').filter((_, i) => i % 2 === 1);
+const CONFIRM = /(^|\s)--confirm(?=$|[\s`.,;:)])/;
+
 describe('R10 P2-4 — the purge instruction the model reads actually purges', () => {
-  it('premise: an unconfirmed purge_stale really is a no-op preview', () => {
-    const schema = z.object(memMaintainSchema);
-    // Both parse — the schema does not require confirm, the HANDLER branches on it. That is
-    // exactly why the docs could be wrong without anything failing.
-    expect(schema.safeParse({ action: 'execute', operations: ['purge_stale'] }).success).toBe(true);
-    expect(
-      readFileSync(join(REPO, 'server.mjs'), 'utf8'),
-      'the confirm gate moved; this guard is describing code that no longer exists',
-    ).toContain('const purgeConfirmed = args.confirm === true;');
+  beforeEach(() => {
+    testDb = createTestDb();
+  });
+  afterEach(() => {
+    testDb.close();
+  });
+
+  it('premise: without --confirm the CLI purge is a preview that deletes nothing, and --confirm deletes', async () => {
+    insertSession(testDb, { id: 'r10-sess', memoryId: 'r10-mem' });
+    insertObs(testDb, {
+      sessionId: 'r10-mem',
+      title: 'R10 PURGEABLE',
+      importance: 1,
+      epochOffset: -60 * 86_400_000,
+      compressedInto: COMPRESSED_PENDING_PURGE,
+    });
+    const count = () =>
+      testDb.prepare("SELECT COUNT(*) c FROM observations WHERE title = 'R10 PURGEABLE'").get().c;
+
+    // It SUCCEEDS — which is exactly why docs that drop the flag could be wrong with nothing failing.
+    const preview = await cli(['maintain', 'execute', '--ops', 'purge_stale']);
+    expect(preview.failed).toBe(false);
+    expect(preview.output).toMatch(/Candidates \(pending-purge, older than 30d\): 1/);
+    expect(count()).toBe(1);
+
+    const confirmed = await cli(['maintain', 'execute', '--ops', 'purge_stale', '--confirm']);
+    expect(confirmed.output).toMatch(/Purged 1 stale observations/);
+    expect(count()).toBe(0);
   });
 
   for (const rel of ['commands/mem.md', 'commands/update.md']) {
-    it(`${rel} pairs every purge_stale instruction with confirm=true`, () => {
-      const src = read(rel);
-      const lines = src.split('\n').filter((l) => l.includes('purge_stale'));
+    it(`${rel} pairs every purge_stale instruction with --confirm`, () => {
+      // Every LINE, as the guard always did: a fenced or indented block, or a command written
+      // in prose, is as much an instruction as an inline code span.
+      const lines = read(rel)
+        .split('\n')
+        .filter((l) => l.includes('purge_stale'));
       expect(lines.length, `${rel} no longer mentions purge_stale at all`).toBeGreaterThan(0);
       for (const line of lines) {
-        expect(line, `${rel}: purge_stale instruction without confirm=true → silent no-op`).toMatch(
-          /confirm\s*=\s*true/,
-        );
+        expect(line, `${rel}: purge_stale instruction without --confirm → silent no-op`).toMatch(CONFIRM);
+        for (const span of codeSpans(line).filter((s) => s.includes('purge_stale'))) {
+          expect(span, `${rel}: purge_stale command without --confirm → silent no-op`).toMatch(CONFIRM);
+        }
       }
     });
   }
 
-  it('commands/mem.md states the retain_days range the schema actually enforces', () => {
-    const { min, max } = retainDaysBounds();
+  it('commands/update.md purges before the step that queues more rows for purge', () => {
+    const lines = read('commands/update.md').split('\n');
+    const purge = lines.findIndex((l) => /--ops purge_stale --confirm/.test(l));
+    // The default-set run: `maintain execute` with no --ops, whose decay queues rows.
+    const execute = lines.findIndex((l) => /cli\.mjs" maintain execute`/.test(l));
+    expect(purge, 'no confirmed purge step').toBeGreaterThan(-1);
+    expect(execute, 'no default-set maintain execute step').toBeGreaterThan(-1);
+    expect(purge, 'the purge runs after decay has queued more rows than the user approved').toBeLessThan(
+      execute,
+    );
+  });
+
+  // D#450: the scan's pending count includes rows too recent to purge, so the number the user
+  // approves has to come from the purge's own preview. Text pattern: catches this spelling only.
+  for (const rel of ['commands/mem.md', 'commands/update.md']) {
+    it(`${rel} previews the purge before asking, so the user approves the purge's own count`, () => {
+      const line = read(rel)
+        .split('\n')
+        .find((l) => /--ops purge_stale --confirm/.test(l));
+      expect(line, `${rel}: no confirmed purge instruction`).toBeTruthy();
+      expect(line, `${rel}: the purge is not previewed before the user is asked`).toMatch(
+        /without `--confirm`/,
+      );
+      // Defects review r1: gated on the scan's pending count, a preview of 0 rows still went to
+      // the user for approval.
+      expect(line, `${rel}: says nothing about a preview that would delete no rows`).toMatch(/count is 0/);
+    });
+  }
+
+  // Delta review r2: with auto-adopt on — the default — the steering points the model at the
+  // detail doc, and its cleanup row said `maintain execute --ops purge_stale --confirm`: a delete
+  // with no preview and no one asked. The cleanup belongs to /update, which a person starts.
+  it('the adoption block and detail doc leave the purge to /qwen-mem-lite:update', async () => {
+    const { getDetailDoc, buildClaudeMdBlock } = await import('../adopt-content.mjs');
+    const doc = getDetailDoc();
+    expect(doc, 'premise: the detail doc has a cleanup row').toMatch(/清理过期记忆/);
+    for (const [name, text] of [
+      ['detail doc', doc],
+      ['CLAUDE.md block', buildClaudeMdBlock()],
+    ]) {
+      // Either flag order, and the MCP form (review r3).
+      expect(text, `${name} has the model confirm a purge itself`).not.toMatch(
+        /purge_stale[^\n|]*(--confirm|confirm\s*[=:]\s*true)|--confirm[^\n|]*purge_stale/,
+      );
+    }
+    expect(doc.split('\n').find((l) => l.includes('清理过期记忆'))).toContain('/qwen-mem-lite:update');
+  });
+
+  // D#461: the dedup step had the model judge Needs-review pairs from 40-char titles; the scan now
+  // prints a line of each row under the pair, and `get` would count as an access.
+  it('commands/update.md judges Needs-review pairs from the scan, not with get', () => {
+    const step = read('commands/update.md')
+      .split('\n')
+      .find((l) => /--ops dedup --merge-ids/.test(l));
+    expect(step, 'no dedup step').toBeTruthy();
+    expect(step).toMatch(/Needs review:/);
+    expect(step).toMatch(/do not read them with `get`/);
+  });
+
+  it('commands/mem.md and commands/update.md state the --retain-days range the CLI actually enforces', async () => {
+    const { min, max } = await retainDaysBounds();
     expect(min).toBe(7);
     expect(max).toBe(365);
-    const src = read('commands/mem.md');
-    expect(src, 'the retain_days bounds are not written down where the model reads them').toContain(`${min}`);
-    expect(src).toMatch(new RegExp(`retain_days[^\\n]*${min}[^\\n]*${max}`));
+    for (const rel of ['commands/mem.md', 'commands/update.md']) {
+      expect(
+        read(rel),
+        `${rel}: the --retain-days bounds are not written down where the model reads them`,
+      ).toMatch(new RegExp(`--retain-days[^\\n]*\\b${min}\\b[^\\n]*\\b${max}\\b`));
+    }
   });
 });

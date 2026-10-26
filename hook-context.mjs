@@ -46,6 +46,8 @@ import { inferProjectDir } from './project-utils.mjs';
 import { TYPE_QUALITY, TYPE_QUALITY_DEFAULT } from './scoring-sql.mjs';
 
 import { DAY_MS } from './lib/time-constants.mjs';
+import { capRecentRows, recentTableRowCap } from './lib/recent-table.mjs';
+
 /**
  * Compute adaptive recall time windows based on project activity velocity.
  * High activity -> shorter windows (recent data more relevant).
@@ -466,12 +468,12 @@ export function cleanupClaudeMdLegacyBlock() {
   // Extend backward if the paired hint comment sits on the line immediately before
   // the start tag. The hint is the exact string the old updateClaudeMd emitted.
   let removeStart = startIdx;
-  const hintPattern = '<!-- claude-mem-lite: auto-updated context';
+  const hintPattern = '<!-- qwen-mem-lite: auto-updated context';
   const leadingSlice = content.slice(0, startIdx);
   const hintIdx = leadingSlice.lastIndexOf(hintPattern);
   if (hintIdx !== -1) {
     const between = content.slice(hintIdx, startIdx);
-    if (/^<!-- claude-mem-lite: [^\n]*-->\s*$/.test(between)) {
+    if (/^<!-- qwen-mem-lite: [^\n]*-->\s*$/.test(between)) {
       removeStart = hintIdx;
     }
   }
@@ -532,14 +534,16 @@ const MIN_LOCAL_OBS = 3;
  * MIN_LOCAL_OBS, so the table gains at most two rows.
  *
  * The COUNT never shrinks; the composition can, and that is a ranking decision rather than
- * an accident. At the uncapped table site this only adds. At the `.slice(0, MIN_LOCAL_OBS)`
+ * an accident. At the table site, before its 5-row cap, this only added. At the `.slice(0, MIN_LOCAL_OBS)`
  * site the selected rows are PREPENDED, so with 1 local row and 3+ fallback rows the third
  * fallback title is evicted — still three rows, one of them now local. Exhaustive
  * enumeration over 42,436 ordered input pairs: 0 cases render fewer rows, 3,000 evict a
  * fallback row that way, max gain 2. Preferring the project's own rows over cross-project
  * ones inside a fixed window is the intended order, and saying so is the point: a new
  * population entering a limit-bounded window without a stated ranking is this repo's
- * recorded failure shape.
+ * recorded failure shape. The table site has been capped since the injection-budget change
+ * (5 rows), and its cut keeps that order too — capRecentRows ranks own rows first; a newest-5
+ * cut over the union evicted them (pre-ship defect review P2-1).
  */
 function withFallbackTopUp(observations, fallbackObs) {
   if (observations.length >= MIN_LOCAL_OBS) return observations;
@@ -686,8 +690,8 @@ export function buildSessionContextLines(
 
     // Phase A (QUIET_HOOKS) + Phase D (adopted sentinel): drop descriptive
     // File Lessons / Key Context sections when the user has opted into low-noise
-    // hooks OR adopted invited-memory (MEMORY.md sentinel carries the triggers
-    // at higher system-prompt authority). The Recent table still fires so #IDs
+    // hooks OR adopted invited-memory (the steering block carries the triggers
+    // in the project's instructions). The Recent table still fires so #IDs
     // remain reachable via mem_get. The collector sees only rows that survive
     // BOTH the quiet gate and the per-section slice — rendered rows, nothing else.
     const quiet = effectiveQuiet();
@@ -914,8 +918,15 @@ export function buildSessionContextLines(
   // already chosen, so the token budget and the row set are untouched (pinned by a case in
   // tests/hook-context.test.mjs). Tiebroken on id for the same reason D#9 gives — an
   // untiebroken tie flips direction, and two saves in one millisecond are common.
+  //
+  // Injection budget C4: the display is then cut to `recentTableRowCap()` rows (5), the project's
+  // own rows ranked before the cross-project top-up (lib/recent-table.mjs). The knapsack still
+  // picks as before.
   const obsLines = [];
-  const obsToShow = [...withFallbackTopUp(observations, fallbackObs)].sort(
+  const obsToShow = capRecentRows(
+    withFallbackTopUp(observations, fallbackObs),
+    project,
+    recentTableRowCap(),
     (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id,
   );
   if (obsToShow.length > 0) {
@@ -924,10 +935,17 @@ export function buildSessionContextLines(
     obsLines.push('');
     obsLines.push('| ID | Time | T | Title |');
     obsLines.push('|----|------|---|-------|');
+    // A row from another day carries its date: under the "Recent (<today>)" heading a bare
+    // HH:MM read as today, and a 5-day-old row looked like this morning's (E2E 2026-10-16).
+    // Same UTC calendar as the heading.
+    const when = (iso) =>
+      typeof iso === 'string' && fmtTime(iso) && iso.slice(0, 10) !== today
+        ? `${iso.slice(5, 10)} ${fmtTime(iso)}`
+        : fmtTime(iso);
     for (const o of obsToShow) {
       const proj = o.project && o.project !== project ? ` (${o.project})` : '';
       obsLines.push(
-        `| #${o.id} | ${fmtTime(o.created_at)} | ${typeIcon(o.type)} | ${mdCell(truncate(o.title || '(untitled)', 60) + proj)} |`,
+        `| #${o.id} | ${when(o.created_at)} | ${typeIcon(o.type)} | ${mdCell(truncate(o.title || '(untitled)', 60) + proj)} |`,
       );
     }
   }

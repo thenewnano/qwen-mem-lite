@@ -19,7 +19,7 @@
 // you're changing it.
 
 import { randomUUID } from 'crypto';
-import { join, resolve as resolvePath } from 'path';
+import { join, basename, resolve as resolvePath } from 'path';
 import {
   readFileSync,
   writeFileSync,
@@ -38,6 +38,7 @@ import {
   isRelatedToEpisode,
   entryEditedFiles,
   makeEntryDesc,
+  truncate,
   scrubSecrets,
   stripPrivate,
   EDIT_TOOLS,
@@ -45,14 +46,15 @@ import {
   debugLog,
   formatErrorRecallHints,
   MAX_HOOK_STDIN_BYTES,
+  getCurrentBranch,
 } from './utils.mjs';
 // Direct import (not via the utils.mjs barrel): the barrel's re-exports are a v2.21
 // backward-compat surface that knip already lists as unused; new shared symbols go to
 // their canonical module.
 import { inferProjectDir } from './project-utils.mjs';
 import { extractFileTargets } from './bash-utils.mjs';
-import { isPluginExplicitlyDisabled } from './lib/plugin-key.mjs';
-import { readHookStdin } from './lib/hook-stdin.mjs';
+import { isPluginDisabledInScopes, pluginSettingsScopes } from './lib/plugin-key.mjs';
+import { readHookStdin, salvageTruncatedHookEvent, TOOL_INPUT_FILE_MAX_BYTES } from './lib/hook-stdin.mjs';
 import { normalizeToolName } from './lib/tool-names.mjs';
 // Aliased: `acquireLock` from hook-episode.mjs below is the episode buffer's own
 // (argument-less) lock - a different mutex with a different staleness policy.
@@ -77,7 +79,7 @@ import {
 } from './hook-episode.mjs';
 // CODE_DIR, not DB_DIR: the schema-skew notice asks which CODE homes exist, and those are
 // always homedir-rooted even when QWEN_MEM_DIR relocates the data.
-import { DB_DIR, DB_PATH, CODE_DIR, refreshPlannerStats } from './schema.mjs';
+import { DB_DIR, DB_PATH, CODE_DIR, refreshPlannerStats, recheckObservationIndexTerms } from './schema.mjs';
 import { cleanupClaudeMdLegacyBlock, buildSessionContextLines } from './hook-context.mjs';
 import { entry as preCompactEntry } from './hook-precompact.mjs';
 import {
@@ -96,14 +98,24 @@ import {
   deadHostFiles,
   getSessionId,
   createSessionId,
+  recordHandoffWriter,
+  liveOtherHostHandoffIds,
+  setHookDbDeadline,
   openDb,
   spawnBackground,
   sweepOrphanEpisodeFiles,
   sweepStaleProjectMarkers,
   lastSchemaSkew,
   lastDbUnusable,
+  lastDbUnusableError,
 } from './hook-shared.mjs';
-import { handleLLMEpisode, handleLLMSummary, saveEpisodeImmediate } from './hook-llm.mjs';
+import { CLI_INVOKE } from './cli-path.mjs';
+import {
+  handleLLMEpisode,
+  handleLLMSummary,
+  saveEpisodeImmediate,
+  recoverOrphanEpisodeFlushes,
+} from './hook-llm.mjs';
 import {
   legacyProjectNameFromDir,
   rekeyLegacyProject,
@@ -129,8 +141,7 @@ import {
 import { writePlainHookText, resetPlainHookText, idsShownWhole } from './lib/hook-text-cap.mjs';
 import { shouldRecallOnFailure } from './lib/tool-refusal.mjs';
 import {
-  entryInputTags,
-  extractDiagnosis,
+  workerEntryFields,
   filterSummaryInput,
   episodeInputFilterEnabled,
 } from './lib/episode-input-filter.mjs';
@@ -176,7 +187,16 @@ import { formatTaskImperative } from './lib/task-imperative.mjs';
 import { gcOldMetricShards, recordMetric } from './lib/metrics.mjs';
 import { detectMemOverride } from './lib/mem-override.mjs';
 import { injectedIdsFileName, keyContextIdsFileName, readInjectedMarker } from './lib/injected-ids.mjs';
+import { threadKey } from './lib/cooldown-path.mjs';
 import { recordKeyContextInjection, touchKeyContextMarker } from './lib/keyctx-marker.mjs';
+import {
+  RECALL_SHOWN_PREFIX,
+  clearRecallShown,
+  markCooldownCompacted,
+  errorRecallShownPath,
+  readErrorRecallShown,
+  markErrorRecallShown,
+} from './lib/recall-shown.mjs';
 import { liveObsFilterSql } from './lib/inject-search-core.mjs';
 import { selectErrorRecall } from './lib/error-recall-core.mjs';
 import { errorRecallSuppression } from './lib/error-recall-gate.mjs';
@@ -198,7 +218,7 @@ import {
   buildCiteRecallNudge as libBuildCiteRecallNudge,
   nextCiteStreakState,
 } from './lib/cite-back-hint.mjs';
-import { citeRecallPathFor } from './lib/cite-recall-path.mjs';
+import { citeRecallPathFor, projectFileKey } from './lib/cite-recall-path.mjs';
 import { detectUnpersistedDecision } from './lib/persist-reminder.mjs';
 // plugin-cache-guard.mjs loaded dynamically - pre-2.31.2 installs that auto-upgraded
 // from an older hook-update.mjs SOURCE_FILES (which did not list this module) would
@@ -240,7 +260,8 @@ async function loadCacheGuard() {
 //     risk than the milliseconds are worth.
 import { SKIP_TOOLS, SKIP_PREFIXES } from './skip-tools.mjs';
 
-import { DAY_MS } from './lib/time-constants.mjs';
+import { DAY_MS, HOOK_DB_DEADLINE_MS, SESSION_START_DB_DEADLINE_MS } from './lib/time-constants.mjs';
+import { isDbBusyError } from './lib/db-busy.mjs';
 import { workerDirGone } from './lib/worker-data-dir.mjs';
 import { claudeConfigDir } from './lib/data-paths.mjs';
 // Prevent recursive hooks from background claude -p calls
@@ -267,6 +288,21 @@ const BG_EVENTS = new Set([
   'update-check',
 ]);
 
+// The events hooks.json runs under a fixed timeout wait for another writer only until a deadline
+// counted from this process's start (performance.timeOrigin): each connection they open waits for
+// the time left (setHookDbDeadline), so a lock held past it fails the write inside the hook rather
+// than getting the hook killed with its output (E2E 2026-10-16 F9), and a lock that ends before
+// it is still waited out.
+const FIVE_SECOND_HOOK_EVENTS = new Set([
+  'user-prompt',
+  'stop',
+  'post-tool-use',
+  'post-tool-failure',
+  'pre-compact',
+]);
+if (FIVE_SECOND_HOOK_EVENTS.has(event)) setHookDbDeadline(performance.timeOrigin + HOOK_DB_DEADLINE_MS);
+else if (event === 'session-start') setHookDbDeadline(performance.timeOrigin + SESSION_START_DB_DEADLINE_MS);
+
 // Respect Claude Code plugin disable state even when legacy settings.json hooks remain.
 // install.mjs writes direct hooks into ~/.claude/settings.json, so disabling the plugin
 // in Claude UI does not automatically remove them. Exit early to make disable actually work.
@@ -274,15 +310,19 @@ const BG_EVENTS = new Set([
 // same decision, and a key that drifts on one side leaves the user with a plugin they
 // switched off and a settings.json hook set that never noticed. Reading the file stays here:
 // install.mjs already holds a parsed settings object when it asks, this process does not.
+// The user, project and local scopes are merged as the host merges them (lib/plugin-key.mjs).
 function pluginDisabledHere() {
-  try {
-    const settingsPath = join(claudeConfigDir(), 'settings.json');
-    return isPluginExplicitlyDisabled(JSON.parse(readFileSync(settingsPath, 'utf8')));
-  } catch {
-    // Missing or unparseable settings.json → not disabled. Fail OPEN: a corrupt file must
-    // not switch the plugin off for a user who never asked for that.
-    return false;
-  }
+  const read = (path) => {
+    try {
+      return JSON.parse(readFileSync(path, 'utf8'));
+    } catch {
+      // Missing or unparseable → sets nothing. Fail OPEN: a corrupt file must not switch the
+      // plugin off for a user who never asked for that.
+      return null;
+    }
+  };
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  return isPluginDisabledInScopes(pluginSettingsScopes(claudeConfigDir(), projectDir).map(read));
 }
 
 if (event && pluginDisabledHere()) process.exit(0);
@@ -324,7 +364,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
           // salvages the in-flight episode on abnormal termination (audit #6). A
           // detached llm-episode child can't be spawned from a dying process, so no
           // ep-flush-* file is written here: it would have NO consumer AND would make
-          // every later handleLLMSummary poll the full QWEN_MEM_FLUSH_TIMEOUT (~15s)
+          // every later handleLLMSummary poll the full QWEN_MEM_FLUSH_TIMEOUT (275 s default)
           // waiting for a file that only the 24h orphan-sweep ever removes.
           // Split by CC session first (v3.35.2 parity): the normal flush and the Stop
           // lock-contended fallback both planEpisodeFlush, but this crash path flushed the
@@ -680,6 +720,10 @@ function flushEpisodeGroup(ep, db) {
   if (isSignificant) {
     const id = saveEpisodeImmediate(ep, db, 'flushEpisode-immediateSave');
     if (id) ep.savedId = id;
+    // The branch the work was on, read here in the session's cwd, for the worker's insert: a worker
+    // runs in its spawner's cwd, and for a file SessionStart hands on that is another project's
+    // (pre-tag review 2026-10-16 P3-5). Cached from the immediate save when it inserted.
+    ep.branch = getCurrentBranch();
   }
 
   const flushFile = join(RUNTIME_DIR, `ep-flush-${Date.now()}-${randomUUID().slice(0, 8)}.json`);
@@ -707,22 +751,54 @@ function flushEpisodeGroup(ep, db) {
 async function handlePostToolUse() {
   let raw;
   try {
-    raw = await readStdin();
-  } catch {
+    // The whole-file tier, like PreToolUse: an Edit carries the whole file in
+    // tool_response.originalFile, and the 256 KB tier dropped every edit of a file past it.
+    raw = await readHookStdin({
+      timeoutMs: 3000,
+      maxBytes: TOOL_INPUT_FILE_MAX_BYTES,
+      rejectOnTimeout: true,
+    });
+  } catch (err) {
+    if (err?.message === 'timeout') debugLog('WARN', 'readStdin', 'stdin timeout after 3s — event dropped');
     return;
   }
 
   let hookData;
+  // Set when the payload was cut short and only part of it was salvaged: the entry then says
+  // so, instead of describing a change from fields it never read.
+  let salvaged = false;
   try {
     hookData = JSON.parse(raw.text);
   } catch {
-    // Truncated JSON - try to salvage tool_name from the prefix
-    if (raw.truncated) {
-      debugLog('WARN', 'postToolUse', 'stdin truncated at 256KB, attempting salvage');
+    // A payload cut short — past this tier, or by the bash prefilter's own byte cap, which
+    // leaves node a prefix it cannot tell is cut (raw.truncated is only set past OUR cap).
+    // Salvage what the prefix holds, path and session included, rather than tool_name alone.
+    const s = salvageTruncatedHookEvent(raw.text);
+    if (s?.toolName) {
+      debugLog('WARN', 'postToolUse', 'stdin cut short, salvaged tool name, path and session');
+      hookData = {
+        tool_name: s.toolName,
+        tool_input: { file_path: s.filePath },
+        tool_response: '(truncated)',
+        ...(s.sessionId ? { session_id: s.sessionId } : {}),
+        ...(s.agentId ? { agent_id: s.agentId } : {}),
+      };
+    } else {
       const m = raw.text.match(/"tool_name"\s*:\s*"([^"]+)"/);
-      if (m) hookData = { tool_name: m[1], tool_input: {}, tool_response: '(truncated)' };
+      // A Bash command sits ahead of its output in the payload, so the prefix holds it.
+      // Bounded like salvageTruncatedHookEvent's path capture.
+      const c = raw.text.match(/"command"\s*:\s*"((?:[^"\\]|\\.){0,4096})"/);
+      let command;
+      try {
+        command = c ? JSON.parse(`"${c[1]}"`) : undefined;
+      } catch {
+        command = undefined;
+      }
+      if (m)
+        hookData = { tool_name: m[1], tool_input: command ? { command } : {}, tool_response: '(truncated)' };
     }
     if (!hookData) return;
+    salvaged = true;
   }
 
   const { tool_name, tool_input, tool_response } = hookData;
@@ -788,30 +864,25 @@ async function handlePostToolUse() {
   // Tier 1 B: Detect significant Bash commands
   const bashSig = toolName === 'Bash' ? detectBashSignificance(toolInput, resp) : null;
 
-  // D#69: tags and diagnosis lines need the FULL command and output, which the entry
-  // does not keep, so they are computed here once. The output is windowed head + tail:
-  // a runner prints its failures at the END, and a multi-megabyte stdout should not be
-  // regex-scanned on every PostToolUse.
-  const respWindow = resp.length > 65536 ? resp.slice(0, 32768) + '\n' + resp.slice(-32768) : resp;
-
-  // `diagOut` = the diagnosis lines read from tool OUTPUT: a lesson quoting one stays
-  // under every injection floor (D#100(3)). Always present on a Bash entry, [] included, so
-  // the worker can tell a new entry with no output lines from one buffered before the field.
-  const diagnosis = extractDiagnosis(tool_name, toolInput, respWindow, {
-    isError: bashSig?.isError || false,
-    writesFiles: tool_name === 'Bash' && bashWrites.length > 0,
-    scrub: scrubSecrets,
-  });
-
-  // Build episode entry
+  // Build episode entry. The worker fields (input tags, DIAGNOSIS lines, Bash's diagOut)
+  // need the full command and output, which the entry does not keep (D#69).
   const entry = {
     tool: toolName,
-    desc: scrubSecrets(makeEntryDesc(toolName, toolInput, resp, bashSig)),
-    inputTags: entryInputTags(toolName, toolInput, respWindow),
-    diag: diagnosis.lines,
-    ...(toolName === 'Bash' ? { diagOut: diagnosis.output } : {}),
+    // A salvaged entry read as a fact about the change (`Created big.txt (0 chars)`, `x: "" →
+    // ""`) in the episode prompt; it now says what is known (E2E 2026-10-16 round 2). The command
+    // is scrubbed BEFORE the cut, or a token straddling it keeps its head (round 3).
+    desc: scrubSecrets(
+      salvaged
+        ? `${toolName} ${toolInput.command ? truncate(scrubSecrets(toolInput.command), 50) : basename(toolInput.file_path || '')} (payload over 8 MB, not read)`
+        : makeEntryDesc(toolName, toolInput, resp, bashSig),
+    ),
+    ...workerEntryFields(toolName, toolInput, resp, {
+      isError: bashSig?.isError || false,
+      writesFiles: toolName === 'Bash' && bashWrites.length > 0,
+      scrub: scrubSecrets,
+    }),
     files,
-    ...(tool_name === 'Bash' && bashWrites.length ? { bashWrites } : {}),
+    ...(toolName === 'Bash' && bashWrites.length ? { bashWrites } : {}),
     ts: Date.now(),
     isError: bashSig?.isError || false,
     // isHardError gates the bugfix-shape save-nudge (lib/cite-back-hint.mjs): a real
@@ -852,7 +923,8 @@ async function handlePostToolUse() {
     !errorRecallSuppressed(toolInput, resp, hookData.session_id, true, bashWrites)
   ) {
     const d = getDb();
-    if (d) triggerErrorRecall(d, toolInput, resp);
+    if (d)
+      triggerErrorRecall(d, toolInput, resp, { thread: threadKey(hookData.session_id, hookData.agent_id) });
   }
 
   // D#69: a subagent's calls (the host sets `agent_id` only inside a subagent) stay out of
@@ -1004,7 +1076,17 @@ function triggerErrorRecall(db, toolInput, response, opts = {}) {
       project,
     });
     if (!selected) return;
-    const rows = selected.rows;
+    // Per-thread dedup, like the PreToolUse and UserPromptSubmit faces: a red/green loop re-sent
+    // the identical block on every failing run (lib/recall-shown.mjs ERROR_RECALL_REPEAT_MS).
+    const shownPath = errorRecallShownPath(RUNTIME_DIR, opts.thread);
+    const shown = readErrorRecallShown(shownPath);
+    const rows = selected.rows.filter((r) => !shown.has(String(r.id)));
+    if (rows.length === 0) return;
+    markErrorRecallShown(
+      shownPath,
+      shown,
+      rows.map((r) => r.id),
+    );
 
     const out = formatErrorRecallHints(rows);
     if (out) {
@@ -1133,6 +1215,7 @@ async function handlePostToolFailure() {
     // name on the envelope differs. A second copy of the query here is the twin-drift
     // defect this project keeps paying for.
     triggerErrorRecall(db, toolInput, error, {
+      thread: threadKey(hookData.session_id, hookData.agent_id),
       eventName: 'PostToolUseFailure',
       // A separate counter, so the volume this event adds is readable on its own rather
       // than merged into the existing surface's total. The citation funnel deliberately
@@ -1305,6 +1388,8 @@ function markSessionCompletedAndSaveHandoff(
   // user_prompts and the handoff row is silently skipped (see hook-handoff.mjs).
   try {
     buildAndSaveHandoff(db, sessionId, project, 'exit', episodeSnapshot, ccSessionId || sessionId);
+    // So a session opened beside this one does not resume this live session's handoff (F5).
+    recordHandoffWriter(ccSessionId || sessionId);
   } catch (e) {
     debugCatch(e, 'handleStop-handoff');
   }
@@ -1813,6 +1898,13 @@ async function handleStop() {
       // turn; run before them, it parsed the parent a second time in any session with subagents.
       trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptPath });
       writeFastSummaryBaseline(db, { sessionId, project, transcriptPath });
+    } catch (e) {
+      // Another process held the write lock past HOOK_DB_DEADLINE_MS: this turn's handoff,
+      // citations and baseline are lost either way. The summary worker below does not run under
+      // the host's timeout and waits for the lock itself, so it is still spawned (pre-tag review
+      // 2026-10-16: the throw skipped it).
+      if (!isDbBusyError(e)) throw e;
+      debugLog('WARN', 'stop', 'database locked by another process; this turn was not recorded');
     } finally {
       db.close();
     }
@@ -1894,8 +1986,9 @@ function gcStalePreRecallCooldowns() {
         name.startsWith('.qwen-mem-injected-') ||
         name.startsWith('.qwen-mem-keyctx-') ||
         name.startsWith('.claude-mem-injected-') ||
-        name.startsWith('.claude-mem-keyctx-') || // D#123 Key Context marker
-        name.startsWith(BUGFIX_NUDGE_MARKER_PREFIX); // §9-B once-per-session nudge claim
+        name.startsWith('.claude-mem-keyctx-') || // D#123 Key Context marker — same per-session growth, same 24h GC
+        name.startsWith(BUGFIX_NUDGE_MARKER_PREFIX) || // §9-B once-per-session nudge claim — same shape
+        name.startsWith(RECALL_SHOWN_PREFIX); // injection budget C1/C3 per-thread marker — same shape
       if (!isCooldown && !isInjectedMarker) continue;
       try {
         const p = join(RUNTIME_DIR, name);
@@ -1960,8 +2053,10 @@ function runSessionStartDbMutations(db, { sessionId, project, prevSessionId, now
 // whole-DB work that should happen once a day in total.
 function markCompressibleGateFile(project) {
   // Project names arrive already mangled by inferProject (`projects--mem`), but this is
-  // a filename, so do not trust that - one stray separator writes outside RUNTIME_DIR.
-  return join(RUNTIME_DIR, `last-mark-compressible-${String(project).replace(/[^A-Za-z0-9._-]/g, '-')}.json`);
+  // a filename, so do not trust that — one stray separator writes outside RUNTIME_DIR.
+  // projectFileKey: an id outside ASCII is made unique with a hash, or two such projects shared
+  // one 24 h gate and one's marking suppressed the other's (lib/cite-recall-path.mjs).
+  return join(RUNTIME_DIR, `last-mark-compressible-${projectFileKey(project)}.json`);
 }
 
 function markAutoCompressibleIfDue(db, project) {
@@ -2253,6 +2348,19 @@ function runSessionStartAutoMaintain(db, project) {
         debugCatch(e, 'auto-maintain-handoff-gc');
       }
 
+      // The CJK index terms an older build still writing this store left out (D#413).
+      try {
+        const { appended } = recheckObservationIndexTerms(db);
+        if (appended > 0)
+          debugLog(
+            'DEBUG',
+            'auto-maintain',
+            `appended index terms to ${appended} observations an older build wrote`,
+          );
+      } catch (e) {
+        debugCatch(e, 'auto-maintain-recheck-index-terms');
+      }
+
       // Planner statistics, the "once a day" half of SQLite's recommendation (#41). Last, so
       // the purge/dedup above have already moved the row counts it compares. Never throws.
       refreshPlannerStats(db);
@@ -2372,6 +2480,7 @@ function saveHandoffAndFastSummary(
         episodeSnapshot,
         handoffScopeId,
       );
+      recordHandoffWriter(handoffScopeId);
     } catch (e) {
       debugCatch(e, 'session-start-handoff');
     }
@@ -2460,9 +2569,9 @@ function saveHandoffAndFastSummary(
  * pid falls back to STALE_LOCK_MS, as before.
  *
  * Liveness of the two real lock families does not depend on this sweeper, so tightening it
- * cannot wedge either: hook-episode.acquireLock() preempts a >30s episode lock itself at
- * acquire time, and proc-lock.acquireLock() steals on a dead pid at once and on age only past
- * LIVE_HOLDER_MAX_MS (D#294), the same bound as ABANDONED_LOCK_MS here.
+ * cannot wedge either: hook-episode.acquireLock() and proc-lock.acquireLock() both steal on a
+ * dead pid at once and on age only past this same bound (ABANDONED_LOCK_MS, LIVE_HOLDER_MAX_MS:
+ * D#294; the episode lock took a live holder's at 30 s until D#398).
  */
 function cleanStaleLockFiles() {
   try {
@@ -2539,8 +2648,8 @@ function buildFallbackFastSummary(db, { project, now, prevSessionId }) {
   }
 }
 
-async function buildStartupDashboardText(db, project) {
-  // T10c: Startup dashboard - aggregate git/tasks/plans/handoff/events into text.
+async function buildStartupDashboardText(db, project, { skipHandoff = false } = {}) {
+  // T10c: Startup dashboard — aggregate git/tasks/plans/handoff/events into text.
   //
   // Returns the text rather than writing it: SessionStart has three would-be
   // stdout contributors (this, the <qwen-mem-context> block, the update
@@ -2555,7 +2664,15 @@ async function buildStartupDashboardText(db, project) {
     // process.cwd(): otherwise the dashboard renders directory A's git state and task list
     // under directory B's project name whenever the hook process was not spawned at the
     // project root. See inferProjectDir()'s docblock for the case this closed.
-    let dashboardText = buildDashboard({ db, project, projectPath: inferProjectDir() });
+    // The continuation pointer promises a resumable handoff, so it skips the ones the prompt-time
+    // injection will not resume: those written by another Claude Code process still running (F5).
+    let dashboardText = buildDashboard({
+      db,
+      project,
+      projectPath: inferProjectDir(),
+      skipHandoff,
+      excludeHandoffIds: liveOtherHostHandoffIds(project),
+    });
     const citeNudge = buildCiteRecallNudge(project);
     if (citeNudge) {
       dashboardText = dashboardText ? `${citeNudge}\n${dashboardText}` : citeNudge;
@@ -2674,11 +2791,14 @@ async function emitDbUnusableNotice() {
     const mod = await import('./lib/db-unusable.mjs');
     // TWO DIFFERENT STRINGS, unlike the skew twin, and the asymmetry is the point: the
     // human channel carries the repair command, the model channel carries only the fact.
-    // See formatDbUnusableModelNotice - this family's remedy overwrites the database.
+    // See formatDbUnusableModelNotice — this family's remedy moves the database file aside.
     queueHookSystemMessage(
-      mod.formatDbUnusableNotice({ dbPath: DB_PATH, remedy: mod.dbUnusableRemedy(DB_PATH) }),
+      mod.formatDbUnusableNotice({
+        dbPath: DB_PATH,
+        remedy: mod.dbUnusableRemedy(DB_PATH, lastDbUnusableError()),
+      }),
     );
-    queueHookContext('SessionStart', mod.formatDbUnusableModelNotice());
+    queueHookContext('SessionStart', mod.formatDbUnusableModelNotice(DB_PATH));
   } catch (e) {
     // A hook must never crash the host session, and a notice that cannot render is better
     // handled by staying quiet than by taking SessionStart down with it.
@@ -2731,8 +2851,8 @@ function offerAdoptOnce(project) {
     writeFileSync(marker, new Date().toISOString(), { mode: 0o600 });
     queueHookSystemMessage(
       'qwen-mem-lite: memory guidance for this project is injected at session start, and nothing is written to your repository. ' +
-        'Run /adopt (or `qwen-mem-lite adopt`) to put it in CLAUDE.md instead - the agent then saves lessons after fixes more reliably. ' +
-        'Shown once per project; `qwen-mem-lite adopt --disable` turns the guidance off for this project.',
+        `Run /adopt (or \`${CLI_INVOKE} adopt\`) to put it in CLAUDE.md instead — the agent then saves lessons after fixes more reliably. ` +
+        `Shown once per project; \`${CLI_INVOKE} adopt --disable\` turns the guidance off for this project.`,
     );
   } catch (e) {
     debugCatch(e, 'session-start-adopt-offer');
@@ -2752,7 +2872,7 @@ function noteLocalSteeringOnce(project) {
     writeFileSync(marker, new Date().toISOString(), { mode: 0o600 });
     queueHookSystemMessage(
       'qwen-mem-lite: memory guidance for this project is in CLAUDE.local.md at the repository root. Git ignores it (it is added to .git/info/exclude unless your ignore rules already cover it), so it is not committed, but npm pack and other packagers do not read .git/info/exclude. ' +
-        'Delete it or run `qwen-mem-lite unadopt` and it is not written again; `qwen-mem-lite adopt --disable` turns the guidance off for this project. Shown once per project.',
+        `Delete it or run \`${CLI_INVOKE} unadopt\` and it is not written again; \`${CLI_INVOKE} adopt --disable\` turns the guidance off for this project. Shown once per project.`,
     );
   } catch (e) {
     debugCatch(e, 'session-start-local-note');
@@ -2771,7 +2891,7 @@ function noteRulesSteeringOnce(project) {
     writeFileSync(marker, new Date().toISOString(), { mode: 0o600 });
     queueHookSystemMessage(
       'qwen-mem-lite: memory guidance for this project is in .claude/rules/qwen-mem-lite.md at the repository root, not in CLAUDE.local.md: Claude Code stops reading your AGENTS.md once a CLAUDE.local.md exists, and a rules file leaves it loading. Git ignores it (it is listed in .git/info/exclude), so it is not committed, but npm pack and other packagers do not read .git/info/exclude. ' +
-        'Delete it or run `qwen-mem-lite unadopt` and it is not written again; `qwen-mem-lite adopt --disable` turns the guidance off for this project. Shown once per project.',
+        `Delete it or run \`${CLI_INVOKE} unadopt\` and it is not written again; \`${CLI_INVOKE} adopt --disable\` turns the guidance off for this project. Shown once per project.`,
     );
   } catch (e) {
     debugCatch(e, 'session-start-rules-note');
@@ -2816,7 +2936,7 @@ async function noteAgentsMdOnce(project, { detail, agentsMd, adoptImports, setti
         );
       else if (detail === 'removed')
         parts.push(
-          `With QWEN_MEM_RULES_STEERING=1 and then \`qwen-mem-lite adopt --enable\` it goes to ${RULES_MD}, which leaves AGENTS.md loading (a local file you or unadopt removed is not written back until then).`,
+          `With QWEN_MEM_RULES_STEERING=1 and then \`${CLI_INVOKE} adopt --enable\` it goes to ${RULES_MD}, which leaves AGENTS.md loading (a local file you or unadopt removed is not written back until then).`,
         );
     }
     if (settingGivesFile)
@@ -2846,12 +2966,12 @@ function noteAgentsImportOnce(project, { imported, elsewhere }) {
     if (imported.length > 0)
       parts.push(
         `added ${imported.map((p) => `@${p}`).join(' and ')} at the top of this project's CLAUDE.md, which holds only the qwen-mem-lite block: Claude Code stops reading AGENTS.md once a CLAUDE.md exists, so it was not being loaded. It loads from the next session. ` +
-          'If CLAUDE.md is committed, commit the change too; to drop CLAUDE.md instead, run `qwen-mem-lite unadopt` (the guidance then goes to a git-ignored local file from the next session, or is injected where none can be written).',
+          `If CLAUDE.md is committed, commit the change too; to drop CLAUDE.md instead, run \`${CLI_INVOKE} unadopt\` (the guidance then goes to a git-ignored local file from the next session, or is injected where none can be written).`,
       );
     if (elsewhere.length > 0) {
       const them = elsewhere.length > 1 ? 'them' : 'it';
       parts.push(
-        `Claude Code does not read ${elsewhere.join(', ')} while this project's CLAUDE.md exists, and an import cannot keep ${them} loading: set Project instructions to claude-md-and-agents-md in /config, or run \`qwen-mem-lite unadopt\`.`,
+        `Claude Code does not read ${elsewhere.join(', ')} while this project's CLAUDE.md exists, and an import cannot keep ${them} loading: set Project instructions to claude-md-and-agents-md in /config, or run \`${CLI_INVOKE} unadopt\`.`,
       );
     }
     queueHookSystemMessage(`qwen-mem-lite: ${parts.join(' ')} Shown once per project.`);
@@ -2895,9 +3015,9 @@ function rekeyProjectOnce(db, project) {
         ? ''
         : left === 1
           ? " 1 other stays under the old id (another directory's, or nothing shows whose); " +
-            `list it with \`qwen-mem-lite recent 50 --project ${legacy}\`.`
+            `list it with \`${CLI_INVOKE} recent 50 --project=${legacy}\`.`
           : ` ${left} others stay under the old id (another directory's, or nothing shows whose); ` +
-            `list them with \`qwen-mem-lite recent 50 --project ${legacy}\`.`;
+            `list them with \`${CLI_INVOKE} recent 50 --project=${legacy}\`.`;
     queueHookSystemMessage(
       `qwen-mem-lite: this project's memory now has its own id, ${project}. Its old id, ${legacy}, ` +
         'could be shared with other directories whose names are not plain ASCII. ' +
@@ -3126,6 +3246,37 @@ async function handleSessionStart() {
   } catch {
     /* stdin unavailable - legacy behavior */
   }
+  // Injection budget C1/C3 (lib/recall-shown.mjs): the recall header and full directive are
+  // shown once per thread because the thread still holds the first copy. Compaction is when it
+  // stops holding it, so the main thread starts over; so does any fresh context (startup, or a
+  // /clear, which also rotates the session id). `resume` keeps the marker, on the ASSUMPTION that
+  // a resumed transcript still carries the earlier copies — not verified (pre-ship delta review);
+  // hooks/hooks.json does not even match `resume`, so this branch only sees it from a direct
+  // call. Clearing errs safe: the worst case is one more header.
+  if (ccSessionId && startSource !== 'resume') clearRecallShown(RUNTIME_DIR, ccSessionId);
+  // Same reason, per file: the session id survives compaction, so the cooldown would keep every
+  // pre-compact file "already recalled" and its lesson was never shown again (lib/recall-shown.mjs).
+  // The two cross-hook "already shown" markers describe the pre-compact context too; left in
+  // place, they filtered the re-recalled lesson out of the very block the compaction made
+  // necessary. This SessionStart writes its own Key Context marker again further down.
+  if (ccSessionId && startSource === 'compact') {
+    markCooldownCompacted(RUNTIME_DIR, ccSessionId);
+    // inferProject(), not `project`: that const is declared further down this function, and
+    // reading it here is a TDZ ReferenceError that eslint's no-undef cannot see.
+    const proj = inferProject();
+    const errShown = basename(errorRecallShownPath(RUNTIME_DIR, ccSessionId));
+    for (const name of [
+      injectedIdsFileName(proj, ccSessionId),
+      keyContextIdsFileName(proj, ccSessionId),
+      errShown,
+    ]) {
+      try {
+        unlinkSync(join(RUNTIME_DIR, name));
+      } catch {
+        /* absent is fine */
+      }
+    }
+  }
 
   // Snapshot episode BEFORE flush for handoff extraction
   const episodeSnapshot = readEpisodeRaw();
@@ -3146,6 +3297,16 @@ async function handleSessionStart() {
       adoptOrphanEpisodes(ccSessionId);
     } finally {
       releaseLock();
+    }
+  }
+  // An episode whose llm-episode worker was killed (reboot, OOM, kill -9) is still in its flush
+  // file; hand the ones no live worker can own to a new worker (E2E 2026-10-16 P2-3). Gated like
+  // the spawn in flushEpisode, which never writes a flush file for a worker under this flag.
+  if (!process.env.QWEN_MEM_SKIP_EPISODE_LLM) {
+    try {
+      recoverOrphanEpisodeFlushes();
+    } catch (e) {
+      debugCatch(e, 'session-start-flush-recovery');
     }
   }
 
@@ -3176,8 +3337,10 @@ async function handleSessionStart() {
     } catch {} // No session file = fresh startup, nothing to recover
   }
 
-  // Tier 1 A: Create unique session ID
-  const sessionId = createSessionId();
+  // Tier 1 A: Create unique session ID. A /clear or /compact is the same host process, so its
+  // record of the handoffs it wrote carries over; a startup is a new process whose pid may be a
+  // dead one's, and must not inherit that process's record (F5).
+  const sessionId = createSessionId({ keepHandoffIds: startSource !== 'startup' });
   const project = inferProject();
 
   const db = openDb();
@@ -3203,7 +3366,18 @@ async function handleSessionStart() {
 
     rekeyProjectOnce(db, project);
 
-    runSessionStartDbMutations(db, { sessionId, project, prevSessionId, now });
+    try {
+      runSessionStartDbMutations(db, { sessionId, project, prevSessionId, now });
+    } catch (e) {
+      // Another process holds the write lock past DB_BUSY_TIMEOUT_MS (a long maintain vacuum,
+      // fts-check rebuild, import or restore). This used to end the handler with no context at all
+      // (D#381). The session row is lost either way, and the first prompt inserts it; the context
+      // below reads the store and does not need it. Stop waiting for this lock, so each
+      // best-effort write that follows fails at once instead of waiting 5 s again.
+      if (!isDbBusyError(e)) throw e;
+      debugLog('WARN', 'session-start', 'database locked by another process; session row not recorded');
+      db.pragma('busy_timeout = 0');
+    }
 
     scheduleSessionStartAutoMaintain(project);
 
@@ -3215,7 +3389,9 @@ async function handleSessionStart() {
 
     buildFallbackFastSummary(db, { project, now, prevSessionId });
 
-    const dashboardText = await buildStartupDashboardText(db, project);
+    const dashboardText = await buildStartupDashboardText(db, project, {
+      skipHandoff: startSource === 'clear' || startSource === 'compact',
+    });
 
     // Build the full context body via shared helper (also used by `mem-cli context`).
     // Queries session_summaries, key observations, clear handoff, and the
@@ -3224,6 +3400,17 @@ async function handleSessionStart() {
     // preventing parallel sessions from seeing each other's /clear handoff.
     const contextCollector = {};
     const fullContext = buildSessionContextLines(db, project, now, ccSessionId, contextCollector);
+    // The Working State block just rendered IS this session's /clear handoff; left unconsumed,
+    // the first prompt's <session-handoff> injection delivered the same state a second time
+    // (E2E 2026-10-16). `context` from the CLI renders it too and must not consume, so this
+    // stays here rather than in the shared builder.
+    if (ccSessionId && fullContext.includes('### Working State')) {
+      try {
+        consumeHandoff(db, { project, type: 'clear', session_id: ccSessionId });
+      } catch (e) {
+        debugCatch(e, 'session-start-consume-clear-handoff');
+      }
+    }
 
     // Stdout is the sole context-delivery channel, and it carries exactly ONE
     // JSON envelope. Everything SessionStart wants to say is collected here and
@@ -3246,7 +3433,9 @@ async function handleSessionStart() {
       const steering = await buildInjectedSteering();
       if (steering) stdoutParts.push(steering);
       if (adoptReason === 'local-agents-md') await noteAgentsMdOnce(project, adoptAgentsInfo ?? {});
-      else offerAdoptOnce(project);
+      // managed-only loads no project CLAUDE.md either, so /adopt would not help (D#219).
+      else if (adoptReason !== 'local-managed-only' && adoptReason !== 'managed-only')
+        offerAdoptOnce(project);
     } else if (adoptAction === 'local') {
       // Claude Code read CLAUDE.local.md before this hook ran, so the session that CREATES it
       // does not load it (release-tree sandbox: first sessions had no steering, 0/4). Inject
@@ -3489,10 +3678,14 @@ function injectHandoffIfEarly(db, { project, promptText, promptNumber, ccSession
     : promptNumber;
   if (windowPos <= 3) {
     try {
-      if (detectContinuationIntent(db, promptText, project, ccSessionId)) {
-        const picked = pickHandoffToInject(db, project, ccSessionId);
+      // A handoff whose writer is another Claude Code process still running belongs to that
+      // open session, not to a previous one. Concurrent sessions in one repo share HEAD, so
+      // the commit anchor would otherwise resume it on any short first prompt (E2E 2026-10-16 F5).
+      const liveWriters = liveOtherHostHandoffIds(project);
+      if (detectContinuationIntent(db, promptText, project, ccSessionId, liveWriters)) {
+        const picked = pickHandoffToInject(db, project, ccSessionId, liveWriters);
         if (picked) {
-          const injection = renderHandoffInjection(db, project, ccSessionId);
+          const injection = renderHandoffInjection(db, project, ccSessionId, liveWriters);
           if (injection) writePlainHookText(injection);
           // Consume ONLY the row we just injected - leave other projects' exit
           // handoffs intact so future sessions can still resume from them.
@@ -3793,14 +3986,22 @@ async function handleUserPrompt() {
 
   try {
     const now = new Date();
-    const { promptNumber, ccSessionId } = recordUserPromptRow(db, {
-      sessionId,
-      project,
-      promptText,
-      hookData,
-      now,
-    });
-    injectHandoffIfEarly(db, { project, promptText, promptNumber, ccSessionId });
+    let recorded = null;
+    try {
+      recorded = recordUserPromptRow(db, { sessionId, project, promptText, hookData, now });
+    } catch (e) {
+      // Another process holds the write lock past HOOK_DB_DEADLINE_MS (F9). The prompt row is
+      // lost either way; what is left is the context that does not depend on it. Stop waiting
+      // for this lock, so each best-effort write below fails at once instead of waiting again.
+      if (!isDbBusyError(e)) throw e;
+      debugLog('WARN', 'user-prompt', 'database locked by another process; prompt not recorded');
+      db.pragma('busy_timeout = 0');
+    }
+    const ccSessionId =
+      typeof hookData.session_id === 'string' && hookData.session_id.length > 0 ? hookData.session_id : null;
+    // The handoff phase needs the row: it counts this session's prompts, and an injected handoff
+    // must be stamped consumed or the next prompt injects it again.
+    if (recorded) injectHandoffIfEarly(db, { project, promptText, ...recorded });
     await injectSemanticMemory(db, { project, promptText, ccSessionId });
   } finally {
     db.close();
@@ -3858,6 +4059,7 @@ function handleAutoCompress() {
     const compressCandidates = selectCompressionCandidates(db, {
       cutoff: compressCutoff,
       includeAutoMarked: true,
+      skipExplicitSaves: true,
     });
     if (compressCandidates.length < 3) return;
 

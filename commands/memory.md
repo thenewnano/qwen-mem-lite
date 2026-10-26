@@ -9,12 +9,12 @@ Save important content to your long-term memory database.
 
 ## Commands
 
-- `/mem:memory <content>` — Save the given content directly to memory
-- `/mem:memory` (no args) — Auto-summarize recent session highlights and save key findings
+- `/qwen-mem-lite:memory <content>` — Save the given content directly to memory
+- `/qwen-mem-lite:memory` (no args) — Auto-summarize recent session highlights and save key findings
 
 ## Instructions
 
-When the user invokes `/mem:memory`, determine the intent:
+When the user invokes `/qwen-mem-lite:memory`, determine the intent:
 
 ### With explicit content
 

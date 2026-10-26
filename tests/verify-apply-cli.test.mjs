@@ -13,6 +13,7 @@ import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
 import { initSchema } from '../schema.mjs';
 import { insertSession, insertObs } from './test-helpers.mjs';
+import { CLI_INVOKE } from '../cli-path.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI_PATH = join(REPO, 'cli.mjs');
@@ -77,7 +78,7 @@ const digestOf = (stdout) => (stdout.match(/--digest ([0-9a-f]{16})/) || [])[1];
 
 beforeEach(() => {
   tmpHome = join(tmpdir(), `mem-verify-cli-${randomUUID().slice(0, 8)}`);
-  dataDir = join(tmpHome, '.claude-mem-lite');
+  dataDir = join(tmpHome, '.qwen-mem-lite');
   projectDir = join(tmpHome, 'parent', 'testproj');
   mkdirSync(projectDir, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
@@ -98,7 +99,7 @@ describe('verify-apply CLI', () => {
   it('without a file prints usage and exits 1', () => {
     const r = runCli(['verify-apply']);
     expect(r.exitCode).toBe(1);
-    expect(r.stderr).toMatch(/Usage: qwen-mem-lite verify-apply/);
+    expect(r.stderr).toContain(`Usage: ${CLI_INVOKE} verify-apply`);
   });
 
   it('dry run is the default: prints the plan, exits 0, writes nothing — not even a backup', () => {
@@ -123,7 +124,7 @@ describe('verify-apply CLI', () => {
     // The user approves what they SEE: the new text itself, not a length or a field name.
     expect(r.stdout).toContain('The bug was fixed in abc123.');
     expect(digestOf(r.stdout)).toMatch(/^[0-9a-f]{16}$/);
-    expect(r.stdout).toContain(`--project ${PROJECT} --apply --digest ${digestOf(r.stdout)}`);
+    expect(r.stdout).toContain(`--project=${PROJECT} --apply --digest ${digestOf(r.stdout)}`);
     expect(r.stderr).not.toMatch(/Unknown flag/);
     expect(snapshot()).toBe(before);
     expect(existsSync(backupsDir())).toBe(false);
@@ -339,7 +340,7 @@ describe('verify-apply CLI', () => {
     const a = seed();
     const file = writeProposals([{ id: a, action: 'retire', verdict: 'STALE', evidence: 'x' }]);
     const r = runCli(['verify-apply', file]);
-    expect(r.stdout).toContain(`node ${CLI_PATH} verify-apply ${file} --project ${PROJECT} --apply --digest`);
+    expect(r.stdout).toContain(`node ${CLI_PATH} verify-apply ${file} --project=${PROJECT} --apply --digest`);
   });
 
   it('an undo whose backup cannot be marked still succeeds, warns, and cannot run a second time', () => {

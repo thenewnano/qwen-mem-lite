@@ -8,16 +8,59 @@
 // relative-time formatting — every command imports from here so the CLI stays
 // consistent.
 
-import { neutralizeContextDelimiters, neutralizeSkillDelimiters } from '../format-utils.mjs';
+import { editDistance } from '../lib/edit-distance.mjs';
+import { neutralizeContextDelimiters, neutralizeSkillDelimiters, truncate } from '../format-utils.mjs';
+import { CLI_INVOKE } from '../cli-path.mjs';
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
+
+/**
+ * Flags that take no value: every reader tests them against true / 'true' (or for presence in
+ * argv), so the word after one is a positional. parseArgs read every `--key next` as key=value,
+ * and `save --type bugfix --title X --force 'text'` parsed `force: 'text'` and no content (the
+ * usage error) while the text-first spelling saved; the swallowed word did not even turn the
+ * flag on, so `search --or redis` lost its query and its --or (D#385, same in v6.27.0). An
+ * explicit `--json true` / `--force false` still parses as before.
+ * tests/cli-boolean-flag-parsing.test.mjs derives the boolean readers from the sources and
+ * fails on one missing here.
+ */
+export const BOOLEAN_CLI_FLAGS = new Set([
+  'all',
+  'apply',
+  'benchmark',
+  'confirm',
+  'deep',
+  'disable',
+  'dry-run',
+  'enable',
+  'execute',
+  'force',
+  'help',
+  'include-compressed',
+  'include-noise',
+  'json',
+  'metrics',
+  'no-deep',
+  'or',
+  'print-project',
+  'quality',
+  'rerank',
+  'retry',
+  'run',
+  'run-all',
+  'search-telemetry',
+  'session-audit',
+  'sidechain',
+  'status',
+  'verbose',
+]);
 
 /**
  * Parse argv-style array into { positional, flags }.
  * `--key value` → flags.key = value; `--flag` (no value) → flags.key = true.
  * `-h` → flags.help = true.
  */
-export function parseArgs(argv) {
+export function parseArgs(argv, { track = true } = {}) {
   const positional = [];
   const flags = {};
   // Canonical flag name for a raw `--key`. Two normalizations, both aimed at the
@@ -53,6 +96,13 @@ export function parseArgs(argv) {
   let i = 0;
   while (i < argv.length) {
     const arg = argv[i];
+    // POSIX end of options: everything after a bare `--` is positional, so text that starts
+    // with `--` can be saved (`save -- "--dry-run is ignored by deploy.sh"`). It parsed as an
+    // empty-named flag and the text after it as a flag of its own (E2E 2026-10-16).
+    if (arg === '--') {
+      positional.push(...argv.slice(i + 1));
+      break;
+    }
     if (arg.startsWith('--')) {
       const body = arg.slice(2);
       // `--key=value` (GNU long-option form). Split on the FIRST '=' so values that
@@ -68,7 +118,11 @@ export function parseArgs(argv) {
       }
       const key = body;
       const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith('--') && (!next.startsWith('-') || /^-\d/.test(next))) {
+      // A flag that takes no value leaves the next word alone, except an explicit true/false.
+      const takes = BOOLEAN_CLI_FLAGS.has(canonicalFlag(key))
+        ? next === 'true' || next === 'false'
+        : next !== undefined && !next.startsWith('--') && (!next.startsWith('-') || /^-\d/.test(next));
+      if (takes) {
         setFlag(key, next);
         i += 2;
       } else {
@@ -83,7 +137,9 @@ export function parseArgs(argv) {
       i++;
     }
   }
-  return { positional, flags: trackFlagReads(flags) };
+  // `track: false` for the dispatcher's own peeks (typo hints, the unknown-project note): a read
+  // there is not the command consuming the flag, and recording it hid the inert-flag notice.
+  return { positional, flags: track ? trackFlagReads(flags) : flags };
 }
 
 // ─── Inert selection flags ───────────────────────────────────────────────────
@@ -195,7 +251,7 @@ export function inertFilterFlagNotice(cmd, inert) {
   const verb = inert.length > 1 ? 'were' : 'was';
   return (
     `[mem] ${names} ${verb} ignored — \`${cmd}\` does not filter on ${inert.length > 1 ? 'them' : 'it'}, ` +
-    `so the results above are UNFILTERED. Run "qwen-mem-lite help" for the flags this command reads.`
+    `so the results above are UNFILTERED. Run "${CLI_INVOKE} help" for the flags this command reads.`
   );
 }
 
@@ -269,7 +325,11 @@ export function fail(text) {
 export function rejectBareStringFlags(flags, keys) {
   for (const key of keys) {
     if (flags[key] === true) {
-      fail(`[mem] --${key} requires a value (received a bare flag with no value).`);
+      // A value that itself starts with `-` parses as a flag of its own and lands here; the
+      // `=` form is the way to pass one, and nothing said so (E2E 2026-10-16 round 2).
+      fail(
+        `[mem] --${key} requires a value (received a bare flag with no value). A value that starts with - is written --${key}="…".`,
+      );
       return true;
     }
   }
@@ -436,26 +496,6 @@ export const COMMAND_SCOPED_FLAGS = new Map([
   ['undo', 'verify-apply'],
 ]);
 
-/** Levenshtein distance, early-exit past `max` (cheap enough for a handful of flags). */
-function editDistance(a, b, max = 2) {
-  const m = a.length,
-    n = b.length;
-  if (Math.abs(m - n) > max) return max + 1;
-  let prev = Array.from({ length: n + 1 }, (_, j) => j);
-  for (let i = 1; i <= m; i++) {
-    const cur = [i];
-    let rowMin = i;
-    for (let j = 1; j <= n; j++) {
-      const d = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] !== b[j - 1] ? 1 : 0));
-      cur[j] = d;
-      if (d < rowMin) rowMin = d;
-    }
-    if (rowMin > max) return max + 1; // whole row already past budget → give up
-    prev = cur;
-  }
-  return prev[n];
-}
-
 /**
  * Detect likely-typo flags: names NOT in KNOWN_CLI_FLAGS but within edit distance 2 of
  * a known flag. parseArgs silently drops unknown flags, so `save --improtance 3` used to
@@ -557,11 +597,16 @@ export function obsFieldLabel(field) {
  * 2026-08-14 A4). Say what the rows are and what deletes them — and say nothing about
  * compression, which is a different sentinel with a different lifecycle.
  *
+ * purge_stale deletes only the queued rows older than its retain window (D#450), so the line
+ * also gives the number a purge at the default window deletes now.
+ *
  * @param {number} n stats.pendingPurge
+ * @param {number} due stats.pendingPurgeDue
+ * @param {number} retainDays the default retain window `due` was counted at
  * @returns {string} the full indented line, identical on both surfaces.
  */
-export function formatPendingPurgeLine(n) {
-  return `  Pending purge (idle-marked): ${n} (rows maintenance queued: hidden and still idle 7 days later, or queued by an earlier version — purge_stale deletes them)`;
+export function formatPendingPurgeLine(n, due, retainDays) {
+  return `  Pending purge (idle-marked): ${n} (rows maintenance queued: hidden and still idle 7 days later, or queued by an earlier version — purge_stale deletes those older than its retain window: ${due} at the default ${retainDays} days)`;
 }
 
 /**
@@ -602,4 +647,30 @@ export function formatProbeHints(probe) {
   if (probe.prompt.length > 0) hints.push(`P#${probe.prompt.join(', P#')} (prompt)`);
   if (probe.event?.length > 0) hints.push(`E#${probe.event.join(', E#')} (event)`);
   return hints;
+}
+
+/**
+ * The line under one side of a scan's Needs-review pair (D#461), from reviewRows: type, importance
+ * (update.md keeps the more important row, D#497), project, date, the lesson or that there is none,
+ * and the start of the narrative — enough to tell two rows with near-identical titles apart without
+ * `get`, which counts as an access.
+ * @param {{id: number, type?: string, importance?: number, project?: string, created_at_epoch?: number,
+ *   narrative?: string|null, lesson_learned?: string|null}|undefined} row
+ * @returns {string}
+ */
+export function formatReviewSide(row) {
+  if (!row) return '';
+  const flat = (v, n) =>
+    truncate(
+      String(v ?? '')
+        .replace(/\s+/g, ' ')
+        .trim(),
+      n,
+    );
+  const lesson =
+    row.lesson_learned && row.lesson_learned !== 'none'
+      ? `lesson: ${flat(row.lesson_learned, 100)}`
+      : 'no lesson';
+  const date = row.created_at_epoch ? new Date(row.created_at_epoch).toISOString().slice(0, 10) : '?';
+  return `#${row.id} ${row.type || '?'} · importance ${row.importance ?? '?'} · ${row.project} · ${date} · ${lesson} · ${flat(row.narrative, 120) || '(no narrative)'}`;
 }

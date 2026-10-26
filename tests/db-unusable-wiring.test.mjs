@@ -19,6 +19,7 @@ import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, existsSy
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import Database from 'better-sqlite3';
+import { CLI_INVOKE, shellWord } from '../cli-path.mjs';
 
 const REPO = resolve(import.meta.dirname, '..');
 const fixtures = [];
@@ -45,6 +46,25 @@ function corruptDataDir({ withSnapshot = false } = {}) {
     db.close();
   }
   writeFileSync(dbPath, 'GARBAGE not a sqlite file at all');
+  return dir;
+}
+
+/** A data dir whose database has a sqlite_master row SQLite cannot parse. */
+function damagedSchemaDataDir({ withSnapshot = false } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'dbschema-'));
+  fixtures.push(dir);
+  const dbPath = join(dir, 'qwen-mem-lite.db');
+  if (withSnapshot) {
+    const snap = new Database(`${dbPath}.v1.bak`);
+    snap.exec('CREATE TABLE t (a)');
+    snap.close();
+  }
+  const db = new Database(dbPath);
+  db.exec('CREATE TABLE t (a); CREATE INDEX idx_t_a ON t(a);');
+  db.unsafeMode(true);
+  db.pragma('writable_schema = ON');
+  db.prepare("UPDATE sqlite_master SET sql = 'CREATE INDEX idx_t_a ON t(' WHERE name = 'idx_t_a'").run();
+  db.close();
   return dir;
 }
 
@@ -111,13 +131,14 @@ describe('SessionStart speaks when the database cannot be opened at all', () => 
   });
 
   // …but the two channels do NOT carry the same string here, unlike the schema-skew twin.
-  // That remedy is `git pull` / `plugin update`; this one is
-  // `rm -f …-wal …-shm && cp "<snapshot>" "<db>"`, which OVERWRITES the database. Handing a
-  // ready-to-run irreversible command to an agent holding Bash is not the same act as
-  // printing it for a human, and the restore arm defeats its own "keep the broken file for
-  // inspection" advice if acted on.
+  // That remedy is `git pull` / `plugin update`; this one moves the database file and its log
+  // out from under every session, safe only once every session is closed. Handing it
+  // ready-to-run to an agent holding Bash, from inside one of those sessions, is not the same
+  // act as printing it for a human.
   it('keeps the destructive repair command OUT of the model channel', () => {
-    const dataDir = corruptDataDir({ withSnapshot: true });
+    // No snapshot, so the human channel carries the set-aside command (with one, SessionStart
+    // names no command at all: the case below).
+    const dataDir = corruptDataDir();
     const r = run([join(REPO, 'hook.mjs'), 'session-start'], dataDir);
     const envelope = JSON.parse(
       r.stdout
@@ -126,22 +147,25 @@ describe('SessionStart speaks when the database cannot be opened at all', () => 
         .pop(),
     );
     const model = envelope.hookSpecificOutput.additionalContext;
-    expect(model, 'no shell command reaches the model').not.toMatch(/rm -f|\bcp\b|\bmv\b/);
+    expect(model, 'no shell command reaches the model').not.toMatch(/rm -f|\bcp\b|\bmv\b|test ! -e/);
     expect(model, 'it still learns memory is off').toMatch(/Memory is OFF/);
-    expect(model).toMatch(/qwen-mem-lite doctor/);
+    // With the data directory: the shell the user runs it from may not have QWEN_MEM_DIR.
+    expect(model).toContain(`QWEN_MEM_DIR=${shellWord(dataDir)} ${CLI_INVOKE} doctor`);
     // The premise: the human channel really does carry the command the model must not get.
-    expect(envelope.systemMessage).toMatch(/rm -f/);
-    expect(envelope.systemMessage).toContain('.v1.bak');
+    expect(envelope.systemMessage).toMatch(/test ! -e .* && .*\bmv\b/);
   });
 
-  it('offers the RESTORE remedy when a snapshot exists, not the set-aside one', () => {
-    // The two remedies are not interchangeable: telling a user to move the file aside when a
-    // backup is sitting next to it throws away recoverable memories.
+  // D#558: which snapshot restores cleanly is decided by doctor, which copies and opens each
+  // candidate; a session start does not pay for that while the store is broken. So with a
+  // snapshot present it offers no command: in particular not the set-aside one, which would
+  // throw away a backup sitting next to the file.
+  it('with a snapshot present, offers no command and points at doctor', () => {
     const dataDir = corruptDataDir({ withSnapshot: true });
     const r = run([join(REPO, 'hook.mjs'), 'session-start'], dataDir);
-    expect(r.stdout).toMatch(/backup snapshot/i);
-    expect(r.stdout).toContain('.v1.bak');
+    expect(r.stdout).toMatch(/1 backup snapshot\(s\) exist beside the database/);
+    expect(r.stdout).toContain(`QWEN_MEM_DIR=${shellWord(dataDir)} ${CLI_INVOKE} doctor`);
     expect(r.stdout).not.toMatch(/No backup snapshot exists/);
+    expect(r.stdout).not.toMatch(/test ! -e|\bmv\b|\bcp\b/);
   });
 
   it('says nothing on a healthy database', () => {
@@ -152,6 +176,37 @@ describe('SessionStart speaks when the database cannot be opened at all', () => 
     const r = run([join(REPO, 'hook.mjs'), 'session-start'], dir);
     expect(r.stdout).not.toMatch(/Memory is OFF/);
     expect(r.status).toBe(0);
+  });
+});
+
+// Triage 2026-10-20: a damaged schema row took the generic branch — memory off every session,
+// a stack trace per fire, and nothing the user sees.
+describe('SessionStart speaks when the database schema cannot be read', () => {
+  it('says memory is off, on both channels, with no command on either', () => {
+    const dataDir = damagedSchemaDataDir({ withSnapshot: true });
+    const r = run([join(REPO, 'hook.mjs'), 'session-start'], dataDir);
+    // Premise: the open really failed on the schema.
+    expect(hookErrorLines(dataDir).some((e) => /malformed database schema/i.test(e.msg))).toBe(true);
+    const envelope = JSON.parse(
+      r.stdout
+        .split('\n')
+        .filter((l) => l.trim().startsWith('{'))
+        .pop(),
+    );
+    expect(envelope.systemMessage).toMatch(/Memory is OFF/);
+    // D#558: which snapshot restores cleanly is doctor's to say; the notice counts them.
+    expect(envelope.systemMessage).toMatch(/1 backup snapshot\(s\) exist beside the database/);
+    expect(envelope.systemMessage).toContain(`${CLI_INVOKE} doctor`);
+    expect(envelope.systemMessage).not.toMatch(/rm -f|\bcp\b|\bmv\b|test ! -e/);
+    expect(envelope.hookSpecificOutput?.additionalContext).toMatch(/Memory is OFF/);
+    expect(r.status).toBe(0);
+  });
+
+  it('records the failure once across repeated fires', () => {
+    const dataDir = damagedSchemaDataDir();
+    for (let i = 0; i < 3; i++) run([join(REPO, 'hook.mjs'), 'session-start'], dataDir);
+    const lines = hookErrorLines(dataDir).filter((e) => /malformed database schema/i.test(e.msg));
+    expect(lines.length).toBe(1);
   });
 });
 
@@ -176,5 +231,22 @@ describe('an unopenable database is logged once, not once per hook fire', () => 
     const second = hookErrorLines(dataDir).filter((e) => /not a database/i.test(e.msg)).length;
     expect(first).toBe(1);
     expect(second).toBe(2);
+  });
+});
+
+// D#488: every CLI command printed SQLite's sentence and the path, and nothing to do next. The
+// next step names doctor; a remedy that overwrites the database stays doctor's to print, since an
+// agent with Bash runs this CLI too.
+describe('the CLI names the next step for a database it cannot use', () => {
+  it.each([
+    ['not a database', () => corruptDataDir({ withSnapshot: true })],
+    ['a schema SQLite cannot read', () => damagedSchemaDataDir({ withSnapshot: true })],
+  ])('%s', (_name, makeDir) => {
+    const r = run([join(REPO, 'cli.mjs'), 'recent', '3'], makeDir());
+    const out = `${r.stdout}\n${r.stderr}`;
+    expect(r.status, out).toBe(1);
+    expect(out).toMatch(/Cannot open database/);
+    expect(out).toContain(`${CLI_INVOKE} doctor`);
+    expect(out).not.toMatch(/rm -f|\bcp\b|\bmv\b/);
   });
 });

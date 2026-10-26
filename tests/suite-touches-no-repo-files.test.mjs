@@ -17,11 +17,22 @@
 // symptom, while the pair above is the mechanism.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  rmSync,
+  readdirSync,
+  symlinkSync,
+  copyFileSync,
+} from 'fs';
 import { join, dirname } from 'path';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { execFileSync } from 'child_process';
+import { pathWithClaudeStub } from './claude-stub.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const INSTALL_PATH = join(REPO, 'install.mjs');
@@ -68,6 +79,7 @@ function runInstall(home, proj, extraEnv) {
     encoding: 'utf8',
     env: {
       ...process.env,
+      PATH: pathWithClaudeStub(home),
       HOME: home,
       CLAUDE_PROJECT_DIR: proj,
       QWEN_MEM_SKIP_REPOS: '1',
@@ -110,22 +122,80 @@ describe('no test spawns install.mjs without opting out of auto-adopt', () => {
   });
 });
 
+/**
+ * A sandbox stand-in for a git clone of this repo: its own .git with the thenewnano remote (what
+ * dogfoodAutoAdopt detects), its own CLAUDE.md, a real copy of install.mjs (so PROJECT_DIR is the
+ * clone; a symlinked entry point would resolve to this repo) and every other entry symlinked.
+ */
+function seedClone(home) {
+  const clone = join(root, 'qwen-mem-lite');
+  mkdirSync(clone, { recursive: true });
+  for (const name of readdirSync(REPO)) {
+    if (['.git', '.claude', 'CLAUDE.md', 'install.mjs'].includes(name)) continue;
+    symlinkSync(join(REPO, name), join(clone, name));
+  }
+  copyFileSync(INSTALL_PATH, join(clone, 'install.mjs'));
+  writeFileSync(join(clone, 'CLAUDE.md'), '# Sandbox clone\n');
+  execFileSync('git', ['init', '-q', clone]);
+  execFileSync('git', [
+    '-C',
+    clone,
+    'remote',
+    'add',
+    'origin',
+    'https://github.com/thenewnano/qwen-mem-lite.git',
+  ]);
+  mkdirSync(join(home, '.claude'), { recursive: true });
+  return { clone, md: join(clone, 'CLAUDE.md') };
+}
+
+function runInstallFrom(clone, home, extraEnv) {
+  const env = {
+    ...process.env,
+    PATH: pathWithClaudeStub(home),
+    HOME: home,
+    PWD: clone,
+    QWEN_MEM_SKIP_REPOS: '1',
+    ...extraEnv,
+  };
+  delete env.CLAUDE_PROJECT_DIR;
+  return execFileSync(process.execPath, [join(clone, 'install.mjs'), 'install', '--dev'], {
+    encoding: 'utf8',
+    env,
+    cwd: clone,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    timeout: 60000,
+  });
+}
+
+// The dogfood branch adopts the clone it runs from and nothing else (E2E 2026-10-16: every
+// README git-clone install has the thenewnano remote, and from the user's own repo it wrote the
+// block into THEIR committed CLAUDE.md). So the premise runs install from a sandbox clone.
 describe('install never adopts a project the caller did not point it at', () => {
-  it('adopts the sandbox project when nothing opts out — the premise', () => {
-    const { home, proj, md } = seed();
-    runInstall(home, proj, {});
+  it('adopts the clone it runs from when nothing opts out — the premise', () => {
+    const home = join(root, 'home');
+    const { clone, md } = seedClone(home);
+    runInstallFrom(clone, home, {});
     expect(
       readFileSync(md, 'utf8'),
-      'dogfood auto-adopt no longer reaches a project dir; the opt-out case below would pass vacuously',
+      'dogfood auto-adopt no longer reaches the clone; the opt-out case below would pass vacuously',
     ).toContain('qwen-mem-lite:begin');
   });
 
-  it('MEM_NO_AUTO_ADOPT=1 leaves the sandbox project byte-identical', () => {
+  it('MEM_NO_AUTO_ADOPT=1 leaves the clone byte-identical', () => {
+    const home = join(root, 'home');
+    const { clone, md } = seedClone(home);
+    const before = readFileSync(md, 'utf8');
+    runInstallFrom(clone, home, { MEM_NO_AUTO_ADOPT: '1' });
+    expect(readFileSync(md, 'utf8'), 'install ignored the global auto-adopt opt-out').toBe(before);
+    expect(existsSync(join(clone, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(false);
+  });
+
+  it('run from another project, it leaves that project byte-identical', () => {
     const { home, proj, md } = seed();
     const before = readFileSync(md, 'utf8');
-    runInstall(home, proj, { MEM_NO_AUTO_ADOPT: '1' });
-    expect(readFileSync(md, 'utf8'), 'install ignored the global auto-adopt opt-out').toBe(before);
-    expect(existsSync(join(proj, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(false);
+    runInstall(home, proj, {});
+    expect(readFileSync(md, 'utf8'), 'install adopted the directory it was run from').toBe(before);
   });
 
   it('leaves this repository CLAUDE.md and .claude sidecar byte-identical across an install', () => {

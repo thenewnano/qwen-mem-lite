@@ -251,6 +251,31 @@ describe('saveObservation supersedes', () => {
     ).toBeNull();
   });
 
+  // The one-step form of the correction flow: save, notice it is wrong, save the fix with
+  // supersedes=[that id] inside five minutes. A correction is textually close to what it
+  // corrects, so the dedup window matched the very row being retired, skipped the save and
+  // left the wrong memory live (E2E 2026-10-16, MCP P1-2).
+  it('a correction is not deduped against a row it names in supersedes', () => {
+    const wrong = saveObservation(db, {
+      content: 'The flaky upload test fails because the S3 mock returns 503 on the first multipart part',
+      title: 'Flaky upload cause',
+      type: 'bugfix',
+      project: 'test',
+    });
+    expect(wrong.kind).toBe('saved');
+    const fix = saveObservation(db, {
+      content: 'The flaky upload test fails because the S3 mock returns 500 on the second multipart part',
+      title: 'Flaky upload cause (corrected)',
+      type: 'bugfix',
+      project: 'test',
+      supersedes: [wrong.id],
+    });
+    expect(fix.kind).toBe('saved');
+    expect(fix.supersededIds).toEqual([wrong.id]);
+    const row = db.prepare('SELECT superseded_by FROM observations WHERE id = ?').get(wrong.id);
+    expect(row.superseded_by).toBe(fix.id);
+  });
+
   // CLASS-LEVEL SWEEP. `supersedeSkipped` is only worth anything if a face
   // actually renders it, and both faces have TWO return paths that need it —
   // the saved path and the dedup short-circuit, which returns before the saved
@@ -356,6 +381,23 @@ describe('saveObservation supersedes', () => {
       expect(msg).toContain('E#0 (not a positive integer id)');
       expect(msg, 'no doubled prefix, in either direction').not.toMatch(/#E#0|E#E#0/);
       expect(msg, 'a non-id token is quoted back as-is').toContain('abc (not a positive integer id)');
+    });
+
+    // E2E 2026-10-16 round 2 (data N3): `#N` is how every listing prints an observation id, and
+    // get / timeline / delete take it; supersedes reported it malformed and left the row live.
+    // Round 3 (data NEW-3): Number() reads JavaScript number literals, so `1e1` retired #10,
+    // `0x4` #4, `5.` #5 and `+3` #3 with no warning; the MCP schema refuses all four.
+    it('a JavaScript number literal is malformed, not an id', () => {
+      const r = splitSupersedeTokens(['1e1', '0x4', '5.', '+3', ' 07 ']);
+      expect(r.obs).toEqual([7]);
+      expect(r.malformed.map((m) => m.id)).toEqual(['1e1', '0x4', '5.', '+3']);
+    });
+
+    it('#N names an observation, as listings print it', () => {
+      const r = splitSupersedeTokens(['#7', ' #8 ', '#', '##9', '#E9']);
+      expect(r.obs).toEqual([7, 8]);
+      expect(r.events).toEqual([]);
+      expect(r.malformed.map((m) => m.id)).toEqual(['#', '##9', '#E9']);
     });
 
     it('a bare number is never routed to events, and E# is never routed to observations', () => {
@@ -544,5 +586,62 @@ describe('near-duplicate guard: force', () => {
     expect(() => saveObservation(db, { content: '   ', project: 'p', force: true })).toThrow(
       /empty or whitespace-only/,
     );
+  });
+});
+
+// E2E 2026-10-16 (MCP P2-15): a whitespace-only title is truthy, so it was stored as the
+// title and every listing showed a blank line where the memory's name should be.
+describe('saveObservation blank title', () => {
+  it('a whitespace-only title is treated as absent and derived from the content', () => {
+    const db = createTestDb();
+    try {
+      const r = saveObservation(db, {
+        content: 'Blank title content about otters and rivers',
+        title: '   ',
+        project: 'test',
+      });
+      expect(r.kind).toBe('saved');
+      const row = db.prepare('SELECT title FROM observations WHERE id = ?').get(r.id);
+      expect(row.title).toBe('Blank title content about otters and rivers');
+    } finally {
+      db.close();
+    }
+  });
+
+  // Round 2 (data nit): trim() keeps zero-width characters, so a title of U+200B alone was
+  // stored as an invisible title.
+  it('a title of zero-width characters only is treated as absent', () => {
+    const db = createTestDb();
+    try {
+      const r = saveObservation(db, {
+        content: 'Zero width title content about herons',
+        title: '\u200b\u200d\ufeff',
+        project: 'test',
+      });
+      const row = db.prepare('SELECT title FROM observations WHERE id = ?').get(r.id);
+      expect(row.title).toBe('Zero width title content about herons');
+    } finally {
+      db.close();
+    }
+  });
+});
+
+// E2E 2026-10-16 (MCP P2-5): for CJK text the stored `text` column carries appended bigrams,
+// so the content arm compared the new raw content against a much longer token set and an
+// IDENTICAL CJK save under a different title was stored twice.
+describe('saveObservation dedups identical CJK content', () => {
+  it('a second save of the same CJK content is a duplicate', () => {
+    const db = createTestDb();
+    try {
+      const content =
+        '登录页面在会话过期后丢失刷新令牌，原因是中间件缓存了旧的令牌，修复方法是过期后重新读取';
+      const first = saveObservation(db, { content, title: '刷新令牌丢失', project: 'test' });
+      expect(first.kind).toBe('saved');
+      const second = saveObservation(db, { content, title: '会话过期问题', project: 'test' });
+      expect(second.kind).toBe('duplicate');
+      expect(second.existingId).toBe(first.id);
+    } finally {
+      db.close();
+    }
   });
 });
