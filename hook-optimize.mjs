@@ -1063,24 +1063,11 @@ export async function executeNormalize(db, force = false, { project } = {}) {
   // was simply still using the legacy unscoped mode.
   if (!project) {
     if (String(process.env.QWEN_MEM_NORMALIZE_CROSS_PROJECT || '') === '1') {
-      // This reaches a caller that OWNS ITS STDERR, and that bound is the whole story of
-      // the line. Three callers reach here: the CLI (`optimize --run --task normalize`,
-      // the user's own terminal), the MCP server (`mem_optimize`, server.mjs:1545 — its
-      // stderr is the host's MCP log, so this does land somewhere a human can reach), and
-      // the daily unattended pass, which is the one that cannot.
-      // Second review moved it off `debugLog` (which returns early unless
-      // QWEN_MEM_DEBUG is set, and the detached worker does not set it) and the test
-      // certifying the repair spied on `console.error` IN PROCESS — which proves the
-      // function emits, not that anyone receives. Nobody does, on the path that matters:
-      // `hook.mjs` reaches this via `spawnBackground('llm-optimize')`, and hook-shared.mjs
-      // spawns with `stdio: 'ignore'`, so the child's fd 2 IS /dev/null. Dropping the
-      // QWEN_MEM_DEBUG gate removed one of two blockers and the remaining one is
-      // sufficient on its own.
-      // So: useful for `qwen-mem-lite optimize --run --task normalize`, silent for the
-      // daily unattended pass. The unattended disclosure is carried by `doctor`, which the
-      // user runs in their own terminal — same shape and prefix as install.mjs's
-      // QWEN_MEM_SKIP_SIG_VERIFY notice. Do not delete either half; they cover different
-      // paths, and tests/normalize-cross-project-disclosure.test.mjs pins both.
+      // console.error, not debugLog (which returns early unless QWEN_MEM_DEBUG is set). Two
+      // callers reach here: the CLI (`optimize --run --task normalize`, the user's own
+      // terminal) and the MCP server (`mem_optimize`, whose stderr is the host's MCP log). The
+      // daily pass does not since D20 (2026-11-11). `doctor` repeats the disclosure where the
+      // user looks; tests/normalize-cross-project-disclosure.test.mjs pins both halves.
       console.error(
         '[qwen-mem-lite] WARNING: QWEN_MEM_NORMALIZE_CROSS_PROJECT=1 — normalize is ' +
           'running over every project at once, so one project’s stored content can steer the ' +
@@ -2091,6 +2078,12 @@ export async function optimizeRun(
   return results;
 }
 
+/** What the daily unattended pass runs (D20: no normalize). Exported for its test. */
+export const DAILY_OPTIMIZE = Object.freeze({
+  reenrichScope: 'wide',
+  tasks: Object.freeze(['re-enrich', 'cluster-merge', 'smart-compress']),
+});
+
 export async function handleLLMOptimize() {
   const { ensureDb } = await import('./schema.mjs');
   let db;
@@ -2108,10 +2101,18 @@ export async function handleLLMOptimize() {
     // targets bugfix/refactor/feature/decision rows with substantive narrative
     // but missing lesson_learned, which is exactly the audit's 11.2% coverage
     // gap. CLI `mem optimize` keeps narrow as default for explicit invocations.
-    const results = await optimizeRun(db, { reenrichScope: 'wide' });
+    //
+    // No normalize here (D20, 2026-11-11). It rewrites observations.concepts with whatever
+    // synonym groups the model returns, and one real call on a copy of the maintainer's store
+    // returned 21 groups, about half of them not synonyms (`fmtDate <- date`,
+    // `CLAUDE.md <- CLAUDE.local.md`); nothing recorded the rewrite and nothing undoes it. The
+    // groups it gets right are mostly case and plural variants, which search already covers:
+    // the FTS tokenizer folds case, wordFormPrefixQuery adds the stem prefix, and the original
+    // word stays in search_aliases. An explicit `optimize --run --task normalize` still runs it.
+    // The three tasks keep the budgets they had: distributeBudget's normalize share is nominal.
+    const results = await optimizeRun(db, { ...DAILY_OPTIMIZE, tasks: [...DAILY_OPTIMIZE.tasks] });
     const parts = [];
     if (results.reenrich?.processed) parts.push(`re-enriched: ${results.reenrich.processed}`);
-    if (results.normalize?.processed) parts.push(`normalized: ${results.normalize.processed}`);
     if (results.clusterMerge?.merged) parts.push(`merged: ${results.clusterMerge.merged}`);
     if (results.smartCompress?.compressed) parts.push(`compressed: ${results.smartCompress.compressed}`);
     if (parts.length > 0) debugLog('DEBUG', 'llm-optimize', parts.join(', '));

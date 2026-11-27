@@ -28,6 +28,79 @@ const CHAIN = Array.from({ length: 40 }, (_, i) => (i % 2 ? 'secret: abcdefgh' :
   ' ',
 );
 
+const PROSE = 'the quick brown fox jumps over a lazy dog '.repeat(Math.ceil(N / 42));
+const thenProse = (body) => body + 'x\n' + PROSE.slice(0, N - body.length - 2);
+
+// D#607 F1: a BEGIN under `left`, `headers` lines `<header>-----BEGIN RSA PRIVATE KEY-----`, a run of
+// `line` to N / `share`, then prose; a prefix given as a function gets the line's number (Read
+// columns, grep). One reading of a long blank run is the released reader's own cost (6.30.8, one
+// BEGIN over 200k chars of `-` lines: 2.6x benign, 18x under coverage), so the run is sized for that
+// one reading to fit the budget and for one reading per header BEGIN not to.
+const headerBegins = (left, header, line, headers = 16, share = 4) => {
+  const at = (p, n) => (typeof p === 'function' ? p(n) : p);
+  let n = 1;
+  let head = `${at(left, n++)}-----BEGIN RSA PRIVATE KEY-----\n`;
+  for (let h = 0; h < headers; h++) head += `${at(header, n++)}-----BEGIN RSA PRIVATE KEY-----\n`;
+  const run = [];
+  for (let len = head.length; len < N / share;) {
+    const l = at(line, n++);
+    run.push(l);
+    len += l.length;
+  }
+  return thenProse(head + run.join(''));
+};
+const col = (n) => String(n).padStart(6);
+const LONG_PATH = 'src/very_long/project_path/to_some/deeply_nested/module_dir/sub_pkg/config.py:';
+const CONTEXT_UNIT = " KEY = '''-----BEGIN RSA PRIVATE KEY-----\n-abc: def\n the context line after it\n";
+const ESCAPE_DEPTH_BEGINS = [1, 2, 4, 8]
+  .map((d) => `'-----BEGIN RSA PRIVATE KEY-----${'\\'.repeat(d)}n-a: b${'\\'.repeat(d)}n`)
+  .join('');
+const HEADER_BEGINS_IN_KEY =
+  "+KEY = '''-----BEGIN RSA PRIVATE KEY-----\n" +
+  '+Comment: -----BEGIN RSA PRIVATE KEY-----\n'.repeat(16) +
+  '+MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun\n+QWERTYUIOPasdfg\nprose line\n';
+// D#641: a context BEGIN over a context key line, then a removed short line (the first reading takes the
+// context line, the diff reading reads it again); a rotated key whose removed lines end with a short one
+// (the added lines read on); context header BEGINs over a run of unmarked context key lines with one
+// removed line at its end (each header BEGIN's reading takes the run; only the last spans no BEGIN).
+// The first two in one hunk, under one header (D#649): those readings apply inside a hunk only.
+const HUNK = '\n@@ -1,99999 +1,99999 @@\n';
+const OPENSSH_UNIT = ` -----BEGIN OPENSSH PRIVATE KEY-----\n ${'b3BlbnNzaC1rZXktdjE'.padEnd(70, 'A')}\n-x\n`;
+const ROTATED_UNIT = ` -----BEGIN RSA PRIVATE KEY-----\n-MIIEowIBAAKCAQEA${'B'.repeat(48)}\n-abc\n+MIIEpAIBAAKCAQEA${'C'.repeat(48)}\n+abc\n`;
+const contextHeadersOverContextKey = () => {
+  let t =
+    " KEY = '''-----BEGIN RSA PRIVATE KEY-----\n" + ' Comment: -----BEGIN RSA PRIVATE KEY-----\n'.repeat(15);
+  const line = ` ${'D'.repeat(64)}\n`;
+  t += line.repeat(Math.floor((N / 4 - t.length) / line.length)) + '-x\n';
+  const prose = 'the quick brown fox jumps over a lazy dog '.repeat(Math.ceil(N / 42));
+  return t + prose.slice(0, N - t.length);
+};
+// D#649: hunks a context BEGIN can be in. Each BEGIN asks for its hunk, read from the header down once
+// per call and depth. Hunks at four escape depths in turn (a hunk's line at one depth runs across the
+// others' text), small hunks one after another, and one large hunk whose lines hold a header's text.
+// Over all of N, under coverage on the dev machine: 9.0x, 6.9x and 5.3-5.7x (v6.30.10 3.9x, 3.5x,
+// 3.6x; D#641's readings alone, every BEGIN taken as in a hunk, 5.7x, 5.3x, 3.9x); plain 3.8x, 3.2x,
+// 2.8x. Sized for CI's margin (D#651), a share of N then prose: 4.3x, 4.6x, 4.3x. A reader made anew for
+// each question reads 68-1,047x, and a hunk read from its header for each, 857x on the large hunk (both
+// past 10x plain too). Finding a line's break natively in a hunk (15x -> 9x on the first, all of N) is
+// measured, not guarded: without it the sized shape reads 6.8x. D#687's literal stage costs the first
+// (escaped) shape and not benign text: 5.61x at 0.4 of N (CI read 10.1x and 10.2x, 2026-11-03), 4.55x at
+// 0.3; a reader made anew for each question 60.8x there, headers read again for each 44.8x.
+const escBreak = (d) => '\\'.repeat(d) + 'n';
+const HUNK_DEPTHS = [1, 2, 4, 8]
+  .map(
+    (d) =>
+      `@@ -1,3 +1,3 @@${escBreak(d)} -----BEGIN RSA PRIVATE KEY-----${escBreak(d)} a: b${escBreak(d)}-x${escBreak(d)}`,
+  )
+  .join('');
+const SMALL_HUNK = '\n@@ -1,3 +1,3 @@\n -----BEGIN RSA PRIVATE KEY-----\n a: b\n-x';
+const HEADER_TEXT_UNIT = ' x = "@@ -1 +1 @@"\n -----BEGIN RSA PRIVATE KEY-----\n a: b\n';
+const share = (unit, s) => thenProse(unit.repeat(Math.floor((N * s) / unit.length)));
+const SPACED_PATH = 'My Keys/conf.py';
+const SPACED_GREP_UNIT =
+  `${SPACED_PATH}:5:KEY = '''-----BEGIN RSA PRIVATE KEY-----\n${SPACED_PATH}-6-abc: def\n` +
+  `${SPACED_PATH}-7-the line after it\n--\n${SPACED_PATH}-12-and the next match context\n`;
+
 describe('scrubSecrets stays linear on crafted input (D#130)', () => {
   const shapes = {
     jsonVendorKey: '"' + 'secret'.repeat(N / 6),
@@ -53,6 +126,25 @@ describe('scrubSecrets stays linear on crafted input (D#130)', () => {
     // The same lines with JSON-escaped breaks (a literal backslash and n).
     pemEscapedBodyNoEnd:
       CHAIN + ' -----BEGIN RSA PRIVATE KEY-----\\n' + 'MIIEabcdefghijklmnop\\n'.repeat(N / 22),
+    // D#168: in escaped text the prefix grammar is looked for past the single quotes before each
+    // BEGIN, at most 256 characters back.
+    pemEscapedLongCodeBeforeBegin:
+      CHAIN +
+      ' ' +
+      JSON.stringify(('x'.repeat(300) + "'-----BEGIN RSA PRIVATE KEY-----\n-abc\n").repeat(N / 337)),
+    // D#614 A3: the walk back to a line's start past single quotes is bounded (LINE_START_SCAN), since
+    // walks at different escape depths cross one run, judging each backslash in it. One BEGIN per depth
+    // 1-8 after a backslash run: 2.4x under coverage at the bound, 27x without it.
+    pemEscapeDepthsAfterBackslashRun:
+      CHAIN + ' ' + '\\'.repeat(N - ESCAPE_DEPTH_BEGINS.length - CHAIN.length - 1) + ESCAPE_DEPTH_BEGINS,
+    // A bare `>` under a quoted code BEGIN (6.19.4 round-2 F3 read it as blank: 168x benign).
+    pemBlankQuoteRun: CHAIN + ' > key = "-----BEGIN RSA PRIVATE KEY-----\n' + '>\n'.repeat(N / 2),
+    // The grammar reading takes every line of the run, then refuses it (no 40+ line, no key start),
+    // on each pass.
+    pemGrammarRunRefused:
+      CHAIN +
+      " -KEY = '''-----BEGIN RSA PRIVATE KEY-----\n" +
+      '-abcdefghijklmnopqrstuvwxyzAB\n'.repeat(N / 30),
     // v6.19.1 delta review P1: a whitespace run inside an RFC 1421 header value, ended by a
     // backslash or a lone CR, backtracked quadratically (48.9 s at 200k).
     pemHeaderSpacesBackslash: '-----BEGIN PGP PRIVATE KEY BLOCK-----\nComment:' + ' '.repeat(N) + '\\x',
@@ -83,12 +175,125 @@ describe('scrubSecrets stays linear on crafted input (D#130)', () => {
       'MIIEabcdefghijklmnop\n'
     ).repeat(N / 532),
     pemBeginChunksOneLine: '-----BEGIN RSA PRIVATE KEY----- ' + 'MIIEabcdefghijklmnop '.repeat(N / 21),
-    // D#160 (open): code or a string opener around the line prefix on every BEGIN line, raw and
-    // escaped. The fix withdrawn from 6.19.4 read these lines twice; a next attempt must fit here.
+    // D#168 (D#160 reopened): code or a string opener around the line prefix on every BEGIN line,
+    // raw and escaped, so each BEGIN is read again with its prefix grammar on each of the 32 passes.
     pemCodeBeforeBegin: CHAIN + ' ' + "-KEY = '''-----BEGIN RSA PRIVATE KEY-----\n-abc def\n".repeat(N / 52),
     pemOpenerBeforeBegin: CHAIN + ' ' + "'+-----BEGIN RSA PRIVATE KEY-----\n+\n".repeat(N / 37),
+    // Sized for CI's margin since D#687 (its literal stage costs escaped text, not benign): under coverage
+    // on the dev machine 6.15x over all of N, 5.05x at 0.75 of it. The scan it was written for
+    // (sharedPrefixLength, D#160) is gone; unbounding the line-start or prefix scans moves it by 2-5%.
     pemEscapedQuotesBeforeBegin:
-      CHAIN + ' ' + JSON.stringify("a'a'a'a'a'a'-----BEGIN RSA PRIVATE KEY-----\n-abc def\n".repeat(N / 55)),
+      CHAIN +
+      ' ' +
+      JSON.stringify(
+        thenProse("a'a'a'a'a'a'-----BEGIN RSA PRIVATE KEY-----\n-abc def\n".repeat((N * 0.75) / 55)),
+      ),
+    // D#614 A1: a BEGIN on a diff context line over a removed line the reading refuses, read again with
+    // a diff mark's shape on each pass (the colon keeps the D#168 skip from applying), raw and escaped.
+    // Under coverage that reading costs what the D#168 one does on `-KEY = '''` (v6.30.9, the same
+    // units: 6.9x benign over a header, 6.3x without); a context line per unit keeps it near the rest.
+    // D#651: units to 0.7 of N, then prose. Over all of N they read 5.5-6.1x on the dev machine under
+    // coverage, where CI's runners read 1.65-1.70x as much (headerBeginsBlankRunEscaped, the same code:
+    // 6.2x there, 10.20x and 10.56x on CI's Node 24); at 0.7, 3.9-4.3x. With each BEGIN asking for
+    // an END from scratch (endFollows' cached positions dropped) they read 10.7-18.4x, plain and under
+    // coverage; at half of N the escaped one read 8.6x plain.
+    pemContextBeforeBegin: CHAIN + '\n' + thenProse(CONTEXT_UNIT.repeat((N * 0.7) / CONTEXT_UNIT.length)),
+    // The escaped one at 0.55 since D#687 (5.98x at 0.7 under coverage, 5.03x at 0.55); with endFollows'
+    // positions found anew for each BEGIN it reads 101.6x there, with each BEGIN's whole left context
+    // read for its grep column 43.1x.
+    pemContextBeforeBeginEscaped:
+      CHAIN + ' ' + JSON.stringify(thenProse(CONTEXT_UNIT.repeat((N * 0.55) / (CONTEXT_UNIT.length + 3)))),
+    // D#614 A2: a grep column after a spaced path on each BEGIN line, read again with its shape.
+    // The escaped one is sized for CI's margin since D#687, whose literal stage costs escaped text and
+    // not the benign one: under coverage on the dev machine 6.34x over all of N, 4.95x at 0.7 of it
+    // (CI read 10.4x and 10.9x over all of N, 2026-11-03); with every BEGIN's whole left context read
+    // for its grep column, 34.0x and 18.8x.
+    pemSpacedGrepBeforeBegin: CHAIN + '\n' + SPACED_GREP_UNIT.repeat(N / SPACED_GREP_UNIT.length),
+    pemSpacedGrepBeforeBeginEscaped:
+      CHAIN +
+      ' ' +
+      JSON.stringify(thenProse(SPACED_GREP_UNIT.repeat((N * 0.7) / (SPACED_GREP_UNIT.length + 5)))),
+    // D#607 F1: 16 header lines that each hold a BEGIN, then a run the reading refuses. Each BEGIN's
+    // grammar reading read the run again (d0766de4 with a 200k-char run: 33x benign raw, 48x escaped,
+    // 186x under coverage); readKeyLines' per-call memos read it once per pass and escape depth. The
+    // numbered ones (r2 P2-1): memos keyed by regex object held one per line number (56af7270, 200k
+    // chars: 21x Read, 25x `N→`, 15x grep under coverage).
+    headerBeginsBlankRun: CHAIN + ' ' + headerBegins('-', '-Comment: ', '-\n'),
+    // D#651: an escaped blank line costs more to read than a raw one, and one reading of a run to N/4
+    // read 6.2x benign on the dev machine under coverage, 10.20x and 10.56x on CI's Node 24. To N/8:
+    // 3.5-3.7x. With the blank-run memo dropped (one reading per header BEGIN), 40x under coverage and
+    // 6.1x plain (84x and 11.3x at N/4), so only the coverage run CI makes catches that.
+    headerBeginsBlankRunEscaped:
+      CHAIN + ' ' + JSON.stringify(headerBegins("-KEY = '''", '-Comment: ', '-\n', 16, 8)),
+    headerBeginsQuoteBlankRun: CHAIN + ' ' + headerBegins('> key = "', '> Comment: ', '> \n'),
+    headerBeginsReadBlankRun:
+      CHAIN +
+      ' ' +
+      headerBegins(
+        (n) => `${col(n)}\tKEY = """`,
+        (n) => `${col(n)}\tComment: `,
+        (n) => `${col(n)}\t\n`,
+      ),
+    headerBeginsReadShortRun:
+      CHAIN +
+      ' ' +
+      headerBegins(
+        (n) => `${col(n)}\tKEY = """`,
+        (n) => `${col(n)}\tComment: `,
+        (n) => `${col(n)}\t${'A'.repeat(20)}\n`,
+      ),
+    headerBeginsArrowBlankRun:
+      CHAIN +
+      ' ' +
+      headerBegins(
+        (n) => `${n}→KEY = """`,
+        (n) => `${n}→Comment: `,
+        (n) => `${n}→\n`,
+      ),
+    headerBeginsGrepBlankRun:
+      CHAIN +
+      ' ' +
+      headerBegins(
+        (n) => `conf.py:${n}:KEY = """`,
+        (n) => `conf.py:${n}:Comment: `,
+        (n) => `conf.py:${n}:\n`,
+      ),
+    // r3 F3: a 79-char path over blank lines leaves ~630 lines a quarter of N, too few to tell
+    // the trees apart; over 20-char base64 lines it does (56af7270 23.9x under coverage).
+    headerBeginsLongPathShortRun:
+      CHAIN +
+      ' ' +
+      headerBegins(LONG_PATH + 'KEY = """', LONG_PATH + 'Comment: ', LONG_PATH + 'A'.repeat(20) + '\n'),
+    // r3 F4: empty lines, read by the blank test before lineCore, the memo's other site.
+    // D#651: to N/4, 5.0-5.3x on the dev machine under coverage (9.1x at CI's ratio to it); to N/8,
+    // 3.1x, and 17.8x with the blank-run memo dropped (35.6x at N/4; plain caught it at neither size).
+    headerBeginsEmptyRun: CHAIN + ' ' + headerBegins('-', '-Comment: ', '\n', 16, 8),
+    headerBeginsShortRun: CHAIN + ' ' + headerBegins('-', '-Comment: ', '-' + 'A'.repeat(20) + '\n'),
+    headerBegins32BlankRun: CHAIN + ' ' + headerBegins('-', '-Comment: ', '-\n', 32),
+    // D#614 A1: header BEGINs on context lines between removed ones, each read with a diff mark's shape
+    // through the same run; the per-call memos of that shape take it once.
+    // D#614 A4: a code BEGIN's re-read key span holding 16 header BEGINs, each read for the union.
+    headerBeginsInReadKeyEscaped:
+      CHAIN + ' ' + JSON.stringify(HEADER_BEGINS_IN_KEY.repeat(N / (HEADER_BEGINS_IN_KEY.length + 22))),
+    headerBeginsContextRun:
+      CHAIN + '\n' + headerBegins(" KEY = '''", (n) => (n % 2 ? ' Comment: ' : '-Comment: '), '-\n'),
+    // D#614 A2: the same through numbered grep columns after a spaced path.
+    headerBeginsSpacedGrepRun:
+      CHAIN +
+      '\n' +
+      headerBegins(
+        (n) => `${SPACED_PATH}:${n}:KEY = """`,
+        (n) => `${SPACED_PATH}-${n}-Comment: `,
+        (n) => `${SPACED_PATH}-${n}-\n`,
+      ),
+    contextKeyThenRemovedShort: CHAIN + HUNK + OPENSSH_UNIT.repeat(Math.floor(N / OPENSSH_UNIT.length)),
+    rotatedKeyShortLast: CHAIN + HUNK + ROTATED_UNIT.repeat(Math.floor(N / ROTATED_UNIT.length)),
+    contextHeadersOverContextKey: CHAIN + '\n' + contextHeadersOverContextKey(),
+    contextHeadersOverContextKeyEscaped: CHAIN + ' ' + JSON.stringify(contextHeadersOverContextKey()),
+    hunkDepthsCycle: CHAIN + ' ' + share(HUNK_DEPTHS, 0.3),
+    manySmallHunks: CHAIN + share(SMALL_HUNK, 0.6),
+    headerTextInHunkLines: CHAIN + '\n@@ -1,99999 +1,99999 @@\n' + share(HEADER_TEXT_UNIT, 0.75),
+    contextHeadersInHunk: CHAIN + '\n@@ -1,99999 +1,99999 @@\n' + contextHeadersOverContextKey(),
     // v6.19.2 pre-tag defect review F1: a quote then a whitespace run after an escaped break; the
     // continuation pattern split the run between two quantifiers (200k: 16-19 s).
     // D#500 (open) was withdrawn from v6.30.1 at its second pre-tag review: a memo of blank-line
@@ -112,6 +317,13 @@ describe('scrubSecrets stays linear on crafted input (D#130)', () => {
       '"-----BEGIN RSA PRIVATE KEY-----\\n" +\n' + '  "MIIEabcdefghijklmnop\\n" +\n'.repeat(N / 28),
     jwtLongHyphenPrefix: 'a-'.repeat(N / 2) + 'eyJ' + 'A'.repeat(20),
     jwtDotChain: ('eyJ' + 'A'.repeat(12) + '.').repeat(N / 16),
+    // Guards for the next attempt at D#679 / D#690 (withdrawn at the v6.30.14 pre-tag review): the
+    // drafts' patterns, with their repeats unbounded, took 13 s (a name-first `_key` pattern), 1.9-2.9 s
+    // (a name checked behind each key segment) and 2.7-3.2 s (a `name` field rescanning the pairs after
+    // it) at 200k on these shapes (2026-11-02).
+    keyNameHyphenRun: 'a-'.repeat(N / 2) + '_key=',
+    keySegmentRun: 'a-key'.repeat(N / 5),
+    nameFieldRun: '{' + '"name":"password",'.repeat(N / 18) + '}',
   };
   // Timed against benign prose of the same length, not a wall-clock bound: a 500 ms bound
   // passed locally (335 ms) and failed on CI under coverage (555 ms). The benign text runs
@@ -122,14 +334,29 @@ describe('scrubSecrets stays linear on crafted input (D#130)', () => {
   // 1,100-1,700x; with the code-label lookaheads removed, chainedWordRun 15.7-16.2x.
   const benign =
     CHAIN + ' ' + 'the quick brown fox jumps over a lazy dog '.repeat(Math.ceil(N / 42)).slice(0, N);
-  let benignMs;
   beforeAll(() => {
     scrubSecrets(benign);
-    benignMs = Math.max(5, Math.min(...[0, 1, 2].map(() => ms(() => scrubSecrets(benign)))));
   });
+  // D#608: each shape is timed against benign text back to back, three times interleaved, as min
+  // crafted / min benign. Interference only adds time, so each minimum approaches its cost from
+  // above. Before, one crafted reading was divided by benign's min of 3 taken in beforeAll: in 8
+  // full-suite runs under coverage with 3 workers on 2 cores (2026-11-01, D#168 tree) that read up
+  // to 10.88x and failed twice, on shapes that read 4.2-4.5x on a quiet machine, while the same
+  // samples as min of 3 each read at most 6.46x. Timing benign next to each shape but once left
+  // 92% of the inflation: it sits in the single crafted reading. The pre-D#130 scrubber still
+  // reads 20.6-1,125x on the six shapes D#130 made linear.
+  const ratio = (text) => {
+    const benignMs = [];
+    const craftedMs = [];
+    for (let k = 0; k < 3; k++) {
+      benignMs.push(ms(() => scrubSecrets(benign)));
+      craftedMs.push(ms(() => scrubSecrets(text)));
+    }
+    return Math.min(...craftedMs) / Math.max(5, Math.min(...benignMs));
+  };
   for (const [name, text] of Object.entries(shapes)) {
     it(`${name}: 200k chars within 10x of benign text of the same length`, () => {
-      expect(ms(() => scrubSecrets(text)) / benignMs).toBeLessThan(10);
+      expect(ratio(text)).toBeLessThan(10);
     });
   }
 

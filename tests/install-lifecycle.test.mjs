@@ -9,6 +9,8 @@ import {
   existsSync,
   symlinkSync,
   readlinkSync,
+  chmodSync,
+  lstatSync,
 } from 'fs';
 import { join, resolve, isAbsolute } from 'path';
 import { tmpdir } from 'os';
@@ -413,6 +415,601 @@ describe('install lifecycle checks', () => {
     }
   });
 
+  // D#829 (D#811 retry; 6.33.0 pre-tag review, defects F9): with ~/.qwen-mem-lite a symbolic
+  // link, rmSync took the link alone, printed "Data purged" and "Done!", and the store stayed
+  // behind it. The first fix removed the link and then let the relocated purge decide, and a
+  // QWEN_MEM_DIR naming the link's target by another spelling ended in "Done!" with the store
+  // left (r2 R2-1). Now a link means the purge removes nothing at all, the link included, and
+  // says so; QWEN_MEM_DIR is not purged either, however it is spelled.
+  const purgeWith = (home, memDir, nodeArgs = []) => {
+    const env = { ...process.env, HOME: home, PATH: `${makeFakeClaudeBin(home)}:${process.env.PATH}` };
+    delete env.QWEN_MEM_DIR;
+    if (memDir !== undefined) env.QWEN_MEM_DIR = memDir;
+    const r = spawnSync(process.execPath, [...nodeArgs, INSTALL_PATH, 'uninstall', '--purge'], {
+      encoding: 'utf8',
+      env,
+    });
+    return { output: r.stdout + r.stderr, status: r.status };
+  };
+  const files = (dir) =>
+    readdirSync(dir, { recursive: true, withFileTypes: true })
+      .filter((e) => e.isFile())
+      .map((e) => join(e.parentPath, e.name).slice(dir.length + 1))
+      .sort();
+  const seed = (dir, names) => {
+    for (const f of names) {
+      mkdirSync(join(dir, f, '..'), { recursive: true });
+      writeFileSync(join(dir, f), 'x');
+    }
+  };
+  // The output's lines: asserting one whole line pins its status mark and its end.
+  const lines = (output) => output.split('\n');
+  describe('uninstall --purge with ~/.qwen-mem-lite a symbolic link', () => {
+    const STORE = ['qwen-mem-lite.db', 'server.mjs', 'my-notes.txt', 'runtime/session.json'];
+
+    // Each shape: how the link is spelled, and the QWEN_MEM_DIR beside it (undefined = unset).
+    const SHAPES = {
+      'absolute link': (home) => ({ to: join(home, 'data', 'mem') }),
+      'relative link, named as spelled': () => ({ to: join('data', 'mem') }),
+      'QWEN_MEM_DIR = the target': (home) => ({
+        to: join(home, 'data', 'mem'),
+        mem: join(home, 'data', 'mem'),
+      }),
+      'QWEN_MEM_DIR = the link with a trailing slash': (home) => ({
+        to: join(home, 'data', 'mem'),
+        mem: join(home, '.qwen-mem-lite') + '/',
+      }),
+      'QWEN_MEM_DIR = the link with /.': (home) => ({
+        to: join(home, 'data', 'mem'),
+        mem: join(home, '.qwen-mem-lite') + '/.',
+      }),
+      'QWEN_MEM_DIR = a directory inside the target': (home) => ({
+        to: join(home, 'data', 'mem'),
+        mem: join(home, 'data', 'mem', 'sub'),
+        extra: { 'data/mem/sub': ['qwen-mem-lite.db'] },
+      }),
+      'QWEN_MEM_DIR = an unrelated directory': (home) => ({
+        to: join(home, 'data', 'mem'),
+        mem: join(home, 'other'),
+        extra: { other: ['qwen-mem-lite.db'] },
+      }),
+    };
+
+    for (const [name, shape] of Object.entries(SHAPES)) {
+      it(`removes nothing and does not say Done: ${name}`, () => {
+        const home = makeTmpDir();
+        try {
+          const { to, mem, extra = {} } = shape(home);
+          seed(join(home, 'data', 'mem'), STORE);
+          for (const [dir, names] of Object.entries(extra)) seed(join(home, dir), names);
+          symlinkSync(to, join(home, '.qwen-mem-lite'));
+          const before = files(join(home, 'data'));
+          const others = mem && extra.other ? files(join(home, 'other')) : null;
+          const { output, status } = purgeWith(home, mem);
+          expect(lstatSync(join(home, '.qwen-mem-lite')).isSymbolicLink()).toBe(true);
+          expect(readlinkSync(join(home, '.qwen-mem-lite'))).toBe(to);
+          expect(files(join(home, 'data'))).toEqual(before);
+          if (others) expect(files(join(home, 'other'))).toEqual(others);
+          // The whole line, so a QWEN_MEM_DIR named when unset fails (review F5), and so does a
+          // sentence appended after it or a success mark (D#836: review r2 R2-1, R2-3).
+          expect(lines(output)).toContain(
+            `  ⚠ ~/.qwen-mem-lite is a link to ${to}. --purge does not delete through a link, so it removed nothing` +
+              (mem === undefined ? '.' : ` (QWEN_MEM_DIR ${mem} included).`),
+          );
+          expect(output).not.toMatch(/Data purged|Relocated data purged|Done!/);
+          expect(output).toContain('the purge is incomplete');
+          expect(status).toBe(1);
+        } finally {
+          rmSync(home, { recursive: true, force: true });
+        }
+      });
+    }
+
+    it('a link to nothing, or to a file, stays, and the purge is not done', () => {
+      const home = makeTmpDir();
+      try {
+        writeFileSync(join(home, 'notes.txt'), 'mine');
+        for (const to of [join(home, 'gone'), join(home, 'notes.txt')]) {
+          symlinkSync(to, join(home, '.qwen-mem-lite'));
+          const { output, status } = purgeWith(home);
+          expect(readlinkSync(join(home, '.qwen-mem-lite')), to).toBe(to);
+          expect(lines(output), to).toContain(
+            `  ⚠ ~/.qwen-mem-lite is a link to ${to}. --purge does not delete through a link, so it removed nothing.`,
+          );
+          expect(output, to).not.toMatch(/Data purged|Done!/);
+          expect(status, to).toBe(1);
+          rmSync(join(home, '.qwen-mem-lite'));
+        }
+        expect(readFileSync(join(home, 'notes.txt'), 'utf8')).toBe('mine');
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // D#815 (6.33.0 pre-tag claims F8): an entry of ~/.qwen-mem-lite it may not remove threw out
+  // of rmSync, uncaught, so the relocated QWEN_MEM_DIR was never reached and no line said what
+  // was left. The failure is named, the purge is not done, and the relocated purge still runs.
+  it('uninstall --purge names what it could not remove in ~/.qwen-mem-lite and still purges QWEN_MEM_DIR', () => {
+    const home = makeTmpDir();
+    const locked = join(home, '.qwen-mem-lite', 'locked');
+    try {
+      mkdirSync(locked, { recursive: true });
+      writeFileSync(join(locked, 'inner.txt'), 'x');
+      writeFileSync(join(home, '.qwen-mem-lite', 'qwen-mem-lite.db'), 'x');
+      mkdirSync(join(home, 'reloc'));
+      writeFileSync(join(home, 'reloc', 'qwen-mem-lite.db'), 'x');
+      chmodSync(locked, 0o555);
+      const env = {
+        ...process.env,
+        HOME: home,
+        QWEN_MEM_DIR: join(home, 'reloc'),
+        PATH: `${makeFakeClaudeBin(home)}:${process.env.PATH}`,
+      };
+      const r = spawnSync(process.execPath, [INSTALL_PATH, 'uninstall', '--purge'], {
+        encoding: 'utf8',
+        env,
+      });
+      const output = r.stdout + r.stderr;
+      chmodSync(locked, 0o700);
+      expect(output).toMatch(/^ {2}⚠ Could not remove ~\/\.qwen-mem-lite \((?:EACCES|ENOTEMPTY)\)\.$/m);
+      expect(output).not.toMatch(/Data purged \(|Done!|^\s+at /m);
+      expect(existsSync(join(locked, 'inner.txt'))).toBe(true);
+      expect(existsSync(join(home, 'reloc', 'qwen-mem-lite.db'))).toBe(false);
+      expect(output).toContain('the purge is incomplete');
+      expect(r.status).toBe(1);
+    } finally {
+      if (existsSync(locked)) chmodSync(locked, 0o700);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // The line names the code the removal failed with, not EACCES alone (D#836: review r2 R2-3). A
+  // preload stands in for a removal that throws EBUSY, which no unprivileged fixture can produce.
+  it('uninstall --purge names the code the removal of ~/.qwen-mem-lite failed with', () => {
+    const home = makeTmpDir();
+    const dir = join(home, '.qwen-mem-lite');
+    try {
+      seed(dir, ['qwen-mem-lite.db', 'runtime/session.json']);
+      const preload = join(home, 'rm-throws-ebusy.mjs');
+      writeFileSync(
+        preload,
+        [
+          "import fs from 'node:fs';",
+          "import { syncBuiltinESMExports } from 'node:module';",
+          'const real = fs.rmSync;',
+          'fs.rmSync = (p, ...rest) => {',
+          "  if (!String(p).endsWith('/.qwen-mem-lite')) return real(p, ...rest);",
+          "  throw Object.assign(new Error('EBUSY: resource busy or locked, rm'), { code: 'EBUSY' });",
+          '};',
+          'syncBuiltinESMExports();',
+        ].join('\n'),
+      );
+      const { output, status } = purgeWith(home, undefined, ['--import', preload]);
+      expect(output).toMatch(/qwen-mem-lite uninstaller/); // the preload loaded and install ran
+      expect(lines(output)).toContain('  ⚠ Could not remove ~/.qwen-mem-lite (EBUSY).');
+      expect(output).not.toMatch(/Data purged|Done!/);
+      expect(output).toContain('the purge is incomplete');
+      expect(status).toBe(1);
+      expect(existsSync(join(dir, 'qwen-mem-lite.db'))).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // D#835 (D#829 review r2 X1): the purge said "Data purged" and "Done!" and exited 0 with the
+  // store left when rmSync returned normally with the directory still there while another process
+  // deleted files in it (7 of 12 runs, tasks/d835/race.mjs).
+  describe('uninstall --purge with data left behind ~/.qwen-mem-lite', () => {
+    // A link inside a real ~/.qwen-mem-lite goes with the directory and is never followed. D#835's
+    // rule that a link under a data name holds the purge back was withdrawn from 6.35.0 after both
+    // pre-tag rounds found a real shape it got wrong (r1 F1, r2 F1). A dev install links its code
+    // there on purpose (deployCodeTree): those links go, as before, and what they point to stays.
+    it('removes the links a dev install makes, and not what they point to', () => {
+      const home = makeTmpDir();
+      const dir = join(home, '.qwen-mem-lite');
+      try {
+        seed(join(home, 'repo'), ['cli.mjs', 'node_modules/x/index.js', 'scripts/setup.sh']);
+        seed(dir, ['qwen-mem-lite.db', 'runtime/session.json']);
+        for (const n of ['cli.mjs', 'node_modules', 'scripts'])
+          symlinkSync(join(home, 'repo', n), join(dir, n));
+        const before = files(join(home, 'repo'));
+        const { output, status } = purgeWith(home);
+        expect(output).toContain('Data purged (~/.qwen-mem-lite/)');
+        expect(output).toContain('Done!');
+        expect(status).toBe(0);
+        expect(existsSync(dir)).toBe(false);
+        expect(files(join(home, 'repo'))).toEqual(before);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    // A dev install from an earlier release leaves code links under names the running one no longer
+    // ships, which no install removes, and a user may keep a link of their own there: they go too,
+    // never followed, and do not stop the relocated purge (6.35.0 pre-tag review r1 F1).
+    it('removes the code links an earlier dev install left, and a link of the user’s own, and not what they point to', () => {
+      const home = makeTmpDir();
+      const dir = join(home, '.qwen-mem-lite');
+      const mem = join(home, 'reloc');
+      try {
+        seed(join(home, 'repo'), [
+          'cli.mjs',
+          '.mcp.json',
+          'commands/mem.md',
+          'node_modules/x/index.js',
+          'scripts/a.sh',
+        ]);
+        seed(join(home, 'notes'), ['todo.md']);
+        seed(dir, ['qwen-mem-lite.db', 'runtime/session.json']);
+        seed(mem, ['qwen-mem-lite.db']);
+        for (const n of ['cli.mjs', 'node_modules', 'scripts', '.mcp.json', 'commands'])
+          symlinkSync(join(home, 'repo', n), join(dir, n));
+        symlinkSync(join(home, 'repo', 'registry.mjs'), join(dir, 'registry.mjs')); // dangling
+        symlinkSync(join(home, 'notes'), join(dir, 'my-notes'));
+        const before = { repo: files(join(home, 'repo')), notes: files(join(home, 'notes')) };
+        const { output, status } = purgeWith(home, mem);
+        expect(output).not.toContain('is a link');
+        expect(output).toContain('Data purged (~/.qwen-mem-lite/)');
+        expect(output).toContain('Done!');
+        expect(status).toBe(0);
+        expect(existsSync(dir)).toBe(false);
+        expect(existsSync(join(mem, 'qwen-mem-lite.db'))).toBe(false);
+        expect(files(join(home, 'repo'))).toEqual(before.repo);
+        expect(files(join(home, 'notes'))).toEqual(before.notes);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    // The race itself cannot be scheduled in a test, so a preload makes rmSync do what it was
+    // seen doing under it: return normally with part of the tree, the store included, still there.
+    it('does not say Data purged when ~/.qwen-mem-lite is still there after the removal returns', () => {
+      const home = makeTmpDir();
+      const dir = join(home, '.qwen-mem-lite');
+      try {
+        seed(dir, ['qwen-mem-lite.db', 'runtime/session.json', 'metrics/2026-11-12.jsonl']);
+        const preload = join(home, 'rm-returns-early.mjs');
+        writeFileSync(
+          preload,
+          [
+            "import fs from 'node:fs';",
+            "import { join } from 'node:path';",
+            "import { syncBuiltinESMExports } from 'node:module';",
+            'const real = fs.rmSync;',
+            'fs.rmSync = (p, ...rest) => {',
+            "  if (!String(p).endsWith('/.qwen-mem-lite')) return real(p, ...rest);",
+            "  for (const e of fs.readdirSync(p)) if (e !== 'qwen-mem-lite.db') real(join(p, e), ...rest);",
+            '};',
+            'syncBuiltinESMExports();',
+          ].join('\n'),
+        );
+        const { output, status } = purgeWith(home, undefined, ['--import', preload]);
+        expect(output).toMatch(/qwen-mem-lite uninstaller/); // the preload loaded and install ran
+        expect(existsSync(join(dir, 'runtime'))).toBe(false); // and the stand-in removed something
+        expect(lines(output)).toContain(
+          '  ⚠ Could not remove ~/.qwen-mem-lite: it was still there when the removal returned.',
+        );
+        expect(output).not.toMatch(/Data purged|Done!/);
+        expect(output).toContain('the purge is incomplete');
+        expect(status).toBe(1);
+        expect(existsSync(join(dir, 'qwen-mem-lite.db'))).toBe(true);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // R32 E2E install F1 (P0): with QWEN_MEM_DIR relocated, --purge removed the WHOLE directory
+  // once it held qwen-mem-lite.db, so files a user keeps beside the store went with it. Only
+  // what qwen-mem-lite writes there is removed; anything else stays, and the output says so.
+  describe('uninstall --purge with a relocated QWEN_MEM_DIR', () => {
+    // Names qwen-mem-lite really writes there, in the formats its writers use (R32 reviews:
+    // the first cut matched top-level names only and took backups/, metrics/, errors/ whole; the
+    // second took any `qwen-mem-lite.db.*` and any `.update-backup-*`, user files included).
+    const OURS = [
+      'qwen-mem-lite.db',
+      'qwen-mem-lite.db-wal',
+      'qwen-mem-lite.db-shm',
+      'qwen-mem-lite.db-journal',
+      'qwen-mem-lite.db.pre-delete-2026-11-11T00-00-00-000Z-1-1.bak',
+      'qwen-mem-lite.db.pre-delete-2026-11-11T00-00-00-000Z-1-1.bak-journal', // a killed VACUUM INTO
+      'qwen-mem-lite.db.legacy-backup-1700000000',
+      'qwen-mem-lite.db.legacy-backup-1700000000-wal',
+      'qwen-mem-lite.db.legacy-backup-1700000000-shm',
+      'qwen-mem-lite.db-wal.legacy-backup-1700000000000',
+      'qwen-mem-lite.db-shm.legacy-backup-1700000000000',
+      'qwen-mem-lite.db.corrupt-2026-11-11T00-00-00-000Z',
+      'qwen-mem-lite.db.corrupt-2026-11-11T00-00-00-000Z-wal',
+      'qwen-mem-lite.db.corrupt', // the set-aside name an earlier remedy told users to `mv` to
+      'claude-mem.db',
+      'claude-mem.db-wal',
+      'resource-registry.db',
+      'resource-registry.db-wal',
+      'resource-registry.db-shm',
+      'resource-registry.db-journal',
+      'plugin_claude_mem_lite.md',
+      'plugin_claude_mem_lite.md.tmp-4242',
+      '.legacy-backup-copy-4242-1700000000',
+      '.legacy-backup-copy-4242-1700000000-shm',
+      '.legacy-backup-setup-4242-1700000000',
+      '.legacy-backup-setup-4242-1700000000-wal',
+      '.snapshot-check-4242-abc123/probe.db',
+      '.update-staging-1700000000000-4242/hook.mjs',
+      '.update-backup-1700000000000-4242/hook.mjs',
+      '.update-backup-s2-1700000000000-4242/hook.mjs',
+      'runtime/session.json',
+      'runtime/hook-errors/2026-11-11.json',
+      'managed/repos/superpowers/README.md', // resource clones from releases before 5.0.0
+      'managed/skills/foo/SKILL.md',
+      'metrics/2026-11-11.jsonl',
+      'errors/2026-11-11.jsonl',
+      'backups/verify-2026-11-11T00-00-00-000Z-a1b2c3.json',
+      'backups/verify-2026-11-11T00-00-00-000Z-a1b2c3.json.tmp-4242',
+    ];
+    // A user's own files: several sit in directories that share the product's names, or carry
+    // names that start like the product's. `before-upgrade.bak` is the hand-made copy
+    // lib/db-backup.mjs names as one no sweep may take; `verify-settings.json` sits beside
+    // verify-apply's backups and matched their pattern when it was looser than their writer's.
+    const THEIRS = [
+      'notes.txt',
+      'taxes/2025.pdf',
+      'backups/photos/wedding.jpg',
+      'backups/old-laptop.tar',
+      'backups/verify-passport.pdf',
+      'backups/verify-settings.json',
+      'qwen-mem-lite.db.before-upgrade.bak',
+      'metrics/q3-revenue.csv',
+      'metrics/notes.jsonl',
+      'metrics/2026-01-02.jsonl/inner.txt',
+      'errors/notes.txt',
+      'errors/my-log.jsonl',
+      'qwen-mem-lite.db-schema-notes.md',
+      'qwen-mem-lite.db.notes.txt',
+      'qwen-mem-lite.db.corrupt-notes.txt',
+      'qwen-mem-lite.db.mine/my-manual-copy.db',
+      'claude-mem.dbx-thesis.tex',
+      'claude-mem.db.old',
+      '.update-backup-mine/f',
+    ];
+    const seed = (dir, files) => {
+      for (const f of files) {
+        mkdirSync(join(dir, f, '..'), { recursive: true });
+        writeFileSync(join(dir, f), 'x');
+      }
+    };
+    const purge = (home, dir, nodeArgs = []) => {
+      const r = spawnSync(process.execPath, [...nodeArgs, INSTALL_PATH, 'uninstall', '--purge'], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          HOME: home,
+          QWEN_MEM_DIR: dir,
+          PATH: `${makeFakeClaudeBin(home)}:${process.env.PATH}`,
+        },
+      });
+      return { output: r.stdout + r.stderr, status: r.status };
+    };
+    const tree = (dir) =>
+      readdirSync(dir, { recursive: true, withFileTypes: true })
+        .filter((e) => e.isFile())
+        .map((e) => join(e.parentPath, e.name).slice(dir.length + 1))
+        .sort();
+
+    // runtime/ and managed/ are its own, but it cannot tell every file inside them from one a
+    // user put there; beside the user's files they stay, named, and the purge is not done
+    // (R33 review H2: they went whole, a user's runtime/my-notes.txt with them).
+    const WHOLE = OURS.filter((f) => /^(runtime|managed)\//.test(f));
+    it("removes every file it wrote and none of the user's, and names what it kept", () => {
+      const home = makeTmpDir();
+      try {
+        const dir = join(home, 'shared');
+        seed(dir, [...OURS, ...THEIRS]);
+        const { output, status } = purge(home, dir);
+        expect(tree(dir)).toEqual([...THEIRS, ...WHOLE].sort());
+        expect(output).toMatch(/[ ,]notes\.txt/);
+        expect(output).toMatch(/backups\/photos/);
+        expect(output).toMatch(/Left managed, runtime in /);
+        expect(output).not.toMatch(/Relocated data purged|Done!/);
+        expect(status).not.toBe(0);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps a user's files inside runtime/ when the directory holds files of theirs", () => {
+      const home = makeTmpDir();
+      try {
+        const dir = join(home, 'work');
+        const mine = ['metrics/q3-revenue.csv', 'runtime/my-notes.txt', 'runtime/my-service/config.yaml'];
+        seed(dir, ['qwen-mem-lite.db', 'qwen-mem-lite.db-wal', 'runtime/session.json', ...mine]);
+        const { output, status } = purge(home, dir);
+        expect(tree(dir)).toEqual([...mine, 'runtime/session.json'].sort());
+        expect(output).toMatch(/Left runtime in /);
+        expect(output).not.toMatch(/Done!/);
+        expect(status).not.toBe(0);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it('removes the directory when it held only qwen-mem-lite files', () => {
+      const home = makeTmpDir();
+      try {
+        const dir = join(home, 'mem');
+        seed(dir, OURS);
+        const { output } = purge(home, dir);
+        expect(existsSync(dir)).toBe(false);
+        expect(output).toContain(`Relocated data purged (${dir})`);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    // One of its directory names as a link to somewhere else: listed, never followed.
+    it('does not follow a symlink under one of its directory names', () => {
+      const home = makeTmpDir();
+      try {
+        const dir = join(home, 'linked');
+        const elsewhere = join(home, 'elsewhere');
+        seed(dir, ['qwen-mem-lite.db']);
+        seed(elsewhere, ['2026-01-01.jsonl']);
+        symlinkSync(elsewhere, join(dir, 'metrics'));
+        const { output } = purge(home, dir);
+        expect(tree(elsewhere)).toEqual(['2026-01-01.jsonl']);
+        expect(output).toMatch(/metrics/);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    // A directory that cannot be listed must not take the "nothing else is here" path, which
+    // removes the directory; and a purge that did not happen is not reported as done.
+    it('removes nothing when the directory cannot be listed', () => {
+      const home = makeTmpDir();
+      const dir = join(home, 'locked');
+      try {
+        seed(dir, ['qwen-mem-lite.db', 'notes.txt']);
+        chmodSync(dir, 0o300);
+        const { output, status } = purge(home, dir);
+        chmodSync(dir, 0o700);
+        expect(tree(dir)).toEqual(['notes.txt', 'qwen-mem-lite.db']);
+        expect(output).toMatch(/Could not list/);
+        expect(output).not.toMatch(/Relocated data purged|Done!/);
+        expect(status).not.toBe(0);
+      } finally {
+        chmodSync(dir, 0o700);
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    // existsSync() is false on EACCES too, so a store it could not even look for was reported
+    // absent: "has no qwen-mem-lite.db" (untrue), then "Done!" and exit 0 (R32 depth-2 review
+    // M1). Three ways to be unable to look: the directory unreadable and unsearchable, readable
+    // but not searchable, and its parent not searchable.
+    it('does not report a store it could not look for as absent', () => {
+      const home = makeTmpDir();
+      const parent = join(home, 'p');
+      const dir = join(parent, 'data');
+      try {
+        for (const [locked, mode] of [
+          [dir, 0o000],
+          [dir, 0o600],
+          [parent, 0o000],
+        ]) {
+          seed(dir, ['qwen-mem-lite.db', 'notes.txt']);
+          chmodSync(locked, mode);
+          const { output, status } = purge(home, dir);
+          chmodSync(locked, 0o700);
+          const shape = `${locked === dir ? 'data dir' : 'parent'} ${mode.toString(8)}`;
+          expect(tree(dir), shape).toEqual(['notes.txt', 'qwen-mem-lite.db']);
+          expect(output, shape).toMatch(/Could not look for qwen-mem-lite\.db/);
+          expect(output, shape).not.toMatch(/has no qwen-mem-lite\.db|Relocated data purged|Done!/);
+          expect(status, shape).not.toBe(0);
+        }
+      } finally {
+        for (const d of [parent, dir]) if (existsSync(d)) chmodSync(d, 0o700);
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    // ...whereas a QWEN_MEM_DIR with no store in it (a mistyped one; or a file, where stat says
+    // ENOTDIR) is not ours to touch: "left untouched", not a lookup that failed.
+    it('leaves a QWEN_MEM_DIR with no store in it untouched and says why', () => {
+      const home = makeTmpDir();
+      try {
+        const dir = join(home, 'mistyped');
+        const file = join(home, 'not-a-dir');
+        seed(dir, ['notes.txt', 'metrics/2026-11-11.jsonl']);
+        writeFileSync(file, 'mine');
+        for (const target of [dir, file]) {
+          const { output, status } = purge(home, target);
+          expect(output, target).toMatch(/has no qwen-mem-lite\.db - left untouched/);
+          expect(status, target).toBe(0);
+        }
+        expect(tree(dir)).toEqual(['metrics/2026-11-11.jsonl', 'notes.txt']);
+        expect(readFileSync(file, 'utf8')).toBe('mine');
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    // What is left after a failed unlink decides the report, not the error code alone. A shard a
+    // live session pruned between the listing and the unlink (ENOENT) is gone, as wanted; a file
+    // of its own that will not go (EPERM: on Linux an immutable file, or another user's in a
+    // sticky dir) is a failure, not an entry it "does not recognise". Neither can be produced
+    // here without root, so a preload makes unlink answer that way (R32 depth-2 review L3, L4).
+    it('counts a shard pruned meanwhile as removed, and its own file it may not remove as a failure', () => {
+      const home = makeTmpDir();
+      try {
+        const dir = join(home, 'live');
+        seed(dir, ['qwen-mem-lite.db', 'metrics/2026-01-01.jsonl', 'errors/2026-01-01.jsonl']);
+        const preload = join(home, 'unlink-faults.mjs');
+        writeFileSync(
+          preload,
+          [
+            "import fs from 'node:fs';",
+            "import { syncBuiltinESMExports } from 'node:module';",
+            'const real = fs.unlinkSync;',
+            'fs.unlinkSync = (p, ...rest) => {',
+            "  if (String(p).endsWith('/metrics/2026-01-01.jsonl')) real(p);",
+            "  if (String(p).endsWith('/errors/2026-01-01.jsonl'))",
+            "    throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });",
+            '  return real(p, ...rest);',
+            '};',
+            'syncBuiltinESMExports();',
+          ].join('\n'),
+        );
+        const { output, status } = purge(home, dir, ['--import', preload]);
+        expect(output).toMatch(/qwen-mem-lite uninstaller/); // the preload loaded and install ran
+        expect(existsSync(join(dir, 'metrics'))).toBe(false);
+        expect(output).not.toMatch(/metrics\/2026-01-01\.jsonl/);
+        // the store stays while one of its own entries does: a re-run must still find it
+        expect(tree(dir)).toEqual(['errors/2026-01-01.jsonl', 'qwen-mem-lite.db']);
+        expect(output).toMatch(/Could not remove[^\n]*errors\/2026-01-01\.jsonl \(EPERM\)/);
+        expect(output).not.toMatch(/does not recognise[^\n]*errors/);
+        expect(status).not.toBe(0);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it('says which of its own entries it could not remove, and does not claim the purge', () => {
+      const home = makeTmpDir();
+      const dir = join(home, 'stuck');
+      const locked = [join(dir, 'runtime'), join(dir, 'errors'), join(dir, 'metrics')];
+      try {
+        seed(dir, [
+          'qwen-mem-lite.db',
+          'runtime/install.lock',
+          'errors/2026-11-11.jsonl',
+          'metrics/2026-11-11.jsonl',
+        ]);
+        chmodSync(locked[0], 0o500); // its entries cannot be removed
+        chmodSync(locked[1], 0o300); // it cannot be listed
+        chmodSync(locked[2], 0o600); // listed, but neither unlink nor lstat can reach the shard
+        const { output, status } = purge(home, dir);
+        for (const d of locked) chmodSync(d, 0o700);
+        expect(output).toMatch(/Could not remove[^\n]*runtime/);
+        expect(output).toMatch(/Could not remove[^\n]*errors/);
+        expect(output).toMatch(/Could not remove[^\n]*metrics\/2026-11-11\.jsonl \(EACCES\)/);
+        expect(output).not.toMatch(/Relocated data purged|Done!/);
+        expect(status).not.toBe(0);
+        // R33 review M2: the first run removed the store, so the run the message asks for found
+        // "no qwen-mem-lite.db", left the rest and said Done!. The store now goes last.
+        expect(tree(dir)).toContain('qwen-mem-lite.db');
+        expect(output).toMatch(/qwen-mem-lite\.db stays until they go/);
+        const again = purge(home, dir);
+        expect(again.output).toMatch(/Done!/);
+        expect(again.status).toBe(0);
+        expect(existsSync(dir)).toBe(false);
+      } finally {
+        for (const d of locked) if (existsSync(d)) chmodSync(d, 0o700);
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+  });
+
   // A plain uninstall said "Data preserved (use --purge to remove)". True, and it named
   // the wrong half of what is left: on a real sandbox install the DB was 0.2MB while the
   // now-unreachable code and node_modules were 53MB — the symlink, hooks and MCP entry are
@@ -545,10 +1142,15 @@ describe('install lifecycle checks', () => {
       execFileSync('chmod', ['+x', fakeClaude]);
       // D#439: install's dependency step runs `npm install` in the sandbox HOME, which reached
       // the repo's own node_modules through the link above and, now and then, rebuilt
-      // better-sqlite3 with node-gyp and timed out fetching headers from nodejs.org. The
-      // dependencies are already in place, so the step has nothing to do here.
+      // better-sqlite3 with node-gyp and timed out fetching headers from nodejs.org. A copy
+      // install now removes that link first (R32: npm with `force` set writes through it), so
+      // this npm stands in for the real one by providing the dependencies — linking the repo's,
+      // without rebuilding anything.
       const fakeNpm = join(binDir, 'npm');
-      writeFileSync(fakeNpm, '#!/usr/bin/env bash\nexit 0\n');
+      writeFileSync(
+        fakeNpm,
+        `#!/usr/bin/env bash\n[ -e node_modules ] || ln -s ${JSON.stringify(resolve('node_modules'))} node_modules\nexit 0\n`,
+      );
       execFileSync('chmod', ['+x', fakeNpm]);
 
       const output = execFileSync(process.execPath, [INSTALL_PATH, 'install'], {

@@ -9,7 +9,13 @@
 // consistent.
 
 import { editDistance } from '../lib/edit-distance.mjs';
-import { neutralizeContextDelimiters, neutralizeSkillDelimiters, truncate } from '../format-utils.mjs';
+import {
+  neutralizeContextDelimiters,
+  neutralizeSkillDelimiters,
+  truncate,
+  localYmd,
+  localIsoTime,
+} from '../format-utils.mjs';
 import { CLI_INVOKE } from '../cli-path.mjs';
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
@@ -554,10 +560,10 @@ export function relativeTime(epochMs) {
   return `${days}d ago`;
 }
 
-/** ISO date string → "YYYY-MM-DD" prefix. */
+/** ISO date string → its local "YYYY-MM-DD" (D18: the day `--from/--to` read it as). */
 export function fmtDateShort(iso) {
   if (!iso) return '';
-  return iso.slice(0, 10);
+  return localYmd(iso) || String(iso).slice(0, 10);
 }
 
 // Integer epoch-ms time fields on the observations table that `get`/`mem_get`
@@ -627,6 +633,10 @@ export function formatObsFieldValue(field, val) {
   if (OBS_TIME_FIELDS.includes(field) && typeof val === 'number') {
     return `${val} (${relativeTime(val)})`;
   }
+  // The stored ISO string is UTC; shown raw, its date is the next day for an evening save west of
+  // Greenwich, a day the date filters (local) do not find it on (D18). The CLI shows the local
+  // day in its header instead and skips the field.
+  if (field === 'created_at' && typeof val === 'string') return localIsoTime(val) || val;
   return val;
 }
 
@@ -671,6 +681,6 @@ export function formatReviewSide(row) {
     row.lesson_learned && row.lesson_learned !== 'none'
       ? `lesson: ${flat(row.lesson_learned, 100)}`
       : 'no lesson';
-  const date = row.created_at_epoch ? new Date(row.created_at_epoch).toISOString().slice(0, 10) : '?';
+  const date = row.created_at_epoch ? localYmd(row.created_at_epoch) : '?';
   return `#${row.id} ${row.type || '?'} · importance ${row.importance ?? '?'} · ${row.project} · ${date} · ${lesson} · ${flat(row.narrative, 120) || '(no narrative)'}`;
 }

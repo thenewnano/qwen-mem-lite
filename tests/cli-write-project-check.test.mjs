@@ -189,3 +189,138 @@ describe('restore checks the project it writes to', () => {
     expect(projects()).toContain('zebra-billing');
   });
 });
+
+// R4 §8.2 (docs/audits/20261124-r4-session-history-analysis.md): an agent ran
+// `cd ~/.claude/projects/-home-ai-dev-daagu/memory && python3 … MEMORY.md … ; node cli.mjs save …`
+// in one Bash command. With no CLAUDE_PROJECT_DIR in that shell, the write took its project from
+// PWD and filed 4 lessons and a deferred item under `-home-ai-dev-daagu--memory`. Claude Code's
+// per-project state directory holds no user project, so
+// a write whose project would come from there is refused with a way out; --project still works.
+describe("a write whose project would come from Claude Code's per-project state is refused", () => {
+  /** Run the CLI the way that agent's shell did: cwd and PWD in `dir`, no CLAUDE_PROJECT_DIR. */
+  function cliIn(dir, ...args) {
+    const env = {
+      ...process.env,
+      HOME: join(root, 'home'),
+      PWD: dir,
+      QWEN_MEM_DIR: dataDir,
+      QWEN_MEM_SKIP_SAVE_ENRICH: '1',
+    };
+    delete env.CLAUDE_PROJECT_DIR;
+    delete env.CLAUDE_CONFIG_DIR;
+    delete env.QWEN_MEM_HOOK_RUNNING;
+    return spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', timeout: 20000, cwd: dir, env });
+  }
+  const stateDir = () => {
+    const d = join(root, 'home', '.claude', 'projects', '-tmp-work-invoice-app', 'memory');
+    mkdirSync(d, { recursive: true });
+    return d;
+  };
+  const refused = (r) => {
+    expect(r.status, r.stdout + r.stderr).toBe(1);
+    expect(r.stderr).toMatch(/Claude Code's own per-project state/);
+    expect(r.stderr).toMatch(/--project/);
+  };
+
+  it('save, defer add and activity save are refused and write nothing', () => {
+    const dir = stateDir();
+    refused(cliIn(dir, 'save', 'element plus lazy css beats overrides', '--type', 'bugfix'));
+    refused(cliIn(dir, 'defer', 'add', 'evaluate the chan bi extension'));
+    refused(cliIn(dir, 'activity', 'save', 'a lesson', '--title', 'x'));
+    expect(projects()).toEqual([]);
+  });
+
+  it('import-jsonl and the restore of a row without a project are refused', () => {
+    const dir = stateDir();
+    refused(cliIn(dir, 'import-jsonl', transcript()));
+    const file = join(root, 'export.jsonl');
+    writeFileSync(file, JSON.stringify({ type: 'discovery', title: 'restored row', narrative: 'x' }) + '\n');
+    refused(cliIn(dir, 'restore', file));
+    expect(projects()).toEqual([]);
+  });
+
+  // D#940 (6.35.6 pre-tag C3): `.` and `current` were spelled out by the READ resolver before
+  // dispatch, so these writes never reached the refusal and filed the row under the state
+  // directory's own name — the form a user reaches for when the refusal says "pass --project".
+  it('--project . and --project=current are refused there too, and write nothing', () => {
+    const dir = stateDir();
+    refused(cliIn(dir, 'save', 'element plus lazy css beats overrides', '--project', '.'));
+    refused(cliIn(dir, 'defer', 'add', 'evaluate the chan bi extension', '--project=current'));
+    refused(cliIn(dir, 'activity', 'save', 'a lesson', '--title', 'x', '--project', 'current'));
+    // restore's --project replaces every row's own, so `.` there is not the same as no flag: rows
+    // that all carry a project would restore under theirs, the user's `.` read by nothing.
+    const file = join(root, 'export.jsonl');
+    writeFileSync(
+      file,
+      JSON.stringify({ type: 'discovery', title: 'restored row', narrative: 'x', project: 'work--other' }) +
+        '\n',
+    );
+    refused(cliIn(dir, 'restore', file, '--project', '.'));
+    refused(cliIn(dir, 'import-jsonl', transcript(), '--project=.'));
+    const proposals = join(root, 'proposals.json');
+    writeFileSync(proposals, JSON.stringify([{ id: 1, action: 'supersede', reason: 'x' }]));
+    refused(cliIn(dir, 'verify-apply', proposals, '--project', 'current'));
+    expect(projects()).toEqual([]);
+    // Only those six: a read, or a write that creates no row, naming `.` there runs as before
+    // (6.36.0 pre-tag r2 F4: refusing every command passed the suite). The `=` form, since the
+    // state directory's project name starts with `-` (D#945).
+    for (const args of [
+      ['recent', '--project=.'],
+      ['defer', 'list', '--project=current'],
+    ]) {
+      const r = cliIn(dir, ...args);
+      expect(r.status, `${args.join(' ')}\n${r.stdout}${r.stderr}`).toBe(0);
+      expect(r.stderr).not.toMatch(/per-project state/);
+    }
+  });
+
+  // Outside that state, `.` on a write still resolves as on a read (6.36.0 pre-tag review F3): from
+  // a subdirectory of a work tree whose own name holds no rows it names the work tree's project, so
+  // closing the work tree's deferred item from there with `--project .` keeps working as in 6.35.6.
+  it('outside the state directory, `.` on a write resolves as it did before', () => {
+    mkdirSync(join(projectDir, '.git'));
+    const add = cli('defer', 'add', 'totals drift by a cent');
+    expect(add.status, add.stderr).toBe(0);
+    const id = /D#(\d+)/.exec(add.stdout)[1];
+    const sub = join(projectDir, 'src');
+    mkdirSync(sub);
+    const r = cliIn(sub, 'save', 'fixed the rounding', '--closes-deferred', `D#${id}`, '--project', '.');
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    const db = new Database(join(dataDir, 'qwen-mem-lite.db'), { readonly: true });
+    expect(db.prepare('SELECT status FROM deferred_work WHERE id = ?').get(id).status).toBe('done');
+    db.close();
+    expect(projects()).toEqual(['work--invoice-app']);
+  });
+
+  it('--project still writes from there, and the project directory itself is unaffected', () => {
+    const dir = stateDir();
+    expect(cliIn(dir, 'save', 'rounding is per line', '--project', 'work--invoice-app').status).toBe(0);
+    expect(cliIn(projectDir, 'save', 'totals drift by a cent').status).toBe(0);
+    expect(projects()).toEqual(['work--invoice-app']);
+  });
+
+  it('follows CLAUDE_CONFIG_DIR, and the config home outside projects/ is not refused', () => {
+    const cfg = join(root, 'cfg');
+    const mem = join(cfg, 'projects', '-tmp-x', 'memory');
+    mkdirSync(mem, { recursive: true });
+    const withCfg = (dir, ...args) => {
+      const env = {
+        ...process.env,
+        HOME: join(root, 'home'),
+        PWD: dir,
+        QWEN_MEM_DIR: dataDir,
+        CLAUDE_CONFIG_DIR: cfg,
+        QWEN_MEM_SKIP_SAVE_ENRICH: '1',
+      };
+      delete env.CLAUDE_PROJECT_DIR;
+      delete env.QWEN_MEM_HOOK_RUNNING;
+      return spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', timeout: 20000, cwd: dir, env });
+    };
+    refused(withCfg(mem, 'save', 'a lesson'));
+    // A user who keeps their Claude Code config in a repository and works in it is a project.
+    expect(withCfg(cfg, 'save', 'hooks run in order').status).toBe(0);
+    const names = projects();
+    expect(names).toHaveLength(1);
+    expect(names[0]).toMatch(/--cfg$/);
+  });
+});

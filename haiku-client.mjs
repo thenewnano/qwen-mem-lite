@@ -70,6 +70,18 @@ function cliSpawnCwd() {
   return dir;
 }
 
+// The headless-tax switches every `claude` CLI spawn inherits, plus the fork's hook-running
+// variable. One definition so the sync and async legs cannot drift.
+function cliSpawnEnv() {
+  return {
+    ...process.env,
+    QWEN_MEM_HOOK_RUNNING: '1',
+    DISABLE_CLAUDEMD_HOOKS: '1',
+    MAX_THINKING_TOKENS: '0',
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+  };
+}
+
 // ─── Model Resolution ────────────────────────────────────────────────────────
 
 // CLI name → API model ID mapping
@@ -948,15 +960,10 @@ export function execClaudeCliSync(modelName, { input, timeout }) {
     input,
     timeout,
     encoding: 'utf8',
-    env: {
-      ...process.env,
-      QWEN_MEM_HOOK_RUNNING: '1',
-      DISABLE_CLAUDEMD_HOOKS: '1',
-      MAX_THINKING_TOKENS: '0',
-      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
-    },
+    env: cliSpawnEnv(),
     stdio: ['pipe', 'pipe', 'pipe'],
     cwd: cliSpawnCwd(), // private dir, not /tmp - see cliSpawnCwd (R10 P2-13)
+    windowsHide: true,
   };
   const args = claudeArgs(modelName);
   const started = Date.now();
@@ -1040,14 +1047,9 @@ export async function callModelCLIAsync(prompt, model, { timeout }) {
       try {
         // Same headless-tax flags + flag-compat retry as callModelCLI (rationale there).
         child = spawn(getClaudePath(), args, {
-          env: {
-            ...process.env,
-            QWEN_MEM_HOOK_RUNNING: '1',
-            DISABLE_CLAUDEMD_HOOKS: '1',
-            MAX_THINKING_TOKENS: '0',
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
-          },
+          env: cliSpawnEnv(),
           cwd: cliSpawnCwd(), // private dir, not /tmp - see cliSpawnCwd (R10 P2-13)
+          windowsHide: true,
           stdio: ['pipe', 'pipe', 'pipe'],
         });
       } catch (e) {

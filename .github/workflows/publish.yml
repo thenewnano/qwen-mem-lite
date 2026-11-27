@@ -193,23 +193,12 @@ jobs:
           PKG_VER="$(node -p 'require("./package.json").version')"
           if npm view "${PKG_NAME}@${PKG_VER}" version >/dev/null 2>&1; then
             echo "::notice::${PKG_NAME}@${PKG_VER} is already on the registry — skipping publish and continuing to the release steps."
-          elif [ "${NPM_PROVENANCE}" = "true" ]; then
-            # Provenance needs an OIDC-capable (automation/granular) token. A classic
-            # token can't attest and fails the provenance publish (lesson #8583). Rather
-            # than block the release, fall back to a plain publish with a loud warning —
-            # so enabling NPM_PROVENANCE is safe even before the token is confirmed.
-            if npm publish --provenance --access public; then
-              echo "Published with provenance."
-            else
-              echo "::warning::npm publish --provenance failed (token likely not automation/granular-scoped, see #8583) — retrying without provenance."
-              npm publish --access public
-            fi
           else
-            npm publish --access public
+            # No token: npm authenticates through trusted publishing (OIDC). With a token
+            # in the environment, npm 11 falls back to it when the OIDC exchange fails, so
+            # a broken trust configuration would still publish and stay green.
+            npm publish --provenance --access public
           fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_PROVENANCE: ${{ vars.NPM_PROVENANCE }}
 
       # P1 supply-chain: sign the release manifest. No-op (exits 0, writes nothing)
       # until the RELEASE_SIGNING_KEY secret is provisioned; action-gh-release then

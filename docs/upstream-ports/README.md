@@ -15,4 +15,4 @@ sha` the next port starts from.
 |---|---|---|---|---|
 | 2026-09-30 | `6e5439c`..`6ff7bb9` (249 commits, v6.12.0-v6.20.0) | 1+2+3 | merged to branch, in review | [2026-09-30-v6.20.0-sync.md](2026-09-30-v6.20.0-sync.md) |
 | 2026-10-01 | `6ff7bb9`..`1e4835a2` (62 commits, v6.21.0) | 1+2+3 | merged to branch, in review | [2026-10-01-v6.21.0-sync.md](2026-10-01-v6.21.0-sync.md) |
-| 2026-10-13 | `1e4835a2`..`faa0d33e` (154 commits, v6.22.0-v6.25.3) | 1+2+3 | merged to branch, ready for review | [2026-10-13-v6.25.3-sync.md](2026-10-13-v6.25.3-sync.md) |
+| 2026-10-13 | `1e4835a2`..`faa0d33e` (154 commits, v6.22.0-v6.25.3) | 1+2+3 | merged to branch, ready for review | [2026-10-13-v6.25.3-sync.md](2026-10-13-v6.25.3-sync.md) || 2026-11-27 | `25e21f26`..`3f6d5dcc` (305 commits, v6.30.9-v6.37.0) | 1+2+3 | port branch green, ready for review | [2026-11-27-v6.37.0-sync.md](2026-11-27-v6.37.0-sync.md) |

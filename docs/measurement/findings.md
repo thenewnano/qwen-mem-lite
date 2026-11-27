@@ -1025,21 +1025,41 @@ Full evidence for the first three in `docs/measurement/findings.md`.
   (benchmark fixture, same-tree A/B) — against **+0.0002 R@10** for all eight scoring
   multipliers combined — but that is *what they are worth*, NOT what backfilling recovers
   in production, which is still unmeasured.
-- **A prebuilt addon that is PRESENT and will not load cannot be healed by compiling one.**
-  better-sqlite3 13's `lib/binding.js` picks `prebuilds/<target>.node` on **existence alone**
-  and prefers it over `build/`, so whatever `npm run --prefix node_modules/better-sqlite3
-  build-release` produces stays shadowed. Measured 2026-09-06 with a control: corrupt prebuild
-  + healthy `build/Release` → `wrong ELF class`; prebuild moved aside → opens; neither → fails.
-  Real triggers are a glibc too old for the shipped binary, a truncated download, the wrong
-  arch baked into an image. Before the fix `rebuild-binding` exited 1 on that shape and printed
-  a manual command with the same dead end, so `doctor` stayed red forever.
-  `ensureBetterSqlite3Working` now renames the dead prebuild to `<name>.node.unusable` before
-  the source build and puts it back if the compile did not help. **Only inside the source-build
+- **better-sqlite3 13.2.0 loads a compiled `build/` addon BEFORE `prebuilds/`; 13.0.x did the
+  reverse, and this entry's first half is the 13.0.x record.** 13.0.x's `lib/binding.js` picked
+  `prebuilds/<target>.node` on **existence alone**, so whatever `npm run --prefix
+  node_modules/better-sqlite3 build-release` produced stayed shadowed. Measured 2026-09-06 with a
+  control: corrupt prebuild + healthy `build/Release` → `wrong ELF class`; prebuild moved aside →
+  opens; neither → fails. Real triggers are a glibc too old for the shipped binary, a truncated
+  download, the wrong arch baked into an image. Before the fix `rebuild-binding` exited 1 on that
+  shape and printed a manual command with the same dead end, so `doctor` stayed red forever.
+  `ensureBetterSqlite3Working` renames the dead prebuild to `<name>.node.unusable` before the
+  source build and puts it back if the compile did not help. **Only inside the source-build
   branch** — quarantining with no compile to follow turns "broken addon" into "no addon", and
   that branch is exactly what the 20 s SessionStart path opts out of (`sourceBuild: false`).
+
+  **13.2.0 (PR #59, measured 2026-11-21, Node v26.8.1, linux-x64, scratch copies of the
+  installed package):** corrupt prebuild + healthy `build/Release` → **opens via
+  `build/Release`**; corrupt prebuild alone → fails (control); **healthy prebuild + corrupt
+  `build/Release` → fails** — the shadow now runs the other way. D#928 (v6.35.5): before any npm step,
+  `ensureBetterSqlite3Working` renames compiled addons that fail to load in a fresh process to
+  `<file>.unusable`, only when the prebuild loads in their place, and puts them back if the tree
+  still does not open — no compile, so the SessionStart path heals it too (real-fixture tests in
+  `tests/native-binding-selfheal.test.mjs`, `binding-probe-cli.mjs` and `rebuild-binding` end to
+  end). A normal install never writes a `build/` addon:
+  `binding.gyp` (byte-identical to 13.0.3) compiles nothing when `node lib/binding.js` reports
+  a prebuild, so the implicit `node-gyp rebuild` writes no addon — checked with
+  `npm ci --ignore-scripts` (no `build/`) and with npm 11.19.0's default, which runs the script
+  and only warns; in both 13.2.0 dlopens the prebuild. Our own source build (`build-release`,
+  `--force_build=1`) compiles, and quarantines the prebuild first. The quarantine is no longer what makes the compile load; it is
+  kept. Sandbox phases on the PR tree: A 47/47, B 56/56, both self-heal arms executed.
 - **Never name the native addon's path — ask `lib/binding.js`'s `getPrebuildPath()`.** The
   literal has now gone stale twice on one dependency bump: `tests/install-bsqlite-probe.test.mjs`
   (caught by its control) and both sandbox phases (caught by nothing for four minor versions).
+  The ORDER is a third thing that moves: `getPrebuildPath()` names the prebuild, not the file
+  that loads, and the sandbox's `loadedBindingPath()` asked it first until 13.2.0 inverted the
+  order — on a tree holding both it named a file 13.2.0 does not load (checked 2026-11-21
+  against the addon Node maps).
 - **Deep search answers questions the corpus cannot answer, and the recall ruler cannot
   see it.** Measured 2026-09-06 with `benchmark/deep-search-holdout.mjs` (the suite's own
   queries asked of a corpus with their `relevant_ids` deleted): **mean FP@10 = 10.00,
@@ -1633,6 +1653,29 @@ every main-thread transcript on the maintainer's machine (both arms exit 0):
   query-side expansion — mapping a query term to the word forms the index actually holds —
   is untested and would need its own run of this same ruler.
 
+  **Query side, 2026-11-10 (converge R29): a word-form tier that runs only when the strict AND
+  and the OR relaxation both return nothing — WITHDRAWN before 6.33.0's tag, never released.**
+  Two pre-tag review rounds each found a real-shape defect in it: r1, its rows joined a search
+  another leg had answered and ranked above the exact match; r2, the repair that dropped them
+  then removed the very memories the search was for whenever any other leg matched (a stored
+  prompt saying "crashes" sufficed), and in MCP's auto mode three word-form rows first blocked
+  the deep escalation. A return should rank these rows after the as-written ones rather than
+  drop them, and measure on queries that return nothing as written. The record below is of the
+  withdrawn tier (`searchObservationsHybrid`, each
+  Latin word's Porter stem as an FTS5 prefix, the y spelling added where Porter wrote i, stems
+  under four letters skipped). It cannot reorder a search that found anything, so its cost is
+  confined to searches that had no observation result.
+  **Read this ruler result before quoting it**: denoise-ab read Δ=0.000 on all four suites. The
+  reach probe first recorded here (`tasks/converge-r29/reach.mjs`, local) read 0 of 76 suite
+  queries reaching the tier, but it counted a reach by `effectiveFtsQuery`, which the tier never
+  sets, so it could only read 0; the 6.33.0 pre-tag claims review re-measured by disabling the
+  tier: **8 of the 76 reach it (all in identifier_parts, e.g. `LayoutEffect` → `layouteffect*`),
+  and it returned 0 rows on each**, so Δ=0 holds and the ruler did run it. The real-search
+  figure (30 unique `mem_search` / CLI `search` queries, 2 returned nothing) came from the same
+  blind counter, so whether the tier fired there is unknown. Its precision when it fires is
+  unmeasured, and the gain shown is the constructed single-word shape (`crash` → a memory
+  saying "crashes").
+
 - **A real shell parser (tree-sitter-bash) for the hook-path file extraction — measured
   2026-09-26, REJECTED (D#100 item 4).** Three reviews in a row found superlinear shapes in
   the hand-written parser, which is why this was worth deciding once. Measured in a scratch
@@ -1682,6 +1725,62 @@ every main-thread transcript on the maintainer's machine (both arms exit 0):
   **Next, if anything:** after the report fix ships, count sessions whose Last Session is
   still model-sourced and label them; retiring the per-Stop model worker is the candidate
   if they read wrong. D#95 (the input) stays open.
+
+- **Dropping the MCP idle pass's FTS5 `optimize` — measured 2026-11-10, REJECTED (D#595,
+  now D#761).** The idle pass (`server.mjs`, once per MCP process after 5 idle minutes)
+  rewrites the whole FTS index with no page check, and on a store whose freelist lists a live
+  leaf one such rewrite garbled 12 of 300 observations (D#595). Taking it off the unattended
+  path, leaving only the explicit `maintain` one, was the cheap narrowing. Measured first,
+  with the decision rule written down before the run (≤ 1 ms p50, ≤ 5 ms p95, ≤ 1.5× FTS data
+  to drop it). Population: a backup copy of this machine's store on tree `08d84680` (1,211
+  observations, every project), the 300 most recent distinct user prompts, each through
+  `searchProductionHybrid`, the two arms interleaved ABBA × 6, median per query. The
+  not-optimized arm is the same copy after FTS `delete-all` and a row-by-row replay (one
+  transaction per insert, then one per delete + insert), automerge only:
+
+  | arm | p50 / p95 ms per search | FTS data |
+  |---|---|---|
+  | optimized | 3.380 / 19.351 | 1,442,295 B |
+  | not optimized | 8.026 / 63.221 | 2.043× |
+  | per-query difference | 4.890 / 44.314 | — |
+
+  At 4× (the rows copied, 4,844) the difference is 8.008 / 74.128 ms. The same ids came back
+  for 300 of 300 queries and FTS `integrity-check` passed on both arms. An insert-only replay
+  (exploratory, not in the rule) leaves FTS data at 1.033× and still reads 8.299 against
+  3.505 ms at p50: the gain is merging the per-transaction segments, not dropping tombstones,
+  so a gentler write mix keeps it. Removing the pass would charge every search about 5 ms at
+  p50 to close one path to a hazard that ordinary writes also reach (automerge allocates from
+  the same freelist — reasoned from SQLite's allocator, not reproduced). It stays until
+  D#593's page check can gate it. Not ways around it: a
+  `quick_check` gate (SQLite skips the freelist check in some layouts), FTS5 `merge` (it
+  allocates pages the same way). Script `tasks/remaining-6310/d595.mjs` (local, untracked).
+
+- **PreToolUse volume levers S2(a) per-session cap and S2(b) type filter — measured
+  2026-11-24 (R4), REJECTED by the maintainer.** Pre-registered in
+  `docs/audits/20261110-r4-preregistration.md` before any reading; run on a frozen corpus
+  (`benchmark/results/r4-corpus-20261124`, 55 sessions on 6.31.0, 1,847 pretool blocks).
+  S2(a) keeps the first N = 22 blocks per session (median, floor) and removes 856 blocks,
+  48.2% of pretool bytes; S2(b) keeps only bugfix / decision rows with importance ≥ 2 and a
+  lesson and removes 802 whole blocks, 44.1% of the bytes. Blind judge, 30 per group:
+
+  | group | as registered | pointer blocks given their text |
+  |---|---|---|
+  | A — removed by S2(a) | APPLICABLE 2/30 | **3/30** [3.5, 25.6] |
+  | B — removed by S2(b) | APPLICABLE 2/30 | **3/30** |
+  | C — kept by both | APPLICABLE 4/30 | 4/30 [5.3, 29.7] |
+
+  MISLEADING 0 of 97 judgements. **As written, both levers pass** (≤ 2/30, not above C,
+  ≥ 30% of bytes) — but all 19 UNCLEAR samples were pointer-only Read→Edit nudges
+  (`Lessons #X were shown when you Read …`) carrying no lesson text, 29.5% of the population,
+  so the registered sample format (R3 §4.3) could not see them. Given the text the model saw
+  at that Read (a supplementary judge, decided after the readings), both removed groups read
+  3/30 and fail the ≤ 2/30 condition. The two arms cannot be told apart from C at n = 30
+  either way, and the saving is about 0.1–0.2% of input tokens against roughly 1.5
+  applicable blocks lost per session. **Do not re-propose either lever without new data**
+  (evidence that non-applicable blocks cause harm, or a lever aimed at a narrower population).
+  **Ruler lesson:** a blind-judge sample of a pointer block must carry the content it points
+  at — register that before the run. Report: `docs/audits/20261124-r4-session-history-analysis.md`
+  §5; raw labels in `tasks/r4/` (local only).
 
 ## Condensed surfaces — original wording (pre-20 KB cap, v6.5.0)
 

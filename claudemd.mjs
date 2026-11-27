@@ -18,9 +18,11 @@
 //
 // See docs/CLAUDE-MD-STEERING-PLAN.md for rationale + migration.
 
-import { readFileSync, existsSync, unlinkSync, mkdirSync, rmdirSync, readdirSync, lstatSync } from 'fs';
+import { existsSync, unlinkSync, mkdirSync, rmdirSync, readdirSync, lstatSync, statSync } from 'fs';
 import { atomicWriteFileSync as atomicWrite } from './lib/atomic-write.mjs';
-import { basename, join } from 'path';
+import { readRegularText, readRegularTextOrThrow } from './lib/regular-file.mjs';
+import { linkRefusal, refusalText } from './lib/project-link.mjs';
+import { join, basename } from 'path';
 import { createHash } from 'crypto';
 import { memdirPath, removePluginSection, removePluginDoc, isAdopted as memdirIsAdopted } from './memdir.mjs';
 
@@ -55,11 +57,14 @@ export function claudeMdPath(cwd, layout = PRIMARY_LAYOUT) {
 function dotDir(cwd, layout) {
   return join(cwd, layout.dir);
 }
+const docRel = (slug, layout) => `${layout.dir}/plugin_${slugSnake(slug)}.md`;
+const stateRel = (slug, layout) => `${layout.dir}/.plugin_${slugSnake(slug)}_state.json`;
+
 export function detailDocPath(cwd, slug, layout = PRIMARY_LAYOUT) {
-  return join(dotDir(cwd, layout), `plugin_${slugSnake(slug)}.md`);
+  return join(cwd, docRel(slug, layout));
 }
 function stateFilePath(cwd, slug, layout = PRIMARY_LAYOUT) {
-  return join(dotDir(cwd, layout), `.plugin_${slugSnake(slug)}_state.json`);
+  return join(cwd, stateRel(slug, layout));
 }
 /**
  * Every (context file, detail doc) pair this module manages - for callers that report
@@ -74,8 +79,19 @@ export function contextTargets(cwd, slug) {
   }));
 }
 
-// First line of the detail doc - an invisible (in rendered markdown) marker that
-// lets us distinguish our generated copy from a user's same-named file.
+// The three files adopt writes for ONE layout, each with whether the plugin writes it whole
+// (lib/project-link.mjs).
+const managedTargets = (slug, layout = PRIMARY_LAYOUT) => [
+  [layout.contextFile, false],
+  [docRel(slug, layout), true],
+  [stateRel(slug, layout), true],
+];
+
+// Throws the first refusal: a link on the way to `rel` that the plugin must not write through.
+function assertWritable(cwd, rel, whole) {
+  const r = linkRefusal(cwd, rel, { whole });
+  if (r) throw new Error(refusalText(r));
+}
 function managedByMarker(slug) {
   return `<!-- managed-by: ${slug} -->`;
 }
@@ -150,7 +166,8 @@ function orphanSentinelCount(raw, slug) {
 export function straySentinelLines(p, slug) {
   let raw;
   try {
-    raw = readFileSync(p, 'utf8');
+    // Not a regular file, or over the limit: Claude Code does not load it, so nothing in it is.
+    raw = readRegularTextOrThrow(p);
   } catch {
     return [];
   }
@@ -208,7 +225,9 @@ function isOwnImportsOnly(rest, slug) {
 export function holdsOnlyOwnLines(p, slug) {
   try {
     if (!existsSync(p)) return false;
-    const rest = readFileSync(p, 'utf8').replace(blockRegexG(slug), '');
+    const text = readRegularText(p);
+    if (text === null) return false;
+    const rest = text.replace(blockRegexG(slug), '');
     return rest.trim() === '' || isOwnImportsOnly(rest, slug);
   } catch {
     return false;
@@ -233,7 +252,9 @@ const ANY_BLOCK_RE_G =
 export function holdsOnlyPluginLines(p, slug) {
   try {
     if (!existsSync(p)) return false;
-    const rest = readFileSync(p, 'utf8').replace(blockRegexG(slug), '').replace(ANY_BLOCK_RE_G, '');
+    const text = readRegularText(p);
+    if (text === null) return false;
+    const rest = text.replace(blockRegexG(slug), '').replace(ANY_BLOCK_RE_G, '');
     return rest.trim() === '' || isOwnImportsOnly(rest, slug);
   } catch {
     return false;
@@ -247,8 +268,9 @@ export function holdsOnlyPluginLines(p, slug) {
  * @returns {'added'|'present'}
  */
 export function addAgentsImports(cwd, slug, imports) {
+  assertWritable(cwd, 'CLAUDE.md', false);
   const p = claudeMdPath(cwd);
-  const raw = existsSync(p) ? readFileSync(p, 'utf8') : '';
+  const raw = existsSync(p) ? readRegularTextOrThrow(p) : '';
   const marker = agentsImportMarker(slug);
   if (raw.includes(marker)) return 'present';
   const lines = `${marker}\n${imports.map((i) => `@${i}`).join('\n')}\n`;
@@ -295,15 +317,77 @@ function clearState(cwd, slug, layout = PRIMARY_LAYOUT) {
  * @returns {{ exists: boolean, version: string|null, body: string|null, raw: string }}
  */
 export function readBlock(cwd, slug, layout = PRIMARY_LAYOUT) {
-  const p = claudeMdPath(cwd, layout);
+  return readBlockAt(claudeMdPath(cwd, layout), slug);
+}
+
+// Every read of an instruction file in this module goes through lib/regular-file.mjs: null (or a
+// throw) for a FIFO, a device or a file over Claude Code's 4194304-byte limit. The session sync
+// reads instruction files in every directory above the project (D#509(4)), /tmp among them, where
+// any local user can put a FIFO (v6.32.0 pre-release defects review F1) or a huge file (delta
+// review R2-1); inside the project a repository can commit a symlink to a device.
+
+/**
+ * readBlock for any instructions file - CLAUDE.md, QWEN.md, or the CLAUDE.local.md that
+ * auto-adopt writes (lib/local-steering.mjs). One parser, so both files get the same CRLF,
+ * orphan and duplicate handling.
+ * @param {string} p absolute path of the file
+ * @param {string} slug
+ * @returns {{ exists: boolean, version: string|null, body: string|null, raw: string }}
+ */
+export function readBlockAt(p, slug) {
   if (!existsSync(p)) return { exists: false, version: null, body: null, raw: '' };
-  const raw = readFileSync(p, 'utf8');
+  const raw = readRegularText(p);
+  if (raw === null) return { exists: true, version: null, body: null, raw: '' };
   const m = raw.match(blockRegex(slug));
   if (!m) return { exists: true, version: null, body: null, raw };
   // Normalize CRLF in the captured body so drift comparison (needsRefresh) is
   // line-ending-agnostic - a CRLF-saved file matching the shipped LF content
   // must NOT be seen as drifted and rewritten every session.
   return { exists: true, version: m[1], body: m[2].replace(/\r\n/g, '\n'), raw };
+}
+
+/**
+ * Is `relPath` - an UNTRACKED path as `git status --porcelain` prints it, relative to `cwd` -
+ * nothing but this plugin's own adoption output? True for a CLAUDE.md or QWEN.md that holds only
+ * our managed block (and adopt's AGENTS.md imports), for our detail doc (checked by its
+ * managed-by marker, so a user's file of the same name is not ours) or state sidecar, and for a
+ * `.claude/` or `.qwen/` directory holding only those. The startup dashboard and the handoff's
+ * tree state count uncommitted files to describe the USER's work; counting what the first
+ * SessionStart itself wrote told the model "2 uncommitted file(s)" on a clean repo
+ * (docs/audits/20260929-sandbox-usage-eval.md). Any read failure answers false: counting a file
+ * is the safe mistake.
+ * @param {string} cwd
+ * @param {string} relPath
+ * @param {string} slug
+ * @returns {boolean}
+ */
+export function isOwnAdoptionArtifact(cwd, relPath, slug) {
+  try {
+    const rel = String(relPath).replace(/\/+$/, '');
+    if (LAYOUTS.some((layout) => rel === layout.contextFile) || rel === 'CLAUDE.local.md') {
+      const p = join(cwd, rel);
+      return readBlockAt(p, slug).body !== null && holdsOnlyOwnLines(p, slug);
+    }
+    for (const layout of LAYOUTS) {
+      const dir = dotDir(cwd, layout);
+      const docName = basename(detailDocPath(cwd, slug, layout));
+      const stateName = basename(stateFilePath(cwd, slug, layout));
+      const ownFile = (name) =>
+        name === stateName ||
+        (name === docName && readRegularTextOrThrow(join(dir, name)).startsWith(managedByMarker(slug)));
+      if (rel === layout.dir) {
+        const names = readdirSync(dir);
+        return names.length > 0 && names.every(ownFile);
+      }
+      const prefix = `${layout.dir}/`;
+      if (rel.startsWith(prefix) && !rel.slice(prefix.length).includes('/')) {
+        return ownFile(rel.slice(prefix.length));
+      }
+    }
+  } catch {
+    /* unreadable -> not provably ours */
+  }
+  return false;
 }
 
 /**
@@ -373,7 +457,7 @@ function layoutNeedsRefresh(cwd, layout, { slug, version, block, doc }) {
   if (!existsSync(dp)) return true;
   let cur;
   try {
-    cur = readFileSync(dp, 'utf8');
+    cur = readRegularText(dp);
   } catch {
     return true;
   }
@@ -392,6 +476,7 @@ function layoutNeedsRefresh(cwd, layout, { slug, version, block, doc }) {
  * @returns {{action: 'created'|'updated'|'unchanged', docAction: 'created'|'updated'|'unchanged'}}
  *   (block disposition, and the detail doc's)
  */
+
 export function writeManaged(cwd, args) {
   // Both layouts get the same block/doc text. The steering text is host-neutral apart from
   // its detail-doc pointer, which names the pair (adopt-content.mjs), so there is no
@@ -408,8 +493,43 @@ export function writeManaged(cwd, args) {
 }
 
 function writeManagedIn(cwd, layout, { slug, version, block, doc }) {
-  const p = claudeMdPath(cwd, layout);
-  const raw = existsSync(p) ? readFileSync(p, 'utf8') : '';
+  // The shared writer writes THROUGH a link (for a dotfiles-managed context file), and a cloned
+  // repository can commit links: one as the doc or the state, as .claude/.qwen, or as the context
+  // file had this write outside the project (D#880). All three are checked before anything is
+  // written, so a refusal leaves the context file as it was too.
+  for (const [rel, whole] of managedTargets(slug, layout)) assertWritable(cwd, rel, whole);
+  const { action } = writeBlockAt(claudeMdPath(cwd, layout), { slug, version, block });
+
+  // Detail doc (marker on first line so unadopt/refresh can tell it apart from a
+  // user's same-named file).
+  const docContent = `${managedByMarker(slug)}\n${doc}`;
+  const dp = detailDocPath(cwd, slug, layout);
+  const dir = dotDir(cwd, layout);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const existingDoc = existsSync(dp) ? readRegularTextOrThrow(dp) : null;
+  if (existingDoc !== docContent) atomicWrite(dp, docContent);
+  const docAction = existingDoc === null ? 'created' : existingDoc === docContent ? 'unchanged' : 'updated';
+
+  // Written only when what it records changed: it is committed alongside the block in a team
+  // repo, and a fresh writtenAt on every re-run of adopt left a diff each time (E2E
+  // 2026-10-16). Nothing reads writtenAt.
+  const blockHash = sha256(block);
+  const docHash = sha256(doc);
+  let prev = null;
+  try {
+    prev = JSON.parse(readRegularTextOrThrow(stateFilePath(cwd, slug, layout)));
+  } catch {
+    /* absent or unreadable: write it */
+  }
+  if (!(prev?.version === version && prev?.blockHash === blockHash && prev?.docHash === docHash)) {
+    writeState(cwd, slug, { version, blockHash, docHash, writtenAt: new Date().toISOString() }, layout);
+  }
+  return { action, docAction };
+}
+
+export function writeBlockAt(p, { slug, version, block }) {
+  // Throws for a FIFO, a device or an over-limit file: nothing is written over it.
+  const raw = existsSync(p) ? readRegularTextOrThrow(p) : '';
   const section = renderBlock(slug, version, block);
   const m = raw.match(blockRegex(slug));
 
@@ -429,7 +549,7 @@ function writeManagedIn(cwd, layout, { slug, version, block, doc }) {
   }
   // H2: collapse any DUPLICATE same-slug blocks (keep the first, drop the rest).
   // Defends against a CRLF-orphaned copy a pre-fix build may have appended, or a
-  // user paste - otherwise the extras would be invisible to refresh/unadopt.
+  // user paste — otherwise the extras would be invisible to refresh/unadopt.
   let seen = 0;
   const deduped = next.replace(blockRegexG(slug), (whole) => (seen++ === 0 ? whole : ''));
   if (deduped !== next) {
@@ -437,32 +557,7 @@ function writeManagedIn(cwd, layout, { slug, version, block, doc }) {
     if (action === 'unchanged') action = 'updated';
   }
   if (next !== raw) atomicWrite(p, next);
-
-  // Detail doc (marker on first line so unadopt/refresh can tell it apart from a
-  // user's same-named file).
-  const docContent = `${managedByMarker(slug)}\n${doc}`;
-  const dp = detailDocPath(cwd, slug, layout);
-  const dir = dotDir(cwd, layout);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const existingDoc = existsSync(dp) ? readFileSync(dp, 'utf8') : null;
-  if (existingDoc !== docContent) atomicWrite(dp, docContent);
-  const docAction = existingDoc === null ? 'created' : existingDoc === docContent ? 'unchanged' : 'updated';
-
-  // Written only when what it records changed: it is committed alongside the block in a team
-  // repo, and a fresh writtenAt on every re-run of adopt left a diff each time (E2E
-  // 2026-10-16). Nothing reads writtenAt.
-  const blockHash = sha256(block);
-  const docHash = sha256(doc);
-  let prev = null;
-  try {
-    prev = JSON.parse(readFileSync(stateFilePath(cwd, slug, layout), 'utf8'));
-  } catch {
-    /* absent or unreadable: write it */
-  }
-  if (!(prev?.version === version && prev?.blockHash === blockHash && prev?.docHash === docHash)) {
-    writeState(cwd, slug, { version, blockHash, docHash, writtenAt: new Date().toISOString() }, layout);
-  }
-  return { action, docAction };
+  return { action };
 }
 
 /**
@@ -482,30 +577,107 @@ function writeManagedIn(cwd, layout, { slug, version, block, doc }) {
  * (that is the defect, not a detail), and guessing a span in a file we do not own is how the
  * adopt side came to delete a user's runbook. Report, do not repair.
  *
- * @returns {{action: 'removed'|'partial'|'absent', residue?: string}}
+ * A file reached through a link the plugin must not write through (lib/project-link.mjs) is left as
+ * it is, and named in `left`: a cloned repository's committed `.claude` link had unadopt delete two
+ * files in the directory it picked (D#880). `skipped-symlink` = CLAUDE.md was such a file; the doc
+ * and the state then stay too.
+ *
+ * @returns {{action: 'removed'|'partial'|'absent'|'skipped-symlink', residue?: string,
+ *   left?: {link: string, why: string}[]}}
  */
 export function removeManaged(cwd, slug) {
-  // One outcome for the caller, as before: 'removed' wins over 'partial' wins over
-  // 'absent', and any residue text from either layout rides along. A sweep that empties
-  // one host's file and finds an orphan in the other's is 'removed' + residue - the two
-  // facts stay separate, as their docblocks below insist.
+  // One outcome for the caller: a block left behind a refused link wins, then 'removed' over
+  // 'partial' over 'absent' (the same precedence the single-file version used). Residue and
+  // `left` from either layout ride along; the two facts stay separate.
   let action = 'absent';
   const residues = [];
+  const left = [];
   for (const layout of LAYOUTS) {
     const r = removeManagedIn(cwd, slug, layout);
-    if (r.action === 'removed') action = 'removed';
+    if (r.action === 'skipped-symlink') action = 'skipped-symlink';
+    else if (r.action === 'removed' && action !== 'skipped-symlink') action = 'removed';
     else if (r.action === 'partial' && action === 'absent') action = 'partial';
     if (r.residue) residues.push(r.residue);
+    if (r.left) left.push(...r.left);
   }
-  return residues.length ? { action, residue: residues.join(' ') } : { action };
+  const out = { action };
+  if (residues.length) out.residue = residues.join(' ');
+  if (left.length) out.left = left;
+  return out;
 }
 
 function removeManagedIn(cwd, slug, layout) {
   const p = claudeMdPath(cwd, layout);
+  const left = [];
+  // A context file the plugin will not write through is left alone only while the block is in it
+  // (read with a bound, never written): once the user has taken the block out by hand, the rest
+  // goes.
+  const mdRefusal = linkRefusal(cwd, layout.contextFile);
+  const mdLeft = mdRefusal !== null && readBlockAt(p, slug).body !== null;
+  if (mdLeft) left.push(mdRefusal);
+  const { action, orphans } = mdLeft
+    ? { action: 'skipped-symlink', orphans: 0 }
+    : mdRefusal
+      ? { action: 'absent', orphans: 0 }
+      : removeBlockAt(p, slug);
+  // The doc and the state go only with the block: a block left behind a link still points at the
+  // doc (v6.35.4 pre-tag round 1, F5). Deleting either one is unlinkSync, which removes a link
+  // itself, not what it names; what can lead it out of the project is a .claude/.qwen link.
+  const dirRefusal = linkRefusal(cwd, layout.dir);
+  if (dirRefusal) left.push(dirRefusal);
+  const keep = dirRefusal !== null || mdLeft;
+  const dp = detailDocPath(cwd, slug, layout);
+  const wasOurs = action === 'removed' || existsSync(dp) || existsSync(stateFilePath(cwd, slug, layout));
+  if (!keep && existsSync(dp))
+    try {
+      unlinkSync(dp);
+    } catch {
+      /* best-effort */
+    }
+  if (!keep) clearState(cwd, slug, layout);
+  // Drop an emptied .claude/ (or .qwen/) so unadopt leaves no trace (skips if it holds
+  // anything else - e.g. settings.local.json).
+  try {
+    const dir = dotDir(cwd, layout);
+    if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
+  } catch {
+    /* best-effort */
+  }
+  // `action` answers ONE question - what happened to the block - and `residue` is an
+  // independent fact that rides alongside it. A first cut let an orphan override 'removed'
+  // too, on the reasoning that both are "unfinished". Pre-ship review P2-1: unadoptAll's
+  // else-branch prints "cleaned partial residue (detail doc/state, no block)" and counts
+  // `partial++`, so a sweep that DID remove a block reported "no block" and tallied zero
+  // removals. Two facts, two fields.
+  const residue = orphans > 0 && wasOurs ? orphanResidueNote(orphans, slug, p) : null;
+  const leftField = left.length > 0 ? { left } : {};
+  if (action === 'removed') return residue ? { action, residue, ...leftField } : { action, ...leftField };
+  if (residue) return { action: 'partial', residue, ...leftField };
+  return { action, ...leftField };
+}
+
+export function orphanResidueNote(orphans, slug, p) {
+  return `${orphans} unpaired \`${slug}\` sentinel line(s) remain in ${p} — the block they opened has no matching end marker, so its extent cannot be determined safely. Remove those lines and the text they wrap by hand.`;
+}
+
+function regularFileLimit(p) {
+  try {
+    const st = statSync(p);
+    return st.size > 4194304 ? st.size : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function removeBlockAt(p, slug) {
   let action = 'absent';
   let orphans = 0;
-  if (existsSync(p)) {
-    let raw = readFileSync(p, 'utf8');
+  // A FIFO or a device is not read and holds no block: a repository can commit
+  // `CLAUDE.md -> /dev/zero`. A regular file is read whatever its size, as before: Claude Code
+  // does not load one over 4 MiB, but the block the user asked to remove still comes out.
+  const found = existsSync(p) ? readRegularText(p, regularFileLimit(p)) : null;
+  if (found !== null) {
+    let raw = found;
     // H2: loop so ALL same-slug blocks are removed, not just the first (a
     // duplicate/CRLF-orphaned copy must not survive unadopt).
     let m;
@@ -527,11 +699,11 @@ function removeManagedIn(cwd, slug, layout) {
       // When the managed block was the ENTIRE file (adopt created CLAUDE.md
       // because none existed), removing it leaves nothing but whitespace.
       // Delete the now-empty file rather than writing a 0-byte CLAUDE.md, so
-      // unadopt fully restores the pre-adopt state - mirrors the emptied-.claude/
+      // unadopt fully restores the pre-adopt state — mirrors the emptied-.claude/
       // cleanup below ("unadopt leaves no trace").
       //
       // UNLESS the path is a SYMLINK (audit R7 P2-2). writeManaged reaches this file
-      // through atomicWriteFileSync, which lstats and writes THROUGH a link on purpose -
+      // through atomicWriteFileSync, which lstats and writes THROUGH a link on purpose —
       // that is the audit 2026-09-02 P0-5 fix, for CLAUDE.md symlinked into a dotfiles
       // repo (chezmoi/stow/yadm). Unlinking here would delete the LINK and orphan the
       // target, i.e. undo that invariant on the removal side. Empty it through the link
@@ -559,41 +731,7 @@ function removeManagedIn(cwd, slug, layout) {
     // a matched pair) reports zero and only a genuinely unpaired line survives the count.
     orphans = orphanSentinelCount(raw, slug);
   }
-  // Captured BEFORE the deletions below, because they are what it asks about: is there any
-  // evidence the plugin ever wrote in this project? An unpaired sentinel is NOT such
-  // evidence - it is text, and a project that merely documents the marker in prose has one
-  // (pre-ship review P2-3). Reporting residue there means telling a stranger to delete their
-  // own paragraph, on a project this tool has never touched.
-  const dp = detailDocPath(cwd, slug, layout);
-  const wasOurs = action === 'removed' || existsSync(dp) || existsSync(stateFilePath(cwd, slug, layout));
-  if (existsSync(dp))
-    try {
-      unlinkSync(dp);
-    } catch {
-      /* best-effort */
-    }
-  clearState(cwd, slug, layout);
-  // Drop an emptied .claude/ (or .qwen/) so unadopt leaves no trace (skips if it holds
-  // anything else - e.g. settings.local.json).
-  try {
-    const dir = dotDir(cwd, layout);
-    if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
-  } catch {
-    /* best-effort */
-  }
-  // `action` answers ONE question - what happened to the block - and `residue` is an
-  // independent fact that rides alongside it. A first cut let an orphan override 'removed'
-  // too, on the reasoning that both are "unfinished". Pre-ship review P2-1: unadoptAll's
-  // else-branch prints "cleaned partial residue (detail doc/state, no block)" and counts
-  // `partial++`, so a sweep that DID remove a block reported "no block" and tallied zero
-  // removals. Two facts, two fields.
-  const residue =
-    orphans > 0 && wasOurs
-      ? `${orphans} unpaired \`${slug}\` sentinel line(s) remain in ${claudeMdPath(cwd, layout)} - the block they opened has no matching end marker, so its extent cannot be determined safely. Remove those lines and the text they wrap by hand.`
-      : null;
-  if (action === 'removed') return residue ? { action, residue } : { action };
-  if (residue) return { action: 'partial', residue };
-  return { action };
+  return { action, orphans };
 }
 
 // ─── Legacy migration ────────────────────────────────────────────────────────
@@ -623,145 +761,4 @@ export function migrateLegacyMemoryDir(cwd, slug, { force = false } = {}) {
 /** True if the legacy memory-dir sentinel still exists for this project. */
 export function hasLegacyMemdirSentinel(cwd, slug) {
   return memdirIsAdopted(memdirPath(cwd), slug);
-}
-
-// ─── Upstream generic API, re-applied on the fork's layout layer ─────────────
-// thenewnano/qwen-mem-lite v6.20 refactored the block codec to be path-based so a
-// second instructions file could reuse it (CLAUDE.local.md steering). The fork
-// keeps its dual-layout writer (CLAUDE.md + QWEN.md); these are the path-based
-// entry points the upstream modules (lib/local-steering.mjs, lib/quiet-scope.mjs)
-// import. One codec, two callers.
-
-/**
- * Path-based read of the slug block in one instructions file.
- * @param {string} p absolute path of the file
- * @param {string} slug
- * @returns {{ exists: boolean, version: string|null, body: string|null, raw: string }}
- */
-export function readBlockAt(p, slug) {
-  if (!existsSync(p)) return { exists: false, version: null, body: null, raw: '' };
-  const raw = readFileSync(p, 'utf8');
-  const m = raw.match(blockRegex(slug));
-  if (!m) return { exists: true, version: null, body: null, raw };
-  return { exists: true, version: m[1], body: m[2].replace(/\r\n/g, '\n'), raw };
-}
-
-/**
- * Is `relPath` nothing but this plugin's own adoption output (its managed block
- * and adopt's AGENTS.md imports)? Used by the startup dashboard / handoff so a
- * clean repo does not read as "N uncommitted files".
- * @param {string} cwd
- * @param {string} relPath
- * @param {string} slug
- * @returns {boolean}
- */
-export function isOwnAdoptionArtifact(cwd, relPath, slug) {
-  try {
-    const rel = String(relPath).replace(/\/+$/, '');
-    if (rel === 'CLAUDE.md' || rel === 'CLAUDE.local.md' || rel === 'QWEN.md') {
-      const p = join(cwd, rel);
-      return readBlockAt(p, slug).body !== null && holdsOnlyOwnLines(p, slug);
-    }
-    const claudeDir = dotDir(cwd, PRIMARY_LAYOUT);
-    const docName = basename(detailDocPath(cwd, slug));
-    const stateName = basename(stateFilePath(cwd, slug));
-    const ownFile = (name) =>
-      name === stateName ||
-      (name === docName && readFileSync(join(claudeDir, name), 'utf8').startsWith(managedByMarker(slug)));
-    if (rel === '.claude') {
-      const names = readdirSync(claudeDir);
-      return names.length > 0 && names.every(ownFile);
-    }
-    if (rel.startsWith('.claude/') && !rel.slice(8).includes('/')) return ownFile(rel.slice(8));
-  } catch {
-    /* unreadable → not provably ours */
-  }
-  return false;
-}
-
-/**
- * Insert-or-replace our block in one instructions file (created if absent).
- * @param {string} p absolute path of the file
- * @returns {{action: 'created'|'updated'|'unchanged'}}
- */
-export function writeBlockAt(p, { slug, version, block }) {
-  const raw = existsSync(p) ? readFileSync(p, 'utf8') : '';
-  const section = renderBlock(slug, version, block);
-  const m = raw.match(blockRegex(slug));
-
-  let next, action;
-  if (!m) {
-    if (raw.length === 0) next = section + '\n';
-    else if (raw.endsWith('\n\n')) next = raw + section + '\n';
-    else if (raw.endsWith('\n')) next = raw + '\n' + section + '\n';
-    else next = raw + '\n\n' + section + '\n';
-    action = 'created';
-  } else {
-    next = raw.replace(m[0], () => section);
-    action = next !== raw ? 'updated' : 'unchanged';
-  }
-  let seen = 0;
-  const deduped = next.replace(blockRegexG(slug), (whole) => (seen++ === 0 ? whole : ''));
-  if (deduped !== next) {
-    next = deduped.replace(/\n{3,}/g, '\n\n');
-    if (action === 'unchanged') action = 'updated';
-  }
-  if (next !== raw) atomicWrite(p, next);
-  return { action };
-}
-
-/**
- * The residue line for unpaired sentinels left in `p` after a removal.
- * @returns {string}
- */
-export function orphanResidueNote(orphans, slug, p) {
-  return `${orphans} unpaired \`${slug}\` sentinel line(s) remain in ${p} - the block they opened has no matching end marker, so its extent cannot be determined safely. Remove those lines and the text they wrap by hand.`;
-}
-
-/**
- * Remove every well-formed block of `slug` from one instructions file, keeping
- * all other text; a file left holding only whitespace is deleted (a symlink is
- * emptied through the link instead).
- * @param {string} p absolute path of the file
- * @returns {{action: 'removed'|'absent', orphans: number}}
- */
-export function removeBlockAt(p, slug) {
-  let action = 'absent';
-  let orphans = 0;
-  if (existsSync(p)) {
-    let raw = readFileSync(p, 'utf8');
-    let m;
-    while ((m = raw.match(blockRegex(slug)))) {
-      const blockAtStart = m.index === 0;
-      let start = m.index;
-      let end = m.index + m[0].length;
-      if (raw[end] === '\n') end++;
-      if (start > 0 && raw.slice(0, start).endsWith('\n\n')) start--;
-      raw = raw.slice(0, start) + raw.slice(end);
-      raw = raw.replace(/\n{3,}/g, '\n\n');
-      if (blockAtStart) raw = raw.replace(/^\s+/, '');
-      action = 'removed';
-    }
-    if (action === 'removed') {
-      let isLink = false;
-      try {
-        isLink = lstatSync(p).isSymbolicLink();
-      } catch {
-        /* raced away */
-      }
-      if (raw.trim() === '' && !isLink) {
-        try {
-          unlinkSync(p);
-        } catch (e) {
-          // ENOENT: another process deleted it first (two sessions starting at once, pre-tag defect
-          // review of D#212, P1-1). Writing the empty text back would recreate it for good.
-          if (e?.code !== 'ENOENT') atomicWrite(p, raw);
-        }
-      } else {
-        atomicWrite(p, raw);
-      }
-    }
-    orphans = orphanSentinelCount(raw, slug);
-  }
-  return { action, orphans };
 }

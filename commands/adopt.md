@@ -21,6 +21,9 @@ next to an `AGENTS.md`, excluded the same way. Run `/adopt` when you want the bl
 copy so the text does not load twice. A project that carries the block is kept in sync on every
 SessionStart, and a `CLAUDE.md` holding nothing but the block gets the `AGENTS.md` import
 described below.
+A session started where the host already loads the current block from a directory above the
+repository root writes no local copy and adds nothing. A project file committed as a link out of
+the repository is refused rather than written through.
 
 ## What it writes
 

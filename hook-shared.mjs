@@ -190,7 +190,7 @@ export function sweepOrphanEpisodeFiles(
     // does not - that name ends in `.txt`, so `isReads` picks the 24h cutoff either way,
     // and dropping the anchor killed no test (caught by a pre-tag reviewer). What the
     // anchor actually protects is the LIVE episode buffer of a project whose sanitized
-    // name contains the token: `ep-x.tmp-y.json` matches an unanchored pattern, and would
+    // name contains the word `token`, and `ep-x.tmp-y.json` matches an unanchored pattern, and would
     // then be swept as residue one hour into a session that is still using it.
     const isCrashResidue = /\.(claim|collect|trim|tmp)-[^.]*$/.test(f);
     const isEpisode = f.startsWith('ep-flush-') || f.startsWith('pending-');
@@ -726,6 +726,7 @@ export function spawnBackground(bgEvent, ...extraArgs) {
   try {
     const child = spawn(process.execPath, args, {
       detached: true,
+      windowsHide: true,
       stdio: 'ignore',
       env: backgroundWorkerEnv(),
     });

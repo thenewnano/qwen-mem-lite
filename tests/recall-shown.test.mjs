@@ -17,8 +17,11 @@ import {
   ACK_DIRECTIVE_SHORT,
   RECALL_SHOWN_PREFIX,
   clearRecallShown,
+  errorRecallShownPath,
+  markErrorRecallShown,
   markRecallShown,
   planRecallBlock,
+  readErrorRecallShown,
   readRecallShown,
   recallShownPath,
 } from '../lib/recall-shown.mjs';
@@ -143,6 +146,16 @@ describe('SessionStart wiring (hook.mjs)', () => {
     });
   };
 
+  // R3 O3 made compaction the only in-session reset of the error-recall marker (review L6).
+  it('compact deletes the error-recall marker; resume keeps it', () => {
+    const err = errorRecallShownPath(runtime, 'sess-e');
+    markErrorRecallShown(err, new Map(), [7]);
+    start('sess-e', 'resume');
+    expect(readErrorRecallShown(err).has('7'), 'resume keeps what the thread was shown').toBe(true);
+    start('sess-e', 'compact');
+    expect(existsSync(err)).toBe(false);
+  });
+
   it('compact and startup clear the main thread; resume keeps it; a subagent thread survives', () => {
     const main = recallShownPath(runtime, 'sess-c');
     const sub = recallShownPath(runtime, 'sess-c-agent1');
@@ -168,5 +181,48 @@ describe('SessionStart wiring (hook.mjs)', () => {
     start('sess-gc', 'startup');
     expect(existsSync(stale)).toBe(false);
     expect(existsSync(fresh)).toBe(true);
+  });
+});
+
+// R3 O3 (docs/audits/20261103-r3-optimization-plan.md): the 30-minute window let one memory back
+// into the same thread.
+// The thread holds the first copy until compaction, and SessionStart `compact` deletes the marker.
+describe('error-recall marker: one showing per thread until compaction', () => {
+  let dir;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'mem-errshown-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const MIN = 60 * 1000;
+
+  it('an id shown 31 minutes or a day ago still counts as shown by default', () => {
+    const p = errorRecallShownPath(dir, 'sess-a');
+    const t0 = 1_000_000_000_000;
+    markErrorRecallShown(p, new Map(), [7, 8], t0);
+    expect([...readErrorRecallShown(p, t0 + 31 * MIN, {}).keys()].sort()).toEqual(['7', '8']);
+    expect(readErrorRecallShown(p, t0 + 25 * 60 * MIN, {}).has('7')).toBe(true);
+  });
+
+  it('QWEN_MEM_ERROR_RECALL_REPEAT_MIN restores a time window (30 = the old behaviour)', () => {
+    const p = errorRecallShownPath(dir, 'sess-b');
+    const t0 = 1_000_000_000_000;
+    markErrorRecallShown(p, new Map(), [7], t0);
+    const env = { QWEN_MEM_ERROR_RECALL_REPEAT_MIN: '30' };
+    expect(readErrorRecallShown(p, t0 + 29 * MIN, env).has('7')).toBe(true);
+    expect(readErrorRecallShown(p, t0 + 31 * MIN, env).has('7')).toBe(false);
+  });
+
+  it('a value that is not a positive number keeps the whole-thread default', () => {
+    const p = errorRecallShownPath(dir, 'sess-c');
+    const t0 = 1_000_000_000_000;
+    markErrorRecallShown(p, new Map(), [7], t0);
+    for (const v of ['0', '-5', 'abc', '']) {
+      expect(
+        readErrorRecallShown(p, t0 + 31 * MIN, { QWEN_MEM_ERROR_RECALL_REPEAT_MIN: v }).has('7'),
+        v,
+      ).toBe(true);
+    }
   });
 });

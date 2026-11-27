@@ -51,10 +51,10 @@ PreToolUse hooks already run \`mem_recall\` for past lessons before Read/Edit/Wr
 | When | Call |
 |------|------|
 | Before Edit/Write | hook already recalled; if an injected \`#NN\` lesson changed what you did, add the bare tag \`(#NN)\` once at the end of the sentence describing that change (citing = adopting; uncited lessons decay; skip ones that did not apply). No other mention of memory ids, saves or the memory store in replies to the user |
-| A recalled memory drives an answer or a design choice | check its claim in the code or \`git log\` first: \`#NN\` and \`E#NN\` rows are notes from past sessions, many written automatically, so they can be wrong, and they describe the code as it was. If the code disagrees, trust the code and replace the note: \`mem_save(..., supersedes=[NN])\`, or \`supersedes=["E#NN"]\` for an event |
+| A recalled memory drives an answer or a design choice | check its claim in the code or \`git log\` first: \`#NN\` and \`E#NN\` rows are notes from past sessions, many written automatically, so they can be wrong, and they describe the code as it was. If the code disagrees, trust the code and replace the note: \`mem_save(..., supersedes=[NN])\`, or \`supersedes=["E#NN"]\` for an event (CLI: \`save "<correction>" --supersedes NN,E#NN\`) |
 | After fixing a non-trivial bug | \`mem_save(type="bugfix", lesson_learned="<root cause + fix, only what this change's diff shows>", importance=2)\` |
 | After a non-obvious architecture decision | \`mem_save(type="decision", lesson_learned="<constraint + tradeoff>")\` |
-| Deferring to a future session | \`mem_defer({title, priority:1|2|3, detail})\`; when fixed, add \`closes_deferred=[N]\` to \`mem_save\` |
+| Deferring to a future session | \`mem_defer({title, priority:1|2|3, detail})\`; when fixed, add \`closes_deferred=[N]\` to \`mem_save\`. CLI: \`defer update D#N --title "<t>" --detail "<d>" --priority <1-3>\` edits it in place (no drop and re-add); \`save "<fix>" --closes-deferred D#N\` closes it; \`defer drop D#N --reason "<why>"\` drops it |
 | Looking up past work / history | \`mem_search "keywords"\` · \`mem_recent\` · \`mem_timeline\` |
 
 Path cost is round-trips, not milliseconds: the PreToolUse hook above already recalls (0 calls) - prefer it. For an explicit query, if these \`mem_*\` tools are deferred behind ToolSearch this session, the Bash CLI \`${CLI}\` is one call vs two (ToolSearch + call); the MCP server instructions carry the absolute path to use when it is not on PATH.
@@ -92,7 +92,7 @@ PreToolUse hook 在你 Read / Edit / Write 文件前已自动 \`mem_recall\` 该
   把 ID 记在工作记忆里，写回时引用。
 - 给用户的回复里，除了这个 \`(#NN)\` 标签，不要再提记忆编号：不要报告保存、延期得到的编号
   （如"已记进项目记忆，编号 #1"），也不要讨论记忆库本身（如"和记忆库里 #1 的记录一致"）。
-- 系统按会话追踪引用：被引用的 lesson 在召回排序里上浮，被注入却未引用的下沉（有界的排序乘数）；
+- 系统按会话追踪引用：被引用的 lesson 在搜索和提示时注入的排序里上浮，被注入却未引用的下沉（有界的排序乘数）；
   反复注入却从未被引用的，后台维护会把它的 importance 降到 2（无 lesson 的降到 1）。
   写成 \`#NN n/a\` 的驳回不算采纳：排序上与未引用相同，同样下沉——所以不必写。
   引用是给系统的反馈，不是合规仪式——注入池据此自调。
@@ -186,6 +186,8 @@ PreToolUse hook 在你 Read / Edit / Write 文件前已自动 \`mem_recall\` 该
 |------|------------------|
 | 存观测 | \`${CLI} save "<text>" --type bugfix\\|decision --lesson "<≤500 字符>" [--importance 1-3] [--closes-deferred N] [--supersedes 12,E#34]\` - \`<text>\` **必填定位参数**；\`--lesson\` 超 500 直接 fail；\`--supersedes\` 替换代码已推翻的旧记忆 |
 | 推迟工作 | \`${CLI} defer add "<title ≤200>" [--priority 1\\|2\\|3] [--detail "<约束+为何推迟>"]\` - 标题 >200 挪到 \`--detail\` |
+| 改推迟项 | \`${CLI} defer update D#N [--title T] [--detail T] [--priority 1\\|2\\|3]\` - 原地改，id 不变；不要 drop 再 add |
+| 放弃推迟项 | \`${CLI} defer drop D#N --reason "<为何不做>"\` - 修好了的用 \`save … --closes-deferred D#N\` 关闭，不要 drop |
 | 改某条 | \`${CLI} update <id> [--lesson "<≤500>"] [--title T] [--type T] [--importance 1-3] [--narrative T] [--concepts "a b c"]\` |
 | 事件日志 | \`${CLI} activity save --type <bugfix\\|lesson\\|bug\\|discovery\\|refactor\\|feature\\|observation\\|decision> "<title>" [--body T] [--files f1,f2]\` |
 

@@ -1,7 +1,7 @@
 // D#170: the published npm-shrinkwrap.json is package-lock.json without its dev-only entries.
 //
 // `npm shrinkwrap` copied the lockfile whole and npm installs a dependency's shrinkwrap whole,
-// so every registry install of claude-mem-lite carried vitest, eslint, knip and prettier.
+// so every registry install of qwen-mem-lite carried vitest, eslint, knip and prettier.
 // Measured 2026-10-07 through a local registry serving the packed tarball with _hasShrinkwrap
 // (the registry's own flag; a local-tgz install ignores the file): full lock 298 packages /
 // 541 MB on npm 11.19.0; this lock 96 / 57 MB on npm 11.19.0 and 10.9.2, with all 95

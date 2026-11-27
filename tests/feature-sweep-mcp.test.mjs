@@ -200,6 +200,9 @@ beforeAll(async () => {
     QWEN_MEM_SKIP_REPOS: '1',
     MEM_QUIET_HOOKS: '1',
     QWEN_MEM_QUIET_TRACE: '0',
+    // D18 (converge R31): displayed dates are local; a zone west of UTC is what tells a local day
+    // from a UTC one, and CI runs in UTC.
+    TZ: 'America/Los_Angeles',
   };
   delete env.QWEN_MEM_HOOK_RUNNING;
   // Both project-dir env vars are removed so the transport's `cwd` is the ONLY source
@@ -396,8 +399,10 @@ describe('MCP feature sweep: public tools', () => {
       detail: 'needs a load fixture first',
       project: 'mcpsweep-defer',
     });
-    const m = text.match(/Deferred as D#(\d+) \(item (\d+)\) in project "mcpsweep-defer"/);
+    // D17 (converge R31): the confirmation names D#N only; a `(item N)` went stale on the next add.
+    const m = text.match(/Deferred as D#(\d+) in project "mcpsweep-defer"/);
     expect(m, `unexpected mem_defer confirmation: ${text}`).toBeTruthy();
+    expect(text).not.toMatch(/\(item/);
     const row = withDb((db) =>
       db
         .prepare('SELECT title, priority, detail, status, project FROM deferred_work WHERE id = ?')
@@ -412,15 +417,67 @@ describe('MCP feature sweep: public tools', () => {
     });
   });
 
-  // D#123: the ordinal came from a 50-row page, so an item added past 50 open printed `(item ?)`.
-  it('mem_defer past 50 open items prints its ordinal', async () => {
+  // D#123 asked that an item added past 50 open be named right; since D17 by its D# id alone.
+  it('mem_defer past 50 open items names the new row by its D# id', async () => {
     const P = 'mcpsweep-defer-deep';
     withDb((db) => {
       for (let i = 1; i <= 55; i++) insertDeferred(db, { project: P, title: `deep item ${i}`, priority: 2 });
     });
     const text = await call('mem_defer', { title: 'deep item last', priority: 1, project: P });
-    expect(text).toMatch(/\(item 56\)/);
+    const id = Number(text.match(/Deferred as D#(\d+)/)[1]);
+    expect(withDb((db) => db.prepare('SELECT title FROM deferred_work WHERE id = ?').get(id).title)).toBe(
+      'deep item last',
+    );
+    expect(text).not.toMatch(/\(item/);
   });
+
+  // D17 (converge R31, user-chosen 2026-11-11, E2E MCP F1): "drop items 1 and 2" took two calls,
+  // and the list renumbered between them — the second dropped "Charlie" instead of "Bravo". One
+  // call now takes every id, resolved against the list as it stands before any is dropped.
+  it('mem_defer_drop takes several ordinals in one call, read from one list', async () => {
+    const P = 'mcpsweep-defer-multi';
+    for (const title of ['Alpha task', 'Bravo task', 'Charlie task']) {
+      await call('mem_defer', { title, priority: 2, project: P });
+    }
+    const dropped = await call('mem_defer_drop', { id: [1, 2], reason: 'scope changed', project: P });
+    expect(dropped).toContain('Alpha task');
+    expect(dropped).toContain('Bravo task');
+    const left = await call('mem_defer_list', { project: P });
+    expect(left).toContain('Charlie task');
+    expect(left).not.toMatch(/Alpha task|Bravo task/);
+  }, 30000);
+
+  // R31 delta review T1: the all-or-nothing guarantee was tested only on dropDeferredMany; the
+  // handler resolving and dropping row by row passed every test. Whichever row is dropped SECOND
+  // fails, after the first was written (keyed on order, not on an id, so a loop that drops in
+  // either order is caught — depth-2 review), and both must stay open.
+  it('mem_defer_drop: a failure on a later row leaves the earlier one open', async () => {
+    const P = 'mcpsweep-defer-atomic';
+    const ids = [];
+    for (const title of ['Alpha atomic', 'Bravo atomic']) {
+      ids.push(Number((await call('mem_defer', { title, priority: 2, project: P })).match(/D#(\d+)/)[1]));
+    }
+    withDb((db) =>
+      db.exec(`CREATE TRIGGER fail_second BEFORE UPDATE ON deferred_work
+               WHEN NEW.status = 'dropped' AND OLD.project = '${P}'
+                 AND (SELECT COUNT(*) FROM deferred_work WHERE project = '${P}' AND status = 'dropped') > 0
+               BEGIN SELECT RAISE(ABORT, 'injected failure'); END`),
+    );
+    try {
+      const res = await client.callTool({
+        name: 'mem_defer_drop',
+        arguments: { id: [1, 2], reason: 'scope changed', project: P },
+      });
+      expect(res.isError, textOf(res)).toBe(true);
+      expect(textOf(res)).toMatch(/injected failure/);
+    } finally {
+      withDb((db) => db.exec('DROP TRIGGER fail_second'));
+    }
+    const status = withDb((db) =>
+      db.prepare('SELECT status FROM deferred_work WHERE id IN (?, ?) ORDER BY id').all(ids[0], ids[1]),
+    );
+    expect(status.map((r) => r.status)).toEqual(['open', 'open']);
+  }, 30000);
 
   itTool('mem_defer_list', async () => {
     // Seeds its own rows (no dependency on the mem_defer case) in its own project.
@@ -653,6 +710,153 @@ describe('MCP feature sweep: hidden tools', () => {
     },
     30000,
   );
+
+  // converge R28 (E2E 2026-11-10): a refused near-duplicate answered only "Skipped: similar to
+  // existing #N"; the lesson it carried was gone and nothing named force.
+  it('mem_save refused as a near-duplicate says nothing was stored and names force', async () => {
+    const P = 'mcpsweep-dup-message';
+    const title = 'Cart total drifts a cent on multi-line orders';
+    await save({ title, content: 'Rounding per line item drifts the total by a cent.', project: P });
+    const res = await client.callTool({
+      name: 'mem_save',
+      arguments: {
+        title,
+        content: 'Rounding per line item drifts the total by a cent.',
+        type: 'bugfix',
+        lesson_learned: 'Round once, at the total',
+        project: P,
+      },
+    });
+    const text = textOf(res);
+    expect(text).toMatch(
+      /Skipped: similar to existing #\d+ in project "[^"]+" — nothing was saved, including lesson_learned/,
+    );
+    expect(text).toContain('call mem_save again with force: true');
+  }, 30000);
+
+  // converge R28 (E2E 2026-11-10): mem_maintain's suggested merge kept the bare re-save and hid
+  // the copy carrying the lesson; the CLI scan shared the rule (tests/cli.test.mjs).
+  it('mem_maintain scan suggests keeping the copy that carries the lesson', async () => {
+    const P = 'mcpsweep-dedup-keeper';
+    const title = 'Fixed token refresh race in auth middleware';
+    const rich = await save({
+      type: 'bugfix',
+      title,
+      content: 'Two tabs refreshed the token at once and the loser got a 401.',
+      lesson_learned: 'Serialize the refresh behind a mutex',
+      importance: 2,
+      project: P,
+    });
+    const bare = await save({
+      type: 'bugfix',
+      title,
+      content: 'Two tabs refreshed the token at once and the loser got a 401.',
+      importance: 2,
+      project: P,
+      force: true,
+    });
+    const scan = await call('mem_maintain', { action: 'scan', project: P });
+    expect(scan).toContain(`merge_ids=${JSON.stringify([[rich, bare]])}`);
+    expect(scan).toMatch(new RegExp(`\\[${rich}\\] "[^"]*" <-> \\[${bare}\\]`));
+  }, 30000);
+
+  // D18 (converge R31): the purge preview's Oldest/Newest were the UTC day. The rows sit at 22:30
+  // Los Angeles time (the server runs in that zone), when the UTC date is already the next day.
+  it('mem_maintain purge preview dates its rows in local time', async () => {
+    const P = 'mcpsweep-purge-dates';
+    for (const title of ['Idle note one', 'Idle note two', 'Idle note three'])
+      await save({
+        title,
+        content: `${title} about an unused staging bucket`,
+        importance: 1,
+        project: P,
+        force: true,
+      });
+    expect(asMachineWritten(P)).toBe(3);
+    const la = (e) =>
+      new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date(e));
+    const base = Date.now() - 60 * 86400000;
+    const [y, m, d] = la(base).split('-').map(Number);
+    // 22:30 in Los Angeles that day, as an instant: 05:30 or 06:30 UTC the next day.
+    let evening = Date.UTC(y, m - 1, d + 1, 5, 30);
+    if (la(evening) !== la(base)) evening -= 3600000;
+    expect(la(evening), 'premise: still that Los Angeles day').toBe(la(base));
+    expect(new Date(evening).toISOString().slice(0, 10), 'premise: the UTC day differs').not.toBe(
+      la(evening),
+    );
+    withDb((db) =>
+      db
+        .prepare(
+          'UPDATE observations SET compressed_into = -2, created_at_epoch = ?, created_at = ? WHERE project = ?',
+        )
+        .run(evening, new Date(evening).toISOString(), P),
+    );
+    const preview = await call('mem_maintain', {
+      action: 'execute',
+      operations: ['purge_stale'],
+      project: P,
+    });
+    expect(preview).toContain(`Oldest: ${la(evening)}`);
+    expect(preview).toContain(`Newest: ${la(evening)}`);
+  }, 30000);
+
+  // D18 review M1 (converge R31): mem_get printed each row's created_at as the stored UTC string,
+  // whose date is the next day for an evening row here — not the day date_from/date_to find it on.
+  it('mem_get shows created_at in local time with its offset, on all four row kinds', async () => {
+    const P = 'mcpsweep-get-dates';
+    const la = (e) =>
+      new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date(e));
+    const base = Date.now() - 3 * 86400000;
+    const [y, m, d] = la(base).split('-').map(Number);
+    // Seconds and milliseconds, as every writer stores them: the shown time must be the same
+    // instant on each of the four sites, not one up to 999 ms earlier (R31 delta review F1).
+    let evening = Date.UTC(y, m - 1, d + 1, 5, 30, 7, 456);
+    if (la(evening) !== la(base)) evening -= 3600000;
+    const iso = new Date(evening).toISOString();
+    expect(iso.slice(0, 10), 'premise: the UTC day differs').not.toBe(la(evening));
+    const obsId = await save({
+      title: 'Evening note on the staging bucket',
+      content: 'x',
+      project: P,
+      force: true,
+    });
+    const ids = withDb((db) => {
+      db.prepare('UPDATE observations SET created_at = ?, created_at_epoch = ? WHERE id = ?').run(
+        iso,
+        evening,
+        obsId,
+      );
+      db.prepare(
+        `INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch)
+         VALUES ('get-dates-sess', 'get-dates-mem', ?, ?, ?)`,
+      ).run(P, iso, evening);
+      const s = db
+        .prepare(
+          `INSERT INTO session_summaries (memory_session_id, project, request, created_at, created_at_epoch)
+           VALUES ('get-dates-mem', ?, 'evening request', ?, ?)`,
+        )
+        .run(P, iso, evening);
+      const pr = db
+        .prepare(
+          `INSERT INTO user_prompts (content_session_id, prompt_text, prompt_number, created_at, created_at_epoch)
+           VALUES ('get-dates-sess', 'evening prompt', 1, ?, ?)`,
+        )
+        .run(iso, evening);
+      const e = db
+        .prepare(
+          `INSERT INTO events (project, event_type, title, created_at_epoch) VALUES (?, 'discovery', 'evening event', ?)`,
+        )
+        .run(P, evening);
+      return [s, pr, e].map((r) => Number(r.lastInsertRowid));
+    });
+    const out = await call('mem_get', { ids: `#${obsId},S#${ids[0]},P#${ids[1]},E#${ids[2]}` });
+    const shown = [...out.matchAll(/created_at: (\S+)/g)].map((x) => x[1]);
+    expect(shown, out).toHaveLength(4);
+    for (const t of shown) {
+      expect(t.slice(0, 10)).toBe(la(evening));
+      expect(Date.parse(t)).toBe(evening);
+    }
+  }, 30000);
 
   itTool(
     'mem_optimize',

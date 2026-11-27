@@ -60,9 +60,34 @@ export const SECRET_PATTERNS = [
   // v3.61.0 already had to undo exactly that. `| password | <v> |` table rows stay open for a
   // different reason: those 831k lines held 1 such row and none with a credential-shaped
   // value, so a table pattern's false-positive rate cannot be measured here.
+  //
+  // A KEY'S BEGIN IS NOT A VALUE (D#657). These patterns run before the private key ones below, and
+  // a value took the `-----BEGIN` of a key written right after its label (`PRIVATE_KEY=-----BEGIN …`,
+  // or `private_key = <<EOT\n-----BEGIN …` in a JSON string, where the escaped break is no space):
+  // the key passes then saw no BEGIN and stored every line of a cut-off key. So a value stops before a
+  // private key's BEGIN, and the label patterns' values also before `***PEM_KEY***`, or the next pass
+  // took that mark and the lines after it up to a space (6.30.11 kept them: it erased such a key from
+  // its END).
+  // The `--password` flag stops at the BEGIN only: with the mark stop as well, a line that the reading
+  // of a cut-off key left after its mark, which the flag's value on the next pass erased in 6.30.11,
+  // was kept.
+  // A quoted value is left to the key passes when it holds the BEGIN line and nothing else (`'…-----\n'
+  // +`: a key concatenated one string per line, Node's util.inspect of an object); a whole key printed
+  // that way was stored when the text was in a JSON string. A quoted value with more of the
+  // key in it is erased to its closing quote as before: the key passes miss some of what that erases
+  // (a first body line cut inside its first 40 characters).
+  //
+  // A VALUE ON A LATER LINE (D#683). The whitespace after a separator may run onto the next lines, so a
+  // value written below its label is still erased (`password:` then `  <v>`; prettier's `const X =` then
+  // `  "<v>";`), but not when that line opens with a label of its own (`NAME: v`, `NAME=v`, `"name":`).
+  // A label with an empty value (`POSTGRES_PASSWORD:` in a compose file, `password =` in an INI section)
+  // took the next line's label as its value, and that line's value was stored. Such a line is now read
+  // as it would be on its own; text with no line break between a separator and its value scrubs exactly
+  // as before. A name over 64 characters is not taken for a label, so the check reads a bounded prefix
+  // of the line. The quoted-value, JSON-key and env-name patterns below carry the same rule.
   //   1a. `=` assignment → ALWAYS scrub (config syntax, never prose):
   [
-    /((?:\b|_)(?:password|passwd|passphrase|token|bearer|secret)(?:[*_~`]{1,3})?\s*=(?:[*_~]{1,2}(?=\s))?\s*)(?!process\.env\.)(?!new\s)(?!\w+\()(?!(?:null|undefined|true|false|None|nil|empty|""|''|0)\b)[^\s,;'"}\]]{6,}/gi,
+    /((?:\b|_)(?:password|passwd|passphrase|token|bearer|secret)(?:[*_~`]{1,3})?\s*=(?:[*_~]{1,2}(?=\s))?(?:[^\S\r\n]*|[^\S\r\n]*[\r\n]\s*(?![*~`]{0,3}[\w.-]{1,64}[*~`]{0,3}[^\S\r\n]*(?:[=：](?!=)|:(?=[\s'"]))[^\S\r\n]*\S)))(?!process\.env\.)(?!new\s)(?!\w+\()(?!(?:null|undefined|true|false|None|nil|empty|""|''|0)\b)(?:(?!-----BEGIN [A-Z0-9 ]*PRIVATE KEY|\*\*\*PEM_KEY\*\*\*)[^\s,;'"}\]]){6,}/gi,
     '$1***',
   ],
   //   1b. `:` separator, PASSWORD nouns. Position decides how permissive the value
@@ -103,16 +128,16 @@ export const SECRET_PATTERNS = [
   //       Both arms emit `***` (3 chars, under the {6,} floor), so they cannot
   //       double-apply.
   [
-    /((?:(?<![A-Za-z][ \t][*_~]{0,3})(?:\b|_)(?:password|passwd|passphrase)(?:[*_~]{1,3})?|(?=_?(?:password|passwd|passphrase)`)(?<![A-Za-z][ \t]`[\w-]{0,40})(?<=`[\w-]{0,40})(?:\b|_)(?:password|passwd|passphrase)`)\s*[:：](?:[*_~]{1,2}(?=\s))?\s*)(?!process\.env\.)(?!new\s)(?!\w+\()(?!(?:null|undefined|true|false|None|nil|empty|""|''|0)\b)[^\s,;'"}\]]{6,}/gi,
+    /((?:(?<![A-Za-z][ \t][*_~]{0,3})(?:\b|_)(?:password|passwd|passphrase)(?:[*_~]{1,3})?|(?=_?(?:password|passwd|passphrase)`)(?<![A-Za-z][ \t]`[\w-]{0,40})(?<=`[\w-]{0,40})(?:\b|_)(?:password|passwd|passphrase)`)\s*[:：](?:[*_~]{1,2}(?=\s))?(?:[^\S\r\n]*|[^\S\r\n]*[\r\n]\s*(?![*~`]{0,3}[\w.-]{1,64}[*~`]{0,3}[^\S\r\n]*(?:[=：](?!=)|:(?=[\s'"]))[^\S\r\n]*\S)))(?!process\.env\.)(?!new\s)(?!\w+\()(?!(?:null|undefined|true|false|None|nil|empty|""|''|0)\b)(?:(?!-----BEGIN [A-Z0-9 ]*PRIVATE KEY|\*\*\*PEM_KEY\*\*\*)[^\s,;'"}\]]){6,}/gi,
     '$1***',
   ],
   [
-    /((?:\b|_)(?:password|passwd|passphrase)(?:[*_~`]{1,3})?\s*[:：](?:[*_~]{1,2}(?=\s))?\s*)(?!process\.env\.)(?!new\s)(?!\w+\()(?!(?:null|undefined|true|false|None|nil|empty|""|''|0)\b)(?![A-Za-z]{1,15}(?=[`*~]*(?:[\s,;'"}\]]|$)))[^\s,;'"}\]]{6,}/gi,
+    /((?:\b|_)(?:password|passwd|passphrase)(?:[*_~`]{1,3})?\s*[:：](?:[*_~]{1,2}(?=\s))?(?:[^\S\r\n]*|[^\S\r\n]*[\r\n]\s*(?![*~`]{0,3}[\w.-]{1,64}[*~`]{0,3}[^\S\r\n]*(?:[=：](?!=)|:(?=[\s'"]))[^\S\r\n]*\S)))(?!process\.env\.)(?!new\s)(?!\w+\()(?!(?:null|undefined|true|false|None|nil|empty|""|''|0)\b)(?![A-Za-z]{1,15}(?=[`*~]*(?:[\s,;'"}\]]|$)))(?:(?!-----BEGIN [A-Z0-9 ]*PRIVATE KEY|\*\*\*PEM_KEY\*\*\*)[^\s,;'"}\]]){6,}/gi,
     '$1***',
   ],
   //   1c. `:` separator, prose-ambiguous nouns → keep the lookbehind ("the token: alicebob"):
   [
-    /((?:(?<![A-Za-z][ \t][*_~]{0,3})(?:\b|_)(?:token|bearer|secret)(?:[*_~]{1,3})?|(?=_?(?:token|bearer|secret)`)(?<![A-Za-z][ \t]`[\w-]{0,40})(?<=`[\w-]{0,40})(?:\b|_)(?:token|bearer|secret)`)\s*[:：](?:[*_~]{1,2}(?=\s))?\s*)(?!process\.env\.)(?!new\s)(?!\w+\()(?!(?:null|undefined|true|false|None|nil|empty|""|''|0)\b)[^\s,;'"}\]]{6,}/gi,
+    /((?:(?<![A-Za-z][ \t][*_~]{0,3})(?:\b|_)(?:token|bearer|secret)(?:[*_~]{1,3})?|(?=_?(?:token|bearer|secret)`)(?<![A-Za-z][ \t]`[\w-]{0,40})(?<=`[\w-]{0,40})(?:\b|_)(?:token|bearer|secret)`)\s*[:：](?:[*_~]{1,2}(?=\s))?(?:[^\S\r\n]*|[^\S\r\n]*[\r\n]\s*(?![*~`]{0,3}[\w.-]{1,64}[*~`]{0,3}[^\S\r\n]*(?:[=：](?!=)|:(?=[\s'"]))[^\S\r\n]*\S)))(?!process\.env\.)(?!new\s)(?!\w+\()(?!(?:null|undefined|true|false|None|nil|empty|""|''|0)\b)(?:(?!-----BEGIN [A-Z0-9 ]*PRIVATE KEY|\*\*\*PEM_KEY\*\*\*)[^\s,;'"}\]]){6,}/gi,
     '$1***',
   ],
   // access_token / refresh_token are the canonical OAuth2 field names — they were
@@ -127,7 +152,7 @@ export const SECRET_PATTERNS = [
   // low-FP decision that `topsecret=` / `access_token_count:` are non-credentials
   // (#8283 + utils.test.mjs:1089-1100); bare `pwd` is omitted so `PWD=` (a path) survives.
   [
-    /((?:\b|_)(?:api[_-]?key|api[_-]?secret|secret[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token|pgpassword|pgpass|mysql_pwd)(?:[*_~`]{1,3})?\s*[=:：](?:[*_~]{1,2}(?=\s))?\s*)(?!process\.env\.)(?!new\s)(?!\w+\()(?!(?:null|undefined|true|false|None|nil|empty|""|''|0)\b)[^\s,;'"}\]]{6,}/gi,
+    /((?:\b|_)(?:api[_-]?key|api[_-]?secret|secret[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token|pgpassword|pgpass|mysql_pwd)(?:[*_~`]{1,3})?\s*[=:：](?:[*_~]{1,2}(?=\s))?(?:[^\S\r\n]*|[^\S\r\n]*[\r\n]\s*(?![*~`]{0,3}[\w.-]{1,64}[*~`]{0,3}[^\S\r\n]*(?:[=：](?!=)|:(?=[\s'"]))[^\S\r\n]*\S)))(?!process\.env\.)(?!new\s)(?!\w+\()(?!(?:null|undefined|true|false|None|nil|empty|""|''|0)\b)(?:(?!-----BEGIN [A-Z0-9 ]*PRIVATE KEY|\*\*\*PEM_KEY\*\*\*)[^\s,;'"}\]]){6,}/gi,
     '$1***',
   ],
   // Space-separated credential CLI flag: `--password <value>` (long-form). The KV
@@ -138,7 +163,10 @@ export const SECRET_PATTERNS = [
   // `gh auth login --token …` and `op … --secret …` are the shapes that actually appear in
   // Bash output. The {6,} floor is what keeps `--token abc` (a placeholder in a usage line)
   // out, so do not lower it.
-  [/(--(?:password|passwd|token|api[-_]?key|secret)[=\s]+)(?!-)[^\s'"]{6,}/gi, '$1***'],
+  [
+    /(--(?:password|passwd|token|api[-_]?key|secret)[=\s]+)(?!-)(?:(?!-----BEGIN [A-Z0-9 ]*PRIVATE KEY)[^\s'"]){6,}/gi,
+    '$1***',
+  ],
   // Bare-key QUOTED values — `api_key="..."`, `password: '...'`. The unquoted KV
   // patterns above stop at `'`/`"` (excluded from their value class), so a quoted
   // value matched 0 chars and slipped through. Consumes the opening quote, the value,
@@ -151,21 +179,21 @@ export const SECRET_PATTERNS = [
   //       (mirrors the unquoted 1a/1b split — a quoted value doesn't turn `:` prose
   //       into config, but `<word> password="x"` is still a leak):
   [
-    /((?:\b|_)(?:password|passwd|passphrase|token|bearer|secret)(?:[*_~`]{1,3})?\s*=(?:[*_~]{1,2}(?=\s))?\s*)(['"])[^'"]{6,}\2/gi,
+    /((?:\b|_)(?:password|passwd|passphrase|token|bearer|secret)(?:[*_~`]{1,3})?\s*=(?:[*_~]{1,2}(?=\s))?(?:[^\S\r\n]*|[^\S\r\n]*[\r\n]\s*(?!(?:"[^"\r\n]*"|'[^'\r\n]*')[^\S\r\n]*[:=：])))(['"])(?!-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----(?:\\+[nr])*\2)[^'"]{6,}\2/gi,
     '$1$2***$2',
   ],
   [
-    /((?:\b|_)(?:password|passwd|passphrase)(?:[*_~`]{1,3})?\s*[:：](?:[*_~]{1,2}(?=\s))?\s*)(['"])[^'"]{6,}\2/gi,
+    /((?:\b|_)(?:password|passwd|passphrase)(?:[*_~`]{1,3})?\s*[:：](?:[*_~]{1,2}(?=\s))?(?:[^\S\r\n]*|[^\S\r\n]*[\r\n]\s*(?!(?:"[^"\r\n]*"|'[^'\r\n]*')[^\S\r\n]*[:=：])))(['"])(?!-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----(?:\\+[nr])*\2)[^'"]{6,}\2/gi,
     '$1$2***$2',
   ],
   [
-    /((?:(?<![A-Za-z][ \t][*_~]{0,3})(?:\b|_)(?:token|bearer|secret)(?:[*_~]{1,3})?|(?=_?(?:token|bearer|secret)`)(?<![A-Za-z][ \t]`[\w-]{0,40})(?<=`[\w-]{0,40})(?:\b|_)(?:token|bearer|secret)`)\s*[:：](?:[*_~]{1,2}(?=\s))?\s*)(['"])[^'"]{6,}\2/gi,
+    /((?:(?<![A-Za-z][ \t][*_~]{0,3})(?:\b|_)(?:token|bearer|secret)(?:[*_~]{1,3})?|(?=_?(?:token|bearer|secret)`)(?<![A-Za-z][ \t]`[\w-]{0,40})(?<=`[\w-]{0,40})(?:\b|_)(?:token|bearer|secret)`)\s*[:：](?:[*_~]{1,2}(?=\s))?(?:[^\S\r\n]*|[^\S\r\n]*[\r\n]\s*(?!(?:"[^"\r\n]*"|'[^'\r\n]*')[^\S\r\n]*[:=：])))(['"])(?!-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----(?:\\+[nr])*\2)[^'"]{6,}\2/gi,
     '$1$2***$2',
   ],
   //   (b) structured keys + named env vars are unambiguous config even after a word
   //       (`see api_key: "x"` DOES scrub, mirroring the unquoted structured-key path):
   [
-    /((?:\b|_)(?:pgpassword|pgpass|mysql_pwd|api[_-]?key|api[_-]?secret|secret[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token)(?:[*_~`]{1,3})?\s*[=:：](?:[*_~]{1,2}(?=\s))?\s*)(['"])[^'"]{6,}\2/gi,
+    /((?:\b|_)(?:pgpassword|pgpass|mysql_pwd|api[_-]?key|api[_-]?secret|secret[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token)(?:[*_~`]{1,3})?\s*[=:：](?:[*_~]{1,2}(?=\s))?(?:[^\S\r\n]*|[^\S\r\n]*[\r\n]\s*(?!(?:"[^"\r\n]*"|'[^'\r\n]*')[^\S\r\n]*[:=：])))(['"])(?!-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----(?:\\+[nr])*\2)[^'"]{6,}\2/gi,
     '$1$2***$2',
   ],
   // AWS access keys: AKIA (long-term) + ASIA (STS temp) + AROA (role) + AIDA
@@ -237,7 +265,10 @@ export const SECRET_PATTERNS = [
   // name and the colon, so a `curl -v` / fetch header dump walked straight through. The
   // scheme word is optional because a raw token as the whole value is just as common;
   // `authorization` is not a benign key, and over-scrub is the safe direction here.
-  [/(['"](?:proxy-)?authorization['"]\s*:\s*)(['"])(?:(?:Bearer|Basic|token)\s+)?[^'"]{6,}\2/gi, '$1$2***$2'],
+  [
+    /(['"](?:proxy-)?authorization['"]\s*:(?:[^\S\r\n]*|[^\S\r\n]*[\r\n]\s*(?!(?:"[^"\r\n]*"|'[^'\r\n]*')[^\S\r\n]*[:=：])))(['"])(?:(?:Bearer|Basic|token)\s+)?[^'"]{6,}\2/gi,
+    '$1$2***$2',
+  ],
   // R10 P1-6: Azure storage. AccountKey= is the account's master credential and sig= is a
   // live SAS token; neither had any pattern. `sig` is anchored to a URL query position
   // (`?`/`&`) rather than a word boundary — bare `\bsig=` eats `const sig=computeX(y)`.
@@ -245,7 +276,7 @@ export const SECRET_PATTERNS = [
   [/([?&]sig=)[^\s;&'"]{16,}/gi, '$1***'],
   // Supabase / generic long base64 keys (40+ chars, common in env vars)
   [
-    /(\b(?:SUPABASE_KEY|SUPABASE_ANON_KEY|SUPABASE_SERVICE_ROLE_KEY|DATABASE_URL|REDIS_URL)\s*[=:]\s*)[^\s,;'"}\]]+/gi,
+    /(\b(?:SUPABASE_KEY|SUPABASE_ANON_KEY|SUPABASE_SERVICE_ROLE_KEY|DATABASE_URL|REDIS_URL)\s*[=:](?:[^\S\r\n]*|[^\S\r\n]*[\r\n]\s*(?![*~`]{0,3}[\w.-]{1,64}[*~`]{0,3}[^\S\r\n]*(?:[=：](?!=)|:(?=[\s'"]))[^\S\r\n]*\S)))[^\s,;'"}\]]+/gi,
     '$1***',
   ],
   // Basic auth in URLs (https://user:password@host). ftp/ftps added — file-drop
@@ -266,6 +297,14 @@ export const SECRET_PATTERNS = [
   ],
   // npm tokens (npm_...)
   [/\bnpm_[a-zA-Z0-9]{36,}(?![A-Za-z0-9])/g, '***'],
+  // D#812: fixed-prefix, fixed-body provider tokens. Shapes from gitleaks (config/gitleaks.toml
+  // @ 5f6ec56c: huggingface-*, digitalocean-*, pypi-upload-token, shopify-*) and trufflehog
+  // (pkg/detectors/groq). Each body is one character class, so a failing match is linear.
+  [/\b(?:hf|api_org)_[a-zA-Z0-9]{34}(?![A-Za-z0-9])/g, '***'],
+  [/\bdo[opr]_v1_[a-f0-9]{64}(?![A-Za-z0-9])/g, '***'],
+  [/\bpypi-AgE[A-Za-z0-9_-]{50,}/g, '***'],
+  [/\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}(?![A-Za-z0-9])/g, '***'],
+  [/\bgsk_[a-zA-Z0-9]{52}(?![A-Za-z0-9])/g, '***'],
   // Stripe keys (sk_live_, rk_live_, pk_live_, sk_test_, pk_test_) + webhook signing secret (whsec_)
   [/\b[srp]k_(?:live|test)_[a-zA-Z0-9]{20,}(?![A-Za-z0-9])/g, '***'],
   [/\bwhsec_[a-zA-Z0-9]{20,}(?![A-Za-z0-9])/g, '***'],
@@ -286,7 +325,7 @@ export const SECRET_PATTERNS = [
   // these slip through. Match the value-quoted form explicitly. Length floor
   // (6) avoids tripping on intentional placeholder shorts ("...", "secret").
   [
-    /("(?:password|passwd|token|api[_-]?key|api[_-]?secret|secret[_-]?key|access[_-]?key|access[_-]?token|private[_-]?key|client[_-]?secret|auth[_-]?token|bearer|refresh[_-]?token|session[_-]?id|sessionid)"\s*:\s*")[^"]{6,}(")/gi,
+    /("(?:password|passwd|token|api[_-]?key|api[_-]?secret|secret[_-]?key|access[_-]?key|access[_-]?token|private[_-]?key|client[_-]?secret|auth[_-]?token|bearer|refresh[_-]?token|session[_-]?id|sessionid)"\s*:(?:[^\S\r\n]*|[^\S\r\n]*[\r\n]\s*(?!(?:"[^"\r\n]*"|'[^'\r\n]*')[^\S\r\n]*[:=：]))")[^"]{6,}(")/gi,
     '$1***$2',
   ],
   // JSON keys with vendor PREFIX/SUFFIX around the core credential noun —
@@ -299,7 +338,7 @@ export const SECRET_PATTERNS = [
   // one quote, `\w*` ran to the end of a word run and backtracked through every keyword in it,
   // each rescanning the run — `"` + `secret` x 33k took 4.6 s. 64 is far past any key name.
   [
-    /("\w{0,64}(?:password|passwd|secret|api[_-]?key|auth[_-]?token|access[_-]?token|private[_-]?key)\w{0,64}"\s*:\s*")[^"]{6,}(")/gi,
+    /("\w{0,64}(?:password|passwd|secret|api[_-]?key|auth[_-]?token|access[_-]?token|private[_-]?key)\w{0,64}"\s*:(?:[^\S\r\n]*|[^\S\r\n]*[\r\n]\s*(?!(?:"[^"\r\n]*"|'[^'\r\n]*')[^\S\r\n]*[:=：]))")[^"]{6,}(")/gi,
     '$1***$2',
   ],
   // Quoted-KEY credential values — Python dict reprs `{'api_key': '...'}`, single-quoted
@@ -315,7 +354,7 @@ export const SECRET_PATTERNS = [
   // `'token_count': 123456`); `passphrase` added here too (double-quoted JSON passphrase is
   // subsumed by this pattern since `['"]` matches `"`). Over-scrub is the safe direction.
   [
-    /(['"](?:\w{0,64}(?:password|passwd|passphrase|secret|api[_-]?key|auth[_-]?token|access[_-]?token|private[_-]?key)\w{0,64}|\w{1,64}_token)['"]\s*:\s*)(['"])[^'"]{6,}\2/gi,
+    /(['"](?:\w{0,64}(?:password|passwd|passphrase|secret|api[_-]?key|auth[_-]?token|access[_-]?token|private[_-]?key)\w{0,64}|\w{1,64}_token)['"]\s*:(?:[^\S\r\n]*|[^\S\r\n]*[\r\n]\s*(?!(?:"[^"\r\n]*"|'[^'\r\n]*')[^\S\r\n]*[:=：])))(['"])[^'"]{6,}\2/gi,
     '$1$2***$2',
   ],
   // Session cookies in headers / urlencoded bodies (sessionid=, session_id=, JSESSIONID=, PHPSESSID=).
@@ -421,6 +460,8 @@ const startsLikeKey = (s) => KEY_MAGIC_RE.test(s) || isDerKeyStart(s);
 const ARMOR_HEADER_RE =
   /^(?:Proc-Type|DEK-Info|Content-Domain|Originator-ID-(?:Asymmetric|Symmetric)|Originator-Certificate|Issuer-Certificate|MIC-Info|Key-Info|Recipient-ID-(?:Asymmetric|Symmetric)|CRL|Version|Comment|Hash|Charset|MessageID|X-[A-Za-z0-9-]+)[ \t]*:/i;
 const MAX_ARMOR_HEADERS = 16;
+// The blank line of a run from which readKeyLines asks its memo where the run ends.
+const BLANK_MEMO_AFTER = 8;
 // A JS/Python string split across source lines: `…\n" +` then `"…` on the next line. Not a comma:
 // `'…\n',` then `'…'` is the next element of a list, and its first word is not the key's last line.
 // One whitespace quantifier on each side of the `+`: `[ \t]*\+?[ \t]*` split a run between two
@@ -549,6 +590,38 @@ function prevLine(text, ls, u, floor) {
   return { start: i + 1, end: bs };
 }
 
+// D#168: the line prefix grammars a BEGIN line can carry with code after them, before the BEGIN:
+// a Read column (`     5\t`, `5→`), a diff mark, a quote, a grep column (`path:5:`, `path:`),
+// after at most one string opener (`'+`, `b'+`, `'''+`). Named forms only, not "what the next line
+// shares with this one": that reading took `//`, `#` and a bare `>` for prefixes and was withdrawn
+// from 6.19.4 for the prose it erased and the keys it let through on a later pass. The diff mark
+// comes before the grep forms, so `-key: '''` is a diff line, not a grep path `-key:`. In escaped
+// text a tab is `\t` and a quote may be `\"`.
+const PREFIX_GRAMMAR_RE =
+  /^[ \t]*(?:[rRbBuUfF]{0,2}(?:\\*['"`]){1,3})?([ \t]*\d+(?:\t|\\+t)|\d+→|[-+]|(?:>[ \t]?)+|[^\s'"`:\\]+[:-]\d+[:-]|[^\s'"`:\\]+:)/;
+// D#614 A2: a grep column after any path, up to the line's last `:N:` or `-N-` (a number past the path
+// is the grep's; one inside code before the BEGIN is rare): a backslash, a space, a drive letter or
+// another colon, a quote or a backtick in the path, or a leading `-`, `+` or `>`, which the grammar
+// above reads as a diff mark or a quote.
+const GREP_ANY_PATH_RE = /^[ \t]*(\S.*(?::\d+:|-\d+-))/;
+// A grammar is a few characters; testing more of a long left context costs a pass over it per BEGIN.
+const PREFIX_GRAMMAR_SCAN = 256;
+// How far escaped text is searched back for the start of a BEGIN's line past single quotes (D#614 A3).
+// It was PREFIX_GRAMMAR_SCAN, and a code line of more than 256 characters before its last quote
+// (keyword arguments, a dict literal) left no grammar, so the key under it was stored. Not unbounded:
+// the walks of BEGINs at one escape depth never overlap (each BEGIN's break ends the next one's
+// walk), but those at different depths cross the same run, judging each quote or backslash in it.
+// One BEGIN per depth (1, 2, 4, 8) after 150k characters of escaped quotes read 18x benign under
+// coverage unbounded, 1.2x at this bound.
+const LINE_START_SCAN = 4096;
+// From a position back over the characters that cannot end a line in escaped text: anything but a
+// break, a double quote or a backslash. A lookbehind is matched backward, so this runs natively.
+const LINE_BACK_RE = /(?<=([^\n\r"\\]*))/y;
+// A key line (LONG or CUT) starts with a run of 16+ of these, so a stretch without one holds none.
+const B64_RUN16_RE = /[A-Za-z0-9+/=]{16}/;
+// The longest gap the D#168 skip tests; past it the reading runs.
+const SKIP_GAP_SCAN = 4096;
+
 /** A regex for the line prefix `prefix` has, with digits free and grep's `:`/`-` interchangeable. */
 function prefixShape(prefix) {
   const body = prefix.replace(/^[ \t]+/, '');
@@ -654,7 +727,7 @@ function cutRun(core) {
  * or an identifier of 16-39 characters under a header is prose (delta review P3-5). A complete
  * block never gets here; the block pattern above takes it first.
  */
-function cutOffKeyEnd(text, b, be) {
+function cutOffKeyEnd(text, b, be, ctx) {
   // The rest of the BEGIN line: nothing, or base64 chunks, then a break that sets the depth.
   let i = be;
   for (
@@ -711,20 +784,372 @@ function cutOffKeyEnd(text, b, be) {
   // per pass (v6.19.2 pre-tag round-5 review F2).
   let run = 0;
   while (run < 16 && b - run > ls && isB64Code(text.charCodeAt(b - run - 1))) run++;
-  const shape = run >= 16 ? null : prefixShape(text.slice(ls, b));
+  const left = text.slice(ls, b);
+  const shape = run >= 16 ? null : ctx.shapeOf(left);
   // The first character of the prefix after its spaces and tabs: a shape's match can only start a
   // line whose first character after spaces and tabs is this one (a digit, `:` and `-` stand for
   // more, and none of them begins a blank line below).
   let pl = ls;
   while (pl < b && (text.charCodeAt(pl) === 32 || text.charCodeAt(pl) === 9)) pl++;
   const shapeLead = shape ? text.charCodeAt(pl) : -1;
+  const label = text.slice(b, be);
+  const read = readKeyLines(text, next, u, shape, shapeLead, longs, longest, first, end, ctx.memoOf);
+  const found = read.longs > 0 && keyEvidence(read, label, true) ? read.end : -1;
+  // The lines below read again with the shape of `prefix`, whose first character after blanks is
+  // `lead`: the reading of the key they hold, or null. `accept`: a further test of that reading.
+  const reread = (prefix, lead, accept = null) => {
+    const alt = ctx.shapeOf(prefix);
+    if (!alt || ctx.endFollows(be)) return null;
+    const again = readKeyLines(text, next, u, alt, lead, longs, longest, first, end, ctx.memoOf);
+    if (!(again.longs > 0 && again.end > found && keyEvidence(again, label, false))) return null;
+    if (accept && !accept(again)) return null;
+    ctx.reread = true;
+    return again;
+  };
+  // The lines under a diff context BEGIN (D#614 A1, D#641) read with a diff mark's shape, which takes
+  // context lines too: where the key ends, or -1. Only when the lines it takes include a removed or
+  // added one: Read output starts its lines with spaces as well, and a reading there took the next
+  // line's number for a key's short last line. A removed key that ends with its short last line (or a
+  // PGP checksum) is followed by the added key's lines, which the reading stopped at: they are read
+  // on, as lines of the same key.
+  // What D#641 added (a reading of a BEGIN whose next line has no mark, `admitted` false, and the added
+  // key's lines) never spans another private-key BEGIN, which no key in a real diff holds: a header line
+  // holding one, swallowed by the span, started no reading of its own on a later pass, where it read on
+  // over the first pass's ***PEM_KEY*** line and erased a cut line after it (6 of 400,000 r3mix texts).
+  // And what D#641 added reads only inside a unified diff's hunk (ctx.inHunk, from the BEGIN's line
+  // start `gl`): an indented cut key in prose read the dash list under it as removed and added key
+  // lines, losing it (6.30.10 pre-tag r1 F2).
+  const diffRead = (admitted, gl) => {
+    // Such a reading ends before the next BEGIN and takes a marked line, so with no marked line before
+    // that BEGIN there is none to read (header BEGINs over context lines read the same run again each).
+    if (!admitted && !(ctx.inHunk(gl, u) && markedLineIn(text, next, ctx.nextBegin(next), u))) return -1;
+    let r = reread(
+      '-',
+      45,
+      (a) => (admitted || ctx.nextBegin(next) >= a.end) && markedLineIn(text, next, a.end, u),
+    );
+    if (!r) return -1;
+    const alt = ctx.shapeOf('-');
+    for (;;) {
+      const n = r.shorts > 0 ? nextLine(text, r.end, u).next : -1;
+      if (n === -1 || (text[n] !== '-' && text[n] !== '+') || !ctx.inHunk(gl, u)) return r.end;
+      const again = readKeyLines(text, n, u, alt, 45, 0, 0, '', -1, ctx.memoOf);
+      if (again.longs === 0 || ctx.nextBegin(n) < again.end) return r.end;
+      r = again;
+    }
+  };
+  // D#168: code between the line prefix and the BEGIN (`-KEY = '''`, `     5\tKEY = """`) or a
+  // string opener before it (`'+`, `"-`) made the whole left context the shape, which no line below
+  // starts with, so nothing past the BEGIN line was read and a cut key was stored. Read again with
+  // the prefix grammar alone, only when the reading above took nothing below the BEGIN line (its
+  // output is unchanged otherwise), and only on stronger evidence than that reading's: two prefixed
+  // identifiers under a BEGIN in a diff are a list, not a key. Not when an END follows before the
+  // next BEGIN: that is a whole block the block pattern did not take on this pass (a partial BEGIN
+  // inside it), which it takes whole once the blocker goes; a ***PEM_KEY*** over its BEGIN would
+  // keep every line after the first one that is not base64 (v6.19.4 round-2 F1).
+  if (run < 16 && (found === -1 || found <= i)) {
+    // Skipped only when it cannot find a key line, never cut short: a read limit at the next header
+    // BEGIN stored keys twice (D#169), since a quoted or unclosed BEGIN starts no reading of its own.
+    // With no key on the BEGIN line, the first line the reading counts is a key line, which starts
+    // with a 16+ base64 run, after blank lines and armor headers only, and a header has a colon. A
+    // line holding a private-key BEGIN is neither blank nor a key line (its core holds that text, or
+    // starts one `-` into it, and `BEGIN ` ends any run), and no header name holds one (names have
+    // no space, the BEGIN has one after `BEGIN`): a header line holding one has its colon before it.
+    // So with no run and no colon before the next one (or the end) the reading stops on its line at
+    // the latest. Not any `-----BEGIN `: `X-----BEGIN : v` is a header whose name swallows it, read
+    // through, and ending the gap there stored the key below it (D#607 F5). Reading every short
+    // BEGIN block again (`'+-----BEGIN …` over a bare `+`, 5,400 per pass) took that shape from
+    // 4.7x to 10.1x benign under coverage, past the linearity budget on CI.
+    // Only over a short gap, since the skip saves a reading and the reading is the answer: with no
+    // private-key BEGIN below, the gap is the rest of the text, and testing it on each pass took
+    // pemHeaderThenCerts from 75 to 142 ms where the reading stops on its first line.
+    if (longs === 0 && next === -1) return found;
+    if (longs === 0) {
+      const to = ctx.nextBegin(next);
+      if (to - next <= SKIP_GAP_SCAN) {
+        const gap = text.slice(next, to);
+        if (!B64_RUN16_RE.test(gap) && !gap.includes(':')) return found;
+      }
+    }
+    const gl = lineStartPastQuotes(text, ls, u);
+    const head = gl === -1 ? '' : text.slice(gl, Math.min(b, gl + PREFIX_GRAMMAR_SCAN));
+    const g = gl === -1 ? null : PREFIX_GRAMMAR_RE.exec(head);
+    const gs = g ? gl + g[0].length - g[1].length : -1;
+    let gp = gl;
+    while (gp < b && (text.charCodeAt(gp) === 32 || text.charCodeAt(gp) === 9)) gp++;
+    // Only when the line is more than its grammar before the BEGIN: an opener before it or code after it.
+    if (g && !(gs === gp && gl + g[0].length === b)) {
+      let lead = gs;
+      while (text.charCodeAt(lead) === 32 || text.charCodeAt(lead) === 9) lead++;
+      const r = reread(g[1], text.charCodeAt(lead));
+      if (r) return r.end;
+    }
+    // D#614 A2: a grep column after a path the grammar refuses; not the column the grammar read
+    // already, nor the first reading's own prefix. That prefix is the column whenever nothing stands
+    // between it and the BEGIN, except in escaped text after a quote in the path (`it's/`), where the
+    // prefix starts past the quote.
+    const p = gl === -1 ? null : GREP_ANY_PATH_RE.exec(head);
+    if (p && !(g && g[1] === p[1]) && p[1] !== left.replace(/^[ \t]+/, '')) {
+      const r = reread(p[1], text.charCodeAt(gl + p[0].length - p[1].length));
+      if (r) return r.end;
+    }
+    // D#614 A1: a unified diff's context line starts with its space, with code after it or none, and
+    // the removed and added lines below it with `-` and `+`, which the line prefix (that space, or the
+    // code) never matched.
+    if (gl !== -1 && isDiffContextLine(text, gl, b)) {
+      const r = diffRead(text[next] === '-' || text[next] === '+', gl);
+      if (r !== -1) return r;
+    }
+  } else if (run < 16) {
+    // D#641: in a real diff the lines under a context BEGIN can be context lines too: an OpenSSH key's
+    // first body line is the same for every key of its type. The reading above took them for the key
+    // and stopped at the first removed line, so the removed and added lines were stored.
+    const after = nextLine(text, found, u).next;
+    if (after !== -1 && (text[after] === '-' || text[after] === '+')) {
+      const gl = lineStartPastQuotes(text, ls, u);
+      if (gl !== -1 && isDiffContextLine(text, gl, b)) {
+        const r = diffRead(false, gl);
+        if (r !== -1) return r;
+      }
+    }
+  }
+  return found;
+}
 
+/**
+ * Whether the line from `gl` to the BEGIN at `b` is a unified diff's context line: led by its space,
+ * with code after it or none. Not when the line holds an escaped break of another depth: it is then
+ * several lines, the first one led by a space.
+ */
+function isDiffContextLine(text, gl, b) {
+  return text.charCodeAt(gl) === 32 && !/\\[nr]/.test(text.slice(gl, b));
+}
+
+// A unified diff's hunk header and the counts of old and new lines under it (1 when left out).
+const HUNK_HEADER_RE = /@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/g;
+
+/**
+ * Whether a line starts at `at` at break depth u: the text's start, a break (at an escape depth not a
+ * real one right after a backslash, which nextEscapedLine steps over), or the quote that opens a string
+ * at that depth (`"patch":"@@ …` in JSON, where the line is the string's first).
+ */
+function startsLineAt(text, at, u) {
+  if (at === 0) return true;
+  const c = text[at - 1];
+  if (c === '\n' || c === '\r') return u === 0 || text[at - 2] !== '\\';
+  if (c === 'n' || c === 'r') return isEscBreak(backslashesBefore(text, at - 1, 0), u);
+  return (c === '"' || c === "'") && isStringEnd(backslashesBefore(text, at - 1, 0), u);
+}
+
+// A break at an escape depth, found natively: a backslash run then `n` or `r` (its length decides the
+// depth), or a real break not right after a backslash (nextEscapedLine steps over the character after a
+// run). The lookbehinds start a match at a run's first backslash only, so each run is read once.
+const ESC_BREAK_TOKEN_RE = /(?<!\\)\\+[nr]|(?<!\\)[\n\r]/g;
+const BREAK_RE = /[\n\r]/g;
+
+/**
+ * nextLine from a line start `s`, its break found natively. A hunk's lines are read at the depth asked,
+ * and in text at several depths a line runs across the others' text: nextEscapedLine stopped at each
+ * backslash in it, 33% of the time of hunks at four depths in turn under coverage.
+ */
+function hunkNextLine(text, s, u) {
+  const re = u === 0 ? BREAK_RE : ESC_BREAK_TOKEN_RE;
+  re.lastIndex = s;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const r = m[0].length - 1;
+    if (r === 0 || isEscBreak(r, u)) return nextLine(text, m.index, u);
+  }
+  return { end: text.length, next: -1 };
+}
+
+/**
+ * Whether a line starting at `s` is in a unified diff's hunk at break depth u (D#649), from the headers
+ * `heads` ({ at, old, add }, ascending). A hunk is the lines below a header that starts a line, as
+ * nextLine reads them: a `-` line spends one of the old count, a `+` line one of the new, and a context
+ * line (led by a space, or empty: git's diff.suppressBlankEmpty and GNU diff's --suppress-blank-empty
+ * leave it so) one of each while both last; any other line ends it (`\ No newline at end of file` comes
+ * after one side's last line, so no context line follows it). Only context lines are asked about (a
+ * BEGIN's line led by a space), so once a count is spent nothing after it is in the hunk. A line's
+ * question goes to the nearest header before it that starts a line at u; a header's text inside a line
+ * (the diff of a file that holds one) starts no hunk. A hunk is read from its header only as far as the
+ * line asked about, and on from there for a later one, so no line is read twice: reading each hunk
+ * whole read the last line of every hunk at one depth across the text at the others, 14.7x benign under
+ * coverage (hunks at four depths in turn, 3.9x on v6.30.10).
+ */
+function hunkReader(text, heads, u) {
+  const own = heads.filter((h) => startsLineAt(text, h.at, u));
+  const read = new Map();
+  return (s) => {
+    let lo = 0;
+    let hi = own.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (own[mid].at < s) lo = mid + 1;
+      else hi = mid;
+    }
+    const k = lo - 1;
+    if (k < 0) return false;
+    let h = read.get(k);
+    if (h === undefined) {
+      const { at, old, add } = own[k];
+      read.set(k, (h = { next: hunkNextLine(text, at, u).next, old, add, starts: new Set() }));
+    }
+    // Never past the next header: it is at or after s (a later line's question goes to its hunk).
+    while (h.next !== -1 && h.next <= s) {
+      const at = h.next;
+      const line = hunkNextLine(text, at, u);
+      const c = line.end === at ? 32 : text.charCodeAt(at);
+      if (c === 32 && h.old > 0 && h.add > 0) {
+        h.old--;
+        h.add--;
+      } else if (c === 45) h.old--;
+      else if (c === 43) h.add--;
+      else {
+        h.next = -1;
+        break;
+      }
+      h.starts.add(at);
+      h.next = line.next;
+    }
+    return h.starts.has(s);
+  };
+}
+
+// A diff mark after a character that can end a line: a break, and at an escape depth an escaped
+// break's letter or (one escape deep) the quote that reopens a string concatenated across lines.
+const MARK_AFTER_BREAK_RE = /[\n\r][-+]/g;
+const MARK_AFTER_ESC_RE = /[\n\r"'nr][-+]/g;
+
+/**
+ * Whether a line that starts in [from, to) at break depth u (`from` a line start) starts with a diff's
+ * `-` or `+`. The marks are found natively and each is checked to start a line as nextLine reads them:
+ * reading the lines one by one went through every line of a run under a BEGIN in Read output (each led
+ * by a space) on each of the 32 passes a chain of labelled secrets takes, 42-57% of two linearity
+ * shapes under coverage.
+ */
+function markedLineIn(text, from, to, u) {
+  if (from === -1 || from >= to) return false;
+  const c0 = text.charCodeAt(from);
+  if (c0 === 45 || c0 === 43) return true;
+  const re = u === 0 ? MARK_AFTER_BREAK_RE : MARK_AFTER_ESC_RE;
+  const seg = to === Infinity ? text.slice(from) : text.slice(from, to);
+  re.lastIndex = 0;
+  for (let m = re.exec(seg); m; m = re.exec(seg)) {
+    re.lastIndex = m.index + 1;
+    const c = from + m.index;
+    const ch = text.charCodeAt(c);
+    // At an escape depth a real break right after a backslash run is that run's next character, which
+    // nextEscapedLine steps over.
+    if (ch === 10 || ch === 13) {
+      if (u === 0 || text.charCodeAt(c - 1) !== 92) return true;
+    } else if (ch === 110 || ch === 114) {
+      if (isEscBreak(backslashesBefore(text, c, from), u)) return true;
+    } else if (u === 1) {
+      // The quote that opens the string after `\n" +` and a break: a line start when an escaped break
+      // at depth 1 starts the concatenation (nextEscapedLine's CONCAT_AFTER_RE).
+      if (opensConcat(text, c, from)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether the quote at `c` opens the string after a depth-1 escaped break, a quote, an optional `+` and a
+ * break, so that a line starts after it: CONCAT_AFTER_RE (nextEscapedLine) read backward, within `from`.
+ */
+function opensConcat(text, c, from) {
+  const blanks = (j) => {
+    while (j >= from && (text[j] === ' ' || text[j] === '\t')) j--;
+    return j;
+  };
+  let j = blanks(c - 1);
+  if (j < from) return false;
+  if (text[j] === '\n') j -= j - 1 >= from && text[j - 1] === '\r' ? 2 : 1;
+  else if (text[j] === '\r') j--;
+  else return false;
+  j = blanks(j);
+  if (j >= from && text[j] === '+') j = blanks(j - 1);
+  if (j < from || (text[j] !== '"' && text[j] !== "'")) return false;
+  j--;
+  return j >= from && (text[j] === 'n' || text[j] === 'r') && isEscBreak(backslashesBefore(text, j, from), 1);
+}
+
+/**
+ * Where the line that holds the BEGIN starts, from `ls`, the start cutOffKeyEnd's prefix walk found:
+ * that, unless the walk stopped at a single quote in escaped text, or -1. The walk stops at an
+ * unescaped single quote, which JSON never escapes (`-KEY = '''` in a JSON string leaves ''), so look
+ * past single quotes for the start of the line: a break, or a double quote that ends a string at this
+ * depth (the string the line is in), or the start of the text. At most LINE_START_SCAN characters
+ * back; past that, -1.
+ */
+function lineStartPastQuotes(text, ls, u) {
+  if (!(u > 0 && ls > 0 && text[ls - 1] === "'")) return ls;
+  // Native between candidates: a character by character walk was most of the time of a shape that
+  // repeats one 300-character line (pemEscapedLongCodeBeforeBegin), and now goes the whole line.
+  const lim = Math.max(0, ls - LINE_START_SCAN);
+  for (let j = ls - 1; ;) {
+    LINE_BACK_RE.lastIndex = j;
+    const k = j - LINE_BACK_RE.exec(text)[1].length;
+    if (k === 0) return lim === 0 ? 0 : -1;
+    // text[k - 1] is a break, a double quote or a backslash. A backslash run then `n` or `r` at k is
+    // an escaped break at this depth when the run fits it; the line starts after that letter.
+    const c = text.charCodeAt(k - 1);
+    if (c === 92) {
+      const e = text.charCodeAt(k);
+      if (k + 1 < lim) return -1;
+      if ((e === 110 || e === 114) && isEscBreak(backslashesBefore(text, k, 0), u)) return k + 1;
+    } else if (k < lim) return -1;
+    else if (c === 10 || c === 13 || isStringEnd(backslashesBefore(text, k - 1, 0), u)) return k;
+    j = k - 1;
+  }
+}
+
+/**
+ * Whether a reading is a key: one base64 line of 40+ characters or a start the way a key encoding
+ * starts; when `loose`, also armor headers or two lines of 16+. The grammar reading (D#168) is not
+ * loose: armor headers over an identifier (`Proc-Type`, `DEK-Info`, then `loadPrivateKeyFromDisk`)
+ * read as a key on 858-899 of ~12,000 keyless fuzz texts per seed, which the reading above keeps.
+ */
+function keyEvidence(r, label, loose) {
+  // Under an opener whose prefix does not match the diff lines below it (`'+`, `rb'+`,
+  // `+KEY = '''`) the line still starts with its `+`; the magic is tested without it (D#167).
+  const body = r.first.replace(/^[-+]/, '');
+  const magic = startsLikeKey(body) || (label.includes('PGP') && PGP_MAGIC_RE.test(body));
+  return (loose && (r.longs >= 2 || r.armors > 0)) || r.longest >= 40 || magic;
+}
+
+/**
+ * The lines of a cut key below its BEGIN line, read with one line shape, from the state the BEGIN
+ * line left (`longs`, `longest`, `first`, `end`: a key pasted onto the BEGIN line counts as one line).
+ *
+ * `memoOf(shape)` (one scrubCutOffKeys call's) keeps what a reading found past two points,
+ * keyed by the line and the depth, of which the rest of the reading is a function (with the shape:
+ * its lead is the first character of the prefix the source was built from, and the one test that
+ * reads it tells only a quote or `<` from the rest, which the source keeps literally): where
+ * a run of blank lines ends, from its BLANK_MEMO_AFTER-th line (the run only sets pendingBlank),
+ * and the result from the first counted base64 line on, when nothing was counted before it (from
+ * there `armors` is never read, and the state is that line's alone). D#607 F1: 16 header lines
+ * that each hold a BEGIN (`-Comment: -----BEGIN …`) under a code BEGIN each read the same run again
+ * under the prefix grammar and refused it, 33x benign at 200k chars (186x under coverage). Short
+ * runs never reach the memo: a memo of every blank run made two shapes slower (D#500). Headers at
+ * different depths still read the run once per depth: a line's end depends on it.
+ */
+function readKeyLines(text, next, u, shape, shapeLead, longs, longest, first, end, memoOf) {
+  let memo = null;
   let armors = 0;
   let shorts = 0;
   let pendingBlank = false;
+  let blanks = 0;
+  let blankKey = null;
+  let longKey = null;
   while (next !== -1) {
+    const at = next;
     // Another BEGIN line is never part of this key; stop before reading it whole.
-    if (!shape && text.startsWith('-----BEGIN ', next)) break;
+    if (!shape && text.startsWith('-----BEGIN ', next)) {
+      if (blankKey !== null) memo.blank.set(blankKey, at);
+      blankKey = null;
+      break;
+    }
     const line = nextLine(text, next, u);
     // Blank lines read here without lineCore, where the runs a BEGIN reads through spent a third of
     // their time (D#511). Spaces and tabs, at most one quote or backtick, spaces and tabs: blank
@@ -750,11 +1175,26 @@ function cutOffKeyEnd(text, b, be) {
       next = line.next;
       if (shorts > 0) break;
       pendingBlank = true;
+      if (++blanks === BLANK_MEMO_AFTER) {
+        const key = at + ',' + u;
+        memo ??= memoOf(shape);
+        const to = memo.blank.get(key);
+        if (to !== undefined) {
+          next = to;
+          blanks = 0;
+        } else blankKey = key;
+      }
       continue;
     }
     const { core, start, end: coreEnd } = lineCore(text, next, line.end, shape);
     const kind = classify(core);
     next = line.next;
+    // A run ends here (blankKey is set only inside one).
+    if (kind !== BLANK && blanks !== 0) {
+      blanks = 0;
+      if (blankKey !== null) memo.blank.set(blankKey, at);
+      blankKey = null;
+    }
     if (kind === END) {
       if (longs > 0) end = start + KEY_END_LINE_RE.exec(core)[0].length;
       break;
@@ -762,6 +1202,15 @@ function cutOffKeyEnd(text, b, be) {
     if (kind === BLANK) {
       if (shorts > 0) break;
       pendingBlank = true;
+      if (++blanks === BLANK_MEMO_AFTER) {
+        const key = at + ',' + u;
+        memo ??= memoOf(shape);
+        const to = memo.blank.get(key);
+        if (to !== undefined) {
+          next = to;
+          blanks = 0;
+        } else blankKey = key;
+      }
       continue;
     }
     if (longs === 0) {
@@ -769,6 +1218,13 @@ function cutOffKeyEnd(text, b, be) {
       if (kind !== LONG && kind !== CUT) break;
     }
     if (kind === LONG && shorts === 0) {
+      if (longs === 0) {
+        longKey = at + ',' + u;
+        memo ??= memoOf(shape);
+        const r = memo.long.get(longKey);
+        if (r !== undefined)
+          return { longs: r.longs, longest: r.longest, first: r.first, end: r.end, armors, shorts: r.shorts };
+      }
       if (longs++ === 0) first = core;
       longest = Math.max(longest, core.length);
       end = coreEnd;
@@ -793,23 +1249,125 @@ function cutOffKeyEnd(text, b, be) {
     }
     break;
   }
-  if (longs === 0) return -1;
-  // Under an opener whose prefix does not match the diff lines below it (`'+`, `rb'+`,
-  // `+KEY = '''`) the line still starts with its `+`; the magic is tested without it (D#167).
-  const body = first.replace(/^[-+]/, '');
-  const magic = startsLikeKey(body) || (text.slice(b, be).includes('PGP') && PGP_MAGIC_RE.test(body));
-  return longs >= 2 || armors > 0 || longest >= 40 || magic ? end : -1;
+  if (blankKey !== null) memo.blank.set(blankKey, -1);
+  if (longKey !== null) memo.long.set(longKey, { longs, longest, first, end, shorts });
+  return { longs, longest, first, end, armors, shorts };
+}
+
+// Separate scanners: KEY_BEGIN_RE's lastIndex drives scrubCutOffKeys' loop while these run.
+const KEY_BEGIN_SCAN_RE = new RegExp(KEY_BEGIN_RE.source, 'g');
+const KEY_END_SCAN_RE = new RegExp(KEY_END_RE.source, 'g');
+const KEY_BEGIN_NEXT_RE = new RegExp(KEY_BEGIN_RE.source, 'g');
+const KEY_BEGIN_INNER_RE = new RegExp(KEY_BEGIN_RE.source, 'g');
+
+/** Start offsets of every match of the global regex `re` in `text`. */
+function matchStarts(re, text) {
+  const starts = [];
+  re.lastIndex = 0;
+  for (let m = re.exec(text); m; m = re.exec(text)) starts.push(m.index);
+  return starts;
+}
+
+/** The first value in ascending `arr` at or after `x`, or Infinity. */
+function firstAtOrAfter(arr, x) {
+  let lo = 0;
+  let hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid] < x) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < arr.length ? arr[lo] : Infinity;
 }
 
 function scrubCutOffKeys(text) {
   if (!text.includes('PRIVATE KEY')) return text;
+  // Whether an END follows offset `be` before the next BEGIN. Positions found once per call, on
+  // first use, so a text with many BEGINs is not rescanned to its end for each.
+  let begins = null;
+  let ends = null;
+  const endFollows = (be) => {
+    if (begins === null) {
+      begins = matchStarts(KEY_BEGIN_SCAN_RE, text);
+      ends = matchStarts(KEY_END_SCAN_RE, text);
+    }
+    const e = firstAtOrAfter(ends, be);
+    return e !== Infinity && e < firstAtOrAfter(begins, be);
+  };
+  // The first private-key BEGIN at or after line start `x`, or Infinity: the leftmost match from a
+  // start, kept for every x between that start and it (a line start is never inside a match, which
+  // holds no break). Not the positions above: found for every BEGIN on each pass, they cost a shape
+  // whose skip holds before endFollows is asked 14-18% under coverage (a binary search in them, 9.6%).
+  let beginFrom = Infinity;
+  let beginAt = Infinity;
+  const nextBegin = (x) => {
+    if (!(beginFrom <= x && beginAt >= x)) {
+      beginFrom = x;
+      KEY_BEGIN_NEXT_RE.lastIndex = x;
+      const m = KEY_BEGIN_NEXT_RE.exec(text);
+      beginAt = m ? m.index : Infinity;
+    }
+    return beginAt;
+  };
+  // One line-prefix regex per distinct short prefix, for this call only: a text repeating one BEGIN
+  // line built the same regex for each BEGIN, 15-22% of those shapes' time under coverage.
+  const shapes = new Map();
+  const shapeOf = (prefix) => {
+    if (prefix.length > 64) return prefixShape(prefix);
+    let r = shapes.get(prefix);
+    if (r === undefined) shapes.set(prefix, (r = prefixShape(prefix)));
+    return r;
+  };
+  // What a reading found past a point, per line shape, for this call only (readKeyLines). Keyed by
+  // the shape's source, not the regex: prefixes that differ only in digits (Read columns, grep line
+  // numbers) build the same pattern from different strings, and one over 64 characters a new regex
+  // per BEGIN, which kept every header BEGIN of numbered output in a memo of its own (D#607 r2 P2-1).
+  const memos = new Map();
+  const memoOf = (shape) => {
+    const id = shape && shape.source;
+    let m = memos.get(id);
+    if (m === undefined) memos.set(id, (m = { blank: new Map(), long: new Map() }));
+    return m;
+  };
+  // Whether the line starting at `s` (depth u) is in a unified diff's hunk (hunkReader): the headers
+  // found once per call, on first use, and one reader per depth.
+  let heads = null;
+  const hunks = new Map();
+  const inHunk = (s, u) => {
+    if (heads === null) {
+      heads = [];
+      HUNK_HEADER_RE.lastIndex = 0;
+      for (let h; (h = HUNK_HEADER_RE.exec(text));) {
+        heads.push({ at: h.index, old: h[1] === undefined ? 1 : +h[1], add: h[2] === undefined ? 1 : +h[2] });
+      }
+    }
+    let has = hunks.get(u);
+    if (has === undefined) hunks.set(u, (has = hunkReader(text, heads, u)));
+    return has(s);
+  };
+  const ctx = { endFollows, nextBegin, shapeOf, memoOf, inHunk, reread: false };
   KEY_BEGIN_RE.lastIndex = 0;
   let out = '';
   let last = 0;
   let m;
   while ((m = KEY_BEGIN_RE.exec(text))) {
-    const end = cutOffKeyEnd(text, m.index, m.index + m[0].length);
+    ctx.reread = false;
+    let end = cutOffKeyEnd(text, m.index, m.index + m[0].length, ctx);
     if (end === -1) continue;
+    // D#614 A4 (D#633): a span read again with a named grammar's shape can take a header line that
+    // holds another private-key BEGIN for an armor header and end where that BEGIN's own reading goes
+    // on (a 15-character line, a line that is only its prefix, another header). The span covered the
+    // BEGIN, which then started no reading, so the lines past the span were stored; 6.30.8, whose
+    // first reading found nothing there, read the inner BEGIN and erased them. Each private-key BEGIN
+    // inside such a span is read too, and the span ends where the farthest of them ends. Only for these
+    // readings: under a BEGIN with nothing before it the same holds in 6.30.8 (a separate defect).
+    if (ctx.reread) {
+      KEY_BEGIN_INNER_RE.lastIndex = m.index + m[0].length;
+      for (let n; (n = KEY_BEGIN_INNER_RE.exec(text)) && n.index < end;) {
+        const e = cutOffKeyEnd(text, n.index, n.index + n[0].length, ctx);
+        if (e > end) end = e;
+      }
+    }
     out += text.slice(last, m.index) + PEM_MARK;
     last = end;
     KEY_BEGIN_RE.lastIndex = end;
@@ -996,15 +1554,208 @@ function scrubKeyTails(text) {
 // this repo has twice decided the text matters more.
 const MAX_SCRUB_PASSES = 32;
 
-export function scrubSecrets(text) {
-  if (!text || typeof text !== 'string') return text || '';
-  let result = stripPrivate(text);
+function runPatterns(text) {
+  let result = text;
   for (let pass = 1; ; pass++) {
     const before = result;
     for (const [pattern, replacement] of SECRET_PATTERNS) {
       result = result.replace(pattern, replacement);
     }
     if (result === before || pass >= MAX_SCRUB_PASSES) break;
+  }
+  return result;
+}
+
+// ─── Escaped string literals (D#687, D#693, D#685) ────────────────────────
+//
+// A JSON string literal holds its text one escape level deep: a key's quotes are `\"` and a line break
+// is the two characters `\n`. The patterns above are written for text, so inside a literal a JSON key
+// never closes on a bare quote, a label never starts a line, and a label's value runs on over the
+// escaped breaks into the next line's label. What `aws secretsmanager get-secret-value --query
+// SecretString` prints (`"{\"password\":\"…\"}"`), a `.env` that `kubectl … | jq -c .data` prints as one
+// string, an escaped JSON literal in a source file or a `.env` value: all were stored. Two attempts that
+// taught the patterns about escaped line starts (D#663, D#668) were withdrawn at review: a pattern
+// that starts in a new place carries its value's run-on there.
+//
+// So each double-quoted literal on one line whose body holds an escape is decoded (as JSON; an escape
+// JSON does not know is kept as written) and scrubbed as text, MAX_LITERAL_DEPTH levels deep, and
+// rewritten, as the scrubbed text encoded as JSON, only when that scrub changed it: a literal it
+// leaves alone keeps every byte. A literal opens at a quote with an even number of backslashes before
+// it, and a text that ends inside one has it read to the end. Literals are found by a walk from stop
+// character to stop character: the regex it replaced pushed a backtrack frame per character of a body,
+// `(?:[^"\\\r\n]|\\[^\r\n])*`, and threw RangeError on a literal of millions of characters (v6.30.14
+// review r1).
+//
+// A rewritten literal keeps erased what the patterns erase in its escaped body: their run-on erases
+// the lines after a label up to a space, and the text reading keeps such a line when it has no label
+// of its own. Without that, 5-8 values in 20,000 generated texts that v6.30.13 erased were stored
+// (D#687 differential, 2026-11-02). The patterns then run over the whole text as before. A word is
+// erased from the rewritten literal when the body holds it and what the patterns leave of the body does
+// not, in either of two readings, and the rewritten literal is read both ways. As written, a word ends at
+// every escape. Joined, a run of backslashes followed by `/` or by `u` and four hex digits reads as that
+// one character: a rewritten literal holds the character itself, so PHP's `\/` and .NET's `\u002B` join
+// words there that the body split (read only as written, 266-715 of 20,000 generated `.env` texts at one
+// level kept such a word, v6.30.14 review r2; 220 of 329,366 generated values two and three levels in,
+// review r3). Read only joined, a word the inner level erased part of was gone and its pieces were new
+// (194 of 649,498 generated values, v6.30.15 review r1). Decoding literal by literal instead stored values
+// where the patterns had erased a backslash before a quote and so moved where a literal ends (75 of
+// 165,125 generated values, 2026-11-03).
+//
+// Bounds: MAX_LITERALS literals are decoded per text and level (real transcripts, 2026-11-02: at most
+// 133 in one text); with no bound, `"\"` repeated over 500,000 characters took 104x the patterns alone
+// (415 ms against 4). A rewritten literal can give the patterns a reading they did not have, so a text
+// that holds a backslash is scrubbed again until it no longer changes, MAX_LITERAL_ROUNDS times at
+// most; with one round, 23-42 of 20,000 generated texts changed on a second call (scrubSecrets is
+// idempotent by contract: import-jsonl's dedup and cmdRestore rely on it). A text the first round
+// leaves as it is is a fixed point already, and is not scrubbed again.
+const LITERAL_STOP_RE = /["\\\r\n]/g;
+const JSON_ESCAPE_RE = /\\(u[0-9a-fA-F]{4}|["\\/bfnrt])/g;
+const JSON_ESCAPES = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+const VALUE_TOKEN_RE = /[A-Za-z0-9+/=_.-]+/g;
+const HEX4_RE = /^[0-9a-fA-F]{4}$/;
+const MAX_LITERAL_DEPTH = 3;
+const MAX_LITERALS = 256;
+const MAX_LITERAL_ROUNDS = 4;
+
+function decodeLiteral(body) {
+  try {
+    return JSON.parse(`"${body}"`);
+  } catch {
+    return body.replace(JSON_ESCAPE_RE, (_m, e) =>
+      e[0] === 'u' ? String.fromCharCode(parseInt(e.slice(1), 16)) : JSON_ESCAPES[e],
+    );
+  }
+}
+
+/**
+ * text with every escape that decodes to one character, at any depth (a run of backslashes, then `/` or
+ * `u` and four hex digits), read as that character; and where each such escape was: [index in the
+ * reading, start, end in text], flat.
+ */
+function joinedReading(text) {
+  let read = '';
+  let last = 0;
+  const units = [];
+  for (let i = text.indexOf('\\'); i !== -1;) {
+    let j = i;
+    while (text.charCodeAt(j) === 92) j++;
+    let end = -1;
+    let ch;
+    if (text[j] === '/') {
+      end = j + 1;
+      ch = '/';
+    } else if (text[j] === 'u' && HEX4_RE.test(text.slice(j + 1, j + 5))) {
+      end = j + 5;
+      ch = String.fromCharCode(parseInt(text.slice(j + 1, end), 16));
+    }
+    if (end === -1) {
+      i = text.indexOf('\\', j);
+      continue;
+    }
+    read += text.slice(last, i);
+    units.push(read.length, i, end);
+    read += ch;
+    last = end;
+    i = text.indexOf('\\', end);
+  }
+  return [read + text.slice(last), units];
+}
+
+const joinedTokens = (text) => new Set(joinedReading(text)[0].match(VALUE_TOKEN_RE));
+
+/** text with each value token in `erase`, as joinedReading reads it, replaced by `***`. */
+function eraseJoined(text, erase) {
+  const [read, units] = joinedReading(text);
+  let u = 0;
+  let shift = 0;
+  const at = (k) => {
+    for (; u < units.length && units[u] < k; u += 3) shift += units[u + 2] - units[u + 1] - 1;
+    return k + shift;
+  };
+  let out = '';
+  let last = 0;
+  for (const { 0: token, index } of read.matchAll(VALUE_TOKEN_RE)) {
+    if (!erase.has(token)) continue;
+    out += text.slice(last, at(index)) + '***';
+    last = at(index + token.length);
+  }
+  return out + text.slice(last);
+}
+
+/**
+ * The first literal opening at or after `from`: [start, bodyEnd, end], the body being text[start + 1,
+ * bodyEnd) and the closing quote, if any, text[bodyEnd, end). Null when there is none. A quote whose body
+ * meets a line break, or a backslash before one or at the end of the text, opens no literal.
+ */
+function nextLiteral(text, from) {
+  const n = text.length;
+  for (let q = text.indexOf('"', from); q !== -1; q = text.indexOf('"', q + 1)) {
+    if (backslashesBefore(text, q, 0) % 2 === 1) continue;
+    let i = q + 1;
+    for (;;) {
+      LITERAL_STOP_RE.lastIndex = i;
+      if (!LITERAL_STOP_RE.test(text)) return [q, n, n];
+      i = LITERAL_STOP_RE.lastIndex - 1;
+      const c = text.charCodeAt(i);
+      if (c === 34) return [q, i, i + 1];
+      if (c !== 92 || i + 1 === n) break;
+      const d = text.charCodeAt(i + 1);
+      if (d === 10 || d === 13) break;
+      i += 2;
+    }
+  }
+  return null;
+}
+
+/**
+ * text with the body of each literal it decodes replaced by lit(body): a literal whose body holds an
+ * escape, the first MAX_LITERALS of them, and none at MAX_LITERAL_DEPTH.
+ */
+function readLiterals(text, depth, lit) {
+  if (depth >= MAX_LITERAL_DEPTH || !text.includes('\\')) return text;
+  let budget = MAX_LITERALS;
+  let out = '';
+  let last = 0;
+  for (let m = nextLiteral(text, 0); m && budget > 0; m = nextLiteral(text, m[2])) {
+    const body = text.slice(m[0] + 1, m[1]);
+    if (!body.includes('\\')) continue;
+    budget--;
+    out += text.slice(last, m[0] + 1) + lit(body);
+    last = m[1];
+  }
+  return out + text.slice(last);
+}
+
+function scrubEscapedLiterals(text, depth) {
+  return readLiterals(text, depth, (body) => {
+    const decoded = decodeLiteral(body);
+    const scrubbed = scrubText(decoded, depth + 1);
+    if (scrubbed === decoded) return body;
+    const left = decodeLiteral(runPatterns(body));
+    const erase = new Set();
+    const keptJoined = joinedTokens(left);
+    for (const token of joinedTokens(decoded)) if (!keptJoined.has(token)) erase.add(token);
+    const keptAsWritten = new Set(left.match(VALUE_TOKEN_RE));
+    for (const token of decoded.match(VALUE_TOKEN_RE) ?? []) if (!keptAsWritten.has(token)) erase.add(token);
+    const out = eraseJoined(scrubbed, erase).replace(VALUE_TOKEN_RE, (token) =>
+      erase.has(token) ? '***' : token,
+    );
+    return JSON.stringify(out).slice(1, -1);
+  });
+}
+
+function scrubText(text, depth) {
+  return runPatterns(scrubEscapedLiterals(stripPrivate(text), depth));
+}
+
+export function scrubSecrets(text) {
+  if (!text || typeof text !== 'string') return text || '';
+  let result = scrubText(text, 0);
+  if (result === text) return result;
+  for (let round = 1; round < MAX_LITERAL_ROUNDS && result.includes('\\'); round++) {
+    const next = scrubText(result, 0);
+    if (next === result) break;
+    result = next;
   }
   return result;
 }

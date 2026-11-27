@@ -6,13 +6,16 @@
 // Handles adaptive time windows, token-budgeted selection, and legacy CLAUDE.md cleanup.
 
 import { basename, join } from 'path';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, writeFileSync } from 'fs';
 import { atomicWriteFileSync } from './lib/atomic-write.mjs';
+import { linkRefusal, refusalText } from './lib/project-link.mjs';
+import { readRegularTextOrThrow } from './lib/regular-file.mjs';
 import {
   estimateTokens,
   truncate,
   typeIcon,
   fmtTime,
+  localYmd,
   inferProject,
   debugLog,
   neutralizeContextDelimiters,
@@ -421,7 +424,8 @@ export function cleanupClaudeMdLegacyBlock() {
   const claudeMdPath = join(inferProjectDir(), 'CLAUDE.md');
   let content;
   try {
-    content = readFileSync(claudeMdPath, 'utf8');
+    // Bounded: a repository can commit `CLAUDE.md -> /dev/zero`; such a file is treated as missing.
+    content = readRegularTextOrThrow(claudeMdPath);
   } catch {
     // CLAUDE.md missing — still drop the marker so we don't re-stat every session
     try {
@@ -478,14 +482,26 @@ export function cleanupClaudeMdLegacyBlock() {
     }
   }
 
-  // Swallow a single preceding newline to avoid leaving a blank-line gap behind.
-  if (removeStart > 0 && content[removeStart - 1] === '\n') removeStart -= 1;
+  // A span at the end of the file has no newline after it: take the one before it instead. Never
+  // both — that joined the lines around the span (`keep this` + `trailing` → `keep thistrailing`,
+  // v6.35.3 pre-tag round 2, O1).
+  if (removeEnd === endIdx + endTag.length && removeStart > 0 && content[removeStart - 1] === '\n')
+    removeStart -= 1;
 
   const cleaned = content.slice(0, removeStart) + content.slice(removeEnd);
   // Collapse any ≥3 consecutive newlines to two, then ensure exactly one trailing newline.
   const normalized = cleaned.replace(/\n{3,}/g, '\n\n').replace(/\s*$/, '\n');
 
   if (normalized === content) {
+    dropMarker();
+    return;
+  }
+
+  // Not through a CLAUDE.md link the repository may have committed: it rewrote the outside file
+  // it names, with auto-adopt off too (D#880). Marked done, as a file without a block is.
+  const refusal = linkRefusal(inferProjectDir(), 'CLAUDE.md');
+  if (refusal) {
+    debugLog('WARN', 'cleanupClaudeMdLegacyBlock', refusalText(refusal));
     dropMarker();
     return;
   }
@@ -757,7 +773,10 @@ export function buildSessionContextLines(
     if (recentObs.length > 0) {
       summaryLines.push('### Recent Activity');
       for (const o of recentObs) {
-        summaryLines.push(`- ${truncate(o.title || '(untitled)', 80)}`);
+        // A row the top-up borrowed from another project says whose it is, as the Recent table
+        // does; bare, the model read it as this project's history (converge R30, E2E hooks F5).
+        const proj = o.project && o.project !== project ? ` (${o.project})` : '';
+        summaryLines.push(`- ${truncate(o.title || '(untitled)', 80)}${proj}`);
       }
       summaryLines.push('');
     }
@@ -930,17 +949,17 @@ export function buildSessionContextLines(
     (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id,
   );
   if (obsToShow.length > 0) {
-    const today = now.toISOString().slice(0, 10);
+    const today = localYmd(now);
     obsLines.push(`### Recent (${today})`);
     obsLines.push('');
     obsLines.push('| ID | Time | T | Title |');
     obsLines.push('|----|------|---|-------|');
     // A row from another day carries its date: under the "Recent (<today>)" heading a bare
     // HH:MM read as today, and a 5-day-old row looked like this morning's (E2E 2026-10-16).
-    // Same UTC calendar as the heading.
+    // Same local calendar as the heading (D18).
     const when = (iso) =>
-      typeof iso === 'string' && fmtTime(iso) && iso.slice(0, 10) !== today
-        ? `${iso.slice(5, 10)} ${fmtTime(iso)}`
+      typeof iso === 'string' && fmtTime(iso) && localYmd(iso) !== today
+        ? `${localYmd(iso).slice(5)} ${fmtTime(iso)}`
         : fmtTime(iso);
     for (const o of obsToShow) {
       const proj = o.project && o.project !== project ? ` (${o.project})` : '';

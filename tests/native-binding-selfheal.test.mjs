@@ -14,11 +14,20 @@
 //   3. a breakage marker is recorded on EVERY failing fire (even when the hint
 //      is rate-limited) so the next session-start can heal unattended.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, cpSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  existsSync,
+  writeFileSync,
+  readFileSync,
+  cpSync,
+  chmodSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { acquireLock } from '../lib/proc-lock.mjs';
 import { spawnSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 
@@ -29,7 +38,13 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 import {
   isNativeBindingError,
   healAndReexec,
+  healCliBinding,
+  cliHealSkipNote,
+  CLI_HEAL_MARKER,
+  CLI_HEAL_COOLDOWN_MS,
+  rebuildBindingViaCli,
   ensureBetterSqlite3Working,
+  probeBindingInFreshProcess,
   NATIVE_BINDING_REBUILD_CMD,
   NATIVE_BINDING_SOURCE_BUILD_CMD,
   BINDING_HEAL_GUARD_ENV,
@@ -369,6 +384,190 @@ describe('healAndReexec — CLI-side heal must re-exec, never retry in-process',
   });
 });
 
+// D#311. The CLI's cap on its rebuild child was sized in v3.60.0 for one npm step (240 s) in one
+// code home. rebuild-binding then grew to every code home (v3.70.0) and a source build after the
+// npm step (a240f630, another 240 s), and the cap stayed at 300 s. Killing the child mid-compile is
+// destructive — the source build deletes build/ first, the quarantined prebuild is never put back,
+// and install.lock is left to a dead pid. The foreground path is documented as having no budget.
+describe('rebuildBindingViaCli — the CLI lets rebuild-binding finish (D#311)', () => {
+  const run = (status) => {
+    const calls = [];
+    const r = rebuildBindingViaCli('/x/cli.mjs', (cmd, args, opts) => {
+      calls.push({ cmd, args, opts });
+      return { status };
+    });
+    return { r, calls };
+  };
+
+  it('runs rebuild-binding with no time cap, stdout discarded', () => {
+    const { r, calls } = run(0);
+    expect(r).toEqual({ ok: true, action: 'rebuilt' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].cmd).toBe(process.execPath);
+    expect(calls[0].args).toEqual(['/x/cli.mjs', 'rebuild-binding']);
+    expect(calls[0].opts.timeout).toBeUndefined();
+    expect(calls[0].opts.stdio).toEqual(['ignore', 'ignore', 'inherit']);
+  });
+
+  it('reports a failed or signalled child as not rebuilt', () => {
+    expect(run(1).r).toEqual({ ok: false, error: 'rebuild-binding exited 1' });
+    expect(run(null).r).toEqual({ ok: false, error: 'rebuild-binding exited on signal' });
+  });
+});
+
+// D#311 part 1. With no prebuild for the platform and no way to build one, every CLI command
+// re-ran the rebuild before failing: 73-81 ms became 20.5 s on the first call and 0.47 s on each
+// one after; with a toolchain whose compile fails, every command runs that compile. The hooks'
+// heal has had a 6 h cooldown since v3.60.0; the CLI gets its own marker, armed before the try,
+// kept on failure and cleared once a rebuild works.
+describe('healCliBinding — at most one automatic rebuild per 6 h (D#311)', () => {
+  const NOW = 1_800_000_000_000;
+  let dir;
+  let marker;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cml-cliheal-'));
+    marker = join(dir, CLI_HEAL_MARKER);
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  /** status: the rebuild-binding child's exit code. */
+  const heal = (status, { runtimeDir = dir, now = NOW, env = {} } = {}) => {
+    const c = { spawn: 0, reexec: 0, markerAtSpawn: null };
+    const p = healCliBinding({
+      cliPath: '/x/cli.mjs',
+      runtimeDir,
+      now,
+      env,
+      argv: ['node', '/x/cli.mjs', 'search', 'q'],
+      spawn: () => {
+        c.spawn++;
+        c.markerAtSpawn = existsSync(join(runtimeDir, CLI_HEAL_MARKER));
+        return { status };
+      },
+      reexec: () => {
+        c.reexec++;
+        return 0;
+      },
+    });
+    return p.then((r) => ({ r, c }));
+  };
+
+  it('with no marker: arms it before the rebuild starts', async () => {
+    const { r, c } = await heal(1);
+    expect(c.spawn).toBe(1);
+    expect(c.markerAtSpawn).toBe(true);
+    expect(r).toMatchObject({ healed: false, reason: 'rebuild-failed' });
+  });
+
+  it('a runtime dir that does not exist yet is created for the marker', async () => {
+    const fresh = join(dir, 'runtime');
+    await heal(1, { runtimeDir: fresh });
+    expect(Number(readFileSync(join(fresh, CLI_HEAL_MARKER), 'utf8'))).toBe(NOW);
+  });
+
+  it('a marker exactly 6 h old is outside the window', async () => {
+    writeFileSync(marker, String(NOW - CLI_HEAL_COOLDOWN_MS));
+    const { c } = await heal(1);
+    expect(c.spawn).toBe(1);
+  });
+
+  it('a marker dated after now (the clock moved back) counts as absent', async () => {
+    for (const v of [String(NOW + 60_000), String(NOW + 24 * 3600 * 1000), 'Infinity', '1e999']) {
+      writeFileSync(marker, v);
+      const { c } = await heal(1);
+      expect(c.spawn, `marker ${v}`).toBe(1);
+    }
+  });
+
+  it('a directory at the marker path counts as absent', async () => {
+    mkdirSync(marker);
+    const { r, c } = await heal(0);
+    expect(c.spawn).toBe(1);
+    expect(r).toEqual({ healed: true, exitCode: 0 });
+  });
+
+  // Root writes through 0o444, so there the test would pass without the shared writer.
+  it.skipIf(process.getuid?.() === 0)(
+    'a stale marker this user cannot write (left by a sudo run) is still replaced',
+    async () => {
+      writeFileSync(marker, String(NOW - CLI_HEAL_COOLDOWN_MS - 1));
+      chmodSync(marker, 0o444);
+      await heal(1);
+      expect(Number(readFileSync(marker, 'utf8'))).toBe(NOW);
+      expect((await heal(1, { now: NOW + 60_000 })).c.spawn).toBe(0);
+    },
+  );
+
+  it('within 6 h of the last try: does not rebuild, and says when that try was', async () => {
+    writeFileSync(marker, String(NOW - 60 * 60 * 1000));
+    const { r, c } = await heal(0);
+    expect(c.spawn).toBe(0);
+    expect(c.reexec).toBe(0);
+    expect(r).toEqual({ healed: false, reason: 'cooldown', since: NOW - 60 * 60 * 1000 });
+  });
+
+  it('past 6 h: rebuilds again', async () => {
+    writeFileSync(marker, String(NOW - CLI_HEAL_COOLDOWN_MS - 1));
+    const { c } = await heal(1);
+    expect(c.spawn).toBe(1);
+  });
+
+  it('an unreadable marker value counts as no marker', async () => {
+    writeFileSync(marker, 'garbage');
+    const { c } = await heal(1);
+    expect(c.spawn).toBe(1);
+  });
+
+  it('a failed rebuild keeps the marker, so the next command skips', async () => {
+    await heal(1);
+    expect(Number(readFileSync(marker, 'utf8'))).toBe(NOW);
+    const next = await heal(1, { now: NOW + 60_000 });
+    expect(next.c.spawn).toBe(0);
+    expect(next.r.reason).toBe('cooldown');
+  });
+
+  it('a rebuild that works clears the marker, so a later break heals at once', async () => {
+    const { r, c } = await heal(0);
+    expect(r).toEqual({ healed: true, exitCode: 0 });
+    expect(c.reexec).toBe(1);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  // The parent's rebuild reported success, yet the re-exec'd child still cannot load the binding:
+  // the rebuild did not fix the tree this CLI runs from (one rebuild-binding does not repair), so
+  // the next command must not run it again.
+  it("a re-exec'd child whose binding still fails arms the marker, without rebuilding", async () => {
+    const guard = { env: { [BINDING_HEAL_GUARD_ENV]: '1' } };
+    const { r, c } = await heal(0, guard);
+    expect(r.reason).toBe('already-attempted');
+    expect(c.spawn).toBe(0);
+    expect(Number(readFileSync(marker, 'utf8'))).toBe(NOW);
+    // The guard is asked before the marker: a fresh marker does not turn this into a cooldown skip.
+    const again = await heal(0, { ...guard, now: NOW + 60_000 });
+    expect(again.r.reason).toBe('already-attempted');
+  });
+
+  it('a runtime dir that cannot be written does not stop the rebuild', async () => {
+    const blocker = join(dir, 'not-a-dir');
+    writeFileSync(blocker, '');
+    const { r, c } = await heal(0, { runtimeDir: blocker });
+    expect(c.spawn).toBe(1);
+    expect(r).toEqual({ healed: true, exitCode: 0 });
+  });
+
+  it('the skip note says how long ago the last try was and names the 6 h window', () => {
+    expect(cliHealSkipNote(NOW - 30 * 1000, NOW)).toBe(
+      'automatic rebuild skipped: last attempted under a minute ago (one per 6 h)',
+    );
+    expect(cliHealSkipNote(NOW - 25 * 60 * 1000, NOW)).toBe(
+      'automatic rebuild skipped: last attempted 25 min ago (one per 6 h)',
+    );
+    expect(cliHealSkipNote(NOW - 185 * 60 * 1000, NOW)).toBe(
+      'automatic rebuild skipped: last attempted 3 h ago (one per 6 h)',
+    );
+  });
+});
+
 describe('native-binding breakage marker — the unattended-heal trigger', () => {
   let dir;
   beforeEach(() => {
@@ -492,6 +691,32 @@ describe('cli.mjs rebuild-binding — the local, network-free repair command', (
     expect(out).toMatch(/verified|rebuilt/);
   });
 
+  it("clears the CLI's heal cooldown once every tree loads, so a later break heals at once (D#311)", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'cml-rb-cd-'));
+    const fakeHome = mkdtempSync(join(tmpdir(), 'cml-rb-cd-home-'));
+    try {
+      const marker = join(dataDir, 'runtime', CLI_HEAL_MARKER);
+      mkdirSync(join(dataDir, 'runtime'), { recursive: true });
+      writeFileSync(marker, String(Date.now()));
+      const r = spawnSync(process.execPath, [join(REPO_ROOT, 'cli.mjs'), 'rebuild-binding'], {
+        encoding: 'utf8',
+        timeout: 300_000,
+        env: (() => {
+          const e = { ...process.env, QWEN_MEM_DIR: dataDir, HOME: fakeHome, MEM_NO_AUTO_ADOPT: '1' };
+          // Unset, not blanked: either one points rebuild-binding outside this sandbox.
+          delete e.QWEN_MEM_RUNTIME_DIR;
+          delete e.CLAUDE_CONFIG_DIR;
+          return e;
+        })(),
+      });
+      expect(r.status).toBe(0); // premise: the healthy-binding path, the one that clears
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
   it('exits NON-zero when another install holds the lock — skipping is not healing', () => {
     // Callers key their state on this exit code: a false 0 would let the launcher
     // drop its cooldown (npm re-spawned every session) and let the CLI re-exec
@@ -515,6 +740,80 @@ describe('cli.mjs rebuild-binding — the local, network-free repair command', (
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
+  });
+});
+
+// D#311, end to end through the real CLI: the units above do not reach mem-cli's own wiring
+// (which runtime dir it passes, which reason it prints). The binding is broken by a preload that
+// fails every better-sqlite3 dlopen. The rebuild fails because this test holds the sandbox's
+// install.lock, so rebuild-binding refuses before it runs npm at all: nothing is compiled or
+// fetched, and no rebuild can run in this checkout (cwd of the npm step) whatever PATH holds.
+describe('CLI on a broken binding — one automatic rebuild per 6 h, end to end (D#311)', () => {
+  let root;
+  let env;
+  let releaseLock;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'cml-cli-cd-'));
+    for (const d of ['home', 'proj', join('data', 'runtime')]) mkdirSync(join(root, d), { recursive: true });
+    releaseLock = acquireLock(join(root, 'data', 'runtime', 'install.lock'));
+    expect(releaseLock).toBeTruthy();
+    writeFileSync(
+      join(root, 'dlopen-fail.cjs'),
+      [
+        'const orig = process.dlopen;',
+        'process.dlopen = function (m, filename, ...rest) {',
+        '  if (/better[_-]sqlite3/.test(String(filename)))',
+        "    throw Object.assign(new Error('fixture: invalid ELF header'), { code: 'ERR_DLOPEN_FAILED' });",
+        '  return orig.call(this, m, filename, ...rest);',
+        '};',
+      ].join('\n'),
+    );
+    env = {
+      ...process.env,
+      HOME: join(root, 'home'),
+      QWEN_MEM_DIR: join(root, 'data'),
+      MEM_NO_AUTO_ADOPT: '1',
+      NODE_OPTIONS: `--require ${join(root, 'dlopen-fail.cjs')}`,
+    };
+    for (const k of [
+      'CLAUDE_CONFIG_DIR',
+      'CLAUDE_PROJECT_DIR',
+      'QWEN_MEM_RUNTIME_DIR',
+      BINDING_HEAL_GUARD_ENV,
+    ])
+      delete env[k];
+  });
+  afterEach(() => {
+    releaseLock?.();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const cli = () => {
+    const r = spawnSync(process.execPath, [join(REPO, 'cli.mjs'), 'recent', '1'], {
+      encoding: 'utf8',
+      timeout: 120_000,
+      cwd: join(root, 'proj'),
+      env,
+    });
+    return { code: r.status, out: r.stdout, err: r.stderr };
+  };
+
+  it('rebuilds on the first command, skips on the next with the reason, and names the fix both times', () => {
+    const first = cli();
+    expect(first.err).toMatch(/rebuilding for this Node/); // premise: the heal branch ran
+    expect(first.err).toMatch(/in progress/i); // premise: rebuild-binding stopped at the lock, before npm
+    expect(first.out).toMatch(/Error: native DB binding unusable .* rebuild-binding exited 1/);
+    expect(first.out).toMatch(/Fix: .*rebuild-binding/);
+    expect(first.code).toBe(1);
+    expect(existsSync(join(root, 'data', 'runtime', CLI_HEAL_MARKER))).toBe(true);
+
+    const second = cli();
+    expect(second.err).not.toMatch(/rebuilding for this Node/);
+    expect(second.out).toContain(
+      'automatic rebuild skipped: last attempted under a minute ago (one per 6 h)',
+    );
+    expect(second.out).toMatch(/Fix: .*rebuild-binding/);
+    expect(second.code).toBe(1);
   });
 });
 
@@ -564,17 +863,17 @@ describe('formatHookError — the hint must name a repair that actually applies'
 // manual command it printed could not fix it either. doctor stayed red permanently.
 //
 // The mechanism, measured in a scratch tree with a control (`docs/measurement/findings.md`):
-// better-sqlite3 13's `lib/binding.js` picks `prebuilds/<target>.node` on EXISTENCE alone
-// and prefers it over `build/`. So a prebuild that is present and unloadable — an old
-// glibc, a truncated download, the wrong arch baked into an image — shadows the binding the
+// better-sqlite3 13.0.x's `lib/binding.js` picked `prebuilds/<target>.node` on EXISTENCE
+// alone, before `build/`. So a prebuild that is present and unloadable — an old glibc, a
+// truncated download, the wrong arch baked into an image — shadowed the binding the
 // source-compile fallback produces. Corrupt prebuild + healthy build/Release → `wrong ELF
 // class`; move the prebuild aside → loads; remove both → fails (the control proving
-// build/Release is what saved it). v4.0.0 added the source build for "a platform 13 ships no
-// prebuild for" and this is its neighbour: a prebuild that exists but cannot be used.
+// build/Release is what saved it). 13.2.0 loads `build/` first, so on it the compile alone
+// heals this shape; the quarantine these tests pin is kept, not required.
 //
-// These tests build the fixture around the REAL `lib/binding.js` from the installed
-// dependency, so a future version that changes how a prebuild is chosen breaks them here
-// rather than in the field.
+// The fixture runs the REAL `lib/binding.js` only for `getPrebuildPath()`, so a version that
+// renames the prebuild breaks these tests here. They cannot see the load ORDER: `verify` is a
+// stub modelling 13.0.x, and 13.2.0 inverted that order with this file green.
 describe('ensureBetterSqlite3Working — an unloadable prebuild shadows the source build', () => {
   const made = [];
   const realBindingJs = join(REPO, 'node_modules', 'better-sqlite3', 'lib', 'binding.js');
@@ -686,4 +985,181 @@ describe('ensureBetterSqlite3Working — an unloadable prebuild shadows the sour
     expect(existsSync(prebuild)).toBe(true);
     expect(existsSync(`${prebuild}.unusable`)).toBe(false);
   });
+});
+
+// D#928. better-sqlite3 13.2.0 loads a compiled `build/{Debug,Release}/better_sqlite3.node`
+// BEFORE the prebuild, so a compiled addon that will not load hides a prebuild that would.
+// Measured 2026-11-21: that tree does not open.
+//
+// These fixtures are REAL: the installed package's own lib/ and this platform's own prebuild,
+// probed in fresh processes. The premise assertion in the first case is what keeps them
+// honest across a version that changes the load order again.
+describe('ensureBetterSqlite3Working — a dead compiled addon hides a loadable prebuild (D#928)', () => {
+  const made = [];
+  const realPkg = join(REPO, 'node_modules', 'better-sqlite3');
+  const JUNK = Buffer.from('\x7fELF not an addon');
+
+  /** The installed package's prebuild for this platform, or null when it ships none. */
+  const realPrebuild = (() => {
+    const r = spawnSync(
+      process.execPath,
+      [
+        '-e',
+        `const b=require(${JSON.stringify(join(realPkg, 'lib', 'binding.js'))});` +
+          `process.stdout.write((b.getPrebuildPath&&b.getPrebuildPath())||'')`,
+      ],
+      { encoding: 'utf8' },
+    );
+    const p = (r.stdout || '').trim();
+    return p && existsSync(p) ? p : null;
+  })();
+
+  /** A tree with a compiled addon and a prebuild, each `good` (a real addon) or `dead` (junk). */
+  function fixture({ build, prebuild }) {
+    const dir = mkdtempSync(join(tmpdir(), 'mem-deadbuild-'));
+    made.push(dir);
+    const pkg = join(dir, 'node_modules', 'better-sqlite3');
+    writeFileSync(join(dir, 'package.json'), '{"name":"host","version":"1.0.0"}');
+    cpSync(join(realPkg, 'lib'), join(pkg, 'lib'), { recursive: true });
+    cpSync(join(realPkg, 'package.json'), join(pkg, 'package.json'));
+    const pre = join(pkg, 'prebuilds', basename(realPrebuild));
+    const built = join(pkg, 'build', 'Release', 'better_sqlite3.node');
+    for (const [file, state] of [
+      [pre, prebuild],
+      [built, build],
+    ]) {
+      mkdirSync(dirname(file), { recursive: true });
+      if (state === 'good') cpSync(realPrebuild, file);
+      else writeFileSync(file, JUNK);
+    }
+    return { dir, pre, built };
+  }
+
+  afterEach(() => {
+    for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  it('sets the dead compiled addon aside on the SessionStart path, with no npm step and no compile', async () => {
+    if (!realPrebuild) return;
+    const { dir, pre, built } = fixture({ build: 'dead', prebuild: 'good' });
+    expect(probeBindingInFreshProcess(dir).ok, 'premise: the dead build/ addon shadows the prebuild').toBe(
+      false,
+    );
+    const cmds = [];
+    const r = await ensureBetterSqlite3Working(dir, { exec: (cmd) => cmds.push(cmd), sourceBuild: false });
+    expect(r).toEqual({ ok: true, action: 'restored', setAside: [built] });
+    expect(cmds, 'healed before any npm step').toEqual([]);
+    expect(existsSync(built)).toBe(false);
+    expect(existsSync(`${built}.unusable`), 'kept, not deleted').toBe(true);
+    expect(existsSync(pre)).toBe(true);
+    expect(probeBindingInFreshProcess(dir).ok).toBe(true);
+  });
+
+  it('leaves a compiled addon that loads where it is — the user may have built it on purpose', async () => {
+    if (!realPrebuild) return;
+    const { dir, built } = fixture({ build: 'good', prebuild: 'good' });
+    // The first probe fails for a reason that has nothing to do with the addon; the real
+    // verify then finds the tree healthy, so only the guard stands between this and a move.
+    const r = await ensureBetterSqlite3Working(dir, {
+      probe: () => ({ ok: false, error: 'probe timed out' }),
+      verify: () => probeBindingInFreshProcess(dir),
+      exec: () => {},
+      sourceBuild: false,
+    });
+    expect(r.ok).toBe(true);
+    expect(r.setAside).toBeUndefined();
+    expect(existsSync(built)).toBe(true);
+    expect(existsSync(`${built}.unusable`)).toBe(false);
+  });
+
+  it('never moves the compiled addon when the prebuild would not load either', async () => {
+    if (!realPrebuild) return;
+    const { dir, pre, built } = fixture({ build: 'dead', prebuild: 'dead' });
+    let builtMissingAtVerify = false;
+    const r = await ensureBetterSqlite3Working(dir, {
+      verify: () => {
+        builtMissingAtVerify ||= !existsSync(built);
+        return probeBindingInFreshProcess(dir);
+      },
+      exec: () => {},
+      sourceBuild: false,
+    });
+    expect(r.ok).toBe(false);
+    // Not even for the length of one verify: "broken addon" must never become "no addon".
+    expect(builtMissingAtVerify).toBe(false);
+    expect(existsSync(built)).toBe(true);
+    expect(existsSync(pre)).toBe(true);
+    expect(existsSync(`${built}.unusable`)).toBe(false);
+  });
+
+  it('puts the compiled addon back when setting it aside did not fix the tree', async () => {
+    if (!realPrebuild) return;
+    const { dir, built } = fixture({ build: 'dead', prebuild: 'good' });
+    const r = await ensureBetterSqlite3Working(dir, {
+      verify: () => ({ ok: false, error: 'still dead' }),
+      exec: () => {},
+      sourceBuild: false,
+    });
+    expect(r.ok).toBe(false);
+    expect(existsSync(built), 'restored').toBe(true);
+    expect(existsSync(`${built}.unusable`)).toBe(false);
+  });
+
+  // The path the fix exists for, end to end: setup.sh runs this script on SessionStart.
+  it('the SessionStart probe heals the tree and says which file it moved', () => {
+    if (!realPrebuild) return;
+    const { dir, built } = fixture({ build: 'dead', prebuild: 'good' });
+    mkdirSync(join(dir, 'scripts'), { recursive: true });
+    cpSync(join(REPO, 'scripts', 'binding-probe-cli.mjs'), join(dir, 'scripts', 'binding-probe-cli.mjs'));
+    cpSync(join(REPO, 'lib'), join(dir, 'lib'), { recursive: true });
+    cpSync(join(REPO, 'cli-path.mjs'), join(dir, 'cli-path.mjs'));
+    const data = join(dir, 'data');
+    mkdirSync(data);
+    const r = spawnSync(process.execPath, [join(dir, 'scripts', 'binding-probe-cli.mjs')], {
+      encoding: 'utf8',
+      timeout: 60_000,
+      env: { ...process.env, PROBE_ROOT: dir, QWEN_MEM_DIR: data },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toContain(
+      `moved a compiled better-sqlite3 addon that would not load aside: ${built}.unusable`,
+    );
+    expect(probeBindingInFreshProcess(dir).ok).toBe(true);
+  }, 90_000);
+
+  // And the foreground repair doctor prints, against a plugin-cache code home in a fake HOME.
+  it('rebuild-binding heals a plugin cache in that shape and says which file it moved', () => {
+    if (!realPrebuild) return;
+    const home = mkdtempSync(join(tmpdir(), 'mem-deadbuild-home-'));
+    made.push(home);
+    const version = join(home, '.claude', 'plugins', 'cache', 'thenewnano', 'qwen-mem-lite', '6.35.4');
+    const pkg = join(version, 'node_modules', 'better-sqlite3');
+    mkdirSync(join(version, 'scripts'), { recursive: true });
+    writeFileSync(join(version, 'scripts', 'launch.mjs'), ''); // what marks a cache dir as a version
+    writeFileSync(join(version, 'package.json'), '{"name":"qwen-mem-lite","version":"6.35.4"}');
+    cpSync(join(realPkg, 'lib'), join(pkg, 'lib'), { recursive: true });
+    cpSync(join(realPkg, 'package.json'), join(pkg, 'package.json'));
+    mkdirSync(join(pkg, 'prebuilds'));
+    cpSync(realPrebuild, join(pkg, 'prebuilds', basename(realPrebuild)));
+    const built = join(pkg, 'build', 'Release', 'better_sqlite3.node');
+    mkdirSync(dirname(built), { recursive: true });
+    writeFileSync(built, JUNK);
+    const data = join(home, 'data');
+    mkdirSync(data);
+    const env = { ...process.env, HOME: home, QWEN_MEM_DIR: data, MEM_NO_AUTO_ADOPT: '1' };
+    // Unset, not blanked: each one points rebuild-binding outside this sandbox.
+    delete env.QWEN_MEM_RUNTIME_DIR;
+    delete env.CLAUDE_CONFIG_DIR;
+    delete env.CLAUDE_PLUGIN_ROOT;
+    const r = spawnSync(process.execPath, [join(REPO, 'cli.mjs'), 'rebuild-binding'], {
+      encoding: 'utf8',
+      timeout: 300_000,
+      env,
+    });
+    const out = `${r.stdout}${r.stderr}`;
+    expect(r.status, out).toBe(0);
+    expect(out).toMatch(/binding restored for Node .* plugin cache v6\.35\.4/);
+    expect(out).toContain(`a compiled addon would not load — moved aside to ${built}.unusable`);
+    expect(existsSync(`${built}.unusable`)).toBe(true);
+  }, 300_000);
 });

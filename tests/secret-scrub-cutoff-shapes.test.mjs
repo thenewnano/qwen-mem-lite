@@ -686,3 +686,1327 @@ describe('blank lines between a BEGIN and a cut key body', () => {
     expect(windows.filter((w) => escaped.includes(w))).toEqual([]);
   });
 });
+
+// D#168 (D#160 reopened): the BEGIN line's whole left context was the line prefix. With code between
+// the line prefix and the BEGIN (`-KEY = '''`, `     5\tKEY = """`) or a string opener before it
+// (`'+`, `"-`), the lines below carry only the prefix, the shape matched none of them and a cut key
+// was stored whole. Measured 2026-11-01 on 491d6414: 212 of the 336 matrix cases stored key lines,
+// every case of the seven code forms. The matrix is 5981f88's (withdrawn from 6.19.4 for regressions
+// elsewhere, which the cases after it pin).
+describe('D#168: code or a string opener between the line prefix and the BEGIN', () => {
+  // Its own generator: drawing from the file's shared one would move every later draw.
+  let s = 20261101;
+  const r = () => (s = (s * 1103515245 + 12345) >>> 0) / 2 ** 32;
+  const k64 = (n) => Array.from({ length: n }, () => B64[Math.floor(r() * 64)]).join('');
+  const LEFT = {
+    diffMinusCode: ["-KEY = '''", () => '-'],
+    diffPlusCode: ['+const k = `', () => '+'],
+    quoteCode: ['> key = "', () => '> '],
+    readToolCode: ['     5\tKEY = """', (i) => `${String(6 + i).padStart(6)}\t`],
+    readToolArrowCode: ['5→KEY = """', (i) => `${6 + i}→`],
+    grepContextCode: ["keys/conf.py:5:KEY = '''", (i) => `keys/conf.py-${6 + i}-`],
+    // `MY_KEY` and the key's `MII…` share an `M` that is not part of the line prefix.
+    diffIdentifierM: ["-MY_KEY = '''", () => '-'],
+    // A diff of YAML: `-key:` is the diff mark and code, not a grep path.
+    diffYamlCode: ["-private_key: '''", () => '-'],
+    quoteThenPlus: ["'+", () => '+'],
+    bytesThenPlus: ["b'+", () => '+'],
+    doubleQuoteThenMinus: ['"-', () => '-'],
+    backtickThenPlus: ['`+', () => '+'],
+    rawBytesThenPlus: ["rb'+", () => '+'],
+    tripleQuoteThenPlus: ["'''+", () => '+'],
+    indentedBytesThenPlus: ["  b'+", () => '+'],
+  };
+  const WRAPS = {
+    raw: (t) => t,
+    json: (t) => `{"type":"tool_result","content":${J(t)}}`,
+    jsonTwice: (t) => J(`{"content":${J(t)}}`),
+  };
+  for (const [kind, key] of Object.entries(KEYS)) {
+    const long = key.body.filter((l) => l.length >= 16).flatMap((l) => [l.slice(0, 16), l.slice(-16)]);
+    for (const cutName of ['head', 'cutMidLine']) {
+      it(`${kind} / ${cutName}: no key window kept, no text lost`, () => {
+        const failures = [];
+        for (const [leftName, [left, pre]] of Object.entries(LEFT)) {
+          for (const [wrapName, wrap] of Object.entries(WRAPS)) {
+            const [begin, ...rest] = CUTS[cutName](key);
+            const text = ['$ git diff', left + begin, ...rest.map((l, i) => pre(i) + l), PROSE].join('\n');
+            const out = scrubSecrets(wrap(text));
+            const kept = long.filter((w) => out.includes(w));
+            if (kept.length) failures.push(`${leftName}/${wrapName}: ${kept.length} key windows kept`);
+            // The code before the BEGIN is escaped in the wrapped forms, so it is looked for raw only.
+            const codeLost = wrapName === 'raw' && !out.includes(left.trim());
+            if (!out.includes('$ git diff') || !out.includes(PROSE) || codeLost)
+              failures.push(`${leftName}/${wrapName}: text lost`);
+          }
+        }
+        expect(failures).toEqual([]);
+      });
+    }
+  }
+
+  it('Read output of a cut key in an import-jsonl content array', () => {
+    const body = [KL, k64(64), k64(64)];
+    const text = [
+      "     5\tKEY = '''-----BEGIN RSA PRIVATE KEY-----",
+      ...body.map((l, i) => `${String(6 + i).padStart(6)}\t${l}`),
+    ].join('\n');
+    const out = scrubSecrets(JSON.stringify([{ type: 'text', text }]));
+    expect(body.map((l) => l.slice(20, 36)).filter((w) => out.includes(w))).toEqual([]);
+  });
+
+  // The key's first chunk on the code BEGIN line (`head -c` output): the reading ended on the BEGIN
+  // line and the prefixed lines below were stored.
+  it.each([
+    [
+      'a diff',
+      (k) => [`-KEY = '''-----BEGIN RSA PRIVATE KEY-----${k[0]}`, ...k.slice(1).map((l) => `-${l}`)],
+    ],
+    [
+      'Read output',
+      (k) => [
+        `     5\tKEY = """-----BEGIN RSA PRIVATE KEY----- ${k[0]}`,
+        ...k.slice(1).map((l, i) => `${String(6 + i).padStart(6)}\t${l}`),
+      ],
+    ],
+  ])('a key begun on its code BEGIN line in %s', (_name, lines) => {
+    const k = [`MIIE${k64(60)}`, k64(64), k64(64), k64(20)];
+    const out = scrubSecrets([...lines(k), PROSE].join('\n'));
+    expect(
+      k
+        .slice(0, 3)
+        .map((l) => l.slice(20, 36))
+        .filter((w) => out.includes(w)),
+    ).toEqual([]);
+    expect(out).toContain(PROSE);
+  });
+
+  // v6.19.4 round-2 F1, the cross-pass leak: a whole key the block pattern did not take on pass 1
+  // (a partial BEGIN inside it blocks the match until the Authorization pattern removes it) is taken
+  // whole on pass 2. Reading its first lines as a cut key on pass 1 would put ***PEM_KEY*** over
+  // its BEGIN, and the lines after the prose line would be stored.
+  it('a whole key blocked on pass 1 is still taken whole under a code BEGIN', () => {
+    const k = [`MIIE${k64(60)}`, k64(64), k64(64), k64(64)];
+    for (const [left, pre] of [
+      ["-KEY = '''", '-'],
+      ['     5\tKEY = """', '     6\t'],
+    ]) {
+      const text = [
+        `${left}-----BEGIN RSA PRIVATE KEY-----`,
+        `${pre}${k[0]}`,
+        `${pre}${k[1]}`,
+        `${pre}Some prose line here.`,
+        `${pre}${k[2]}`,
+        `${pre}${k[3]}`,
+        `${pre}Authorization: Bearer -----BEGIN RSA PRIVATE KEY`,
+        `${pre}-----END RSA PRIVATE KEY-----`,
+        'the end',
+      ].join('\n');
+      const out = scrubSecrets(text);
+      expect(
+        k.map((l) => l.slice(20, 36)).filter((w) => out.includes(w)),
+        left,
+      ).toEqual([]);
+      expect(out).toContain('the end');
+    }
+  });
+
+  // Two prefixed identifiers under a BEGIN with no code before it read as two key lines (as they do
+  // on 491d6414). Under a code BEGIN the reading needs a 40+ line, a key magic or armor headers, so
+  // a list that names a key marker in a diff keeps its words.
+  it('an identifier list under a code BEGIN keeps its text', () => {
+    for (const [left, pre] of [
+      ["-KEY = '''", '- '],
+      ["-KEY = '''", '-'],
+      ['     5\tKEY = """', '     6\t'],
+      ['> key = "', '> '],
+    ]) {
+      const lines = [
+        `${left}-----BEGIN RSA PRIVATE KEY-----`,
+        `${pre}SessionManagerImpl`,
+        `${pre}TokenRefresherImpl`,
+      ];
+      const text = [...lines, 'the end of the list'].join('\n');
+      expect(scrubSecrets(text), left).toBe(text);
+    }
+  });
+
+  // The first design took armor headers as enough under a code BEGIN; the keyless arm of the fuzz
+  // then lost the identifier under them on 858-899 of ~12,000 texts per seed.
+  it('armor headers over an identifier under a code BEGIN keep their text', () => {
+    for (const [left, pre] of [
+      ['keys/conf.py:5:key = "', (i) => `keys/conf.py-${6 + i}-`],
+      ['+MY_KEY = ', () => '+'],
+      ['> MY_KEY = ', () => '> '],
+    ]) {
+      const lines = [
+        `${left}-----BEGIN RSA PRIVATE KEY-----`,
+        ...['Proc-Type: 4,ENCRYPTED', 'DEK-Info: AES-128-CBC,3F2A9C1E', '', 'loadPrivateKeyFromDisk14'].map(
+          (l, i) => pre(i) + l,
+        ),
+      ];
+      const text = [...lines, 'the end'].join('\n');
+      expect(scrubSecrets(text), left).toBe(text);
+      expect(scrubSecrets(J(text)), `${left} escaped`).toBe(J(text));
+    }
+  });
+
+  it('prefixed prose under a code BEGIN keeps its text', () => {
+    for (const [left, pre] of Object.values(LEFT)) {
+      const text = [
+        `${left}-----BEGIN RSA PRIVATE KEY-----`,
+        `${pre(0)}This line explains where the key is loaded from.`,
+        `${pre(1)}`,
+        `${pre(2)}See config/keys.md for the rotation steps.`,
+      ].join('\n');
+      expect(scrubSecrets(text), left).toBe(text);
+    }
+  });
+
+  // The grammar reading is skipped when no key line can follow the BEGIN before the next BEGIN, and
+  // a header line can carry the next BEGIN. Quoted or followed by text, that BEGIN starts no reading
+  // of its own, so the code BEGIN's reading has to go through it: skipping on "no base64 run before
+  // the next BEGIN" alone stored all three lines below, D#169's withdrawn read limit again.
+  it.each([
+    ['a quoted BEGIN', '-Proc-Type: "-----BEGIN RSA PRIVATE KEY-----", 4,ENCRYPTED'],
+    ['a BEGIN followed by text', '-Comment: -----BEGIN RSA PRIVATE KEY----- was here'],
+  ])('a header line holding %s under a code BEGIN', (_, header) => {
+    // Fixed lines: this block's generator feeds the cases above.
+    const L = 'q7Zr0XbN4kT2pWv9sYc1LmA8dE3fGh6J';
+    const body = [L + L, 'Hk3PwQ9zLm2VbN8xRt5YcA1sDf6GjU0e'.repeat(2), `${L}Zx8CvB7n…`];
+    const text = [
+      '$ git diff',
+      "-KEY = '''-----BEGIN RSA PRIVATE KEY-----",
+      header,
+      '-DEK-Info: AES-128-CBC,3F2A9C1E',
+      '-',
+      ...body.map((l) => `-${l}`),
+      PROSE,
+    ].join('\n');
+    for (const t of [text, J(text)]) {
+      const out = scrubSecrets(t);
+      expect(body.map((l) => l.slice(4, 20)).filter((w) => out.includes(w))).toEqual([]);
+      expect(out).toContain(PROSE);
+    }
+  });
+
+  // With the key begun on its BEGIN line, a short last line below needs no base64 run to belong to
+  // it, so that skip must not apply: the reading under the shape of `"-` stops at `-Qx7Zt2` (a `-`
+  // is not base64) and only the grammar reading takes it.
+  it.each([['"-'], ["'-"], ["b'-"], ["-KEY = '''"]])(
+    'a key begun on a %s BEGIN line keeps no short last line',
+    (left) => {
+      const text = [`${left}-----BEGIN RSA PRIVATE KEY----- ${KL}`, '-Qx7Zt2', PROSE].join('\n');
+      for (const t of [text, J(text)]) {
+        const out = scrubSecrets(t);
+        expect(out).not.toContain('Qx7Zt2');
+        expect(out).not.toContain(KL.slice(10, 26));
+        expect(out).toContain(PROSE);
+      }
+    },
+  );
+
+  // Line-prefix regexes are kept per call, by prefix. A BEGIN the scrubber leaves (prose below it)
+  // stays in every pass, so a regex handed to a later BEGIN by any looser key than its own prefix
+  // (one of the same length here) would store that key on every pass, not only the first.
+  it.each([
+    ['> ', '# '],
+    ['// ', '-- '],
+    // D#607 F9: keyed by the trimmed prefix, `>` took the regex of `> `.
+    ['>', '> '],
+  ])('a cut key under %j after a kept BEGIN under %j', (p2, p1) => {
+    const body = [KL, 'q7Zr0XbN4kT2pWv9sYc1LmA8dE3fGh6J'.repeat(2), 'Zx8CvB7nM6aS5dF4gH3jK2lQ1wE0rTyU…'];
+    const text = [
+      `${p1}-----BEGIN RSA PRIVATE KEY-----`,
+      `${p1}That header is where the key used to start.`,
+      'and then',
+      `${p2}-----BEGIN RSA PRIVATE KEY-----`,
+      ...body.map((l) => p2 + l),
+      PROSE,
+    ].join('\n');
+    const out = scrubSecrets(text);
+    expect(body.map((l) => l.slice(10, 26)).filter((w) => out.includes(w))).toEqual([]);
+    expect(out).toContain('That header is where the key used to start.');
+    expect(out).toContain(PROSE);
+  });
+});
+
+// D#607, the independent review of the D#168 reading (2026-11-01), and its repair. Each case pins a
+// clause that one mutation of secret-scrub.mjs broke with every scrub test still green.
+describe('D#607: the D#168 reading, its skip and its memos', () => {
+  const L2 = 'q7Zr0XbN4kT2pWv9sYc1LmA8dE3fGh6Jq7Zr0XbN4kT2pWv9sYc1LmA8dE3fGh6J';
+  const L3 = 'Hk3PwQ9zLm2VbN8xRt5YcA1sDf6GjU0eHk3PwQ9zLm2VbN8xRt5YcA1sDf6GjU0e';
+  const P = 'The rest of this explanation is prose.';
+  const kept = (out, lines) => lines.map((l) => l.slice(0, 16)).filter((w) => out.includes(w));
+
+  // F5: the skip's gap ended at the next `-----BEGIN ` of any label. `X-----BEGIN : v` is a header
+  // whose name swallows one, so the reading goes through it, and its colon fell past the gap.
+  it('a header whose name holds a -----BEGIN does not end the skip gap', () => {
+    const text = [
+      "-KEY = '''-----BEGIN RSA PRIVATE KEY-----",
+      '-X-----BEGIN : v',
+      `-${KL}`,
+      `-${L2}`,
+      P,
+    ].join('\n');
+    for (const t of [text, J(text)]) {
+      const out = scrubSecrets(t);
+      expect(kept(out, [KL, L2])).toEqual([]);
+      expect(out).toContain(P);
+    }
+  });
+
+  // F9: cases for the grammar's clauses that no test held (each mutant stored all three lines).
+  it.each([
+    [
+      'escaped text that starts with the BEGIN line',
+      ["-KEY = '''-----BEGIN RSA PRIVATE KEY-----", ...[KL, L2, L3].map((l) => `-${l}`), P].join('\\n'),
+    ],
+    [
+      'escaped breaks after a real one',
+      'log entry 1\n' +
+        ["-KEY = '''-----BEGIN RSA PRIVATE KEY-----", ...[KL, L2, L3].map((l) => `-${l}`), P].join('\\n'),
+    ],
+    [
+      'a code line of 40+ characters before the opener, escaped',
+      J(
+        [
+          '$ git diff',
+          "-    PRIVATE_SIGNING_KEY_FOR_TESTS_ONLY = '''-----BEGIN RSA PRIVATE KEY-----",
+          ...[KL, L2, L3].map((l) => `-${l}`),
+          P,
+        ].join('\n'),
+      ),
+    ],
+    [
+      'grep without line numbers',
+      [
+        "keys/conf.py:KEY = '''-----BEGIN RSA PRIVATE KEY-----",
+        ...[KL, L2, L3].map((l) => `keys/conf.py:${l}`),
+        P,
+      ].join('\n'),
+    ],
+    [
+      'a nested quote',
+      ['> > key = "-----BEGIN RSA PRIVATE KEY-----', ...[KL, L2, L3].map((l) => `> > ${l}`), P].join('\n'),
+    ],
+  ])('%s under a code BEGIN', (_, text) => {
+    const out = scrubSecrets(text);
+    expect(kept(out, [KL, L2, L3])).toEqual([]);
+    expect(out).toContain(P);
+  });
+
+  // The memo of what a reading found from its first base64 line holds only for a reading that had
+  // counted nothing before that line: this header BEGIN carries a key start, which the reading from
+  // the code BEGIN above (the memo's writer) never counted.
+  it('a key begun on a header BEGIN line under a code BEGIN', () => {
+    const short = ['QWERTYUIOPASDFGHJKLz', 'ZXCVBNMLKJHGFDSAqwer', 'poiuytrewqlkjhgfdsam'];
+    const text = [
+      "-KEY = '''-----BEGIN RSA PRIVATE KEY-----",
+      '-Comment: -----BEGIN RSA PRIVATE KEY----- MIIEowIBAAKCAQEA',
+      ...short.map((x) => `-${x}`),
+      P,
+    ].join('\n');
+    for (const t of [text, J(text)]) {
+      const out = scrubSecrets(t);
+      expect(short.filter((x) => out.includes(x))).toEqual([]);
+      expect(out).not.toContain('MIIEowIBAAKCAQEA');
+      expect(out).toContain(P);
+    }
+  });
+
+  // Fuzz-found and minimised: each output changed with the blank-run memo recording the line after
+  // the run's end, or with one memo shared by every line shape.
+  it.each([
+    [
+      'a blank run reaching its memo under quoted header BEGINs',
+      [
+        '> X-Foo: -----BEGIN PGP PRIVATE KEY BLOCK-----',
+        '> Comment: -----BEGIN PGP PRIVATE KEY BLOCK-----',
+        '> Comment: -----BEGIN PGP PRIVATE KEY BLOCK-----',
+        ...Array(8).fill('> '),
+        '> -----BEGIN OPENSSH PRIVATE KEY-----',
+        `> ${KL}`,
+      ].join('\n'),
+      [
+        '> X-Foo: -----BEGIN PGP PRIVATE KEY BLOCK-----',
+        '> Comment: -----BEGIN PGP PRIVATE KEY BLOCK-----',
+        '> Comment: -----BEGIN PGP PRIVATE KEY BLOCK-----',
+        ...Array(8).fill('> '),
+        '> ***PEM_KEY***',
+      ].join('\n'),
+    ],
+    [
+      'readings under two line shapes reaching one line',
+      [
+        '+X-Foo: -----BEGIN PGP PRIVATE KEY BLOCK-----',
+        '+Comment: -----BEGIN PGP PRIVATE KEY BLOCK-----',
+        '+ILMyki1sEfmlxDDpiQ48',
+        '+CpI0iqfewyVD5hbsdxHn',
+        '+',
+      ].join('\r\n'),
+      ['+X-Foo: -----BEGIN PGP PRIVATE KEY BLOCK-----', '+Comment: ***PEM_KEY***'].join('\r\n'),
+    ],
+  ])('%s', (_, text, expected) => {
+    expect(scrubSecrets(text)).toBe(expected);
+  });
+
+  // D#607 r2 (delta review of 56af7270): three clauses no case held. The skip's gap must end at the
+  // next private-key BEGIN after each BEGIN, not after the first one asked (P3-1); a 16-char base64
+  // run in the gap keeps the reading (P3-4); and each memo key holds the escape depth, which changes
+  // where lines end (P3-2, and r3 F2 for the other two sites: an empty line, read without lineCore,
+  // and a first base64 line; in each the code or first BEGIN reads at depth 1, the header BEGIN at 0).
+  it.each([
+    [
+      'a second code BEGIN with a key, after one with prose',
+      [
+        "-KEY = '''-----BEGIN RSA PRIVATE KEY-----",
+        '-abc def',
+        "-KEY = '''-----BEGIN RSA PRIVATE KEY-----",
+        `-${KL}`,
+        `-${L2}`,
+        P,
+      ].join('\n'),
+      ["-KEY = '''-----BEGIN RSA PRIVATE KEY-----", '-abc def', "-KEY = '''***PEM_KEY***", P].join('\n'),
+    ],
+    [
+      'a key under a code BEGIN with an unrelated BEGIN after the prose',
+      [
+        "-KEY = '''-----BEGIN RSA PRIVATE KEY-----",
+        `-${KL}`,
+        `-${L2}`,
+        P,
+        '-----BEGIN RSA PRIVATE KEY-----',
+        'word',
+      ].join('\n'),
+      ["-KEY = '''***PEM_KEY***", P, '-----BEGIN RSA PRIVATE KEY-----', 'word'].join('\n'),
+    ],
+    [
+      'one blank run read at two escape depths',
+      "-KEY = '''-----BEGIN RSA PRIVATE KEY-----\\n-Comment: x\n-Comment: -----BEGIN RSA PRIVATE KEY-----\n" +
+        '-\n'.repeat(12) +
+        '-\\n-\n-MIIEabcdefghijklmnop\\"\\nx\n' +
+        P,
+      null,
+    ],
+    [
+      'an empty-line run read at two escape depths',
+      "-KEY = '''-----BEGIN RSA PRIVATE KEY-----\\n-Comment: x\n-Comment: -----BEGIN RSA PRIVATE KEY-----\n" +
+        '\n'.repeat(12) +
+        '\\n\n-MIIEabcdefghijklmnop\\"\\nx\n' +
+        P,
+      null,
+    ],
+    [
+      'a first base64 line read at two escape depths',
+      '-Comment: -----BEGIN RSA PRIVATE KEY-----\n-Comment: -----BEGIN RSA PRIVATE KEY-----\\n\n-QWERTYUIOPASDFGHJKLz\n-AAAAAAAAAAAAAAAAAAAA\\n-' +
+        'B'.repeat(45) +
+        '\n' +
+        P,
+      ['-Comment: -----BEGIN RSA PRIVATE KEY-----', '-Comment: ***PEM_KEY***', P].join('\n'),
+    ],
+  ])('%s', (_, text, expected) => {
+    expect(scrubSecrets(text)).toBe(expected ?? text);
+  });
+});
+
+// D#614: shapes that stored a cut key on v6.30.9 (secret-scrub.mjs sha1 cfda510c) as on v6.30.8.
+// One matrix per shape: 4 key kinds x 2 cuts x the shape's left contexts x the wraps, no key window
+// kept, no text lost.
+const D614_WRAPS = {
+  raw: (t) => t,
+  crlf: (t) => t.replace(/\n/g, '\r\n'),
+  json: (t) => `{"type":"tool_result","content":${J(t)}}`,
+  jsonTwice: (t) => J(`{"content":${J(t)}}`),
+};
+// A rotated key's new lines, for a diff that removes the old ones and adds these.
+const rotated = (l) => l.slice(7) + l.slice(0, 7);
+function d614Matrix(lefts, wraps) {
+  for (const [kind, key] of Object.entries(KEYS)) {
+    const long = key.body.filter((l) => l.length >= 16).flatMap((l) => [l.slice(0, 16), l.slice(-16)]);
+    for (const cutName of ['head', 'cutMidLine']) {
+      it(`${kind} / ${cutName}: no key window kept, no text lost`, () => {
+        const failures = [];
+        for (const [leftName, [left, pre, added]] of Object.entries(lefts)) {
+          // Lines added after the removed ones: under a head cut only, as nothing follows a line cut mid-way.
+          const plus = added && cutName === 'head' ? key.body.slice(0, 3).map(rotated) : [];
+          const windows = [...long, ...plus.flatMap((l) => [l.slice(0, 16), l.slice(-16)])];
+          for (const [wrapName, wrap] of Object.entries(wraps)) {
+            const [begin, ...rest] = CUTS[cutName](key);
+            const text = [
+              '$ git diff',
+              left + begin,
+              ...rest.map((l, i) => pre(i) + l),
+              ...plus.map((l) => `+${l}`),
+              PROSE,
+            ].join('\n');
+            const out = scrubSecrets(wrap(text));
+            const kept = windows.filter((w) => out.includes(w));
+            if (kept.length) failures.push(`${leftName}/${wrapName}: ${kept.length} key windows kept`);
+            // The code before the BEGIN is escaped in the JSON forms, so it is looked for unwrapped only.
+            const codeLost = !wrapName.startsWith('json') && left.trim() !== '' && !out.includes(left.trim());
+            if (!out.includes('$ git diff') || !out.includes(PROSE) || codeLost)
+              failures.push(`${leftName}/${wrapName}: text lost`);
+          }
+        }
+        expect(failures).toEqual([]);
+      });
+    }
+  }
+}
+
+// A1: a BEGIN on a unified diff's context line (its first character is the diff's space) over the
+// removed key lines, and the added ones after them. The BEGIN's line prefix is a space, which no line
+// below shares, and with code the line is no named prefix grammar, so nothing below it was read.
+describe('D#614 A1: a BEGIN on a diff context line over removed key lines', () => {
+  d614Matrix(
+    {
+      contextCode: [" KEY = '''", () => '-'],
+      contextNoCode: [' ', () => '-'],
+      contextIndentedCode: ["     KEY = '''", () => '-'],
+      contextJsTemplate: [' const k = `', () => '-'],
+      contextCodeThenAdded: [" KEY = '''", () => '-', true],
+      contextNoCodeThenAdded: [' ', () => '-', true],
+      // A key added under the context line: `+` is base64, so only a header line stopped the reading.
+      contextCodeOverAdded: [" KEY = '''", () => '+'],
+      contextNoCodeOverAdded: [' ', () => '+'],
+    },
+    D614_WRAPS,
+  );
+
+  // Under a context BEGIN the reading takes a 40+ line or a key start, as the D#168 reading does: two
+  // removed identifiers, or armor headers over one, are a list, not a key.
+  it.each([
+    ['an identifier list', ['- SessionManagerImpl', '- TokenRefresherImpl']],
+    ['the same without a space', ['-SessionManagerImpl', '-TokenRefresherImpl']],
+    [
+      'armor headers over an identifier',
+      ['-Proc-Type: 4,ENCRYPTED', '-DEK-Info: AES-128-CBC,3F2A9C1E', '-', '-loadPrivateKeyFromDisk14'],
+    ],
+    [
+      'prose',
+      [
+        '-This line explains where the key is loaded from.',
+        '-',
+        '+See config/keys.md for the rotation steps.',
+      ],
+    ],
+  ])('%s under a context BEGIN keeps its text', (_, lines) => {
+    for (const left of [" KEY = '''", ' ']) {
+      const text = ['$ git diff', `${left}-----BEGIN RSA PRIVATE KEY-----`, ...lines, 'the end'].join('\n');
+      expect(scrubSecrets(text), left).toBe(text);
+      expect(scrubSecrets(J(text)), `${left} escaped`).toBe(J(text));
+    }
+  });
+
+  // Only a line led by a space reads as a context line: a BEGIN named in prose over a list of hashes
+  // keeps the list.
+  it('a hash list under a BEGIN named in prose keeps its text', () => {
+    const text = [
+      'Fingerprints of the keys pasted after -----BEGIN RSA PRIVATE KEY-----',
+      '- e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      '- 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+      'and nothing else.',
+    ].join('\n');
+    expect(scrubSecrets(text)).toBe(text);
+  });
+
+  // Read output starts its lines with spaces too. Only a removed or added line among the lines read makes
+  // the BEGIN's line a context line (D#641; a next line that starts with a mark before it): here the
+  // reading took the empty line's number for a short last line.
+  it('Read output of a key begun on its BEGIN line keeps the next line number', () => {
+    const text = [
+      `     5\t-----BEGIN RSA PRIVATE KEY----- ${KL}`,
+      '     6\t',
+      '     7\tThat was the key.',
+    ].join('\n');
+    expect(scrubSecrets(text)).toBe(
+      ['     5\t***PEM_KEY***', '     6\t', '     7\tThat was the key.'].join('\n'),
+    );
+  });
+
+  // A line at one escape depth that holds a break of another is several lines, not a context line:
+  // here ` a` is a line of its own, and the BEGIN under it is a header's (the key goes either way).
+  it('a line of two escape depths led by a space is not a context line', () => {
+    const text = `${[' a', '-Comment: -----BEGIN RSA PRIVATE KEY-----'].join('\\n')}\\\\n${[
+      '-Comment: -----BEGIN RSA PRIVATE KEY-----',
+      `-${KL}`,
+      PROSE,
+    ].join('\\\\n')}`;
+    const out = scrubSecrets(text);
+    expect(out).toBe(
+      `${[' a', '-Comment: -----BEGIN RSA PRIVATE KEY-----'].join('\\n')}\\\\n${[
+        '-Comment: ***PEM_KEY***',
+        PROSE,
+      ].join('\\\\n')}`,
+    );
+  });
+});
+
+// A2: a grep path the D#168 grammar's path class (`[^\s'"`:\\]+`) refuses, with code after its line
+// number: a backslash, a space, a drive letter or another colon, a quote or a backtick, or a leading
+// `-`, `+` or `>` (read as a diff mark or a quote first). The BEGIN on a match line (`path:5:`) over
+// context lines (`path-6-`), and the reverse. One group per path character class.
+describe('D#614 A2: a grep path outside the grammar path class, with code before the BEGIN', () => {
+  const PATHS = {
+    backslash: 'keys\\conf.py',
+    space: 'My Keys/conf.py',
+    driveLetter: 'C:/src/conf.py',
+    driveAndBackslash: 'C:\\keys\\conf.py',
+    otherColon: 'srv/a:b/conf.py',
+    singleQuote: "it's/conf.py",
+    doubleQuote: 'say"hi/conf.py',
+    backtick: 'a`b/conf.py',
+    leadingMinus: '-x/conf.py',
+    leadingPlus: '+x/conf.py',
+    leadingQuoteMark: '>x/conf.py',
+    // The column is the line's last `:N:` or `-N-`: the first one here is part of the path.
+    spaceAndDashedNumber: 'My Logs/2026-11-01/conf.py',
+    uncPath: '\\\\srv\\keys\\conf.py',
+  };
+  for (const [name, path] of Object.entries(PATHS)) {
+    describe(name, () => {
+      d614Matrix(
+        {
+          matchOverContext: [`${path}:5:KEY = '''`, (i) => `${path}-${6 + i}-`],
+          contextOverMatch: [`${path}-5-KEY = '''`, (i) => `${path}:${6 + i}:`],
+          matchOverContextNoCode: [`${path}:5:`, (i) => `${path}-${6 + i}-`],
+          matchOverContextJs: [`${path}:5:const k = \``, (i) => `${path}-${6 + i}-`],
+        },
+        D614_WRAPS,
+      );
+    });
+  }
+
+  // Both separators of a grep column are the same character: `-1:` in a slice after it is code.
+  it('a slice in the code after a spaced path does not end the grep column', () => {
+    const path = 'My Keys/conf.py';
+    const body = [KL, 'q7Zr0XbN4kT2pWv9sYc1LmA8dE3fGh6J'.repeat(2), 'Zx8CvB7nM6aS5dF4gH3jK2lQ1wE0rTyU'];
+    const text = [
+      `${path}:5:KEY = s[n-1:] + '''-----BEGIN RSA PRIVATE KEY-----`,
+      ...body.map((l, i) => `${path}-${6 + i}-${l}`),
+      PROSE,
+    ].join('\n');
+    for (const t of [text, J(text)]) {
+      const out = scrubSecrets(t);
+      expect(body.map((l) => l.slice(0, 16)).filter((w) => out.includes(w))).toEqual([]);
+      expect(out).toContain(PROSE);
+    }
+  });
+
+  // The grep column's reading takes the D#168 evidence too: identifiers and prose that a grep for a
+  // key marker printed under it keep their text.
+  it.each([
+    ['an identifier list', ['SessionManagerImpl', 'TokenRefresherImpl']],
+    ['prose', ['Keys are loaded from the vault at startup.', '', 'See docs/keys.md for rotation.']],
+    [
+      'armor headers over an identifier',
+      ['Proc-Type: 4,ENCRYPTED', 'DEK-Info: AES-128-CBC,3F2A9C1E', 'loadKey14x'],
+    ],
+  ])('%s under a grep BEGIN with a spaced path keeps its text', (_, lines) => {
+    const path = 'My Keys/conf.py';
+    const text = [
+      `${path}:5:KEY = '''-----BEGIN RSA PRIVATE KEY-----`,
+      ...lines.map((l, i) => `${path}-${6 + i}-${l}`),
+      'the end',
+    ].join('\n');
+    expect(scrubSecrets(text)).toBe(text);
+    expect(scrubSecrets(J(text))).toBe(J(text));
+  });
+});
+
+// A3: in escaped text the first reading's prefix stops at an unescaped single quote, and the D#168
+// reading looked for the line's start past such quotes at most 256 characters back: a longer code
+// line before the last quote (keyword arguments, a dict) left no grammar, and the key was stored.
+// Raw text has no such stop, so only the escaped wraps failed.
+describe('D#614 A3: escaped code longer than 256 characters before the last quote', () => {
+  const pad = 'x'.repeat(300);
+  d614Matrix(
+    {
+      readLongArgs: [
+        `     5\tDEFAULTS = dict(name='svc', ${pad}=1, ua='client', key="""`,
+        (i) => `${String(6 + i).padStart(6)}\t`,
+      ],
+      diffLongDict: [`-    CONFIG = {'name': 'svc', '${pad}': 1, 'key': '''`, () => '-'],
+      grepLongCode: [`keys/conf.py:5:x = '${pad}' + '''`, (i) => `keys/conf.py-${6 + i}-`],
+      quoteLongCode: [`> key = '${pad}' + '''`, () => '> '],
+      contextLongCode: [` KEY = '${pad}' + '''`, () => '-'],
+      codeOf4000: [`-    K = '${'y'.repeat(4000)}' + '''`, () => '-'],
+      // A `\n` in the code is a break one escape level down, not this line's start.
+      escapedNewlineInCode: [`-    x = "a\\nb" + '${pad}' + '''`, () => '-'],
+    },
+    {
+      raw: D614_WRAPS.raw,
+      json: D614_WRAPS.json,
+      jsonTwice: D614_WRAPS.jsonTwice,
+      // Lone CRs: the line starts after an escaped `\r`.
+      jsonLoneCr: (t) => `{"content":${J(t.replace(/\n/g, '\r'))}}`,
+    },
+  );
+});
+
+// A4 (D#633, a 6.30.9 regression): in an added diff, a header line under a BEGIN that holds a second
+// private-key BEGIN (`+Comment: -----BEGIN …`). The first BEGIN's D#168 reading takes that header as
+// an armor header, ends at a line the second BEGIN's own reading goes past (a 15-character line, a
+// line that is only the second BEGIN's prefix, another header) and its span swallowed the second
+// BEGIN, which then started no reading. 6.30.8 read the second BEGIN (the first found nothing) and
+// erased every key line; 6.30.9 stored the lines past the first one's end. Shapes from the v6.30.9
+// pre-tag r1 defects review (q1_repro.mjs, fuzz seed 33).
+describe('D#614 A4 (D#633): a second BEGIN in a header line under a code BEGIN', () => {
+  const K1 = 'MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun';
+  const K2 = 'VfLLGRHmAKOLzbCZpNqdM0MGSFhnfRSbxnrDTHjHqNHnL2dsc8RIG1rN7nsUiaHP';
+  const K3 = 'hgsZH+ZH+Nj3KhnWTuotrsusbcuKGV8QotwGpDNSePvXW3QS8FPBrUpgD5lxBrD2';
+  const S15 = 'QWERTYUIOPasdfg';
+  const B = '-----BEGIN RSA PRIVATE KEY-----';
+  it.each([
+    [
+      'a 16-character line under the header BEGIN',
+      ["+KEY = '''" + B, `+Comment: ${B}`, `+${K1}`, `+${S15}`, `+${K2}`, `+${K3}`],
+      [K1, S15, K2, K3],
+    ],
+    [
+      'a line holding only the header BEGIN’s prefix',
+      ["+KEY = '''" + B, `+Comment: ${B}`, `+${K1}`, '+Comment: ', `+${K2}`, `+${K3}`],
+      [K1, K2, K3],
+    ],
+    [
+      'two header BEGINs over a key whose second line is a header value',
+      [
+        '+Comment: -----BEGIN EC PRIVATE KEY-----',
+        '+Comment: -----BEGIN DSA PRIVATE KEY-----',
+        `+${K1}`,
+        `+Comment: ${K2}`,
+      ],
+      [K1, K2],
+    ],
+    // The first header BEGIN's reading ends where the code BEGIN's does; only the second goes on.
+    [
+      'two header BEGINs under a code BEGIN, the second reading farther',
+      ["+KEY = '''" + B, `+Comment: ${B}`, `+Comment: ${B}`, `+${K1}`, `+${S15}`, `+${K2}`, `+${K3}`],
+      [K1, S15, K2, K3],
+    ],
+  ])('%s', (_, lines, keys) => {
+    const text = ['$ git diff', ...lines, PROSE].join('\n');
+    const failures = [];
+    for (const [wrapName, wrap] of Object.entries(D614_WRAPS)) {
+      const out = scrubSecrets(wrap(text));
+      const kept = keys.filter((k) => out.includes(k.slice(0, 15)) || out.includes(k.slice(-15)));
+      if (kept.length) failures.push(`${wrapName}: ${kept.length} key lines kept`);
+      if (!out.includes('$ git diff') || !out.includes(PROSE)) failures.push(`${wrapName}: text lost`);
+    }
+    expect(failures).toEqual([]);
+  });
+
+  // Only BEGINs inside the span are read with it: a later key, past prose, is a key of its own.
+  it('a key after prose below the span keeps the prose between', () => {
+    const text = [
+      '$ git diff',
+      "+KEY = '''" + B,
+      `+Comment: ${B}`,
+      `+${K1}`,
+      `+${S15}`,
+      `+${K2}`,
+      PROSE,
+      B,
+      K3,
+    ].join('\n');
+    for (const t of [text, J(text)]) {
+      const out = scrubSecrets(t);
+      expect([K1, S15, K2, K3].filter((k) => out.includes(k.slice(0, 15)))).toEqual([]);
+      expect(out).toContain(PROSE);
+    }
+  });
+});
+
+// D#641: `git diff` of a rotated key cut by `head` or a truncation, in the shape git writes it. The
+// lines under the BEGIN depend on the key type: an OpenSSH key's first body line is the same for
+// every key of its type (a context line), as is an encrypted PEM key's Proc-Type header, and a PGP
+// block's blank line after the BEGIN is a context line of one space. The A1 matrix above writes them
+// as removed lines, which git never does, and v6.30.9 and the D#614 A1 fix both stored the removed
+// and added lines. A removed key that ends with a short line or a PGP checksum is followed by the
+// added key, whose lines were stored once the reading stopped at that short line.
+describe('D#641: a cut `git diff` of a rotated key, in the shape git writes it', () => {
+  const hex = (n) => Array.from({ length: n }, () => '0123456789ABCDEF'[Math.floor(rnd() * 16)]).join('');
+  // Key lines of these lengths (-1: a PGP checksum), the first one starting with `start`: a DER key's
+  // `MII…` or an RSA PGP key's `lQ…`, as a lone line of 16-39 characters is a key only with that start.
+  const lines = (lens, start = '') =>
+    lens.map((n, i) => (n < 0 ? `=${b64(4)}` : i === 0 ? start + b64(n - start.length) : b64(n)));
+  const OPENSSH_FIRST = 'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW';
+  const hunk = (begin, end, ctx, mid, oldLines, newLines) => [
+    ` ${begin}`,
+    ...ctx.map((l) => ` ${l}`),
+    ...mid,
+    ...oldLines.map((l) => `-${l}`),
+    ...newLines.map((l) => `+${l}`),
+    ` ${end}`,
+  ];
+  const BO = '-----BEGIN OPENSSH PRIVATE KEY-----';
+  const EO = '-----END OPENSSH PRIVATE KEY-----';
+  const BR = '-----BEGIN RSA PRIVATE KEY-----';
+  const ER = '-----END RSA PRIVATE KEY-----';
+  const BP = '-----BEGIN PGP PRIVATE KEY BLOCK-----';
+  const EP = '-----END PGP PRIVATE KEY BLOCK-----';
+  const HUNKS = {
+    openssh: hunk(BO, EO, [OPENSSH_FIRST], [], lines([70, 70, 70, 32]), lines([70, 70, 70, 32])),
+    opensshShortLast: hunk(BO, EO, [OPENSSH_FIRST], [], lines([70, 70, 70, 12]), lines([70, 70, 70, 12])),
+    encryptedPem: hunk(
+      BR,
+      ER,
+      ['Proc-Type: 4,ENCRYPTED'],
+      [`-DEK-Info: AES-128-CBC,${hex(32)}`, `+DEK-Info: AES-128-CBC,${hex(32)}`, ' '],
+      lines([64, 64, 64, 40]),
+      lines([64, 64, 64, 40]),
+    ),
+    pgp: hunk(BP, EP, [''], [], lines([64, 64, 64, 28, -1], 'lQOYBF'), lines([64, 64, 64, 28, -1], 'lQOYBG')),
+    pemShortLast: hunk(
+      BR,
+      ER,
+      [],
+      [],
+      lines([64, 64, 64, 12], 'MIIEowIBAAKCAQEA'),
+      lines([64, 64, 64, 12], 'MIIEpAIBAAKCAQEA'),
+    ),
+  };
+  const FRAMES = {
+    keyFile: (h) => [
+      'diff --git a/id_key b/id_key',
+      'index 3b18e51..a4f0c2d 100600',
+      '--- a/id_key',
+      '+++ b/id_key',
+      `@@ -1,${h.length - 1} +1,${h.length - 1} @@`,
+    ],
+    embedded: () => ['@@ -4,14 +4,14 @@ deploy:', ' user: deploy', ' key: |'],
+  };
+  const windowsOf = (l) => {
+    const body = l.slice(1);
+    return /^[A-Za-z0-9+/=]{16,}$/.test(body) ? [body.slice(0, 16), body.slice(-16)] : [];
+  };
+  // The BEGIN line alone, or under code that opens a string (a key in a Python file): in a JSON string the
+  // BEGIN's line starts past the code's quotes.
+  const CODES = { noCode: '', code: "KEY = '''" };
+  for (const [kind, h0] of Object.entries(HUNKS)) {
+    for (const [frameName, frame] of Object.entries(FRAMES)) {
+      for (const [codeName, code] of Object.entries(CODES)) {
+        const h = [` ${code}${h0[0].slice(1)}`, ...h0.slice(1)];
+        it(`${kind} / ${frameName} / ${codeName}: no key window kept at any cut, no text lost`, () => {
+          const failures = [];
+          // Every cut from the line under the BEGIN to the line before the END, whole or cut mid-line.
+          for (let n = 2; n < h.length; n++) {
+            for (const midLine of [false, true]) {
+              const cut = h.slice(0, n);
+              const last = cut[n - 1];
+              if (midLine && !(last.length > 33 && /^[-+ ][A-Za-z0-9+/=]+$/.test(last))) continue;
+              // Not covered: an encrypted key's random first line cut inside its first 40 characters. Under
+              // the diff reading, as under the D#168 one, armor headers over one line of 16-39 characters
+              // are no key (headers over an identifier, below).
+              if (midLine && kind === 'encryptedPem' && n - 1 === h.findIndex((l) => windowsOf(l).length))
+                continue;
+              if (midLine) cut[n - 1] = `${last.slice(0, Math.ceil(last.length / 2))}…`;
+              const windows = cut.slice(0, midLine ? n - 1 : n).flatMap(windowsOf);
+              if (midLine) windows.push(last.slice(1, 17));
+              const text = ['$ git diff', ...frame(h), ...cut, PROSE].join('\n');
+              for (const [wrapName, wrap] of Object.entries(D614_WRAPS)) {
+                const out = scrubSecrets(wrap(text));
+                const kept = windows.filter((w) => out.includes(w));
+                const tag = `${n}${midLine ? '…' : ''}/${wrapName}`;
+                if (kept.length)
+                  failures.push(`${tag}: ${kept.length} of ${windows.length} key windows kept`);
+                if (!out.includes('$ git diff') || !out.includes('@@ -') || !out.includes(PROSE))
+                  failures.push(`${tag}: text lost`);
+              }
+            }
+          }
+          expect(failures).toEqual([]);
+        });
+      }
+    }
+  }
+
+  // The reading under a context BEGIN takes a key only on a removed or added line, and only on a
+  // 40+ line or a key start, as the A1 reading does.
+  it.each([
+    [
+      'prose',
+      [
+        ` ${BR}`,
+        ' The key above was rotated.',
+        '-It is loaded from config/keys.',
+        '+It is loaded from the vault.',
+      ],
+    ],
+    [
+      'removed identifiers under a blank context line',
+      [` ${BR}`, ' ', '-SessionManagerImpl', '-TokenRefresherImpl'],
+    ],
+    [
+      'armor headers over a removed identifier',
+      [
+        ` ${BR}`,
+        ' Proc-Type: 4,ENCRYPTED',
+        '-DEK-Info: AES-128-CBC,3F2A9C1E',
+        ' ',
+        '-loadPrivateKeyFromDisk14',
+      ],
+    ],
+  ])('%s under a context BEGIN in a real diff keeps its text', (_, hunkLines) => {
+    const text = ['$ git diff', '@@ -1,6 +1,6 @@', ...hunkLines, 'the end'].join('\n');
+    expect(scrubSecrets(text)).toBe(text);
+    expect(scrubSecrets(J(text))).toBe(J(text));
+  });
+
+  // The added lines are read on only after the removed key's short last line or checksum: a reading that
+  // stopped at a line cut mid-way ended where the output did, and an identifier added after it stays.
+  it('an identifier added after a removed key line cut mid-way keeps its text', () => {
+    const k1 = b64(64);
+    const text = [
+      '$ git diff',
+      '@@ -1,4 +1,4 @@',
+      ` ${BR}`,
+      `-MIIEowIBAAKCAQEA${b64(48)}`,
+      `-${k1.slice(0, 30)}…`,
+      '+SessionManagerImplementation',
+      PROSE,
+    ].join('\n');
+    for (const t of [text, J(text)]) {
+      const out = scrubSecrets(t);
+      expect(out).toContain('+SessionManagerImplementation');
+      expect(out).not.toContain(k1.slice(0, 16));
+    }
+  });
+
+  // Only a removed or added line is read on: a hash printed after the diff (`git rev-parse HEAD`) stays.
+  it('a hash printed after a removed key that ends with a short line keeps its text', () => {
+    const sha = '1eb2ce12e8b6ab30424f3aa0ea13ba5bbb9b3840';
+    const k1 = b64(64);
+    const text = [
+      '$ git diff',
+      '@@ -1,3 +1,3 @@',
+      ` ${BR}`,
+      `-MIIEowIBAAKCAQEA${k1.slice(16)}`,
+      `-${b64(12)}`,
+      sha,
+      PROSE,
+    ].join('\n');
+    for (const t of [text, J(text)]) {
+      const out = scrubSecrets(t);
+      expect(out).toContain(sha);
+      expect(out).not.toContain(k1.slice(-16));
+    }
+  });
+
+  // An added line that is no key line ends the reading where the removed key ended: the key goes, the
+  // added prose stays.
+  it('a removed key that ends with a short line, then an added line of prose', () => {
+    const k1 = b64(64);
+    const text = [
+      '$ git diff',
+      '@@ -1,3 +1,3 @@',
+      ` ${BR}`,
+      `-MIIEowIBAAKCAQEA${k1.slice(16)}`,
+      `-${b64(12)}`,
+      '+The key moved to the vault.',
+      PROSE,
+    ].join('\n');
+    for (const [wrapName, wrap] of Object.entries(D614_WRAPS)) {
+      const out = scrubSecrets(wrap(text));
+      expect(out, wrapName).not.toContain(k1.slice(-16));
+      expect(out, wrapName).toContain('+The key moved to the vault.');
+    }
+  });
+
+  // What D#641 added never spans another private-key BEGIN. Here a header line holding one sat under a
+  // context BEGIN: the span took it, and the cut line after the key, which the header BEGIN's reading
+  // erases on the next pass over the first pass's ***PEM_KEY*** line, was kept (W2, r3mix generator).
+  it.each([
+    ['', []],
+    // A context line first: under a marked one the reading was A1's before D#641 (and keeps the line).
+    [' after a removed line', [' ', '+\t']],
+  ])('a span of the added reading leaves a header BEGIN under it to its own reading%s', (_, marked) => {
+    const cut2 = `${b64(20)}…`;
+    const text = [
+      '$ git diff',
+      '@@ -1,8 +1,8 @@',
+      ` ${BP}`,
+      ...marked,
+      ` X-a: ${BO}`,
+      ` Version: ${BR}`,
+      `-MIIEowIBAAKCAQEA${b64(48)}`,
+      ` ${b64(20)}<`,
+      ` ${cut2}`,
+      PROSE,
+    ].join('\n');
+    for (const [wrapName, wrap] of Object.entries(D614_WRAPS)) {
+      const out = scrubSecrets(wrap(text));
+      expect(out, wrapName).not.toContain(cut2.slice(0, 16));
+      expect(out, wrapName).toContain(PROSE);
+    }
+  });
+
+  // A reading kept in the per-call memo carries where it ended: here the D#168 reading of the code BEGIN
+  // reads the removed key first and stops at its short line, and the context header BEGIN inside that
+  // span finds its reading in the memo and reads the added lines on from there.
+  it('a reading found in the memo still reads the added key on', () => {
+    const add = [b64(64), b64(64)];
+    const text = [
+      '$ git diff',
+      '@@ -1,6 +1,6 @@',
+      `-KEY = '''${BR}`,
+      ` Comment: ${BR}`,
+      `-MIIEowIBAAKCAQEA${b64(48)}`,
+      `-${b64(12)}`,
+      ...add.map((l) => `+${l}`),
+      PROSE,
+    ].join('\n');
+    for (const [wrapName, wrap] of Object.entries(D614_WRAPS)) {
+      const out = scrubSecrets(wrap(text));
+      expect(
+        add.filter((l) => out.includes(l.slice(0, 16)) || out.includes(l.slice(-16))),
+        wrapName,
+      ).toEqual([]);
+      expect(out, wrapName).toContain(PROSE);
+    }
+  });
+
+  // Outside a diff's hunk none of this reads: an indented cut key in prose over a dash list keeps the
+  // list, as in v6.30.9 (6.30.10 pre-tag r1 F2: the list read as removed and added key lines).
+  it.each([
+    [
+      'notes',
+      [
+        'Key (cut):',
+        `    ${BR}`,
+        `    ${KL}`,
+        '- Done',
+        '- src/components/Button',
+        '- Next',
+        '- src/components/Header',
+      ],
+      ['- Done', '- src/components/Button', '- Next', '- src/components/Header'],
+    ],
+    [
+      'a YAML value',
+      ['  key: |', `    ${BR}`, `    ${KL}`, '- v2', '- version: 3', '- deploy/scripts/rotate'],
+      ['- v2', '- version: 3', '- deploy/scripts/rotate'],
+    ],
+    [
+      'one path',
+      ['Key (cut):', `    ${BR}`, `    ${KL}`, '- src/components/Button'],
+      ['- src/components/Button'],
+    ],
+    // A line led by `@` is a hunk header only in a hunk header's shape.
+    [
+      'a reply under a mention',
+      ['@alice the deploy key (cut):', `    ${BR}`, `    ${KL}`, '- Done', '- src/components/Button'],
+      ['- Done', '- src/components/Button'],
+    ],
+  ])('a dash list under an indented cut key in %s keeps its items', (_, lines, items) => {
+    const text = [...lines, 'and the rest of the notes'].join('\n');
+    for (const t of [text, J(text)]) {
+      const out = scrubSecrets(t);
+      expect(out).not.toContain(KL.slice(-16));
+      for (const item of items) expect(out).toContain(item);
+    }
+  });
+
+  // Nor are the added key's lines read on outside a hunk: a dash-led key line under an indented BEGIN is
+  // read (D#614 A1), the list item after its short line is not.
+  it('a list item after a dash-led key under an indented BEGIN, outside a hunk, keeps its text', () => {
+    const text = ['Notes:', `    ${BR}`, `-${KL}`, '- v2', '- src/components/Button', 'the end'].join('\n');
+    for (const t of [text, J(text)]) {
+      const out = scrubSecrets(t);
+      expect(out).not.toContain(KL.slice(-16));
+      expect(out).toContain('- src/components/Button');
+    }
+  });
+
+  // A context key line read by the first reading, then a removed line of prose: the prose stays.
+  it('a context key line over a removed line of prose keeps the prose', () => {
+    const text = [
+      '$ git diff',
+      '@@ -1,3 +1,3 @@',
+      ` ${BO}`,
+      ` ${OPENSSH_FIRST}`,
+      '-This line is prose.',
+    ].join('\n');
+    expect(scrubSecrets(text)).toBe(
+      ['$ git diff', '@@ -1,3 +1,3 @@', ' ***PEM_KEY***', '-This line is prose.'].join('\n'),
+    );
+  });
+});
+
+// D#649 (D#641 attempt 2): what D#641 added reads inside a unified diff's hunk, found from its header
+// down. 6.30.10's pre-tag r2 found the walk up from the BEGIN blind to a header that opens a JSON string
+// (F1), to an empty context line (F2) and to a string concatenated across lines (F6).
+describe('D#649: the hunk a context BEGIN is in, from its header down', () => {
+  const BO = '-----BEGIN OPENSSH PRIVATE KEY-----';
+  const BR = '-----BEGIN RSA PRIVATE KEY-----';
+  const FIRST = 'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW';
+  const old = [b64(70), b64(70), b64(70), b64(32)];
+  const add = [b64(70), b64(70)];
+  const kept = (out, ls) => ls.filter((l) => out.includes(l.slice(0, 16)) || out.includes(l.slice(-16)));
+  const rotation = [` ${BO}`, ` ${FIRST}`, ...old.map((l) => `-${l}`), ...add.map((l) => `+${l}`)];
+
+  // r2 F1: `gh api …/pulls/N/comments` (diff_hunk ends at the commented line), `…/pulls/N/files`
+  // (patch), `jq '.[].patch'`, and either through an MCP tool's JSON (one escape deeper).
+  const diffHunk = J([
+    {
+      id: 1,
+      path: 'id_ed25519',
+      diff_hunk: ['@@ -1,7 +1,7 @@', ...rotation].join('\n'),
+      body: PROSE,
+      line: 2,
+    },
+  ]);
+  const patch = ['@@ -1,7 +1,7 @@', ...rotation.slice(0, 4)].join('\n');
+  const files = J([{ sha: 'a'.repeat(40), filename: 'id_ed25519', status: 'modified', patch }]);
+  const jq = `$ gh api repos/o/r/pulls/7/files | jq '.[].patch'\n${J(patch)}\n${J('@@ -1 +1 @@\n-a\n+b')}`;
+  // Python's repr of the same string opens it with a single quote.
+  const repr = `$ python3 -c 'print(repr(patch))'\n'${patch.replace(/\n/g, '\\n')}'`;
+  it.each([
+    ['diff_hunk', diffHunk, [...old, ...add]],
+    ['patch', files, old.slice(0, 2)],
+    ['jq', jq, old.slice(0, 2)],
+    ['Python repr', repr, old.slice(0, 2)],
+    ['diff_hunk through MCP', J(diffHunk), [...old, ...add]],
+    ['patch through MCP', J(files), old.slice(0, 2)],
+  ])('a hunk whose header opens a string (%s)', (_, text, lines) => {
+    const out = scrubSecrets(text);
+    expect(kept(out, lines)).toEqual([]);
+    expect(out).toContain('@@ -1,7 +1,7 @@');
+  });
+
+  // r2 F2: with git's diff.suppressBlankEmpty (GNU diff --suppress-blank-empty) a blank context line is
+  // empty, here over the key and under its BEGIN.
+  it.each([
+    ['over the BEGIN', ['@@ -2,10 +2,10 @@', '', ' The deploy key:', '', ...rotation]],
+    [
+      'under the BEGIN',
+      [
+        '@@ -1,7 +1,7 @@',
+        ` ${BR}`,
+        ' Proc-Type: 4,ENCRYPTED',
+        `-DEK-Info: AES-128-CBC,${'A'.repeat(32)}`,
+        `+DEK-Info: AES-128-CBC,${'B'.repeat(32)}`,
+        '',
+        ...old.map((l) => `-${l}`),
+      ],
+    ],
+  ])('an empty context line %s', (_, lines) => {
+    const text = ['$ git -c diff.suppressBlankEmpty=true diff', ...lines].join('\n');
+    for (const [wrapName, wrap] of Object.entries(D614_WRAPS)) {
+      const out = scrubSecrets(wrap(text));
+      expect(kept(out, [...old, ...add]), wrapName).toEqual([]);
+      expect(out, wrapName).toContain('suppressBlankEmpty');
+    }
+  });
+
+  // r2 F6: a diff in a JS string concatenated across source lines, one line per string.
+  it('a hunk in a string concatenated across lines', () => {
+    const lines = ['diff --git a/k b/k', '@@ -1,7 +1,7 @@', ...rotation.slice(0, 4)];
+    const text = `const patch =\n${lines.map((l) => `  "${l}\\n" +`).join('\n')}\n  "";\n${PROSE}`;
+    const out = scrubSecrets(text);
+    expect(kept(out, old.slice(0, 2))).toEqual([]);
+    expect(out).toContain(PROSE);
+  });
+
+  // A hunk ends where its header's counts are spent: an indented cut key in notes after a whole diff is
+  // read as in v6.30.10, and the dash list under it stays (6.30.10 pre-tag r1 F2's shape).
+  it.each([
+    ['after a whole hunk', ['$ git diff', '@@ -1 +1 @@', '-old line', '+new line']],
+    ['after a hunk with an empty line', ['$ git diff', '@@ -1,2 +1,2 @@', '', '-old line', '+new line']],
+    ['under a header inside a line of prose', ['the header @@ -1,9 +1,9 @@ says nine lines']],
+    // In a JSON string the quote before it is escaped: inside the string, not one that opens it.
+    ['under a quoted header in a line of prose', ['Expected: "@@ -1,9 +1,9 @@"']],
+    ['after a header with no counts left for context', ['$ git diff', '@@ -0,0 +1,2 @@', '+new line']],
+    // Each side's count, and a line no diff writes, end the hunk too.
+    ['after a removed line past the old count', ['$ git diff', '@@ -1 +1,3 @@', '-old', '+new', '-stray']],
+    ['after an added line past the new count', ['$ git diff', '@@ -1,3 +1 @@', '+new', '-old', '+stray']],
+    [
+      'after a line no diff writes, inside the counts',
+      ['$ git diff', '@@ -1,9 +1,9 @@', ' context', 'Notes:'],
+    ],
+  ])('a dash list under an indented cut key %s keeps its items', (_, above) => {
+    const items = ['- Done', '- src/components/Button', '- Next', '- src/components/Header'];
+    const text = [...above, `    ${BR}`, `    ${KL}`, ...items, 'and the rest of the notes'].join('\n');
+    for (const t of [text, J(text)]) {
+      const out = scrubSecrets(t);
+      expect(out).not.toContain(KL.slice(-16));
+      for (const item of items) expect(out).toContain(item);
+    }
+  });
+
+  // Each hunk is read from its own header: a second file's hunk under a first one whose counts are spent.
+  it('a rotated key in the second hunk of a diff', () => {
+    const text = [
+      '$ git diff',
+      '@@ -1 +1 @@',
+      '-old line',
+      '+new line',
+      'diff --git a/id_ed25519 b/id_ed25519',
+      '--- a/id_ed25519',
+      '+++ b/id_ed25519',
+      '@@ -1,7 +1,7 @@',
+      ...rotation,
+    ].join('\n');
+    for (const [wrapName, wrap] of Object.entries(D614_WRAPS)) {
+      expect(kept(scrubSecrets(wrap(text)), [...old, ...add]), wrapName).toEqual([]);
+    }
+  });
+
+  // A header's text inside a line (a diff of a file that holds one) neither starts nor ends a hunk.
+  it('a rotated key under a context line that holds a header', () => {
+    const text = ['$ git diff', '@@ -1,9 +1,9 @@', ' expected = "@@ -1 +1 @@"', ...rotation].join('\n');
+    for (const [wrapName, wrap] of Object.entries(D614_WRAPS)) {
+      const out = scrubSecrets(wrap(text));
+      expect(kept(out, [...old, ...add]), wrapName).toEqual([]);
+      expect(out, wrapName).toContain('expected = ');
+    }
+  });
+
+  // A patch printed alone starts the text with its header (`gh api … --jq '.[0].patch'`).
+  it('a hunk whose header starts the text', () => {
+    const text = ['@@ -1,7 +1,7 @@', ...rotation.slice(0, 4)].join('\n');
+    expect(kept(scrubSecrets(text), old.slice(0, 2))).toEqual([]);
+  });
+
+  // In escaped text a real break right after a backslash starts no line (nextEscapedLine steps over the
+  // character after a backslash run), so a header there starts no hunk: the dash list under an indented
+  // cut key below it stays, as outside any hunk.
+  it('a header after a backslash and a real break starts no hunk in escaped text', () => {
+    const items = ['- Done', '- src/components/Button'];
+    const body = ['@@ -1,9 +1,9 @@', `    ${BR}`, `    ${KL}`, ...items, 'the end'].join('\\n');
+    const text = `{"note":"a \\\n${body}"}`;
+    const out = scrubSecrets(text);
+    expect(out).not.toContain(KL.slice(-16));
+    for (const item of items) expect(out).toContain(item);
+  });
+});
+
+// D#657: a credential label's value ran over the BEGIN right after it (`PRIVATE_KEY=-----BEGIN …`, or
+// `private_key = <<EOT\n-----BEGIN …` in a JSON string, where the escaped break is no space) and turned
+// `-----BEGIN` into `***` before the key passes ran: they saw no BEGIN, and every line of a cut-off key was
+// stored. A quoted value that closes on the BEGIN's line (a key concatenated line by line, Node's util.inspect
+// of an object) lost its BEGIN the same way, and there a whole key was stored when the text was in a JSON string.
+describe('D#657: a BEGIN right after a credential label', () => {
+  const VALUE = 'a8f3e9d27c41';
+  const LEADS = {
+    env: 'PRIVATE_KEY=',
+    export: 'export SSH_PRIVATE_KEY=',
+    yaml: 'private_key: ',
+    secretKey: 'secret_key: ',
+    apiKey: 'API_KEY=',
+    secret: 'export SECRET=',
+    token: '- token: ',
+    password: '  password: ',
+    // In prose position a password value must look like a credential, and a BEGIN does.
+    proseP: 'the db password: ',
+    heredoc: 'private_key = <<EOT\n',
+    // A flag's value never starts with `-`, but in a JSON string one before the BEGIN's line runs into it.
+    flag: `deploy --token ${VALUE}\n`,
+    // A value on the line above the BEGIN is still erased, and so is the key under it. In a JSON string the
+    // value runs over the escaped break up to the BEGIN. (`export `: a label right after an escaped break is
+    // a different gap, D#663.)
+    valueAbove: `export API_KEY=${VALUE}\n`,
+  };
+  const windowsOf = (key) =>
+    key.body.filter((l) => l.length >= 16).flatMap((l) => [l.slice(0, 16), l.slice(-16)]);
+  for (const [kind, key] of Object.entries(KEYS)) {
+    const long = windowsOf(key);
+    for (const cutName of ['head', 'cutMidLine', 'whole']) {
+      it(`${kind} / ${cutName}: no key window kept, no text lost`, () => {
+        const failures = [];
+        for (const [leadName, lead] of Object.entries(LEADS)) {
+          for (const [wrapName, wrap] of Object.entries(D614_WRAPS)) {
+            const [begin, ...rest] = CUTS[cutName](key);
+            const out = scrubSecrets(wrap(['$ cat deploy.env', lead + begin, ...rest, PROSE].join('\n')));
+            const kept = long.filter((w) => out.includes(w));
+            if (kept.length) failures.push(`${leadName}/${wrapName}: ${kept.length} key windows kept`);
+            if (out.includes(VALUE)) failures.push(`${leadName}/${wrapName}: the value above kept`);
+            // A flag's value takes the key's mark and the text after it up to a space, as in 6.30.11 for a flag
+            // right before a BEGIN; the label patterns stop at the mark.
+            const after = leadName === 'flag' ? PROSE.slice(PROSE.indexOf(' ') + 1) : PROSE;
+            if (!out.includes('$ cat deploy.env') || !out.includes(after))
+              failures.push(`${leadName}/${wrapName}: text lost`);
+          }
+        }
+        expect(failures).toEqual([]);
+      });
+    }
+  }
+
+  // One string per key line: `"…\n" +` by hand, and util.inspect, which prints a string holding breaks one
+  // line per piece. A cut key in these pieces is stored inside a JSON string with no label in front too
+  // (D#662), so only the whole key is checked there.
+  const esc = (l) => l.replace(/\\/g, '\\\\');
+  const concat =
+    (name, br = '\\n') =>
+    (ls) =>
+      `const ${name} = "${ls[0]}${br}" +\n${ls
+        .slice(1)
+        .map((l) => `  "${l}${br}" +`)
+        .join('\n')}\n  "";`;
+  const inspect = (name) => (ls) =>
+    [
+      '{',
+      "  type: 'service_account',",
+      `  ${name}: '${ls[0]}\\n' +`,
+      ...ls.slice(1).map((l, i, a) => `    '${l}\\n'${i < a.length - 1 ? ' +' : ','}`),
+      "  client_email: 'deploy@example.invalid'",
+      '}',
+    ].join('\n');
+  // One label per quoted pattern: a key name, `=` after a credential noun, then `:` after each noun family.
+  const PIECES = {
+    'concat, PRIVATE_KEY': concat('PRIVATE_KEY'),
+    'concat, TOKEN': concat('TOKEN'),
+    // Windows source escapes a break as \r\n: the `=` quoted pattern's skip must pass a run of escaped
+    // breaks, not one \n (D#669; cutting it to one \n kept the key's lines here and turned nothing else red).
+    'concat with \\r\\n escapes, TOKEN': concat('TOKEN', '\\r\\n'),
+    'inspect, private_key': inspect('private_key'),
+    'inspect, password': inspect('password'),
+    'inspect, secret': inspect('secret'),
+  };
+  for (const [shapeName, shape] of Object.entries(PIECES)) {
+    it(`a key in one string per line (${shapeName}): no key window kept`, () => {
+      const failures = [];
+      for (const [kind, key] of Object.entries(KEYS)) {
+        const long = windowsOf(key);
+        for (const [cutName, wraps] of [
+          ['head', ['raw', 'crlf']],
+          ['whole', Object.keys(D614_WRAPS)],
+        ]) {
+          for (const wrapName of wraps) {
+            const text = `$ node show.js\n${shape(CUTS[cutName](key).map(esc))}\n${PROSE}`;
+            const out = scrubSecrets(D614_WRAPS[wrapName](text));
+            const kept = long.filter((w) => out.includes(w));
+            if (kept.length) failures.push(`${kind}/${cutName}/${wrapName}: ${kept.length} key windows kept`);
+            if (!out.includes(PROSE)) failures.push(`${kind}/${cutName}/${wrapName}: text lost`);
+          }
+        }
+      }
+      expect(failures).toEqual([]);
+    });
+  }
+
+  // The review's real shape: `git show` of an added Terraform heredoc, through a JSON string.
+  it('an added Terraform heredoc in git show', () => {
+    const failures = [];
+    for (const [kind, key] of Object.entries(KEYS)) {
+      const text = [
+        '$ git show',
+        'diff --git a/main.tf b/main.tf',
+        'new file mode 100644',
+        '--- /dev/null',
+        '+++ b/main.tf',
+        '@@ -0,0 +1,40 @@',
+        '+resource "tls_private_key" "deploy" {',
+        '+  private_key = <<EOT',
+        ...CUTS.head(key).map((l) => `+${l}`),
+      ].join('\n');
+      for (const [wrapName, wrap] of Object.entries(D614_WRAPS)) {
+        const kept = windowsOf(key).filter((w) => scrubSecrets(wrap(text)).includes(w));
+        if (kept.length) failures.push(`${kind}/${wrapName}: ${kept.length} key windows kept`);
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+});

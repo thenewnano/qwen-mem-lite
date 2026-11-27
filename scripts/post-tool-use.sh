@@ -21,9 +21,9 @@
 # tests/post-tool-use-disabled.test.mjs.
 # Cheap by construction: no `node`, no external command on this ~5ms per-tool-call path — except
 # when the regex says disabled, which node then confirms (see _mem_plugin_disabled).
-# `-r` covers missing/unreadable in one builtin test, and `$(<file)` slurps the whole file
-# for ONE regex — measured +0.4ms/call vs +4.0ms for a `while read` loop over the same
-# 239-line settings.json (bash pays a syscall + a regex per line there).
+# Each file is read once for ONE regex (see _mem_plugin_disabled), not line by line: a
+# `while read` loop over a 239-line settings.json measured +4.0ms/call (bash pays a syscall +
+# a regex per line there).
 # The ERE (not a `==` glob) is what keeps a MINIFIED single-line settings.json from
 # matching `"<key>": true, … "other": false` as a false positive: the pattern is anchored
 # to the key, so only that key's own value can satisfy it.
@@ -48,10 +48,14 @@ _mem_settings_file="$_mem_config_home/settings.json"
 _mem_project_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
 _mem_plugin_disabled() {
   local _f _settings _value=""
+  # Bytes, for -n and ${#} below. Function-local: restored on return.
+  local LC_ALL=C
   for _f in "$_mem_settings_file" "$_mem_project_dir/.claude/settings.json" \
     "$_mem_project_dir/.claude/settings.local.json"; do
-    [[ -r "$_f" ]] || continue
-    _settings=$(<"$_f")
+    [[ -f "$_f" && -r "$_f" ]] || continue
+    _settings=
+    IFS= read -r -d '' -n 4194305 _settings <"$_f"
+    ((${#_settings} <= 4194304)) || continue
     [[ "$_settings" =~ \"qwen-mem-lite@thenewnano\"[[:space:]]*:[[:space:]]*(true|false) ]] &&
       _value="${BASH_REMATCH[1]}"
   done

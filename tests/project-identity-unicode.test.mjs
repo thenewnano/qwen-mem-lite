@@ -39,7 +39,7 @@ describe('project identity', () => {
 
   it('is unchanged for every ASCII directory name', () => {
     const cases = [
-      '/home/u/dev/claude-mem-lite',
+      '/home/u/dev/qwen-mem-lite',
       '/home/u/my projects/web app!',
       '/srv/a+b/c:d',
       '/x',
