@@ -12,12 +12,14 @@ import { getDetailDoc } from '../adopt-content.mjs';
 describe('adopt detail doc — citation feedback claim matches the decay loop', () => {
   it('no longer promises an importance change per cited / uncited session', () => {
     const doc = getDetailDoc();
-    expect(doc).toContain('系统按会话追踪引用');
+    expect(doc).toContain('The system tracks citations per session');
     expect(doc).not.toMatch(/importance\s*[−-]1/);
-    expect(doc).not.toMatch(/封顶\s*3/);
+    expect(doc).not.toMatch(/capped at\s*3/i);
     // The dismissal marker is described as not an adoption (B2, 00effdc) — and, since D#98,
     // as not worth writing, because it ranks exactly like silence.
-    expect(doc).toMatch(/#NN n\/a`?\s*的驳回不算采纳：排序上与未引用相同，同样下沉——所以不必写/);
+    expect(doc).toMatch(
+      /A rejection written as `#NN n\/a` does not count as adoption: it ranks like an\s+uncited lesson and sinks the same way/,
+    );
   });
 
   it('the loop it describes leaves importance alone on both branches', () => {

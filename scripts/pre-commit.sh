@@ -80,6 +80,79 @@ if git diff --cached --name-only | grep -qx 'package-lock.json'; then
   fi
 fi
 
+# ── Baselines move guard ────────────────────────────────────────────────────
+# docs/measurement/baselines.md has promised since e1824ffd (2026-09-08) that every row
+# CLAUDE.md's Baselines table replaces is moved there verbatim. Nothing enforced it: of the
+# 14 commits after the promise that changed the rows, 9 overwrote the old row instead, and
+# the rows were recovered from git on 2026-11-09. When the staged table differs from HEAD's,
+# the outgoing rows must be in the STAGED record as one `> `-quoted block. Checking line by
+# line is not enough: Knip rows repeat byte for byte across stamps, so lines of an unmoved
+# row are often already in the file. Every row change committed since the promise is
+# re-checked against the staged record too, so a commit made with this hook off, or a later
+# edit that drops a moved block, is refused at the next commit; replaying this on the 14 real
+# changes refused the 9 overwrites and passed the 5 moves. The history runs strictly after
+# e1824ffd's commit time: that commit recorded the rows it replaced in a reformatted shape.
+# Tested by tests/pre-commit-baselines-guard.test.mjs.
+BASELINES_RC=0
+BASELINES_OUT=$(node --input-type=module - <<'NODE'
+import { execFileSync } from 'node:child_process';
+const git = (...args) => {
+  try {
+    return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    return '';
+  }
+};
+const show = (spec) => git('show', spec);
+const rows = (text) => {
+  const lines = text.split('\n');
+  const at = lines.findIndex((l) => l.startsWith('| Baseline | Value'));
+  if (at < 0) return [];
+  const out = [];
+  for (const l of lines.slice(at + 1)) {
+    if (l.startsWith('|---')) continue;
+    if (!/^\| (Tests|Knip|Coverage) \|/.test(l)) break;
+    out.push(l);
+  }
+  return out;
+};
+const record = show(':docs/measurement/baselines.md');
+const missing = [];
+const check = (label, outgoing, incoming) => {
+  if (outgoing.join('\n') === incoming.join('\n')) return;
+  // No table before the change gives an empty block, which every record includes.
+  const block = outgoing.map((r) => `> ${r}`).join('\n');
+  if (!record.includes(block)) missing.push(label, block);
+};
+check('Replaced by this commit:', rows(show('HEAD:CLAUDE.md')), rows(show(':CLAUDE.md')));
+// Filtered here, not with `git log --since`, which stops at the first run of older commits.
+const PROMISE = Date.parse('2026-09-08T23:24:04Z') / 1000;
+for (const line of git('log', '--format=%H %ct', 'HEAD', '--', 'CLAUDE.md').split('\n')) {
+  const [sha, time] = line.split(' ');
+  if (!sha || Number(time) <= PROMISE) continue;
+  check(`Replaced by ${sha.slice(0, 8)}, already committed:`, rows(show(`${sha}^:CLAUDE.md`)), rows(show(`${sha}:CLAUDE.md`)));
+}
+if (missing.length === 0) process.exit(0);
+console.log(missing.join('\n'));
+process.exit(1);
+NODE
+) || BASELINES_RC=$?
+if [ "$BASELINES_RC" -eq 1 ]; then
+  if [ "${DISABLE_BASELINES_GUARD:-0}" = "1" ]; then
+    echo "[pre-commit] ⚠ Baselines rows replaced without moving the old ones (DISABLE_BASELINES_GUARD=1, allowing)"
+  else
+    echo "[pre-commit] ❌ CLAUDE.md's Baselines rows were replaced, but the rows they replaced are not in"
+    echo "[pre-commit]    the staged docs/measurement/baselines.md. Add each block there verbatim, as one"
+    echo "[pre-commit]    quoted block under a 'Superseded row moved from CLAUDE.md' heading:"
+    while IFS= read -r line; do echo "[pre-commit]      $line"; done <<< "$BASELINES_OUT"
+    echo "[pre-commit]    Override (the old row was never a reading, e.g. a typo fix): DISABLE_BASELINES_GUARD=1 git commit ..."
+    exit 1
+  fi
+elif [ "$BASELINES_RC" -ne 0 ]; then
+  echo "[pre-commit] ❌ The Baselines move guard could not run (node exited $BASELINES_RC)."
+  exit 1
+fi
+
 # ── Frozen-corpus guard ─────────────────────────────────────────────────────
 # The LIVE replay benchmarks dump frozen corpora so a later A/B can be run over the same
 # denominator. `benchmark/results/` is gitignored, but that is one door and these files

@@ -59,11 +59,11 @@ describe('injected steering counts as adopted', () => {
 });
 
 describe('the steering block can point at a detail doc outside the project', () => {
-  it('file mode keeps the committed relative reference; injection names the given path', () => {
-    expect(buildClaudeMdBlock()).toContain('→ `.claude/plugin_claude_mem_lite.md`');
+  it('defaults to the shared data-dir reference; a caller can name another path', () => {
+    expect(buildClaudeMdBlock()).toContain('→ `~/.qwen-mem-lite/plugin_claude_mem_lite.md`');
     const injected = buildClaudeMdBlock({ detailDocRef: '/data/cml/plugin_claude_mem_lite.md' });
     expect(injected).toContain('→ `/data/cml/plugin_claude_mem_lite.md`');
-    expect(injected).not.toContain('.claude/plugin_claude_mem_lite.md');
+    expect(injected).not.toContain('~/.qwen-mem-lite/plugin_claude_mem_lite.md');
   });
 });
 

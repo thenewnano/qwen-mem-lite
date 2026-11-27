@@ -10,9 +10,9 @@ import {
   truncate,
   queryLabel,
   typeIcon,
-  inferProject,
   scrubSecrets,
   COMPRESSED_PENDING_PURGE,
+  localYmd,
 } from './utils.mjs';
 import { isBlankText } from './lib/blank-text.mjs';
 import { resolveProject, checkWriteProject, unknownProjectNote } from './project-utils.mjs';
@@ -20,11 +20,12 @@ import { editDistance } from './lib/edit-distance.mjs';
 // READ commands resolve the project DB-aware: a subdirectory whose own name holds no rows
 // falls back to the enclosing work-tree root, so `cd src/auth && … recent` reads what the
 // session's hooks wrote. WRITE commands (save / defer add / restore / import-jsonl) keep
-// plain inferProject() — pre-tag review reproduced the reason: for a read, "cwd holds
+// plain inferProject(), through cliWriteProject(), which only refuses a directory inside
+// Claude Code's per-project state — pre-tag review reproduced the reason: for a read, "cwd holds
 // nothing" means there is nothing to lose, but for a write it is the normal precondition of
 // a project about to be born, and absorbing it into the enclosing repo strands the row once
 // the session's hooks start writing the subdirectory's own name. Hook-side is untouched.
-import { resolveCliProject as cliProject } from './lib/cli-project.mjs';
+import { resolveCliProject as cliProject, cliWriteProject } from './lib/cli-project.mjs';
 import { reRankWithContext } from './search-scoring.mjs';
 import { searchObservationsHybrid } from './search-engine.mjs';
 import { autoHeaderNote, autoLegend, autoTag, isAutoWritten, writerSessionId } from './lib/provenance.mjs';
@@ -57,6 +58,7 @@ import { selectCompressionCandidates, groupByProjectWeek, compressGroup } from '
 import {
   runMaintainOps,
   findDuplicates,
+  pickDedupKeeper,
   reviewRows,
   maintenanceStats,
   OP_CAP,
@@ -87,13 +89,12 @@ import {
   splitDeferredTokens,
 } from './lib/id-routing.mjs';
 import { join, dirname } from 'path';
-import { spawnSync } from 'child_process';
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 
 // v2.41: shared CLI helpers extracted to cli/common.mjs. Keep this file as the
 // router + remaining-command bodies during the incremental split. Future work:
 // move each cmdXxx into its own cli/<cmd>.mjs; mem-cli.mjs becomes pure dispatch.
-import { isNativeBindingError, healAndReexec } from './lib/binding-probe.mjs';
+import { isNativeBindingError, healCliBinding, cliHealSkipNote } from './lib/binding-probe.mjs';
 import {
   isSchemaSkewError,
   schemaSkewFromError,
@@ -176,11 +177,10 @@ import { aggregateMetrics, readMetrics } from './lib/metrics.mjs';
 import {
   insertDeferred,
   listOpenWithOrdinal,
-  openOrdinalOf,
   deferredDropLabel,
-  dropDeferred,
+  dropDeferredMany,
+  updateDeferred,
   formatDropReasonHint,
-  resolveDeferredIds,
   getDeferredByIds,
   formatDeferredDetail,
   searchDeferredWork,
@@ -1343,7 +1343,12 @@ function cmdSave(db, args) {
   }
   // R10 P2-3: write mode — exact matching only, so `--project api` cannot land the row in
   // `mono--api-gateway` where the caller's own next `--project api` read will not find it.
-  const project = flags.project ? resolveProject(db, flags.project, { mode: 'write' }) : inferProject();
+  const fromDir = flags.project ? null : cliWriteProject();
+  if (fromDir && !fromDir.ok) {
+    fail(`[mem] ${fromDir.message}`);
+    return;
+  }
+  const project = flags.project ? resolveProject(db, flags.project, { mode: 'write' }) : fromDir.project;
   // A named project that does not exist: a near-miss is refused, a new name is noted (cli F14).
   const projectCheck = flags.project ? checkWriteProject(db, project) : { ok: true, note: '' };
   if (!projectCheck.ok) {
@@ -1453,8 +1458,11 @@ function cmdSave(db, args) {
   }
 
   if (result.kind === 'duplicate') {
+    // converge R28: say what did not happen — a --lesson riding on the refused save is gone too —
+    // and the way past the window for a memory that really is different (--force).
+    const lost = rawLesson ? ', including the lesson' : '';
     out(
-      `[mem] Skipped: similar to existing #${result.existingId}. Use "${CLI_INVOKE} get ${result.existingId}" to review.`,
+      `[mem] Skipped: similar to existing #${result.existingId} — nothing was saved${lost}. Use "${CLI_INVOKE} get ${result.existingId}" to review; if this is a different memory, run the same save with --force.`,
     );
     // D#201: the dedup swallowed the requested supersession too — say so here,
     // because this branch returns before the note below is ever reached.
@@ -1479,7 +1487,10 @@ function cmdSave(db, args) {
   if (skipNote) out(`[mem] ${skipNote}`);
 }
 
-// ─── cmdDefer (sub-dispatch: add | list | drop) ──────────────────────────────
+// ─── cmdDefer (sub-dispatch: add | list | update | drop) ─────────────────────
+
+const DEFER_UPDATE_USAGE =
+  'defer update <D#N|ordinal> [--title T] [--detail T] [--priority 1|2|3] [--project P]';
 
 function cmdDefer(db, args) {
   const sub = args[0];
@@ -1491,13 +1502,17 @@ function cmdDefer(db, args) {
     case 'list':
       cmdDeferList(db, rest);
       break;
+    case 'update':
+      cmdDeferUpdate(db, rest);
+      break;
     case 'drop':
       cmdDeferDrop(db, rest);
       break;
     default:
-      fail(`[mem] Usage: ${CLI_INVOKE} defer <add|list|drop> ...`);
+      fail(`[mem] Usage: ${CLI_INVOKE} defer <add|list|update|drop> ...`);
       fail('[mem]   defer add "<title>" [--priority 1|2|3] [--detail T] [--files f1,f2] [--project P]');
       fail('[mem]   defer list [--project P] [--limit N]');
+      fail(`[mem]   ${DEFER_UPDATE_USAGE}`);
       fail('[mem]   defer drop <id-or-D#N> --reason "<reason>" [--project P]');
   }
 }
@@ -1540,7 +1555,12 @@ function cmdDeferAdd(db, args) {
   }
   // R10 P2-3: write mode — exact matching only, so `--project api` cannot land the row in
   // `mono--api-gateway` where the caller's own next `--project api` read will not find it.
-  const project = flags.project ? resolveProject(db, flags.project, { mode: 'write' }) : inferProject();
+  const fromDir = flags.project ? null : cliWriteProject();
+  if (fromDir && !fromDir.ok) {
+    fail(`[mem] ${fromDir.message}`);
+    return;
+  }
+  const project = flags.project ? resolveProject(db, flags.project, { mode: 'write' }) : fromDir.project;
   const projectCheck = flags.project ? checkWriteProject(db, project) : { ok: true, note: '' };
   if (!projectCheck.ok) {
     fail(`[mem] ${projectCheck.message}`);
@@ -1561,10 +1581,9 @@ function cmdDeferAdd(db, args) {
     fail(`[mem] defer add failed: ${e.message}`);
     return;
   }
-  // Compute the freshly-inserted row's ordinal for an immediately-actionable
-  // response ("ok, deferred this as item N"), as mem_defer does.
-  const ord = openOrdinalOf(db, project, r.id) ?? '?';
-  out(`[mem] Deferred as D#${r.id} (item ${ord}) in project "${project}".${projectCheck.note}`);
+  // D#N only (D17): an `(item N)` here went stale on the next higher-priority add, and dropping by
+  // it hit another item.
+  out(`[mem] Deferred as D#${r.id} in project "${project}".${projectCheck.note}`);
 }
 
 function cmdDeferList(db, args) {
@@ -1587,6 +1606,59 @@ function cmdDeferList(db, args) {
   // Affordance for the detail field — list stays title-only by design (it is
   // mirrored into the SessionStart dashboard, where detail would be noise).
   out(`  Full detail: ${CLI_INVOKE} get D#<id>`);
+}
+
+// D#934 T3: change an open item in place. Without it, a rewritten item was dropped and added
+// again under a new id (R4 §8.3: 41 of 131 drops). Resolves like drop (D#N or ordinal, checked
+// against the project), validates like add.
+function cmdDeferUpdate(db, args) {
+  const { positional, flags } = parseArgs(args);
+  if (rejectBareStringFlags(flags, ['id', 'title', 'detail', 'project'])) return;
+  const idStr = resolvePositionalAlias(positional.length > 0 ? positional[0] : '', flags, ['id']);
+  if (idStr === null) return;
+  const token = idStr.trim();
+  if (!token || token.includes(',') || positional.length > 1) {
+    fail(
+      `[mem] Usage: ${CLI_INVOKE} ${DEFER_UPDATE_USAGE} — one item, and the new text goes in --title / --detail`,
+    );
+    return;
+  }
+  const fields = {};
+  if (flags.title !== undefined) {
+    const title = flags.title.trim();
+    if (!title || title.length > 200) {
+      fail(
+        `[mem] defer update: the title must be 1-200 characters (got ${title.length}). Move detail to --detail.`,
+      );
+      return;
+    }
+    fields.title = title;
+  }
+  if (flags.detail !== undefined) fields.detail = flags.detail;
+  if (flags.priority !== undefined) {
+    if (!isNumericToken(flags.priority) || ![1, 2, 3].includes(parseInt(flags.priority, 10))) {
+      fail(`[mem] Invalid --priority "${flags.priority}". Must be 1 (low), 2 (normal), or 3 (urgent).`);
+      return;
+    }
+    fields.priority = parseInt(flags.priority, 10);
+  }
+  if (Object.keys(fields).length === 0) {
+    fail(
+      `[mem] Usage: ${CLI_INVOKE} ${DEFER_UPDATE_USAGE} — give at least one of --title, --detail, --priority`,
+    );
+    return;
+  }
+  const project = flags.project ? resolveProject(db, flags.project) : cliProject(db);
+  let id;
+  try {
+    ({ id } = updateDeferred(db, project, /^\d+$/.test(token) ? parseInt(token, 10) : token, fields));
+  } catch (e) {
+    fail(`[mem] defer update: ${e.message}`);
+    return;
+  }
+  out(
+    `[mem] Updated ${deferredDropLabel(db, id)} in project "${project}" (${Object.keys(fields).join(', ')}).`,
+  );
 }
 
 function cmdDeferDrop(db, args) {
@@ -1617,19 +1689,14 @@ function cmdDeferDrop(db, args) {
   const tokens = rawTokens.map((t) => (/^\d+$/.test(t) ? parseInt(t, 10) : t));
   const project = flags.project ? resolveProject(db, flags.project) : cliProject(db);
 
-  let realIds;
+  // One transaction for every token (dropDeferredMany): a bad id, or a failure part-way, drops
+  // nothing, so retrying the same ordinals cannot hit renumbered items.
+  let dropped, noop;
   try {
-    realIds = resolveDeferredIds(db, project, tokens);
+    ({ dropped, noop } = dropDeferredMany(db, project, tokens, reason));
   } catch (e) {
     fail(`[mem] defer drop: ${e.message}`);
     return;
-  }
-  const dropped = [];
-  const noop = [];
-  for (const realId of realIds) {
-    const r = dropDeferred(db, realId, reason);
-    if (r.changed === 0) noop.push(realId);
-    else dropped.push(realId);
   }
   if (dropped.length > 0) {
     out(
@@ -2484,6 +2551,14 @@ function cmdRestore(db, argv) {
     fail(`[mem] ${projectCheck.message}`);
     return;
   }
+  // A row without its own project takes the directory's; refuse before restoring anything when
+  // that directory is Claude Code's per-project state (cliWriteProject).
+  const fromDir =
+    projOverride || rows.every((r) => !r || typeof r !== 'object' || r.project) ? null : cliWriteProject();
+  if (fromDir && !fromDir.ok) {
+    fail(`[mem] ${fromDir.message}`);
+    return;
+  }
   const dryRun = asksDryRun(flags['dry-run']);
   const num = (v) => (Number.isFinite(Number(v)) ? Math.trunc(Number(v)) : 0);
 
@@ -2523,7 +2598,7 @@ function cmdRestore(db, argv) {
       tombstoned++;
       continue;
     }
-    const project = projOverride || r.project || inferProject();
+    const project = projOverride || r.project || fromDir.project;
     const createdEpoch = Number.isFinite(Number(r.created_at_epoch))
       ? Number(r.created_at_epoch)
       : Date.now();
@@ -2797,14 +2872,14 @@ function cmdMaintain(db, args) {
       if (autoMergeable.length > 0) {
         out(`  Auto-mergeable (similarity >= ${AUTO_MERGE_THRESHOLD}):`);
         for (const d of autoMergeable.slice(0, 15)) {
-          const keep = (d.a.importance ?? 1) >= (d.b.importance ?? 1) ? d.a : d.b;
+          const keep = pickDedupKeeper(d.a, d.b);
           const remove = keep === d.a ? d.b : d.a;
           out(
             `    [${keep.id}] "${truncate(keep.title, 40)}" <-> [${remove.id}] "${truncate(remove.title, 40)}" (${d.similarity})`,
           );
         }
         const mergeIds = autoMergeable.map((d) => {
-          const keep = (d.a.importance ?? 1) >= (d.b.importance ?? 1) ? d.a : d.b;
+          const keep = pickDedupKeeper(d.a, d.b);
           const remove = keep === d.a ? d.b : d.a;
           return `${keep.id}:${remove.id}`;
         });
@@ -2905,8 +2980,8 @@ function cmdMaintain(db, args) {
         lines.push('  Nothing to delete.');
         return lines.join('\n');
       }
-      lines.push(`  Oldest: ${new Date(previewRow.oldest).toISOString().slice(0, 10)}`);
-      lines.push(`  Newest: ${new Date(previewRow.newest).toISOString().slice(0, 10)}`);
+      lines.push(`  Oldest: ${localYmd(previewRow.oldest)}`);
+      lines.push(`  Newest: ${localYmd(previewRow.newest)}`);
       lines.push('  To delete, re-run with --confirm.');
       return lines.join('\n');
     },
@@ -3020,9 +3095,9 @@ function _reportSidechainCiteRecall({ days, json }) {
   );
   if (sidechain.files > 0 && sidechain.injected === 0) {
     out('  → subagent transcripts exist but none carried a detectable memory injection in');
-    out('    this window. qwen-mem-lite hooks do NOT fire inside subagents; the dispatch-');
-    out('    time surface (pre-agent-inject.js, QWEN_MEM_SUBAGENT_INJECT) prompt-injects');
-    out('    a lesson when enabled — a 0 here means it was off or selected none for these.');
+    out('    this window: neither PreToolUse recall inside the subagents nor the dispatch-');
+    out('    time surface (pre-agent-inject.js, QWEN_MEM_SUBAGENT_INJECT, off by default)');
+    out('    put a lesson in front of them.');
   } else if (sidechain.files === 0) {
     out('  → no subagent transcripts in window.');
   }
@@ -3202,7 +3277,7 @@ function cmdCitationStats(db, args) {
     out('  (no resolved sessions in window)');
   } else {
     for (const s of funnel.sessions) {
-      const day = s.resolved_at ? new Date(s.resolved_at).toISOString().slice(0, 10) : '—'.repeat(10);
+      const day = s.resolved_at ? localYmd(s.resolved_at) : '—'.repeat(10);
       const pct = (s.rate * 100).toFixed(1) + '%';
       out(
         `  ${day}  ${(s.project || '').padEnd(28)} inj ${String(s.injected_n).padStart(3)}  cited ${String(s.cited_n).padStart(3)}  ${pct.padStart(6)}`,
@@ -3374,6 +3449,12 @@ Commands:
     list                List open deferred items (title-only; full detail via get D#N)
       --limit N         Max results (default 10)
       --project P       Filter by project
+    update <D#N|ordinal>  Rewrite one open item in place (not drop + re-add)
+      --id D#N          ID as a flag (alias for the positional)
+      --title T         New title (≤200 chars)
+      --detail T        New detail (--detail= clears it)
+      --priority N      New priority: 1=low, 2=normal, 3=urgent
+      --project P       Project the item belongs to (default: current)
     drop <D#N|ordinal>[,...]  Drop one or more deferred items (no fix needed)
       --id D#N          ID as a flag (alias for the positional)
       --reason "..."    Required audit trail
@@ -3393,13 +3474,15 @@ Commands:
     --narrative T       New narrative
     --concepts T        Space-separated concept tags
 
-  export                Export observations as JSON/JSONL (complete backup by default)
+  export                Export observations as JSON/JSONL (every live observation by default;
+                        rows hidden from search — compressed, merged or idle — need
+                        --include-compressed)
     --project P         Filter by project
     --type T            Filter by type
     --format F          json (default) or jsonl
     --from DATE         Start date
     --to DATE           End date
-    --include-compressed  Include compressed observations
+    --include-compressed  Also export rows hidden from search (compressed, merged or idle)
     --limit N           Cap output at N rows (default: export ALL matching rows)
   restore <file>        Restore observations from an export file (JSON/JSONL)
     --project P         Override the restored project for every row
@@ -3453,6 +3536,16 @@ Commands:
     --metrics           Summarize the recorded metrics window (QWEN_MEM_METRICS=1)
     --session-audit     Audit session/episode state for orphans and drift
     --json              Machine-readable output (plain doctor run)
+
+  status                Show the install's state (--json for structured output)
+  repair                Recover a broken install: download the latest package, re-run install
+  rebuild-binding       Recompile better-sqlite3 for the running Node (fixes
+                        "NODE_MODULE_VERSION" after a Node upgrade)
+  self-update           Check for and install updates
+  cleanup               Remove stale temp/staging files (--dry-run to preview)
+  cleanup-hooks         Remove only qwen-mem-lite's hooks from Claude Code's settings
+  install               Install or re-install (what \`npx qwen-mem-lite\` runs)
+  uninstall             Remove the install, keep the data (--purge also deletes the data)
 
   fts-check <check|rebuild>  FTS5 index check, or a rebuild of the FTS5 indexes and then
                         every other index (REINDEX)
@@ -3556,7 +3649,12 @@ async function cmdImportJsonl(db, argv) {
     fail('[mem] --project needs a name, e.g. --project my-repo');
     return;
   }
-  const project = flags.project ? resolveProject(db, flags.project, { mode: 'write' }) : inferProject();
+  const fromDir = flags.project ? null : cliWriteProject();
+  if (fromDir && !fromDir.ok) {
+    fail(`[mem] ${fromDir.message}`);
+    return;
+  }
+  const project = flags.project ? resolveProject(db, flags.project, { mode: 'write' }) : fromDir.project;
   // The check `save` and `defer add` make: a near miss is refused before anything is imported,
   // a new name is noted (pre-tag review 2026-10-16 P3-4).
   const projectCheck = flags.project ? checkWriteProject(db, project) : { ok: true, note: '' };
@@ -3902,6 +4000,7 @@ const CONTENT_WRITER_FLAGS = {
   ],
   update: ['id', 'title', 'narrative', 'lesson', 'lesson-learned', 'concepts', 'importance', 'type', 'json'],
   'defer add': ['title', 'priority', 'detail', 'files', 'project', 'json'],
+  'defer update': ['id', 'title', 'priority', 'detail', 'project', 'json'],
   'activity save': ['type', 'title', 'body', 'files', 'file', 'project', 'importance', 'json'],
 };
 // Commands whose --project names where rows are WRITTEN (a new project is theirs to create).
@@ -3994,9 +4093,23 @@ export async function run(argv) {
   }
 }
 
+// cmdArgs with `--project .` / `--project current` (and the `=` forms) spelled as the current
+// project. Words after a bare `--` are text, not flags, and stay as written.
+function currentProjectSpelled(cmdArgs, current) {
+  const isCurrent = (v) => v === '.' || v === 'current';
+  const out = [...cmdArgs];
+  for (let i = 0; i < out.length; i++) {
+    if (out[i] === '--') break;
+    if (out[i] === '--project' && isCurrent(out[i + 1])) out[i + 1] = current();
+    else if (out[i].startsWith('--project=') && isCurrent(out[i].slice('--project='.length)))
+      out[i] = `--project=${current()}`;
+  }
+  return out;
+}
+
 async function runDispatch(argv) {
   const cmd = argv[0];
-  const cmdArgs = argv.slice(1);
+  let cmdArgs = argv.slice(1);
 
   if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     cmdHelp();
@@ -4213,32 +4326,19 @@ async function runDispatch(argv) {
     // healer was an MCP server start the user might never perform — the shape of
     // the 4-day outage on 2026-08-13. Heal in place, then RE-EXEC: this process
     // has already dlopen'd the stale binary, so it cannot use the new one.
+    // One automatic try per 6 h (D#311); `rebuild-binding` itself is never gated.
     if (isNativeBindingError(e)) {
-      const healed = await healAndReexec({
-        // Delegate the actual rebuild to `cli.mjs rebuild-binding` so there is
-        // ONE healer: it takes install.lock, resolves which node_modules tree
-        // the running code uses, and clears the hooks' breakage marker.
-        ensure: async () => {
-          // Child stdout is DISCARDED, not inherited: install.mjs logs progress
-          // to stdout, and this CLI's stdout is a data channel (`search --json`
-          // is piped into jq). Progress still reaches the user via stderr.
-          const r = spawnSync(process.execPath, [CLI_PATH, 'rebuild-binding'], {
-            stdio: ['ignore', 'ignore', 'inherit'],
-            timeout: 300_000,
-          });
-          return r.status === 0
-            ? { ok: true, action: 'rebuilt' }
-            : { ok: false, error: `rebuild-binding exited ${r.status ?? 'on signal'}` };
-        },
+      const healed = await healCliBinding({
+        cliPath: CLI_PATH,
+        runtimeDir: resolveRuntimeDir(DB_DIR),
         log: (m) => process.stderr.write(`[mem] ${m}\n`),
       });
       if (healed.healed) {
         process.exitCode = healed.exitCode;
         return;
       }
-      out(
-        `[mem] Error: native DB binding unusable on Node ${process.version}${healed.error ? ` — ${healed.error}` : ''}`,
-      );
+      const why = healed.reason === 'cooldown' ? cliHealSkipNote(healed.since) : healed.error;
+      out(`[mem] Error: native DB binding unusable on Node ${process.version}${why ? ` — ${why}` : ''}`);
       out(`[mem] Fix: ${CLI_INVOKE} rebuild-binding`);
       process.exitCode = 1;
       return;
@@ -4346,6 +4446,25 @@ async function runDispatch(argv) {
   ) {
     const note = unknownProjectNote(db, projectFlag);
     if (note) process.stderr.write(`[mem] ${note}\n`);
+  }
+  // `.` and `current` name the current project on every command, as optimize always read them.
+  // Elsewhere they matched a project literally named "." — no results and no note on a read,
+  // a new project of that name on a write (converge R28, E2E 2026-11-10). A write that creates rows
+  // is refused here when the directory is Claude Code's per-project state (cliWriteProject): spelled
+  // by the read resolver alone, `defer add --project=current` there filed the item under that
+  // directory's name (D#940). Elsewhere `.` resolves as on a read, so from a subdirectory
+  // `save --closes-deferred D#N --project .` still names the work tree that owns D#N.
+  let writeRefused = null;
+  cmdArgs = currentProjectSpelled(cmdArgs, () => {
+    if (PROJECT_WRITE_CMDS.has(subKey)) {
+      const fromDir = cliWriteProject();
+      if (!fromDir.ok) writeRefused = fromDir.message;
+    }
+    return cliProject(db);
+  });
+  if (writeRefused) {
+    fail(`[mem] ${writeRefused}`);
+    return;
   }
 
   try {

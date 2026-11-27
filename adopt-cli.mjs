@@ -26,7 +26,7 @@ import {
   realpathSync,
 } from 'fs';
 import { claudeConfigDir, claudeStatePath } from './lib/data-paths.mjs';
-import { join, isAbsolute, relative, dirname } from 'path';
+import { join, isAbsolute, relative, dirname, resolve, basename } from 'path';
 import {
   memdirPath,
   disableSentinelPath,
@@ -45,10 +45,11 @@ import {
   hasResidue as claudeMdHasResidue,
   needsRefresh,
   readBlock,
+  readBlockAt,
   migrateLegacyMemoryDir,
   hasLegacyMemdirSentinel,
   claudeMdPath,
-  detailDocPath,
+  cleanupLegacyProjectDetails,
   addAgentsImports,
   holdsOnlyPluginLines,
   straySentinelLines,
@@ -78,7 +79,9 @@ import {
   samePath,
   localFileLinked,
   userInstructionFiles,
+  steeringDetailDocPath,
 } from './lib/local-steering.mjs';
+import { pluginSettingsScopes, readSettingsScope } from './lib/plugin-key.mjs';
 import { CLI_INVOKE } from './cli-path.mjs';
 
 /**
@@ -198,8 +201,12 @@ export function cmdAdopt(args = []) {
 }
 
 function adoptOne(cwd, { force, dryRun }) {
-  const block = buildClaudeMdBlock();
   const doc = getDetailDoc();
+  // The detail doc is shared by every project and lives in the data directory; the project
+  // keeps only the managed block, so adopt leaves no untracked `.claude`/`.qwen` files behind.
+  const block = dryRun
+    ? buildClaudeMdBlock({ detailDocRef: tildePath(steeringDetailDocPath()) })
+    : buildClaudeMdBlock({ detailDocRef: tildePath(ensureSteeringDetailDoc()) });
   const version = CURRENT_SENTINEL_VERSION;
   // A damaged sentinel line pairs with no block, so writing would add a second block beside it
   // (E2E 2026-10-16 round 2, B14). Which lines are the block is the user's call: refuse first.
@@ -235,7 +242,7 @@ function adoptOne(cwd, { force, dryRun }) {
   if (dryRun) {
     log(`[adopt --dry-run] ${cwd}`);
     log(`  CLAUDE.md block:  ${claudeMdPath(cwd)} (${block.length} chars, ${version})`);
-    log(`  detail doc:       ${detailDocPath(cwd, PLUGIN_SLUG)} (${doc.length} chars)`);
+    log(`  detail doc:       ${steeringDetailDocPath()} (${doc.length} chars, shared by every project)`);
     if (imports.length > 0)
       log(`  AGENTS.md:        would import ${imports.join(', ')} at the top of CLAUDE.md`);
     for (const line of elsewhere('would stop')) log(line);
@@ -248,7 +255,14 @@ function adoptOne(cwd, { force, dryRun }) {
 
   try {
     const mig = migrateLegacyMemoryDir(cwd, PLUGIN_SLUG, { force });
-    const r = writeManaged(cwd, { slug: PLUGIN_SLUG, version, block, doc });
+    const r = writeManaged(cwd, { slug: PLUGIN_SLUG, version, block });
+    const cleanup = cleanupLegacyProjectDetails(cwd, PLUGIN_SLUG, {
+      isTracked: (rel) => trackedByGit(cwd, rel),
+    });
+    const cleanupNote =
+      cleanup.removed.length > 0
+        ? ` (+removed ${cleanup.removed.length} legacy project file${cleanup.removed.length === 1 ? '' : 's'})`
+        : '';
     const importNote =
       imports.length > 0 && addAgentsImports(cwd, PLUGIN_SLUG, imports) === 'added'
         ? ` (+imported ${imports.join(', ')}: Claude Code stops reading AGENTS.md once a CLAUDE.md exists)`
@@ -265,13 +279,18 @@ function adoptOne(cwd, { force, dryRun }) {
             ? ` (could not remove the block from ${local.path}, so sessions here load it twice)`
             : ` (+removed the block from ${local.path})`;
     // The block's disposition alone read "unchanged" over a rewritten detail doc (D#470).
-    const docNote =
-      r.action === 'unchanged' && r.docAction !== 'unchanged'
-        ? ` (+${r.docAction === 'created' ? 'wrote' : 'refreshed'} detail doc)`
-        : '';
-    log(`[adopt] ${cwd} → ${r.action}${docNote}${migNote}${localNote}${importNote}`);
+    log(`[adopt] ${cwd} → ${r.action}${cleanupNote}${migNote}${localNote}${importNote}`);
     for (const line of elsewhere('stops')) log(line);
     for (const line of sharedNote('stops')) log(line);
+    // In a subdirectory the root's local copy stays for the root's sessions, and sessions started
+    // here load it as an ancestor too. No layout the plugin could pick loads the block once in every
+    // session without moving the root's sessions to injection (D#509(4) spec), so say which one does.
+    const top = localSteeringRoot(cwd);
+    const rootCopy = top && !samePath(top, cwd) ? readLocalSteering(top, PLUGIN_SLUG) : null;
+    if (rootCopy && rootCopy.body !== null)
+      log(
+        `  ⚠ ${rootCopy.path} also carries the block, and sessions started here load both, so they load it twice. For one copy in every session, keep the block in one CLAUDE.md at ${top} (\`${CLI_INVOKE} adopt\` there, \`${CLI_INVOKE} unadopt\` here).`,
+      );
     // The copy that could not come out loads beside CLAUDE.md: said, and not a success (R3-4).
     if (local.action === 'failed') {
       if (local.residue) log(`  ⚠ ${local.residue}`);
@@ -362,10 +381,16 @@ export function silentAutoAdopt({ cwd, markerDir, markerKey }) {
       return { ok: true, action: 'disabled', reason: 'disabled-by-sentinel' };
     }
     migrateLegacyMemoryDir(cwd, PLUGIN_SLUG);
+    // Older versions wrote the detail doc and a state sidecar into each project. The doc is
+    // shared from the data directory now, so sweep those untracked copies on every session
+    // (both layouts), leaving tracked files and links alone.
+    const cleanupRoot = localSteeringRoot(cwd) || cwd;
+    cleanupLegacyProjectDetails(cleanupRoot, PLUGIN_SLUG, {
+      isTracked: (rel) => trackedByGit(cleanupRoot, rel),
+    });
 
-    const block = buildClaudeMdBlock();
-    const doc = getDetailDoc();
     const version = CURRENT_SENTINEL_VERSION;
+    const block = buildClaudeMdBlock({ detailDocRef: tildePath(ensureSteeringDetailDoc()) });
 
     // Report §9-A (docs/audits/20260929-sandbox-usage-eval.md): a project with NO managed
     // block is no longer written into. The first SessionStart used to add CLAUDE.md and
@@ -409,6 +434,22 @@ export function silentAutoAdopt({ cwd, markerDir, markerKey }) {
           // (delta review P2-2; lib/quiet-scope.mjs mirrors it).
           if (isAutoAdoptDisabledFor(root)) return { ok: true, action: 'disabled', reason: 'root-disabled' };
         }
+        // The shipped block already loads from above the top-level (an enclosing directory's
+        // CLAUDE.md, or in a worktree the main checkout's CLAUDE.local.md): a local copy would be the
+        // second (D#509(4)). One the plugin wrote goes and is forgotten, so the file comes back if that
+        // block goes or falls behind; one the user removed stays removed. Frozen
+        // (QWEN_MEM_NO_TEMPLATE_REFRESH=1, how edits inside the markers are kept), it stays: removing
+        // it would lose them (v6.32.0 pre-release defects review F2). The detail doc in the data
+        // directory, which a CLAUDE.local.md above points at, is kept current as when writing one (F7).
+        if (steeringAbove(root, cwd).current) {
+          if (
+            process.env.QWEN_MEM_NO_TEMPLATE_REFRESH !== '1' &&
+            removeLocalSteering(root, PLUGIN_SLUG, { keepTracked: true }).action === 'removed'
+          )
+            forgetLocalSteering(root);
+          ensureSteeringDetailDoc();
+          return { ok: true, action: 'already-adopted', reason: 'above-root' };
+        }
         const localBlock = buildClaudeMdBlock({ detailDocRef: tildePath(ensureSteeringDetailDoc()) });
         const r = writeLocalSteering(root, {
           slug: PLUGIN_SLUG,
@@ -440,20 +481,24 @@ export function silentAutoAdopt({ cwd, markerDir, markerKey }) {
       }
       // managed-only loads no project CLAUDE.md, so the hook does not offer /adopt (v6.30.0 pre-tag
       // claims review P2-5; inside a git work tree the reason is local-managed-only).
-      return managedOnly
-        ? { ok: true, action: 'inject', reason: 'managed-only' }
-        : { ok: true, action: 'inject' };
+      if (managedOnly) return { ok: true, action: 'inject', reason: 'managed-only' };
+      // Outside git there is no top-level to stop at, and the host loads every CLAUDE.md above the
+      // session as an ancestor: the shipped block there already steers it, and injecting was a
+      // second copy (D#760). An out-of-date one is not relied on (D#509(4)).
+      if (steeringAbove(cwd).current)
+        return { ok: true, action: 'already-adopted', reason: 'ancestor-claude-md' };
+      return { ok: true, action: 'inject' };
     }
     dropLocalSteering(cwd, { atRootOnly: true, keepTracked: true });
     let action = 'already-adopted';
     if (!claudeMdIsAdopted(cwd, PLUGIN_SLUG)) {
-      writeManaged(cwd, { slug: PLUGIN_SLUG, version, block, doc });
+      writeManaged(cwd, { slug: PLUGIN_SLUG, version, block });
       action = 'adopted';
     } else if (
       process.env.QWEN_MEM_NO_TEMPLATE_REFRESH !== '1' &&
-      needsRefresh(cwd, { slug: PLUGIN_SLUG, version, block, doc })
+      needsRefresh(cwd, { slug: PLUGIN_SLUG, version, block })
     ) {
-      writeManaged(cwd, { slug: PLUGIN_SLUG, version, block, doc });
+      writeManaged(cwd, { slug: PLUGIN_SLUG, version, block });
       action = 'refreshed';
     }
     const agents = syncAgentsImports(cwd);
@@ -530,6 +575,88 @@ function blockAbove(cwd, root) {
     if (blockIn(d)) return d;
     if (samePath(d, root) || dirname(d) === d) return null;
   }
+}
+
+// The main checkout of the linked worktree at `top` as Claude Code 2.1.322 finds it from `.git` (its
+// canonical-root lookup), or null. `.git` reads `gitdir: <gitdir>`; that directory's `gitdir` file
+// must point back at `<top>/.git` (a worktree moved without `git worktree repair` does not, and is
+// no worktree to the host); its `commondir` names the common directory, whose parent is the checkout
+// when it is named `.git`, and which is itself the checkout otherwise (a bare repository). A
+// submodule's gitdir has no back-pointer, so null. The host's further checks reject layouts git does
+// not make; where they would differ, this skips more and the block loads twice, never not at all.
+function worktreeMainCheckout(top) {
+  try {
+    const dotGit = readFileSync(join(top, '.git'), 'utf8').trim();
+    if (!dotGit.startsWith('gitdir:')) return null;
+    const gitdir = resolve(top, dotGit.slice(7).trim());
+    const back = resolve(gitdir, readFileSync(join(gitdir, 'gitdir'), 'utf8').trim());
+    if (realpathSync(back) !== join(realpathSync(top), '.git')) return null;
+    const common = resolve(gitdir, readFileSync(join(gitdir, 'commondir'), 'utf8').trim());
+    return basename(common) === '.git' ? dirname(common) : common;
+  } catch {
+    return null;
+  }
+}
+
+// Whether the user settings or a project's settings files set claudeMdExcludes. An excluded file does
+// not load, and its globs are not evaluated here, so with any set nothing above is relied on. One set
+// where these files do not reach (--settings, managed settings) is not seen (D#781, D#787).
+function claudeMdExcludesSet(dirs) {
+  const files = new Set(dirs.flatMap((d) => pluginSettingsScopes(claudeConfigDir(), d)));
+  for (const f of files) {
+    // Absent, unparseable or not a regular file: sets nothing.
+    const v = readSettingsScope(f)?.claudeMdExcludes;
+    if (Array.isArray(v) ? v.length > 0 : v !== undefined && v !== null) return true;
+  }
+  return false;
+}
+
+/**
+ * The plugin's block in the instruction files Claude Code loads at launch from ABOVE `top` — a git
+ * top-level, or outside git the session's directory (D#509(4), D#760). Checked on Claude Code
+ * 2.1.322 with InstructionsLoaded and in its source (tasks/specs/d509-steering-above-root.md): the
+ * CLAUDE.md and CLAUDE.local.md of every directory above the session load, inside other git
+ * repositories too, up to but not including the filesystem root; a worktree session skips the
+ * CLAUDE.md (and rules) of every directory from its main checkout down, while still loading their
+ * CLAUDE.local.md. Rules files never count here.
+ *
+ * `current` is the nearest such file whose block is the shipped one — a CLAUDE.md compared as the
+ * sync compares it (block and detail doc), a CLAUDE.local.md against the local block — or any block
+ * under QWEN_MEM_NO_TEMPLATE_REFRESH=1; `stale` the nearest one that is not. Only a current block
+ * may stand in for the local copy: an out-of-date one alone would swap the shipped text for an older
+ * one (6.19's block lacks the row on checking a memory against the code). Nothing counts under
+ * managed-only (no project file loads) or where claudeMdExcludes is set.
+ * @returns {{current: string|null, stale: string|null}} file paths
+ */
+function steeringAbove(top, cwd = top) {
+  const found = { current: null, stale: null };
+  if (userInstructionFiles() === 'managed-only') return found;
+  const main = worktreeMainCheckout(top);
+  if (claudeMdExcludesSet(main ? [cwd, top, main] : [cwd, top])) return found;
+  const frozen = process.env.QWEN_MEM_NO_TEMPLATE_REFRESH === '1';
+  const version = CURRENT_SENTINEL_VERSION;
+  const shipped = { slug: PLUGIN_SLUG, version, block: buildClaudeMdBlock() };
+  const localBlock = buildClaudeMdBlock({ detailDocRef: tildePath(steeringDetailDocPath()) });
+  const note = (file, current) => {
+    if (current) found.current ??= file;
+    else found.stale ??= file;
+  };
+  const dirs = [];
+  for (let d = dirname(top); dirname(d) !== d; d = dirname(d)) dirs.push(d);
+  const lastSkipped = main ? dirs.findIndex((d) => samePath(d, main)) : -1;
+  for (const [i, d] of dirs.entries()) {
+    if (i > lastSkipped && blockIn(d)) note(claudeMdPath(d), frozen || !needsRefresh(d, shipped));
+    let local = null;
+    try {
+      local = readBlockAt(join(d, LOCAL_MD), PLUGIN_SLUG);
+    } catch {
+      /* a directory or an unreadable file: no block of ours */
+    }
+    if (local && local.body !== null)
+      note(join(d, LOCAL_MD), frozen || (local.version === version && local.body === localBlock));
+    if (found.current) return found;
+  }
+  return found;
 }
 
 function writeMarker(markerDir, markerKey) {
@@ -669,6 +796,41 @@ function localSteeringStatus(cwd) {
       return `- none: CLAUDE.md carries the block (the local copy in ${cur.path} is removed at the next session start)`;
     return `⚠ CLAUDE.md carries the block, and ${cur.path} also does${kept ? ` (${kept}; the plugin leaves it as it is)` : ''}: sessions here load it twice`;
   }
+  // Then the files above the top-level (outside git, above the session), as the session checks them
+  // (D#509(4), D#760).
+  const above = steeringAbove(root ?? cwd, cwd);
+  if (above.current) {
+    const cur = root ? readLocalSteering(root, PLUGIN_SLUG) : null;
+    if (cur === null || cur.body === null) return `— none: ${above.current} carries the block`;
+    const kept = localFileLinked(root, cur.path)
+      ? 'behind a symbolic link'
+      : trackedByGit(root, relative(root, cur.path))
+        ? 'tracked by git'
+        : null;
+    // A session started here takes the copy out, when the sync runs and where it can, unless a damaged
+    // sentinel line in CLAUDE.md stops it first or the template is frozen.
+    if (
+      !kept &&
+      runs &&
+      removable(cur.path) &&
+      straySentinelLines(claudeMdPath(cwd), PLUGIN_SLUG).length === 0 &&
+      process.env.QWEN_MEM_NO_TEMPLATE_REFRESH !== '1'
+    )
+      return `— none: ${above.current} carries the block (the local copy in ${cur.path} is removed at the next session start)`;
+    return `⚠ ${above.current} carries the block, and ${cur.path} also does${kept ? ` (${kept}; the plugin leaves it as it is)` : ''}: sessions here load it twice`;
+  }
+  const line = localFileLine(cwd, root, runs);
+  if (!above.stale) return line;
+  // Out of date, it does not stand in for the local copy, and it loads here all the same. Only a
+  // CLAUDE.md has a remedy that holds in every state: what a session does to a CLAUDE.local.md
+  // depends on that directory (refreshed, taken out, or left as it is when tracked).
+  const how =
+    basename(above.stale) === LOCAL_MD ? '' : `; \`${CLI_INVOKE} adopt\` there brings it up to date`;
+  return `${line}\n              ⚠ ${above.stale} holds an out-of-date copy of the block, which sessions here load as well${how}`;
+}
+
+// The rest of the `local:` line: the local file, or why there is none and what changes it.
+function localFileLine(cwd, root, runs) {
   if (root) {
     const cur = readLocalSteering(root, PLUGIN_SLUG);
     if (cur.body !== null) return currentLocalLine(root, cwd, cur, runs);
@@ -925,14 +1087,19 @@ function unadoptProject(dir, dryRun) {
     n.blocks++;
     return n;
   }
-  const r = removeManaged(dir, PLUGIN_SLUG);
+  const r = removeManaged(dir, PLUGIN_SLUG, { isTracked: (rel) => trackedByGit(dir, rel) });
   if (r.action === 'removed') {
     log(`[unadopt --all] ${dir} → removed`);
     n.blocks++;
+  } else if (r.action === 'skipped-symlink') {
+    log(`[unadopt --all] ${dir} → skipped-symlink`);
+    n.failures++;
   } else {
     log(`[unadopt --all] ${dir} → cleaned partial residue (detail doc/state, no block)`);
     n.partial++;
   }
+  for (const l of r.left ?? []) log(`  ⚠ left ${l.link} alone: ${l.why}`);
+  if (r.action === 'skipped-symlink') log(`  ⚠ ${BLOCK_LEFT_NOTE}`);
   // OUTSIDE the branch, because residue is orthogonal to what happened to the block: a
   // project can have its block removed AND still carry an unpaired sentinel. An orphan is
   // the one kind of residue the sweep cannot finish - its block has no end marker, so its
@@ -942,6 +1109,11 @@ function unadoptProject(dir, dryRun) {
   if (r.residue) log(`  ⚠ ${r.residue}`);
   return n;
 }
+
+// unadopt's line when CLAUDE.md is a link it will not write through: the block, the detail doc and its
+// state file all stay, and only the user can take the block out (v6.35.4 pre-tag round 1, F5).
+const BLOCK_LEFT_NOTE =
+  'the block stays in the file CLAUDE.md links to, and the detail doc and its state file stay too: remove the block from that file by hand, then run unadopt again';
 
 export function cmdUnadopt(args = []) {
   if (hasFlag(args, '--status')) return statusAll();
@@ -973,10 +1145,15 @@ export function cmdUnadopt(args = []) {
     return;
   }
 
-  const r = removeManaged(cwd, PLUGIN_SLUG);
+  const r = removeManaged(cwd, PLUGIN_SLUG, { isTracked: (rel) => trackedByGit(cwd, rel) });
   const mig = migrateLegacyMemoryDir(cwd, PLUGIN_SLUG, { force });
   const migNote = mig.action === 'removed' ? ' (+cleaned legacy memdir)' : '';
   log(`[unadopt] ${cwd} → ${r.action}${migNote}`);
+  for (const l of r.left ?? []) log(`  ⚠ left ${l.link} alone: ${l.why}`);
+  if (r.action === 'skipped-symlink') {
+    log(`  ⚠ ${BLOCK_LEFT_NOTE}`);
+    process.exitCode = 1;
+  }
   const local = dropLocalSteering(cwd);
   if (local.action !== 'absent') log(`[unadopt] ${local.path} → ${local.action}`);
   if (local.residue) log(`  ⚠ ${local.residue}`);

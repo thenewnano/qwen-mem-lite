@@ -2071,6 +2071,68 @@ describe('CLI compress command', () => {
     expect(output).toContain('--execute');
   });
 
+  // D18 (converge R31): `maintain execute --ops purge_stale` previews its Oldest/Newest rows, and
+  // they were the UTC day; displayed dates are local. The rows sit at 22:30 Los Angeles time, when
+  // the UTC date is already the next day. -2 = COMPRESSED_PENDING_PURGE.
+  it('the purge preview dates its oldest and newest rows in local time', async () => {
+    const saved = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
+    try {
+      const now = new Date();
+      const evening = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 60, 22, 30).getTime();
+      const day = (e) => {
+        const d = new Date(e);
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      };
+      expect(day(evening), 'premise: the UTC day differs').not.toBe(
+        new Date(evening).toISOString().slice(0, 10),
+      );
+      for (let i = 0; i < 3; i++) {
+        insertObs(testDb, {
+          sessionId: 'mem-s1',
+          project: 'test--project',
+          type: 'discovery',
+          title: `Idle obs ${i}`,
+          text: `idle content ${i}`,
+          importance: 1,
+        });
+      }
+      testDb
+        .prepare('UPDATE observations SET compressed_into = -2, created_at_epoch = ?, created_at = ?')
+        .run(evening, new Date(evening).toISOString());
+      const output = await captureStdout(() => run(['maintain', 'execute', '--ops', 'purge_stale']));
+      expect(output).toContain(`Oldest: ${day(evening)}`);
+      expect(output).toContain(`Newest: ${day(evening)}`);
+    } finally {
+      if (saved === undefined) delete process.env.TZ;
+      else process.env.TZ = saved;
+    }
+  });
+
+  // D18: citation-stats dates each resolved session of its funnel; the UTC day disagreed with the
+  // local one the rest of the output uses.
+  it('citation-stats dates a resolved session in local time', async () => {
+    const saved = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
+    try {
+      const now = new Date();
+      const evening = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 22, 30).getTime();
+      const d = new Date(evening);
+      const local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      expect(local, 'premise: the UTC day differs').not.toBe(d.toISOString().slice(0, 10));
+      testDb
+        .prepare(
+          'INSERT INTO citation_log (project, memory_session_id, resolved_at, injected_n, cited_n) VALUES (?, ?, ?, ?, ?)',
+        )
+        .run('test--project', 'mem-s1', evening, 4, 1);
+      const output = await captureStdout(() => run(['citation-stats']));
+      expect(output).toMatch(new RegExp(`^  ${local}  test--project`, 'm'));
+    } finally {
+      if (saved === undefined) delete process.env.TZ;
+      else process.env.TZ = saved;
+    }
+  });
+
   it('shows no candidates when all are recent', async () => {
     insertObs(testDb, {
       sessionId: 'mem-s1',
@@ -2429,6 +2491,98 @@ describe('CLI maintain command', () => {
     }
     const output = await captureStdout(() => run(['maintain', 'scan']));
     expect(output).toContain(`Ready-to-use: ${CLI_INVOKE} maintain execute --ops dedup --merge-ids 1:2`);
+  });
+
+  // converge R28 (E2E 2026-11-10): `--project .` / `current` meant "this project" only to
+  // optimize. Everywhere else it matched a project literally named "." (no results, no note),
+  // and `save --project .` created one.
+  it('--project . and --project=current name the current project on every command', async () => {
+    insertObs(testDb, {
+      sessionId: 'mem-s1',
+      project: 'test--project',
+      type: 'discovery',
+      title: 'Kafka retention dropped the replay topic',
+      text: 'kafka retention replay topic',
+      importance: 2,
+    });
+    const dot = await captureStdout(() => run(['search', 'kafka', '--project', '.']));
+    expect(dot).toContain('Kafka retention dropped the replay topic');
+    const current = await captureStdout(() => run(['recent', '--project=current']));
+    expect(current).toContain('Kafka retention dropped the replay topic');
+    await captureStdout(() => run(['save', 'A note filed under the dot spelling', '--project', '.']));
+    const filed = testDb
+      .prepare("SELECT project FROM observations WHERE title LIKE 'A note filed under%'")
+      .get();
+    expect(filed.project).toBe('test--project');
+    // After a bare `--` the words are the note's text, not a flag.
+    await captureStdout(() => run(['save', '--', 'Use', '--project', '.', 'for the current one']));
+    const literal = testDb.prepare("SELECT text FROM observations WHERE text LIKE 'Use --project%'").get();
+    expect(literal.text).toContain('Use --project . for the current one');
+  });
+
+  // converge R28 (E2E 2026-11-10): a save the 5-minute window refused answered only "Skipped:
+  // similar to existing #N" — a bugfix carrying a lesson was dropped and nothing said so, or that
+  // --force exists for a memory that really is different.
+  it('a save skipped as a near-duplicate says nothing was stored and how to store it anyway', async () => {
+    await captureStdout(() =>
+      run(['save', 'Fixed token refresh race in auth middleware', '--type', 'discovery']),
+    );
+    const out = await captureStdout(() =>
+      run([
+        'save',
+        'Fixed token refresh race in auth middleware',
+        '--type',
+        'bugfix',
+        '--lesson',
+        'Serialize the refresh behind a mutex',
+      ]),
+    );
+    expect(out).toMatch(/Skipped: similar to existing #\d+ — nothing was saved, including the lesson/);
+    expect(out).toContain('run the same save with --force');
+  });
+
+  // converge R28 (E2E 2026-11-10): the keeper was the higher-importance row and, on a tie, the
+  // newer one — a bare re-save of a fix kept its place and the merge hid the copy carrying the
+  // lesson from search and recall.
+  it("scan's merge command keeps the row that carries the lesson", async () => {
+    insertObs(testDb, {
+      sessionId: 'mem-s1',
+      project: 'test--project',
+      type: 'bugfix',
+      title: 'Fixed token refresh race in auth middleware',
+      text: 'x',
+      importance: 2,
+      lessonLearned: 'Serialize the refresh behind a mutex',
+    });
+    insertObs(testDb, {
+      sessionId: 'mem-s1',
+      project: 'test--project',
+      type: 'bugfix',
+      title: 'Fixed token refresh race in auth middleware',
+      text: 'x',
+      importance: 2,
+    });
+    const output = await captureStdout(() => run(['maintain', 'scan']));
+    expect(output).toContain('--merge-ids 1:2');
+    expect(output).toMatch(/\[1\] "Fixed token refresh race in auth middl[^"]*" <-> \[2\]/);
+  });
+
+  // converge R28: two weekly summaries share a title built from their count and type alone.
+  it('scan does not offer to merge two compression summaries', async () => {
+    insertSession(testDb, { id: 'compress-test--project', project: 'test--project' });
+    for (let i = 0; i < 2; i++) {
+      insertObs(testDb, {
+        sessionId: 'compress-test--project',
+        project: 'test--project',
+        type: 'discovery',
+        title: 'Weekly summary: 3 discovery observations',
+        text: 'x',
+        importance: 2,
+      });
+    }
+    const output = await captureStdout(() => run(['maintain', 'scan']));
+    expect(output).toContain('Total active: 2');
+    expect(output).not.toMatch(/Needs review|Auto-mergeable/);
   });
 
   // D#464: a scan over every project paired rows of two projects, which execute then skips

@@ -889,7 +889,7 @@ describe('CLI feature sweep: adoption commands', () => {
     const md = readFileSync(claudeMd(), 'utf8');
     expect((md.match(/<!-- qwen-mem-lite:begin/g) || []).length).toBe(1);
     expect(md).toContain('use tabs'); // user content preserved
-    expect(existsSync(join(ADOPT_DIR, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(true);
+    expect(existsSync(join(ADOPT_DIR, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(false);
 
     expect(ok(['adopt', '--status'], { cwd: ADOPT_DIR }).stdout).toMatch(/CLAUDE\.md:\s+✓ adopted/);
   });
@@ -901,7 +901,7 @@ describe('CLI feature sweep: adoption commands', () => {
     writeFileSync(md_, userContent);
     ok(['adopt'], { cwd: UNADOPT_DIR });
     expect(readFileSync(md_, 'utf8')).toContain('<!-- qwen-mem-lite:begin');
-    expect(existsSync(join(UNADOPT_DIR, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(true);
+    expect(existsSync(join(UNADOPT_DIR, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(false);
 
     const dry = ok(['unadopt', '--dry-run'], { cwd: UNADOPT_DIR });
     expect(dry.stdout).toContain(UNADOPT_DIR);

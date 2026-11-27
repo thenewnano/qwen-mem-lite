@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { spawn } from 'child_process';
-import { resolve, join } from 'path';
+import { resolve, join, dirname } from 'path';
 import { writeFileSync, mkdirSync, rmSync, readFileSync, mkdtempSync, existsSync, readdirSync } from 'fs';
 import {
   createTestDb,
@@ -1228,11 +1228,13 @@ describe('pre-tool-recall', () => {
     });
   });
 
-  // ─── A1.5 (v2.83.2): cite_factor in pre-tool-recall tie-break ────────────
-  // When multiple lessons match the same file, prefer the one with proven
-  // cite history over the merely-most-recent one. Single-match files are
-  // unaffected (obsLimit=1 for Read, 2 for Edit).
-  describe('cite_factor tie-break across multiple file-matching lessons (A1.5)', () => {
+  // ─── D#949 (v6.37.0): recency first, cite_factor breaks ties ──────────────
+  // A1.5 (v2.83.2) ranked cite history ahead of recency when several lessons match one file.
+  // D#771's blind re-run (docs/audits/20261016-citation-regime-consumers.md §9) preferred the
+  // order by write time 37:9 on the stratum written after 2026-09-22, so the default is now
+  // lesson-first, created_at DESC, cite_factor DESC, id DESC. QWEN_MEM_PRETOOL_RECENCY_FIRST=off
+  // restores the A1.5 order; the three A1.5 cases run under it unchanged.
+  describe('per-file lesson order: recency first, cite_factor breaks ties (D#949)', () => {
     let tmpRoot;
     let projectDir;
 
@@ -1255,140 +1257,170 @@ describe('pre-tool-recall', () => {
       } catch {}
     });
 
-    it('Edit: prefers the heavily-cited older lesson over the never-cited newer one', async () => {
+    const lesson = (title, body, extra) => ({
+      sessionId: 'mem-a15',
+      project: 'parent--a15test',
+      type: 'bugfix',
+      importance: 2,
+      title,
+      lessonLearned: body,
+      filesModified: `["${join(projectDir, 'shared.mjs')}"]`,
+      ...extra,
+    });
+
+    /** An older lesson cited five times, then a newer one never cited. */
+    function seedOldCitedNewFresh() {
       const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
       db.pragma('foreign_keys = OFF');
       initSchema(db);
-      // Older (60d ago) but cited 5 times — proven helpful.
-      insertObs(db, {
-        sessionId: 'mem-a15',
-        project: 'parent--a15test',
-        type: 'bugfix',
-        importance: 2,
-        title: 'OLD-CITED lesson',
-        lessonLearned: 'this body was cited five times across sessions',
-        filesModified: `["${join(projectDir, 'shared.mjs')}"]`,
-        epochOffset: -50 * 86400000,
-        citedCount: 5,
-      });
-      // Newer (today) but never cited.
-      insertObs(db, {
-        sessionId: 'mem-a15',
-        project: 'parent--a15test',
-        type: 'bugfix',
-        importance: 2,
-        title: 'NEW-FRESH lesson',
-        lessonLearned: 'fresh body never cited',
-        filesModified: `["${join(projectDir, 'shared.mjs')}"]`,
-        epochOffset: 0,
-        citedCount: 0,
-      });
+      insertObs(
+        db,
+        lesson('OLD-CITED lesson', 'this body was cited five times across sessions', {
+          epochOffset: -50 * 86400000,
+          citedCount: 5,
+        }),
+      );
+      insertObs(db, lesson('NEW-FRESH lesson', 'fresh body never cited', { epochOffset: 0, citedCount: 0 }));
       db.close();
+    }
 
+    /** A newer lesson with an uncited streak of 2, then an older neutral one. */
+    function seedNewStreakedOldNeutral() {
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
+      db.pragma('foreign_keys = OFF');
+      initSchema(db);
+      insertObs(
+        db,
+        lesson('STREAKED lesson', 'body with streak of 2 uncited sessions', {
+          epochOffset: 0,
+          uncitedStreak: 2,
+        }),
+      );
+      insertObs(db, lesson('NEUTRAL lesson', 'older body neutral state', { epochOffset: -3 * 86400000 }));
+      db.close();
+    }
+
+    // `order` undefined = the variable is unset in the child (spawn drops undefined values), so a
+    // developer shell that exports it cannot turn the default-order cases into off-order ones.
+    async function recall(toolName, sessionId, order) {
       const { stdout } = await runScript(
         {
-          tool_name: 'Edit',
+          tool_name: toolName,
           tool_input: { file_path: join(projectDir, 'shared.mjs') },
-          session_id: 'sess-a15-1',
+          session_id: sessionId,
         },
-        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir, QWEN_MEM_PRETOOL_RECENCY_FIRST: order },
       );
+      return JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    }
 
-      const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
-      // Edit caps at 2 rows total — both surface, but the cited one MUST come first.
+    it('Edit: the never-cited newer lesson comes before the heavily-cited older one', async () => {
+      seedOldCitedNewFresh();
+      const ctx = await recall('Edit', 'sess-a15-d1');
+      // The Edit observations query takes 2 rows here — both surface, the newer one first.
       const oldIdx = ctx.indexOf('cited five times');
       const newIdx = ctx.indexOf('fresh body never cited');
       expect(oldIdx).toBeGreaterThanOrEqual(0);
       expect(newIdx).toBeGreaterThanOrEqual(0);
-      expect(oldIdx).toBeLessThan(newIdx);
+      expect(newIdx).toBeLessThan(oldIdx);
     });
 
-    it('Read (obsLimit=1): surfaces the cited lesson, drops the never-cited fresh one', async () => {
-      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
-      db.pragma('foreign_keys = OFF');
-      initSchema(db);
-      insertObs(db, {
-        sessionId: 'mem-a15',
-        project: 'parent--a15test',
-        type: 'bugfix',
-        importance: 2,
-        title: 'OLD-CITED lesson',
-        lessonLearned: 'this body was cited five times across sessions',
-        filesModified: `["${join(projectDir, 'shared.mjs')}"]`,
-        epochOffset: -50 * 86400000,
-        citedCount: 5,
-      });
-      insertObs(db, {
-        sessionId: 'mem-a15',
-        project: 'parent--a15test',
-        type: 'bugfix',
-        importance: 2,
-        title: 'NEW-FRESH lesson',
-        lessonLearned: 'fresh body never cited',
-        filesModified: `["${join(projectDir, 'shared.mjs')}"]`,
-        epochOffset: 0,
-        citedCount: 0,
-      });
-      db.close();
-
-      const { stdout } = await runScript(
-        {
-          tool_name: 'Read',
-          tool_input: { file_path: join(projectDir, 'shared.mjs') },
-          session_id: 'sess-a15-2',
-        },
-        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
-      );
-
-      const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
-      expect(ctx).toContain('cited five times');
-      expect(ctx).not.toContain('fresh body never cited');
+    it('Read (obsLimit=1): surfaces the newer lesson, drops the cited older one', async () => {
+      seedOldCitedNewFresh();
+      const ctx = await recall('Read', 'sess-a15-d2');
+      expect(ctx).toContain('fresh body never cited');
+      expect(ctx).not.toContain('cited five times');
     });
 
-    it('Edit: demotes the uncited-streak lesson below the fresh one', async () => {
-      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
-      db.pragma('foreign_keys = OFF');
-      initSchema(db);
-      // Newer but accumulating uncited streak — agent has been declining it.
-      insertObs(db, {
-        sessionId: 'mem-a15',
-        project: 'parent--a15test',
-        type: 'bugfix',
-        importance: 2,
-        title: 'STREAKED lesson',
-        lessonLearned: 'body with streak of 2 uncited sessions',
-        filesModified: `["${join(projectDir, 'shared.mjs')}"]`,
-        epochOffset: 0,
-        uncitedStreak: 2,
-      });
-      // Older and neutral (cited=0, streak=0).
-      insertObs(db, {
-        sessionId: 'mem-a15',
-        project: 'parent--a15test',
-        type: 'bugfix',
-        importance: 2,
-        title: 'NEUTRAL lesson',
-        lessonLearned: 'older body neutral state',
-        filesModified: `["${join(projectDir, 'shared.mjs')}"]`,
-        epochOffset: -3 * 86400000,
-      });
-      db.close();
-
-      const { stdout } = await runScript(
-        {
-          tool_name: 'Edit',
-          tool_input: { file_path: join(projectDir, 'shared.mjs') },
-          session_id: 'sess-a15-3',
-        },
-        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
-      );
-
-      const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+    it('Edit: a newer lesson with an uncited streak still comes before an older neutral one', async () => {
+      seedNewStreakedOldNeutral();
+      const ctx = await recall('Edit', 'sess-a15-d3');
       const neutralIdx = ctx.indexOf('older body neutral state');
       const streakedIdx = ctx.indexOf('body with streak of 2');
       expect(neutralIdx).toBeGreaterThanOrEqual(0);
       expect(streakedIdx).toBeGreaterThanOrEqual(0);
-      expect(neutralIdx).toBeLessThan(streakedIdx);
+      expect(streakedIdx).toBeLessThan(neutralIdx);
+    });
+
+    it('Read: on a same-millisecond tie the cited lesson wins, though its id is the lower one', async () => {
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
+      db.pragma('foreign_keys = OFF');
+      initSchema(db);
+      // Inserted first, so `id DESC` alone would pick the other one.
+      insertObs(db, lesson('TIED-CITED lesson', 'tied body cited five times', { citedCount: 5 }));
+      insertObs(db, lesson('TIED-FRESH lesson', 'tied body never cited', {}));
+      const ids = db.prepare('SELECT id FROM observations ORDER BY id').all();
+      expect(ids.length).toBe(2);
+      db.prepare('UPDATE observations SET created_at_epoch = ?').run(Date.now() - 60_000);
+      db.close();
+
+      const ctx = await recall('Read', 'sess-a15-d4');
+      expect(ctx).toContain('tied body cited five times');
+      expect(ctx).not.toContain('tied body never cited');
+    });
+
+    it.each([undefined, 'off'])(
+      'Edit: a row with a lesson comes before a newer row without one (switch %s)',
+      async (order) => {
+        const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
+        db.pragma('foreign_keys = OFF');
+        initSchema(db);
+        insertObs(db, lesson('OLDER-LESSON row', 'older lesson body text', { epochOffset: -10 * 86400000 }));
+        // Edit admits a bugfix without a lesson (typeFallback); it is the newer row.
+        insertObs(db, lesson('NEWER-BODYLESS bugfix in shared', null, { epochOffset: 0 }));
+        db.close();
+
+        const ctx = await recall('Edit', `sess-a15-lf-${order ?? 'default'}`, order);
+        const lessonIdx = ctx.indexOf('older lesson body text');
+        const bodylessIdx = ctx.indexOf('NEWER-BODYLESS');
+        expect(lessonIdx).toBeGreaterThanOrEqual(0);
+        expect(bodylessIdx).toBeGreaterThanOrEqual(0);
+        expect(lessonIdx).toBeLessThan(bodylessIdx);
+      },
+    );
+
+    describe('QWEN_MEM_PRETOOL_RECENCY_FIRST=off restores the A1.5 order', () => {
+      it('Edit: prefers the heavily-cited older lesson over the never-cited newer one', async () => {
+        seedOldCitedNewFresh();
+        const ctx = await recall('Edit', 'sess-a15-1', 'off');
+        // The Edit observations query takes 2 rows here — both surface, but the cited one MUST come first.
+        const oldIdx = ctx.indexOf('cited five times');
+        const newIdx = ctx.indexOf('fresh body never cited');
+        expect(oldIdx).toBeGreaterThanOrEqual(0);
+        expect(newIdx).toBeGreaterThanOrEqual(0);
+        expect(oldIdx).toBeLessThan(newIdx);
+      });
+
+      it('Read (obsLimit=1): surfaces the cited lesson, drops the never-cited fresh one', async () => {
+        seedOldCitedNewFresh();
+        const ctx = await recall('Read', 'sess-a15-2', 'off');
+        expect(ctx).toContain('cited five times');
+        expect(ctx).not.toContain('fresh body never cited');
+      });
+
+      it('Edit: demotes the uncited-streak lesson below the fresh one', async () => {
+        seedNewStreakedOldNeutral();
+        const ctx = await recall('Edit', 'sess-a15-3', 'off');
+        const neutralIdx = ctx.indexOf('older body neutral state');
+        const streakedIdx = ctx.indexOf('body with streak of 2');
+        expect(neutralIdx).toBeGreaterThanOrEqual(0);
+        expect(streakedIdx).toBeGreaterThanOrEqual(0);
+        expect(neutralIdx).toBeLessThan(streakedIdx);
+      });
+
+      it.each(['OFF', '0', 'false', 'No'])('Read: the spelling %s turns it off too', async (spelling) => {
+        seedOldCitedNewFresh();
+        const ctx = await recall('Read', `sess-a15-sp-${spelling}`, spelling);
+        expect(ctx).toContain('cited five times');
+        expect(ctx).not.toContain('fresh body never cited');
+      });
+
+      it('Read: any other value keeps the default order', async () => {
+        seedOldCitedNewFresh();
+        const ctx = await recall('Read', 'sess-a15-sp-on', 'on');
+        expect(ctx).toContain('fresh body never cited');
+        expect(ctx).not.toContain('cited five times');
+      });
     });
   });
 
@@ -2004,10 +2036,12 @@ describe('pre-tool-recall', () => {
       initSchema(db);
       insertSession(db, { id: 'sess-a4', project: 'parent--algo4', memoryId: 'mem-a4' });
       const target = join(projectDir, 'shared.mjs');
-      // Four lesson rows on one file. The query sorts lesson-first, then cite_factor
-      // DESC — so cited_count pins a deterministic rank order without relying on
-      // insertion timing (created_at is only the tertiary key and can tie at ms
-      // resolution). Ranks: A(3) > B(2) > C(1) > D(0).
+      // Four lesson rows on one file, ranked A > B > C > D under BOTH per-file orders: the
+      // default (D#949) sorts lesson-first, then created_at DESC, so explicit timestamps one
+      // minute apart pin the rank — insertion alone can tie at ms resolution, which made these
+      // cases flaky once recency led; the QWEN_MEM_PRETOOL_RECENCY_FIRST=off order sorts by
+      // cite_factor first, so cited_count 3 > 2 > 1 > 0 pins the same rank there.
+      const base = Date.now() - 60_000;
       ids = [3, 2, 1, 0].map((cited, i) => {
         const info = insertObs(db, {
           sessionId: 'mem-a4',
@@ -2019,7 +2053,11 @@ describe('pre-tool-recall', () => {
           filesModified: `["${target}"]`,
         });
         const id = Number(info?.lastInsertRowid ?? info);
-        db.prepare('UPDATE observations SET cited_count = ? WHERE id = ?').run(cited, id);
+        db.prepare('UPDATE observations SET cited_count = ?, created_at_epoch = ? WHERE id = ?').run(
+          cited,
+          base - i * 60_000,
+          id,
+        );
         return id;
       });
       // Four EVENTS rows on a DIFFERENT file, so the events arm can be exercised in
@@ -2364,9 +2402,13 @@ describe('pre-tool-recall', () => {
       expect(ctx).toContain('lesson stored under bare basename');
     });
 
+    // R3 O1 restated this control: its first fixture edited <root>/utils.mjs against an edge for
+    // scripts/utils.mjs — a different file, which is now excluded on purpose (see the "same-named
+    // file in another directory" case). The D#78 intent is unchanged: a RELATIVE edge still
+    // recalls the file it names, through the path-boundary arm.
     it('still matches relative path via /basename boundary (positive control)', async () => {
       seedObs(['scripts/utils.mjs'], 'lesson stored under relative path');
-      const { stdout } = await editFile('utils.mjs', 'sess-p0-rel');
+      const { stdout } = await editFile('scripts/utils.mjs', 'sess-p0-rel');
       const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
       expect(ctx).toContain('lesson stored under relative path');
     });
@@ -2387,9 +2429,10 @@ describe('pre-tool-recall', () => {
       expect(ctx).toContain('lesson stored under case-variant basename');
     });
 
+    // Restated with the case above (R3 O1): the edge names lib/utils.mjs, so that is the file edited.
     it('still matches a backslash-separated stored path', async () => {
       seedObs(['lib\\utils.mjs'], 'lesson stored under backslash path');
-      const { stdout } = await editFile('utils.mjs', 'sess-p0-bslash');
+      const { stdout } = await editFile('lib/utils.mjs', 'sess-p0-bslash');
       const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
       expect(ctx).toContain('lesson stored under backslash path');
     });
@@ -2541,6 +2584,15 @@ describe('pre-tool-recall', () => {
         ...extra,
       });
       db.close();
+      // The files a lesson names exist, as they do for a real lesson: a path that names no file now
+      // is kept as possibly moved (v6.31.0 review r1), so every project path stored here is created.
+      for (const f of extra.filesModified ? JSON.parse(extra.filesModified) : [file]) {
+        const onDisk = f.startsWith('/') ? f : /[\\/]/.test(f) ? join(projectDir, f) : null;
+        if (onDisk && onDisk.startsWith(projectDir + '/')) {
+          mkdirSync(dirname(onDisk), { recursive: true });
+          writeFileSync(onDisk, '');
+        }
+      }
     }
 
     function editFile(name, session) {
@@ -2602,6 +2654,184 @@ describe('pre-tool-recall', () => {
       const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
       expect(ctx).toContain('importance-2 lesson must survive');
       expect(ctx).not.toContain('importance-1 lesson must not inject');
+    });
+
+    // R3 O1: a same-named file in another directory of the project is not this file.
+    it('does not inject the lesson of a same-named file in another directory', async () => {
+      seedObs(join(projectDir, 'src', 'server', 'mod.rs'), 'server mod lesson must not inject');
+      seedObs('src/server/mod.rs', 'relative server mod lesson must not inject');
+      seedObs(join(projectDir, 'src', 'snapshot', 'mod.rs'), 'snapshot mod lesson must survive', {
+        epochOffset: -120_000,
+      });
+      const { stdout } = await editFile('src/snapshot/mod.rs', 'sess-live-o1');
+      const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+      expect(ctx).toContain('snapshot mod lesson must survive');
+      expect(ctx).not.toContain('server mod lesson must not inject');
+    });
+
+    // v6.31.0 review r1: a file that moved inside the project keeps the lessons on its old path.
+    it('a lesson on a path that names no file now is kept (the file moved here)', async () => {
+      const old = join(projectDir, 'src', 'old', 'mod.rs');
+      seedObs(old, 'lesson recorded before the move');
+      // Premise: while the old file exists it is another file, and its lesson is dropped.
+      const before = await editFile('src/snapshot/mod.rs', 'sess-live-moved-1');
+      expect(before.stdout).not.toContain('lesson recorded before the move');
+      rmSync(old);
+      const { stdout } = await editFile('src/snapshot/mod.rs', 'sess-live-moved-2');
+      expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toContain(
+        'lesson recorded before the move',
+      );
+    });
+
+    it('a dropped row gives its slot to the next candidate (Read keeps one row)', async () => {
+      seedObs(join(projectDir, 'src', 'snapshot', 'mod.rs'), 'older same-file lesson fills the slot', {
+        epochOffset: -120_000,
+      });
+      seedObs(join(projectDir, 'src', 'server', 'mod.rs'), 'newer other-file lesson must not take it');
+      const { stdout } = await runScript(
+        {
+          tool_name: 'Read',
+          session_id: 'sess-live-o1r',
+          tool_input: { file_path: join(projectDir, 'src', 'snapshot', 'mod.rs') },
+        },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+      );
+      const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+      expect(ctx).toContain('older same-file lesson fills the slot');
+      expect(ctx).not.toContain('newer other-file lesson must not take it');
+    });
+
+    // Pre-ship review M2: the slot must be refilled however many newer other-file rows come first.
+    it('refills past many dropped rows: five newer other-file lessons do not silence a Read', async () => {
+      seedObs(join(projectDir, 'src', 'snapshot', 'mod.rs'), 'the one same-file lesson', {
+        epochOffset: -600_000,
+      });
+      for (let k = 0; k < 5; k++)
+        seedObs(join(projectDir, 'src', `dir${k}`, 'mod.rs'), `other-file lesson ${k}`, {
+          epochOffset: -k * 1000,
+        });
+      const { stdout } = await runScript(
+        {
+          tool_name: 'Read',
+          session_id: 'sess-live-o1m2',
+          tool_input: { file_path: join(projectDir, 'src', 'snapshot', 'mod.rs') },
+        },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+      );
+      expect(stdout, 'the Read must not go silent').toBeTruthy();
+      const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+      expect(ctx).toContain('the one same-file lesson');
+      expect(ctx).not.toMatch(/other-file lesson \d/);
+    });
+
+    // More dropped rows than one page holds (a page is the cap + 20): the second page must be read.
+    it('refills across pages: 25 newer other-file lessons still leave the same-file one for a Read', async () => {
+      seedObs(join(projectDir, 'src', 'snapshot', 'mod.rs'), 'same-file lesson behind a full page', {
+        epochOffset: -900_000,
+      });
+      for (let k = 0; k < 25; k++)
+        seedObs(join(projectDir, 'src', `pg${k}`, 'mod.rs'), `paged other-file lesson ${k}`, {
+          epochOffset: -k * 1000,
+        });
+      const { stdout } = await runScript(
+        {
+          tool_name: 'Read',
+          session_id: 'sess-live-o1pg',
+          tool_input: { file_path: join(projectDir, 'src', 'snapshot', 'mod.rs') },
+        },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir },
+      );
+      expect(stdout, 'the Read must not go silent').toBeTruthy();
+      expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toContain(
+        'same-file lesson behind a full page',
+      );
+    });
+
+    // Delta review F3: the second page must start right after the first — a page at the wrong
+    // OFFSET skips (or repeats) the boundary row. Edit keeps 2 rows and pages of 22: 21 newer
+    // other-file rows put the two same-file lessons at index 21 and 22, the first rows of page 2.
+    it('reads page 2 from the row after page 1, and injects each row once', async () => {
+      seedObs(join(projectDir, 'src', 'snapshot', 'mod.rs'), 'boundary lesson A', { epochOffset: -100_000 });
+      seedObs(join(projectDir, 'src', 'snapshot', 'mod.rs'), 'boundary lesson B', { epochOffset: -200_000 });
+      for (let k = 0; k < 21; k++)
+        seedObs(join(projectDir, 'src', `bd${k}`, 'mod.rs'), `boundary other ${k}`, {
+          epochOffset: -k * 1000,
+        });
+      const ctx = JSON.parse((await editFile('src/snapshot/mod.rs', 'sess-live-o1bd')).stdout)
+        .hookSpecificOutput.additionalContext;
+      expect(ctx).toContain('boundary lesson A');
+      expect(ctx).toContain('boundary lesson B');
+      expect(ctx.split('boundary lesson A').length - 1, 'A once').toBe(1);
+      expect(ctx).not.toMatch(/boundary other \d/);
+    });
+
+    // Delta review F3: the switch-off path keeps the old single LIMIT (Edit: 2 rows).
+    it('with the switch off an Edit still gets at most two observation rows', async () => {
+      for (let k = 0; k < 4; k++)
+        seedObs(join(projectDir, 'src', 'cap', 'mod.rs'), `cap lesson ${k}`, { epochOffset: -k * 1000 });
+      const { stdout } = await runScript(
+        {
+          tool_name: 'Edit',
+          session_id: 'sess-live-o1cap',
+          tool_input: { file_path: join(projectDir, 'src', 'cap', 'mod.rs') },
+        },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir, QWEN_MEM_PRETOOL_PATH_PRECISION: 'off' },
+      );
+      const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+      expect(ctx.match(/cap lesson \d/g)).toHaveLength(2);
+    });
+
+    // Pre-ship review L1: with edge decay on, a decayed same-file edge is no match, so it cannot keep
+    // a row that matched only through another directory's same-named file.
+    it('with QWEN_MEM_EDGE_DECAY on, a decayed same-file edge does not keep an other-file row', async () => {
+      const same = join(projectDir, 'src', 'snapshot', 'mod.rs');
+      seedObs(same, 'row kept only by a decayed edge', {
+        filesModified: JSON.stringify([same, join(projectDir, 'src', 'server', 'mod.rs')]),
+      });
+      const db = new Database(join(tmpRoot, 'qwen-mem-lite.db'));
+      expect(
+        db.prepare('UPDATE observation_files SET miss_streak = 9 WHERE filename = ?').run(same).changes,
+      ).toBe(1);
+      db.close();
+      const run = (env) =>
+        runScript(
+          {
+            tool_name: 'Edit',
+            session_id: `sess-live-l1-${Object.keys(env).length}`,
+            tool_input: { file_path: same },
+          },
+          { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir, ...env },
+        );
+      // Premise: with decay off the same-file edge still matches and the row is injected.
+      expect((await run({})).stdout).toContain('row kept only by a decayed edge');
+      const { stdout } = await run({ QWEN_MEM_EDGE_DECAY: '1' });
+      expect(stdout).not.toContain('row kept only by a decayed edge');
+    });
+
+    it('keeps worktree copies and bare names, and QWEN_MEM_PRETOOL_PATH_PRECISION=off restores the old match', async () => {
+      seedObs(
+        join(projectDir, '.claude', 'worktrees', 'agent-a1', 'src', 'snapshot', 'mod.rs'),
+        'worktree copy lesson stays',
+      );
+      seedObs('mod.rs', 'bare-name lesson stays', { epochOffset: -60_000 });
+      const kept = JSON.parse((await editFile('src/snapshot/mod.rs', 'sess-live-o1k')).stdout)
+        .hookSpecificOutput.additionalContext;
+      expect(kept).toContain('worktree copy lesson stays');
+      expect(kept).toContain('bare-name lesson stays');
+      seedObs(join(projectDir, 'src', 'server', 'mod.rs'), 'other-file lesson under the off switch', {
+        epochOffset: 60_000,
+      });
+      const { stdout } = await runScript(
+        {
+          tool_name: 'Edit',
+          session_id: 'sess-live-o1off',
+          tool_input: { file_path: join(projectDir, 'src', 'snapshot', 'mod.rs') },
+        },
+        { QWEN_MEM_DIR: tmpRoot, CLAUDE_PROJECT_DIR: projectDir, QWEN_MEM_PRETOOL_PATH_PRECISION: 'off' },
+      );
+      expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toContain(
+        'other-file lesson under the off switch',
+      );
     });
 
     // Same untested-clause argument as the live filter: the 60-day

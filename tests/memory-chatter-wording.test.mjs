@@ -32,7 +32,7 @@ describe('steering asks for a bare (#NN) tag and nothing else about memory', () 
   it('the detail doc', () => {
     const doc = getDetailDoc();
     expect(doc).toContain('`(#NN)`');
-    expect(doc).toMatch(/不要.*报告.*保存/);
+    expect(doc).toMatch(/do not report ids\s+from saves or deferrals/);
   });
 
   it('the default PreToolUse ack directive, full and short', () => {

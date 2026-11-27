@@ -105,6 +105,7 @@ export default defineConfig({
       QWEN_MEM_LLM_PROVIDER: '',
       MEM_QUIET_HOOKS: '',
       QWEN_MEM_DIR: '',
+      QWEN_MEM_RUNTIME_DIR: '',
       QWEN_MEM_TEST_GUARD: '1',
       // D14: Claude Code exports its pid to every shell it starts, and hook-shared.mjs keys the
       // session file and episode buffer on it. A suite run from inside a Claude Code session

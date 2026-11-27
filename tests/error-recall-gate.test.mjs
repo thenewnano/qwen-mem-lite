@@ -389,7 +389,7 @@ describe('error-recall wiring: hook.mjs honours the gate', () => {
 
   function fire(cmd, args, { cwd: dir, stdin = '', timeout = 30000 } = {}) {
     // These cases test the GATE, firing the same failure in one session as their own control.
-    // Error recall now skips ids a thread was shown in the last 30 minutes (E2E 2026-10-16), so
+    // Error recall skips ids a thread was already shown (E2E 2026-10-16; until compaction since R3 O3), so
     // that marker is cleared before every fire; the dedup has its own test.
     rmSync(join(dataDir, 'runtime', 'recall-shown-err-cc-errgate.json'), { force: true });
     return new Promise((resolve, reject) => {
@@ -607,6 +607,19 @@ describe('error-recall wiring: hook.mjs honours the gate', () => {
       'FAIL tests/a.test.mjs > shared temp file\nAssertionError: expected 2 to be 3',
     );
     expect(script.block, 'a script file is not a data printer').toBeTruthy();
+  }, 60000);
+
+  it('D#717: a successful commit whose subject names a failure is silent; the same text from a script is not', async () => {
+    const records = '1a2b3c4d (HEAD -> main) fix: vitest fail on the shared temp file traceback';
+    // Premise first: the same text from a program that ran recalls the vitest row, so the
+    // silence below is the gate's, not an empty match.
+    const script = await firePostTool('node scripts/print-log.mjs', records);
+    expect(script.block, 'a script printing the same text fires').toBeTruthy();
+    const commit = await firePostTool(
+      'git add -A && git commit -q -m "fix: vitest fail on the shared temp file traceback" && git log --oneline -1',
+      records,
+    );
+    expect(commit.block, 'git commit + git log --oneline').toBeFalsy();
   }, 60000);
 
   // E2E 2026-10-16 (hooks F10): no thread dedup on this face, so a red/green loop re-sent the

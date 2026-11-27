@@ -3,8 +3,17 @@
 // Isolation via HOME env var → redirects ~/.qwen-mem-lite/ to temp dir
 
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
-import { execFileSync } from 'child_process';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, unlinkSync } from 'fs';
+import { execFileSync, spawn } from 'child_process';
+import {
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  readdirSync,
+  rmSync,
+  unlinkSync,
+  statSync,
+} from 'fs';
 import { join, resolve, dirname } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
@@ -13,6 +22,8 @@ import { computeMinHash } from '../utils.mjs';
 import { initSchema } from '../schema.mjs';
 import { saveEvent } from '../lib/activity.mjs';
 import { makeFixtureTracker } from './test-helpers.mjs';
+import { readTurnReplies } from '../lib/turn-replies.mjs';
+import { DIGEST_BYTES_PER_STOP } from '../lib/transcript-digest.mjs';
 
 const HOOK_PATH = resolve('hook.mjs');
 const MOCK_CLAUDE = resolve('scripts/mock-claude.mjs');
@@ -1180,6 +1191,332 @@ describe('Suite 4: Session Summary', { retry: 2 }, () => {
     const summaries = db.prepare('SELECT * FROM session_summaries').all();
     db.close();
     expect(summaries.length).toBe(0);
+  });
+});
+
+describe('Suite 4b: one summary row per session across turns and /clear', () => {
+  // Stop fires once per assistant TURN and the mem session survives it, so the summary
+  // writers run many times against a session that already has a row. Stop used to write
+  // only on the first turn (its existence guard predates the per-turn Stop), which kept the
+  // first turn's Done / Not done forever; and SessionStart's /clear path INSERTed a second
+  // row beside it. Both now land on the session's one row.
+  const env = () => ({ HOME: tmpHome, QWEN_MEM_SKIP_SUMMARY: '1' });
+  let transcript;
+  const turn = (prompt, reply) => {
+    const lines = [
+      { type: 'user', message: { role: 'user', content: prompt } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: reply }] } },
+    ];
+    writeFileSync(transcript, lines.map((l) => JSON.stringify(l) + '\n').join(''), { flag: 'a' });
+  };
+  const stop = () =>
+    runHook('stop', {
+      stdin: JSON.stringify({ session_id: 'cc-4b', transcript_path: transcript }),
+      env: env(),
+    });
+  const rowsOf = (sid) => {
+    const db = openTestDb(tmpHome);
+    try {
+      return db.prepare('SELECT * FROM session_summaries WHERE memory_session_id = ? ORDER BY id').all(sid);
+    } finally {
+      db.close();
+    }
+  };
+  const seedPrompt = (sid) => {
+    const db = openTestDb(tmpHome);
+    try {
+      db.prepare(
+        `INSERT INTO user_prompts (content_session_id, prompt_text, prompt_number, created_at, created_at_epoch)
+         VALUES (?, 'opening request', 1, ?, ?)`,
+      ).run(sid, new Date().toISOString(), Date.now());
+    } finally {
+      db.close();
+    }
+  };
+
+  beforeEach(() => {
+    transcript = join(tmpHome, 'transcript-4b.jsonl');
+    writeFileSync(transcript, '');
+  });
+
+  // Issue #53: Stop parsed the whole transcript on every turn to find the final reply the host
+  // already sends as `last_assistant_message` — 1.6 s on a 475 MB transcript, the session that
+  // 600 of the reporter's 613 logged Stop timeouts came from. The two texts differ here only so the row shows
+  // which one was read; from the host they are the same message.
+  it("the host's last_assistant_message is the Stop row's reply, not the transcript tail (issue #53)", () => {
+    runHook('session-start', { env: env() });
+    const sid = getSessionIdFromFile(tmpHome);
+    seedPrompt(sid);
+
+    turn('start', 'Done: TRANSCRIPT-DONE\nNot done: TRANSCRIPT-LEFT');
+    runHook('stop', {
+      stdin: JSON.stringify({
+        session_id: 'cc-4b',
+        transcript_path: transcript,
+        last_assistant_message: 'Done: HOST-DONE\nNot done: HOST-LEFT',
+      }),
+      env: { ...env(), QWEN_MEM_NO_CITATION_TRACK: '1' },
+    });
+    const rows = rowsOf(sid);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].completed).toContain('HOST-DONE');
+    expect(rows[0].remaining_items).toContain('HOST-LEFT');
+    expect(rows[0].completed).not.toContain('TRANSCRIPT-DONE');
+  });
+
+  // R4 §8.1: the claudemd spec's report is `## 汇报` with 变更 / 验证 / 遗留 parts; until the
+  // extractor read them, this shape wrote no report Done (0/162).
+  it("a 汇报 report's 变更 / 遗留 parts are the Stop row's Done / Not done, its 验证 part neither", () => {
+    runHook('session-start', { env: env() });
+    const sid = getSessionIdFromFile(tmpHome);
+    seedPrompt(sid);
+
+    const reply = [
+      '## 汇报',
+      '',
+      '本轮修好了一处。',
+      '',
+      '**变更**',
+      '- REPORT-CHANGE：purge 在数据还在时不再说 Done!。',
+      '',
+      '**验证**',
+      '- REPORT-CHECK `npx vitest run` → 通过',
+      '',
+      '**遗留**',
+      '1. REPORT-LEFT：发版说明下次发版时写。',
+    ].join('\n');
+    runHook('stop', {
+      stdin: JSON.stringify({
+        session_id: 'cc-4b',
+        transcript_path: transcript,
+        last_assistant_message: reply,
+      }),
+      env: { ...env(), QWEN_MEM_NO_CITATION_TRACK: '1' },
+    });
+    const rows = rowsOf(sid);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].completed).toContain('REPORT-CHANGE');
+    expect(rows[0].remaining_items).toContain('REPORT-LEFT');
+    expect(rows[0].completed + rows[0].remaining_items).not.toContain('REPORT-CHECK');
+  });
+
+  it("a later turn's report replaces the first turn's Done / Not done", () => {
+    runHook('session-start', { env: env() });
+    const sid = getSessionIdFromFile(tmpHome);
+    seedPrompt(sid);
+
+    turn('start', 'Done: FIRST-DONE\nNot done: FIRST-LEFT');
+    stop();
+    const first = rowsOf(sid);
+    expect(first, 'premise: the first Stop wrote the row').toHaveLength(1);
+    expect(first[0].completed).toContain('FIRST-DONE');
+    expect(first[0].remaining_items).toContain('FIRST-LEFT');
+
+    turn('go on', 'Done: SECOND-DONE');
+    stop();
+    const rows = rowsOf(sid);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].completed).toContain('SECOND-DONE');
+    expect(rows[0].remaining_items, 'a report with nothing left clears the old Not done').toBe('');
+    expect(rows[0].created_at_epoch, 'the refresh does not move the row').toBe(first[0].created_at_epoch);
+  });
+
+  it('a turn without a report leaves the row alone', () => {
+    runHook('session-start', { env: env() });
+    const sid = getSessionIdFromFile(tmpHome);
+    seedPrompt(sid);
+    turn('start', 'Done: KEPT-DONE\nNot done: KEPT-LEFT');
+    stop();
+    turn('a question', 'It is in lib/fast-summary.mjs.');
+    stop();
+    const rows = rowsOf(sid);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].completed).toContain('KEPT-DONE');
+    expect(rows[0].remaining_items).toContain('KEPT-LEFT');
+  });
+
+  // D#121: a user who writes no Done / Not done report. Stop used to leave Completed empty
+  // (no observation titles either), so the next SessionStart showed only the opening prompt.
+  it("without any report, the head of the final reply becomes Last Session's Completed", () => {
+    runHook('session-start', { env: env() });
+    const sid = getSessionIdFromFile(tmpHome);
+    seedPrompt(sid);
+    const reply =
+      '## Summary\n\nI fixed the retry loop in `src/net.mjs`: it now backs off exponentially and caps ' +
+      'at 30 s, so a flaky upstream no longer pins a core. I added a test for the cap; the suite passes.';
+    turn('fix the retry loop', reply);
+    stop();
+    const rows = rowsOf(sid);
+    expect(rows, 'premise: the Stop wrote the row').toHaveLength(1);
+    expect(rows[0].completed.startsWith('Summary I fixed the retry loop in `src/net.mjs`')).toBe(true);
+    expect(rows[0].notes.startsWith('donetail ')).toBe(true);
+
+    const next = runHook('session-start', { env: env() });
+    const ctx = JSON.parse(next.stdout).hookSpecificOutput.additionalContext;
+    expect(ctx, 'premise: Last Session rendered').toContain('### Last Session');
+    expect(ctx).toMatch(/^Completed: Summary I fixed the retry loop in `src\/net\.mjs`/m);
+  });
+
+  it('a later turn that reports only a Not done replaces the old Not done and keeps the Done', () => {
+    runHook('session-start', { env: env() });
+    const sid = getSessionIdFromFile(tmpHome);
+    seedPrompt(sid);
+    turn('start', 'Done: KEPT-DONE\nNot done: OLD-LEFT');
+    stop();
+    turn('go on', 'Not done: NEW-LEFT');
+    stop();
+    const rows = rowsOf(sid);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].completed).toContain('KEPT-DONE');
+    expect(rows[0].remaining_items).toContain('NEW-LEFT');
+    expect(rows[0].remaining_items).not.toContain('OLD-LEFT');
+  });
+
+  // Since D#121 a reply without a report is itself the Done floor, so the titles refresh is
+  // the path of the opt-out (QWEN_MEM_SUMMARY_TAIL=0) — asserted there.
+  it('without a report, each Stop refreshes the observation titles instead of keeping the first turn (tail floor off)', () => {
+    const titlesOnly = () =>
+      runHook('stop', {
+        stdin: JSON.stringify({ session_id: 'cc-4b', transcript_path: transcript }),
+        env: { ...env(), QWEN_MEM_SUMMARY_TAIL: '0' },
+      });
+    runHook('session-start', { env: env() });
+    const sid = getSessionIdFromFile(tmpHome);
+    seedPrompt(sid);
+    const addObs = (title) => {
+      const db = openTestDb(tmpHome);
+      try {
+        db.prepare(
+          `INSERT INTO observations (memory_session_id, project, text, type, title, subtitle, narrative, concepts, facts, files_read, files_modified, importance, created_at, created_at_epoch)
+           VALUES (?, 'parent--testproj', '', 'change', ?, '', '', '', '', '[]', '[]', 1, ?, ?)`,
+        ).run(sid, title, new Date().toISOString(), Date.now());
+      } finally {
+        db.close();
+      }
+    };
+    addObs('FIRST-TURN-OBS');
+    turn('start', 'Looked around.');
+    titlesOnly();
+    expect(rowsOf(sid)[0]?.completed, 'premise: the first Stop stored the titles').toContain(
+      'FIRST-TURN-OBS',
+    );
+    addObs('LATER-TURN-OBS');
+    turn('go on', 'Changed a file.');
+    titlesOnly();
+    const rows = rowsOf(sid);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].completed).toContain('LATER-TURN-OBS');
+  });
+
+  it('a Stop reads the parent transcript only from where the previous Stop stopped (issue #53)', () => {
+    // This was D#152's "the parent is parsed once": lib/transcript-scan.mjs memoized ONE file, so
+    // the order of Stop's scanners decided how many whole parses it paid. Since issue #53 Stop
+    // folds only the bytes appended since its previous run (lib/transcript-digest.mjs) and never
+    // reads the file whole; subagent files are read beside it without touching the parent.
+    runHook('session-start', { env: env() });
+    const sid = getSessionIdFromFile(tmpHome);
+    seedPrompt(sid);
+    turn('start', `Done: X ${'p'.repeat(200 * 1024)}`);
+    const subDir = join(transcript.slice(0, -'.jsonl'.length), 'subagents');
+    mkdirSync(subDir, { recursive: true });
+    writeFileSync(
+      join(subDir, 'agent-1.jsonl'),
+      JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'sub' }] },
+      }) + '\n',
+    );
+    const countFile = join(tmpHome, 'parent-reads.json');
+    const preload = join(tmpHome, 'count-reads.cjs');
+    writeFileSync(
+      preload,
+      `const fs = require('fs'); const { syncBuiltinESMExports } = require('module');
+       const { openSync, readSync, readFileSync } = fs; const fds = new Set(); let whole = 0; let bytes = 0;
+       fs.openSync = function (p, ...r) { const fd = openSync.call(this, p, ...r); if (String(p) === process.env.COUNT_PATH) fds.add(fd); return fd; };
+       fs.readSync = function (fd, ...r) { const n = readSync.call(this, fd, ...r); if (fds.has(fd)) bytes += n; return n; };
+       fs.readFileSync = function (p, ...r) { if (String(p) === process.env.COUNT_PATH) whole++; return readFileSync.call(this, p, ...r); };
+       syncBuiltinESMExports();
+       process.on('exit', () => fs.writeFileSync(process.env.COUNT_FILE, JSON.stringify({ whole, bytes })));`,
+    );
+    const stop = (reply) => {
+      runHook('stop', {
+        stdin: JSON.stringify({
+          session_id: 'cc-4b',
+          transcript_path: transcript,
+          last_assistant_message: reply,
+        }),
+        env: {
+          ...env(),
+          NODE_OPTIONS: `--require ${preload}`,
+          COUNT_PATH: transcript,
+          COUNT_FILE: countFile,
+        },
+      });
+      return JSON.parse(readFileSync(countFile, 'utf8'));
+    };
+
+    const first = stop('Done: X');
+    expect(rowsOf(sid)[0]?.completed, 'premise: the Stop ran the summary writer').toContain('X');
+    expect(first.whole).toBe(0);
+    expect(first.bytes, 'premise: the first Stop read the transcript').toBeGreaterThan(200 * 1024);
+
+    turn('go on', 'Done: Y');
+    const second = stop('Done: Y');
+    expect(rowsOf(sid)[0]?.completed, 'premise: the second Stop ran too').toContain('Y');
+    expect(second.whole).toBe(0);
+    expect(second.bytes, 'the appended turn and the probes, not the 200 KB before them').toBeLessThan(
+      32 * 1024,
+    );
+  });
+
+  it("/clear keeps a first-turn report's Done instead of replacing it with observation titles", () => {
+    runHook('session-start', { env: env() });
+    const sid = getSessionIdFromFile(tmpHome);
+    seedPrompt(sid);
+    const db = openTestDb(tmpHome);
+    try {
+      db.prepare(
+        `INSERT INTO observations (memory_session_id, project, text, type, title, subtitle, narrative, concepts, facts, files_read, files_modified, importance, created_at, created_at_epoch)
+         VALUES (?, 'parent--testproj', '', 'change', 'SOME-OBS-TITLE', '', '', '', '', '[]', '[]', 1, ?, ?)`,
+      ).run(sid, new Date().toISOString(), Date.now());
+    } finally {
+      db.close();
+    }
+    turn('start', 'Done: REPORT-DONE');
+    stop();
+    expect(rowsOf(sid)[0]?.completed, 'premise: the report went in, not the titles').toContain('REPORT-DONE');
+
+    runHook('session-start', { stdin: JSON.stringify({ source: 'clear' }), env: env() });
+
+    expect(rowsOf(sid)[0].completed).toContain('REPORT-DONE');
+  });
+
+  it("Stop keeps the report's Failed / Uncertain lines", () => {
+    runHook('session-start', { env: env() });
+    const sid = getSessionIdFromFile(tmpHome);
+    seedPrompt(sid);
+    turn('start', 'Done: X\nFailed: BUILD-BROKE');
+    stop();
+    expect(rowsOf(sid)[0]?.notes).toContain('Failed: BUILD-BROKE');
+  });
+
+  it('/clear fills the empty fields of the previous session row instead of inserting another', () => {
+    runHook('session-start', { env: env() });
+    const sid = getSessionIdFromFile(tmpHome);
+    seedPrompt(sid);
+    turn('start', 'Not done: STOP-LEFT');
+    stop();
+    const before = rowsOf(sid);
+    expect(before, 'premise: Stop wrote one row').toHaveLength(1);
+    expect(before[0].remaining_items).toContain('STOP-LEFT');
+
+    runHook('session-start', { stdin: JSON.stringify({ source: 'clear' }), env: env() });
+
+    const rows = rowsOf(sid);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].request).toBe('opening request');
+    expect(rows[0].remaining_items, 'existing content wins over the /clear values').toContain('STOP-LEFT');
+    expect(rows[0].created_at_epoch).toBeGreaterThanOrEqual(before[0].created_at_epoch);
   });
 });
 
@@ -2791,6 +3128,161 @@ describe('Suite: G3 unpersisted-decision reminder (Stop → payload → next Ses
     expect(typeof payload.injected).toBe('number');
     expect(typeof payload.ratio).toBe('number');
   });
+
+  // Issue #53: one Stop takes at most DIGEST_BYTES_PER_STOP bytes of new transcript lines. A
+  // transcript first seen larger than that is caught up over several Stops, nothing written until then.
+  it('a transcript over one Stop budget writes nothing until a later Stop has read it all', () => {
+    runHook('session-start', { env: { HOME: tmpHome } });
+    const filler = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: 'z'.repeat(1024 * 1024) },
+    });
+    const lines = Array(DIGEST_BYTES_PER_STOP / (1024 * 1024) + 2).fill(filler);
+    lines.push(
+      JSON.stringify({
+        type: 'attachment',
+        attachment: {
+          type: 'hook_success',
+          command: 'node "/x/scripts/pre-tool-recall.js"',
+          stdout: '  #101 [lesson] alpha\n  #102 [bugfix] beta',
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: '#102 applied' }] },
+      }),
+    );
+    const transcript = join(tmpHome, 'big-transcript.jsonl');
+    writeFileSync(transcript, lines.join('\n') + '\n');
+    expect(statSync(transcript).size, 'premise: one Stop cannot read it all').toBeGreaterThan(
+      DIGEST_BYTES_PER_STOP,
+    );
+    const payloadFile = join(tmpHome, '.qwen-mem-lite', 'runtime', 'cite-recall-parent--testproj.json');
+    const stop = () =>
+      runHook('stop', {
+        stdin: JSON.stringify({ session_id: 'cc-big', transcript_path: transcript }),
+        env: { HOME: tmpHome },
+      });
+
+    stop();
+    expect(existsSync(payloadFile), 'the first Stop read part of it and wrote nothing').toBe(false);
+    stop();
+    const payload = JSON.parse(readFileSync(payloadFile, 'utf8'));
+    expect(payload.gateInjected).toBe(2);
+    expect(payload.gateRecalled).toBe(1);
+  });
+
+  // D#853 F8: the test above holds only the payload. Decay decides an id injected in the part
+  // already read, and cited only past the budget, uncited.
+  it('a Stop that has not read the whole transcript changes no decay column and no citation log', () => {
+    runHook('session-start', { env: { HOME: tmpHome } });
+    const sessionId = getSessionIdFromFile(tmpHome);
+    const db = openTestDb(tmpHome);
+    const now = new Date();
+    db.prepare(
+      `
+      INSERT INTO observations (memory_session_id, project, text, type, title, subtitle, narrative, concepts, facts, files_read, files_modified, importance, created_at, created_at_epoch)
+      VALUES (?, 'parent--testproj', 'catch-up probe row', 'bugfix', 'Catch-up probe observation', '', '', '', '', '[]', '[]', 2, ?, ?)
+    `,
+    ).run(sessionId, now.toISOString(), now.getTime());
+    const obsId = db.prepare('SELECT last_insert_rowid() AS id').get().id;
+    db.close();
+
+    const filler = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: 'z'.repeat(1024 * 1024) },
+    });
+    const transcript = join(tmpHome, 'big-decay-transcript.jsonl');
+    writeFileSync(
+      transcript,
+      [
+        {
+          type: 'attachment',
+          attachment: {
+            type: 'hook_success',
+            command: 'bash "/home/x/.qwen-mem-lite/scripts/post-tool-use.sh"',
+            stdout: `[qwen-mem-lite] Related memories found for this error:\n  #${obsId} [bugfix] Catch-up probe observation\n`,
+          },
+        },
+        {
+          type: 'assistant',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'still investigating' }] },
+        },
+      ]
+        .map((e) => JSON.stringify(e))
+        .concat(Array(DIGEST_BYTES_PER_STOP / (1024 * 1024) + 2).fill(filler))
+        .concat(
+          JSON.stringify({
+            type: 'assistant',
+            message: { role: 'assistant', content: [{ type: 'text', text: `#${obsId} applied` }] },
+          }),
+        )
+        .join('\n') + '\n',
+    );
+    const state = () => {
+      const d = openTestDb(tmpHome);
+      const row = d
+        .prepare('SELECT uncited_streak, decay_seen_count, access_count FROM observations WHERE id = ?')
+        .get(obsId);
+      const logs = {
+        citation_log: d.prepare('SELECT COUNT(*) AS n FROM citation_log').get().n,
+        citation_surface_log: d.prepare('SELECT COUNT(*) AS n FROM citation_surface_log').get().n,
+      };
+      d.close();
+      return { ...row, ...logs };
+    };
+    const stop = () =>
+      runHook('stop', {
+        stdin: JSON.stringify({ session_id: 'cc-big-decay', transcript_path: transcript }),
+        env: { HOME: tmpHome },
+      });
+
+    const before = state();
+    stop();
+    expect(state(), 'the first Stop read part of the transcript').toEqual(before);
+    stop();
+    const after = state();
+    expect(after.decay_seen_count, 'premise: the complete Stop decides the row').toBe(
+      before.decay_seen_count + 1,
+    );
+    expect(after.uncited_streak, 'it is cited in the part the first Stop had not read').toBe(0);
+    expect(after.citation_log, 'premise: the complete Stop writes the funnel').toBeGreaterThan(
+      before.citation_log,
+    );
+    expect(after.citation_surface_log).toBeGreaterThan(before.citation_surface_log);
+  });
+
+  // The gate asks whether the agent ANSWERED what the hooks showed it. `#NN n/a — why`
+  // is a complete answer, so it must count here even though the crediting callers drop
+  // it — otherwise the nudge nags an agent for following the convention to the letter.
+  it('Stop counts a `#NN n/a` answer in the gate numerator', () => {
+    runHook('session-start', { env: { HOME: tmpHome } });
+    const transcript = writeTranscript([
+      {
+        type: 'attachment',
+        attachment: {
+          type: 'hook_success',
+          command: 'node "/x/scripts/pre-tool-recall.js"',
+          stdout: '  #101 [lesson] alpha\n  #102 [bugfix] beta\n  #103 [decision] gamma',
+        },
+      },
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: '#102 applied; #101 n/a — no pool edge here' }],
+        },
+      },
+    ]);
+    runHook('stop', {
+      stdin: JSON.stringify({ session_id: randomUUID(), transcript_path: transcript }),
+      env: { HOME: tmpHome },
+    });
+    const payloadFile = join(tmpHome, '.qwen-mem-lite', 'runtime', 'cite-recall-parent--testproj.json');
+    const payload = JSON.parse(readFileSync(payloadFile, 'utf8'));
+    expect(payload.gateInjected).toBe(3);
+    expect(payload.gateRecalled, '#102 applied and #101 dismissed are both answers').toBe(2);
+  });
 });
 
 describe('Suite: G1+G2 enrich-save worker (spawned-env recursion guard)', () => {
@@ -3026,5 +3518,174 @@ describe('Suite: R10-P1-1 - /clear handoff over the real host event sequence', (
     db.close();
     expect(n).toBe(2); // one per turn, as before v5.4.0
     expect(clearHandoffRows().length).toBe(0);
+  });
+});
+
+// D#156: the hook mints `hook-<project>-<8 hex>` and stores it as both session ids. For a
+// 22-character project with dashes at 3, 8, 13 and 18 that is the uuid shape sdk_sessions refuses,
+// and every hook write in the project failed. The hook still exits 0, so the error reached only its
+// stderr and the hook-errors log.
+// D#825 (D19 + D22): Stop records each turn's last reply under its own memory session, and the
+// summary worker reads that record. The pre-tag reviews of 6.33.0 found the transcript-reading
+// wiring giving one session another's reply across /compact: a notice answered before the next
+// session's first prompt, a prompt queued during the compaction. Here the previous session's
+// worker runs only after the next session has answered both.
+describe('Suite: D#825 — the summary reads its own session’s turns, recorded at Stop', () => {
+  const CC = 'cc-33333333-3333-4333-8333-333333333333';
+
+  function addObservation(sessionId, title) {
+    const db = openTestDb(tmpHome);
+    try {
+      const { project } = db
+        .prepare('SELECT project FROM sdk_sessions WHERE content_session_id = ?')
+        .get(sessionId);
+      db.prepare(
+        `INSERT INTO observations (memory_session_id, project, text, type, title, narrative, importance, created_at, created_at_epoch)
+         VALUES (?, ?, '', 'bugfix', ?, 'n', 2, ?, ?)`,
+      ).run(sessionId, project, title, new Date().toISOString(), Date.now());
+      return project;
+    } finally {
+      db.close();
+    }
+  }
+  const prompt = (text) =>
+    runHook('user-prompt', {
+      stdin: JSON.stringify({ prompt: text, session_id: CC }),
+      env: { HOME: tmpHome },
+    });
+  const stop = (fields) =>
+    runHook('stop', { stdin: JSON.stringify({ session_id: CC, ...fields }), env: { HOME: tmpHome } });
+
+  it('across /compact each worker gets its own turns, each turn its last reply', () => {
+    const e = { HOME: tmpHome };
+    runHook('session-start', { stdin: JSON.stringify({ source: 'startup', session_id: CC }), env: e });
+    const s1 = getSessionIdFromFile(tmpHome);
+    const project = addObservation(s1, 'Fixed the retry backoff in worker.mjs');
+    prompt('fix the retry backoff in worker.mjs');
+    stop({ last_assistant_message: 'S1 turn 1, first: started the suite in the background.' });
+    // A background task's notice answered in the same turn: no prompt is stored for it.
+    stop({ last_assistant_message: 'S1 turn 1, last: backoff fixed, suite 562/562 green.' });
+    prompt('commit it');
+    stop({ last_assistant_message: 'S1 turn 2: committed as abc123.' });
+
+    runHook('session-start', { stdin: JSON.stringify({ source: 'compact', session_id: CC }), env: e });
+    const s2 = getSessionIdFromFile(tmpHome);
+    expect(s2, 'premise: /compact rotated the memory session').not.toBe(s1);
+    addObservation(s2, 'Ran the release gates');
+    stop({ last_assistant_message: 'S2 notice: the background build finished.' });
+    prompt('run the release gates');
+    stop({ last_assistant_message: 'S2 turn 1: gates 10/10.' });
+
+    const capture = join(tmpHome, 'prompts.jsonl');
+    const worker = { HOME: tmpHome, QWEN_MEM_FLUSH_TIMEOUT: '0', MOCK_CLAUDE_CAPTURE: capture };
+    for (const sid of [s1, s2]) {
+      const { exitCode } = runHook('llm-summary', { env: worker, args: [sid, project] });
+      expect(exitCode).toBe(0);
+    }
+    const [p1, p2] = readFileSync(capture, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    expect(p1).toContain('[Turn 1 of 2]\nS1 turn 1, last: backoff fixed, suite 562/562 green.');
+    expect(p1).toContain('[Turn 2 of 2, final]\nS1 turn 2: committed as abc123.');
+    expect(p1).not.toContain('S1 turn 1, first');
+    expect(p1).not.toContain('S2 ');
+    expect(p2).toContain('[Turn 1 of 2]\nS2 notice: the background build finished.');
+    expect(p2).toContain('[Turn 2 of 2, final]\nS2 turn 1: gates 10/10.');
+    expect(p2).not.toContain('S1 ');
+  });
+
+  it('records the reply while another process holds the write lock (pre-ship review F2)', async () => {
+    // Stop's writes give up after HOOK_DB_DEADLINE_MS; the record needs only a read.
+    const e = { HOME: tmpHome };
+    runHook('session-start', { stdin: JSON.stringify({ source: 'startup', session_id: CC }), env: e });
+    const sid = getSessionIdFromFile(tmpHome);
+    prompt('fix it');
+    stop({ last_assistant_message: 'turn 1 reply' });
+    prompt('and the docs');
+    const locker = spawn(
+      process.execPath,
+      [
+        '-e',
+        `const D = require('better-sqlite3');
+         const db = new D(${JSON.stringify(join(tmpHome, '.qwen-mem-lite', 'qwen-mem-lite.db'))});
+         db.exec('BEGIN IMMEDIATE');
+         process.stdout.write('locked\\n');
+         setTimeout(() => { db.exec('ROLLBACK'); db.close(); }, 15000);`,
+      ],
+      { cwd: dirname(HOOK_PATH), stdio: ['ignore', 'pipe', 'inherit'] },
+    );
+    try {
+      await new Promise((r, j) => {
+        locker.stdout.on('data', (d) => String(d).includes('locked') && r());
+        locker.once('exit', () => j(new Error('locker exited before locking')));
+      });
+      stop({ last_assistant_message: 'turn 2 reply: docs done' });
+    } finally {
+      locker.kill('SIGKILL');
+    }
+    expect(readTurnReplies(join(tmpHome, '.qwen-mem-lite', 'runtime'), sid)).toEqual([
+      'turn 1 reply',
+      'turn 2 reply: docs done',
+    ]);
+  });
+
+  it('a host without the field gives the transcript tail; an empty one records nothing', () => {
+    const e = { HOME: tmpHome };
+    runHook('session-start', { stdin: JSON.stringify({ source: 'startup', session_id: CC }), env: e });
+    const sid = getSessionIdFromFile(tmpHome);
+    const project = addObservation(sid, 'Fixed the retry backoff in worker.mjs');
+    const t = join(tmpHome, 'cc.jsonl');
+    writeFileSync(
+      t,
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Tail reply: 8/8 pass.' }] },
+      }) + '\n',
+    );
+    prompt('fix it');
+    stop({ transcript_path: t });
+    prompt('anything else?');
+    // The turn ended without text: the host says so with ''. The tail is the previous turn's.
+    stop({ transcript_path: t, last_assistant_message: '' });
+
+    const capture = join(tmpHome, 'prompts.jsonl');
+    runHook('llm-summary', {
+      env: { HOME: tmpHome, QWEN_MEM_FLUSH_TIMEOUT: '0', MOCK_CLAUDE_CAPTURE: capture },
+      args: [sid, project],
+    });
+    const [p] = readFileSync(capture, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    expect(p).toContain('Final reply:\nTail reply: 8/8 pass.');
+    expect(p).not.toContain('[Turn');
+  });
+});
+
+describe('Suite: D#156 — a project name that gives the hook id the uuid shape', () => {
+  it('session-start, user-prompt and stop all write', () => {
+    const dir = join(tmpHome, 'dev', 'abc-efgh-jklm-opq');
+    mkdirSync(dir, { recursive: true });
+    // Premise: this project's unescaped hook id is uuid-shaped.
+    expect('hook-dev--abc-efgh-jklm-opq-1a2b3c4d').toMatch(/^.{8}-.{4}-.{4}-.{4}-.{12}$/);
+    const env = { HOME: tmpHome, CLAUDE_PROJECT_DIR: dir, PWD: dir, MEM_NO_AUTO_ADOPT: '1' };
+    const cc = randomUUID();
+    runHook('session-start', { stdin: JSON.stringify({ source: 'startup', session_id: cc }), env });
+    const id = getSessionIdFromFile(tmpHome);
+    expect(id.startsWith('hook-dev--abc-efgh-jklm-opq-')).toBe(true);
+    runHook('user-prompt', {
+      stdin: JSON.stringify({ prompt: 'rename the config loader', session_id: cc }),
+      env,
+    });
+    runHook('stop', { stdin: JSON.stringify({ session_id: cc }), env });
+    const db = openTestDb(tmpHome);
+    const session = db
+      .prepare('SELECT project, status FROM sdk_sessions WHERE memory_session_id = ?')
+      .get(id);
+    const prompts = db.prepare('SELECT COUNT(*) c FROM user_prompts WHERE content_session_id = ?').get(id).c;
+    db.close();
+    expect(session).toMatchObject({ project: 'dev--abc-efgh-jklm-opq', status: 'completed' });
+    expect(prompts).toBe(1);
   });
 });

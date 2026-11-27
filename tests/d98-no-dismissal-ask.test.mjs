@@ -71,7 +71,7 @@ describe('D#98 — no shipped text asks for #NN dismissals', () => {
     const doc = getDetailDoc();
     // §9-C (2026-09-29) reworded the ask to a bare `(#NN)` tag; still applied lessons only.
     expect(block).toMatch(/lesson changed what you did, add the bare tag `\(#NN\)` once/);
-    expect(doc).toContain('没用上的 lesson 不必提');
+    expect(doc).toContain('do not mention lessons you did not use');
     for (const t of [block, doc]) expect(t).not.toMatch(DISMISSAL_ASK);
   });
 

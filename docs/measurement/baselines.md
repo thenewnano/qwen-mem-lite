@@ -33,8 +33,118 @@ text differs in kind.
   — is unchanged, because the round added no source file in those directories. Knip is
   recorded as a COUNT only: the name set was not diffed this round, so it says "no new
   module went dark loudly", not "nothing went dead" (rule 4).
+- **2026-11-09, recovery** — 9 of the 14 replacements after this contract was written
+  (`e1824ffd`, 2026-09-08) had overwritten the old row instead of moving it here: eight
+  between 2026-09-09 and 2026-09-14, one on 2026-11-03. Those rows are now below, verbatim
+  from git, each under the commit that wrote it and the one that replaced it.
+  `scripts/pre-commit.sh` now refuses a commit that changes the table's rows unless the
+  outgoing rows are staged here as one `> `-quoted block. Since 2026-11-10 it also re-checks
+  every row change committed after `e1824ffd`, so a change committed with the hook off, or
+  an edit that deletes a moved block, is refused at the next commit.
 
 ## Test-case count — history and why it is partly generated
+
+### Superseded row moved from CLAUDE.md 2026-11-27 (v7.4.0 shared detail doc)
+
+Verbatim, as it stood in CLAUDE.md's Baselines table before the shared-doc change replaced it:
+
+> | Tests | **575 files / 10439**, 10 skipped | `main` @ `port/v6.37.0-sync`, 2026-11-27, v7.4.0 tree |
+> | Knip | **37** unused exports, **0** unused files, **3** unlisted binaries | same tree, primary working tree, knip 6.48.0 |
+> | Coverage | **87.81** stmts · **82.88** branches · **92.68** funcs · **89.11** lines | same tree, vitest 5.1.2 |
+
+The new row is 575 files / 10411 passed (31 skipped), coverage 87.81 / 82.88 / 92.70 / 89.12.
+
+### Superseded row moved from CLAUDE.md 2026-11-27 (v7.4.0 upstream sync)
+
+Verbatim, as it stood in CLAUDE.md's Baselines table before this sync replaced it:
+
+> | Tests | **425 files / 6583**, 0 skipped (1 skips without git hooks) | post-rebrand working tree, 2026-09-26 (re-measured before commit) |
+> | Knip | **32** unused exports, **0** unused files, **3** unlisted binaries | same tree, primary working tree, knip 6.35.1 |
+> | Coverage | **85.93** stmts · **80.24** branches · **91.19** funcs · **87.13** lines | same tree, vitest 5.0.0 |
+
+The row that pre-dates it in the chain (replaced by `5c0ea188`, recorded here so the chain
+stays complete):
+
+> | Tests | **425 files / 6585**, 0 skipped (1 skips without git hooks) | `main` @ `5b67178`, 2026-09-26, v6.12.1 tree |
+> | Knip | **32** unused exports, **0** unused files, **3** unlisted binaries | same tree, primary working tree, knip 6.35.1 |
+> | Coverage | **85.94** stmts · **80.27** branches · **91.18** funcs · **87.12** lines | same tree, vitest 5.0.0 |
+
+The new row is this sync's own reading on the `port/v6.37.0-sync` tree: test:ci-env
+575 files / 10411 passed (31 skipped); knip 6.48.0 read 37 unused exports, 0 unused files
+and 3 unlisted binaries; coverage 87.81 / 82.88 / 92.70 / 89.12 (vitest 5.1.2, v8 text
+reporter). The test count includes the new upstream suites; the two lock-deadline tests
+pass with `--maxWorkers=4` and miss their wall-clock thresholds by a few percent under the
+default parallel run on this Mac.
+
+### Superseded row moved from CLAUDE.md 2026-11-17 (v6.35.4 release tree)
+
+Verbatim, as it stood in CLAUDE.md's Baselines table until the re-stamp on `755d4e1c` replaced it:
+
+> | Tests | **567 files / 10365**, 0 skipped | `main` @ `47f5a8cc`, 2026-11-16, v6.35.3 release tree |
+> | Knip | **36** unused exports, **0** unused files, **7** unlisted binaries | same tree, primary working tree, knip 6.45.1 |
+> | Coverage | **88.38** stmts · **83.51** branches · **92.98** funcs · **89.67** lines | same tree, vitest 5.1.0 |
+
+The new row is the release gate's reading on `755d4e1c` (`tasks/remaining-6312/gates.sh`, claude
+off PATH): test:ci-env 568 files / 10397 passed; knip 6.45.1 read the same 36 export names and 7
+binaries as on `47f5a8cc`. Statements read 16668 / 18904 against 16622 / 18807: 51 more
+uncovered, 35 of them in the new `lib/project-link.mjs` (27 of its 62 covered, 43.54%). Its
+behaviour cases in `tests/project-links-out.test.mjs` run it in child processes, which the
+parent's v8 coverage does not see.
+
+### Superseded row moved from CLAUDE.md 2026-11-16 (v6.35.3 release tree)
+
+Verbatim, as it stood in CLAUDE.md's Baselines table until the re-stamp on `47f5a8cc` replaced it:
+
+> | Tests | **553 files / 9958**, 0 skipped | `main` @ `e9f29568`, 2026-11-09, v6.31.0 + 4 commits |
+> | Knip | **36** unused exports, **0** unused files, **7** unlisted binaries | same tree, primary working tree, knip 6.44.1 |
+> | Coverage | **87.89** stmts · **82.99** branches · **92.52** funcs · **89.18** lines | same tree, vitest 5.1.0 |
+
+**Knip's unlisted-binaries count moved with the ruler, not the code.** Read in the primary
+working tree on 2026-11-16: knip 6.44.1 on `4e040a82` gave 36 unused exports and 10 unlisted
+binaries; v6.35.2's gate (`261eb4e3`, same knip) had read 9, and the one added is `mkfifo` in
+`tests/project-files-not-regular.test.mjs`. PR #55 (`77584895`, knip 6.44.1 → 6.44.2, lockfile
+and `package.json` only) on the same tree: the same 36 export names, 7 binaries — knip 6.44.2
+no longer reports `du` and `pgrep` in `install.mjs` or `pgrep` in
+`tests/summary-worker-spawn.test.mjs`. PR #58 (`0fc8b450`, knip 6.45.1, eslint 10.15.0,
+prettier 3.10.1) read the same name set as 6.44.2. The new row is the release gate's reading
+on `47f5a8cc` (`tasks/remaining-6312/gates.sh`, claude off PATH): test:ci-env and
+test:coverage both 567 files / 10365 passed.
+
+### Superseded row moved from CLAUDE.md 2026-11-09 (after dev-deps PR #52)
+
+Verbatim, as it stood in CLAUDE.md's Baselines table until the re-stamp on `e9f29568` replaced it:
+
+> | Tests | **553 files / 9937**, 0 skipped | `main` @ `ec3510eb`, 2026-11-03, v6.30.15 + R3 (unreleased) |
+> | Knip | **36** unused exports, **0** unused files, **7** unlisted binaries | same tree, primary working tree, knip 6.43.0 |
+> | Coverage | **87.87** stmts · **82.97** branches · **92.51** funcs · **89.16** lines | same tree, vitest 5.0.5 |
+
+**The rulers changed under this row; on this tree that moved none of the three readings.**
+PR #52 (`e9f29568`) took knip 6.43.0 → 6.44.1 and vitest + @vitest/coverage-v8 5.0.5 →
+5.1.0, and touched only `package.json` and `package-lock.json`. Both arms ran back-to-back
+on 2026-11-09 in the primary working tree: the old tools on `7f66776f`, then `npm install`
+(lockfile left unchanged) and the new tools on `e9f29568`.
+
+| Reading | Old tools on `7f66776f` | New tools on `e9f29568` |
+|---------|-------------------------|-------------------------|
+| `npm run test:coverage` | 553 files / 9958 passed | 553 files / 9958 passed |
+| Knip | 36 / 0 / 7 | same name set; text and JSON reports compared |
+| Coverage, v8 text reporter | 87.89 · 82.99 · 92.52 · 89.18 | the same 131-row table, uncovered-line lists included |
+
+Test NAME sets were not diffed. The test sources are the same bytes in both arms, so what
+the equal counts leave open is only how vitest enumerates them. The +21 cases against the
+outgoing row lie between `ec3510eb` and `7f66776f` and were not attributed per commit; both
+arms above read 9958, so none of the 21 comes from the tool bump.
+
+### Superseded row recovered 2026-11-09 (replaced 2026-11-03 by `96d274d1`)
+
+Verbatim, as it stood in CLAUDE.md's Baselines table. The commit that replaced it did not
+move it here; it was recovered from `git show 96d274d1^:CLAUDE.md`.
+
+Written by `13c06642` (2026-09-25), replaced by `96d274d1` (2026-11-03):
+
+> | Tests | **428 files / 6628**, 0 skipped (1 skips without git hooks) | `main` @ `c8cfab5`, 2026-09-25, v6.12.1 tree |
+> | Knip | **32** unused exports, **0** unused files, **3** unlisted binaries | same tree, primary working tree, knip 6.35.1 |
+> | Coverage | **85.34** stmts · **79.75** branches · **90.72** funcs · **86.58** lines | same tree, vitest 5.0.0 |
 
 ### Superseded row moved from CLAUDE.md 2026-09-25 (v6.12.0)
 
@@ -168,6 +278,60 @@ Knip is unchanged at 32 / 0 / 3 across the same span, and that pair of readings 
 name-set diffed, once, on 2026-09-22 across the knip 6.35.0 → 6.35.1 bump: the 32 names
 are identical, `diff` empty. That says the ruler change moved nothing; it says nothing
 about the five releases, where only the counts are known.
+
+### Superseded rows recovered 2026-11-09 (replaced 2026-09-09 → 2026-09-14, newest first)
+
+Verbatim, as they stood in CLAUDE.md's Baselines table. The commits that replaced them did
+not move them here; each was recovered from `git show <replacing sha>^:CLAUDE.md`. No delta
+between them is attributed. The R12 bullet at the top of this file mentions 6090 and 6093.
+
+Written by `da2054d3` (2026-09-13), replaced by `54119ee1` (2026-09-14):
+
+> | Tests | **392 files / 6255**, 0 skipped | `fix/qa-round-sentinel-and-fts` @ 2026-09-13, v6.8.3 release tree |
+> | Knip | **43** unused exports, **0** unused files, **3** unlisted binaries | same tree, primary working tree |
+> | Coverage | **85.52** stmts · **79.81** branches · **91.24** funcs · **86.72** lines | same tree, vitest 5.0.0, 3/3 green runs |
+
+Written by `c7647bbb` (2026-09-11), replaced by `da2054d3` (2026-09-13):
+
+> | Tests | **383 files / 6121**, 0 skipped | `main` @ 2026-09-11, v6.7.0 release tree |
+> | Knip | **43** unused exports, **0** unused files, **3** unlisted binaries | same tree, primary working tree |
+> | Coverage | **85.35** stmts · **79.59** branches · **91** funcs · **86.5** lines | same tree, vitest 5.0.0 |
+
+Written by `5ea09617` (2026-09-11), replaced by `c7647bbb` (2026-09-11):
+
+> | Tests | **383 files / 6114**, 0 skipped | `main` @ 2026-09-11, v6.7.0 release tree |
+> | Knip | **43** unused exports, **0** unused files, **3** unlisted binaries | same tree, primary working tree |
+> | Coverage | **85.35** stmts · **79.59** branches · **91** funcs · **86.5** lines | same tree, vitest 5.0.0 |
+
+Written by `28fe9952` (2026-09-09), replaced by `5ea09617` (2026-09-11):
+
+> | Tests | **382 files / 6097**, 0 skipped | `main` @ 2026-09-09, v6.6.0 release tree |
+> | Knip | **43** unused exports, **0** unused files, **3** unlisted binaries | same tree, primary working tree |
+> | Coverage | **85.36** stmts · **79.61** branches · **91.05** funcs · **86.51** lines | same tree, vitest 5.0.0 |
+
+Written by `de870287` (2026-09-09), replaced by `28fe9952` (2026-09-09):
+
+> | Tests | **382 files / 6093**, 0 skipped | `main` @ 2026-09-09 (R12) |
+> | Knip | **43** unused exports, **0** unused files, **3** unlisted binaries | same tree, primary working tree |
+> | Coverage | **85.32** stmts · **79.58** branches · **91.04** funcs · **86.48** lines | same tree, vitest 5.0.0 |
+
+Written by `c8ae62e9` (2026-09-09), replaced by `de870287` (2026-09-09):
+
+> | Tests | **382 files / 6091**, 0 skipped | `main` @ 2026-09-09 (R12) |
+> | Knip | **43** unused exports, **0** unused files, **3** unlisted binaries | same tree, primary working tree |
+> | Coverage | **85.32** stmts · **79.58** branches · **91.04** funcs · **86.48** lines | same tree, vitest 5.0.0 |
+
+Written by `53f08bef` (2026-09-09), replaced by `c8ae62e9` (2026-09-09):
+
+> | Tests | **382 files / 6090**, 0 skipped | `main` @ 2026-09-09 (R12) |
+> | Knip | **43** unused exports, **0** unused files, **3** unlisted binaries | same tree, primary working tree |
+> | Coverage | **85.32** stmts · **79.58** branches · **91.04** funcs · **86.48** lines | same tree, vitest 5.0.0 |
+
+Written by `e1824ffd` (2026-09-08), replaced by `53f08bef` (2026-09-09):
+
+> | Tests | **379 files / 6071**, 0 skipped | `fix/e2e-round-and-db-unusable` @ 2026-09-08 |
+> | Knip | **43** unused exports, **0** unused files, **3** unlisted binaries | same tree, primary working tree |
+> | Coverage | **85.18** stmts · **79.45** branches · **91.02** funcs · **86.34** lines | same tree, vitest 5.0.0 |
 
 ### Superseded rows moved from CLAUDE.md 2026-09-08 (v6.5.0 → v4.0.0, newest first)
 

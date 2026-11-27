@@ -26,8 +26,9 @@ import {
 import { acquireLLMSlot, releaseLLMSlot, LLM_SEM_TIMEOUT } from './hook-semaphore.mjs';
 import { BG_LLM_TIMEOUT_MS } from './haiku-client.mjs';
 import { scrubRecord, scrubFilePaths } from './lib/scrub-record.mjs';
-import { mergeModelSummary, summarySuperseded } from './lib/fast-summary.mjs';
+import { mergeModelSummary, modelSummaryFields, summarySuperseded } from './lib/fast-summary.mjs';
 import { recordMetric } from './lib/metrics.mjs';
+import { readTurnReplies } from './lib/turn-replies.mjs';
 import { DB_DIR } from './schema.mjs';
 import {
   insertObservationRow,
@@ -545,6 +546,8 @@ export function persistHaikuSummary(db, summary, ctx) {
             : null,
         importance: summary.importance ?? 1,
         created_at_epoch: Date.now(),
+        // D21: so the session summary can read the episodes this session stored as events.
+        memory_session_id: ctx.session_id ?? null,
       });
 
     if (ctx.preSavedObsId) {
@@ -1728,6 +1731,136 @@ async function waitForEpisodeFlushes(flushTimeout, superseded) {
   return false;
 }
 
+/**
+ * D19 — how much of the session's final reply the summary prompt carries: its first
+ * SUMMARY_REPLY_HEAD and last SUMMARY_REPLY_TAIL characters. On this machine's 159 sessions
+ * (2026-11-11) the reply's median length was 2293 chars, p90 3211, max 4704, and the report
+ * convention there puts the open items LAST, so a head-only cut would drop exactly the part
+ * that says what is left (tasks/specs/converge-r31-decisions.md).
+ */
+export const SUMMARY_REPLY_HEAD = 2000;
+export const SUMMARY_REPLY_TAIL = 1000;
+
+/**
+ * D22 — a session of two or more turns gives the summary prompt every turn's last reply, not
+ * only the final one: on 20 multi-turn sessions the final-reply prompt left a main finished
+ * piece of work out of `completed` in 13 (rulers.md, session summary events A/B, reading 2).
+ * An earlier turn's reply is cut to its first SUMMARY_TURN_HEAD and last SUMMARY_TURN_TAIL
+ * characters (the final one keeps the D19 cut), and at most the first SUMMARY_TURNS_FIRST and
+ * the last SUMMARY_TURNS_LAST turns are shown — the cuts the D21/D22 judges read.
+ */
+export const SUMMARY_TURN_HEAD = 700;
+export const SUMMARY_TURN_TAIL = 300;
+export const SUMMARY_TURNS_FIRST = 4;
+export const SUMMARY_TURNS_LAST = 8;
+
+/**
+ * D26 (D#845) — the last sentence of both reply rules: `completed` ordered by importance, so the
+ * Last Session line SessionStart cuts to 120 characters starts with the session's main finished
+ * outcome. That line left it out in 23 of 60 calls without this sentence and 11 of 60 with it;
+ * no other count rose by more than 1 (docs/audits/20261112-d26-reading.md). The prompt without
+ * a reply does not carry it.
+ */
+export const SUMMARY_COMPLETED_ORDER =
+  "Order completed by importance: begin with the session's most important finished outcome, the one a person picking this work up next most needs to know (such as a release published, a deploy live, a fix merged or a measurement's verdict), then list every other finished item. This changes only the order: keep every item and detail you would otherwise include, and an item's state is still the one given by the latest reply that mentions it.";
+
+/**
+ * The final reply as the summary prompt carries it: scrubbed whole first, so a secret
+ * straddling a cut is never half-kept, then cut to head + tail with the omitted length named.
+ * Cuts land on code-point boundaries. Empty for an empty or missing reply.
+ */
+export function summaryReplyExcerpt(reply, head = SUMMARY_REPLY_HEAD, tail = SUMMARY_REPLY_TAIL) {
+  const text = scrubSecrets(String(reply ?? '')).trim();
+  const points = Array.from(text);
+  if (points.length <= head + tail) return text;
+  const omitted = points.length - head - tail;
+  return `${points.slice(0, head).join('')}\n[… ${omitted} characters omitted …]\n${points.slice(-tail).join('')}`;
+}
+
+/**
+ * D22: the turns block of the summary prompt, oldest first, or '' for fewer than two turns with
+ * text. The last turn is the final reply and keeps the D19 cut.
+ * @param {string[]} replies each turn's last assistant text, oldest first
+ */
+function summaryTurnsBlock(replies) {
+  const turns = (Array.isArray(replies) ? replies : []).filter((r) => typeof r === 'string' && r.trim());
+  if (turns.length < 2) return '';
+  const n = turns.length;
+  const cut = (r, i) =>
+    i === n - 1 ? summaryReplyExcerpt(r) : summaryReplyExcerpt(r, SUMMARY_TURN_HEAD, SUMMARY_TURN_TAIL);
+  const block = (i) => `[Turn ${i + 1} of ${n}${i === n - 1 ? ', final' : ''}]\n${cut(turns[i], i)}`;
+  const idx = turns.map((_, i) => i);
+  if (n <= SUMMARY_TURNS_FIRST + SUMMARY_TURNS_LAST) return idx.map(block).join('\n\n');
+  const omitted = n - SUMMARY_TURNS_FIRST - SUMMARY_TURNS_LAST;
+  return [
+    ...idx.slice(0, SUMMARY_TURNS_FIRST).map(block),
+    `[… ${omitted} turns omitted …]`,
+    ...idx.slice(-SUMMARY_TURNS_LAST).map(block),
+  ].join('\n\n');
+}
+
+/**
+ * D21: one list for the summary prompt, newest first. An event becomes an observation-shaped
+ * row (its body is the lesson or narrative the episode stored); at equal times the observation
+ * comes first, so the order never depends on the two tables' unrelated ids.
+ * @param {{created_at_epoch?: number}[]} observations newest first
+ * @param {{event_type: string, title: string, body: string|null, created_at_epoch: number}[]} events
+ */
+export function mergeSummaryRows(observations, events) {
+  const rows = [
+    ...observations.map((o) => ({ row: o, at: o.created_at_epoch ?? 0, table: 0 })),
+    ...events.map((e) => ({
+      row: { type: e.event_type, title: e.title, narrative: e.body || '' },
+      at: e.created_at_epoch ?? 0,
+      table: 1,
+    })),
+  ];
+  rows.sort((a, b) => b.at - a.at || a.table - b.table);
+  return rows.map((r) => r.row);
+}
+
+/**
+ * The session summary prompt. `observations` are {type, title, narrative} newest first,
+ * `userPrompts` the raw prompt texts in order; both are cut here. `finalReply`, when given, is
+ * the session's last assistant message (D19): it goes into the user part behind the same input
+ * guard, and the system part says the outcome it reports wins and that completed is ordered by
+ * importance (SUMMARY_COMPLETED_ORDER, D26). Without one the prompt is the one shipped before D19,
+ * byte for byte. `turnReplies` (D22), each turn's last reply oldest
+ * first, replaces the final reply when it holds two or more turns with text (its last one IS
+ * the final reply); with fewer the prompt is the D19 one.
+ */
+export function buildSessionSummaryPrompt({ project, observations, userPrompts, finalReply, turnReplies }) {
+  const obsList = observations
+    .map((o, i) => `${i + 1}. [${o.type}] ${o.title}${o.narrative ? ': ' + truncate(o.narrative, 200) : ''}`)
+    .join('\n');
+  const prompts = userPrompts.map((p) => truncate(p, 300));
+  const promptCtx = prompts.length > 0 ? `\nUser requests: ${prompts.join(' → ')}\n` : '';
+  const turns = summaryTurnsBlock(turnReplies);
+  const reply = turns ? '' : summaryReplyExcerpt(finalReply);
+
+  // cso F#4: split system/user. The userPrompts content is the single highest-leakage path
+  // for memory poisoning — putting it in the user role behind an explicit boundary is the
+  // main win here. The final reply is captured content too and goes on the same side.
+  const system = `Summarize this coding session. Return ONLY valid JSON, no markdown fences.
+${MEMORY_INPUT_GUARD}
+
+JSON: {"request":"what the user was working on","completed":"specific items accomplished with file names","remaining_items":"specific unfinished items from the original request — compare investigation scope with actual changes to infer what was NOT yet done; be precise with file:issue format, or empty string if all done","next_steps":"suggested follow-up","lessons":["non-obvious insights discovered during this session"],"key_decisions":["important design choices made and WHY"]}
+lessons: Only genuinely non-obvious insights (debugging discoveries, gotchas, architectural reasons). Empty array if routine.
+key_decisions: Only decisions with lasting impact (library choices, architecture, data model). Include reasoning. Empty array if none.${
+    turns
+      ? `
+Replies: the user message ends with the assistant's last reply of each turn, oldest first; the last one is the session's final reply. These are the assistant's own account of the outcome. completed lists the main work the replies report as done in every turn, not only the last. Work a reply reports as done (tests passed, saved, committed, fixed) is completed — never list it in remaining_items or next_steps. An item's state is the one given by the latest reply that mentions it. What is still unfinished, failed or left for later belongs in remaining_items. ${SUMMARY_COMPLETED_ORDER}`
+      : reply
+        ? `
+Final reply: the user message ends with the session's final reply, the assistant's own account of the outcome. Work it reports as done (tests passed, saved, committed, fixed) is completed — never list it in remaining_items or next_steps. What it reports as unfinished, failed or left for later belongs in remaining_items. ${SUMMARY_COMPLETED_ORDER}`
+        : ''
+  }`;
+  const user = `Project: ${project}${promptCtx}
+Observations (${observations.length} total):
+${obsList}${turns ? `\n\nReplies, one per turn, oldest first:\n${turns}` : reply ? `\n\nFinal reply:\n${reply}` : ''}`;
+  return { system, user };
+}
+
 export async function handleLLMSummary() {
   // Seconds. The default spans an episode worker's whole bound (E2E 2026-10-16 P2-4): it was 15,
   // below one CLI-leg episode (2-5 s delay + 8-13 s call, + the lesson retry on a bugfix), so the
@@ -1789,12 +1922,6 @@ export async function handleLLMSummary() {
 
     if (recentObs.length < 1) return outcome('no-obs');
 
-    const obsList = recentObs
-      .map(
-        (o, i) => `${i + 1}. [${o.type}] ${o.title}${o.narrative ? ': ' + truncate(o.narrative, 200) : ''}`,
-      )
-      .join('\n');
-
     // Include user prompts for richer context
     const userPrompts = db
       .prepare(
@@ -1804,22 +1931,19 @@ export async function handleLLMSummary() {
     `,
       )
       .all(sessionId)
-      .map((p) => truncate(p.prompt_text, 300));
-    const promptCtx = userPrompts.length > 0 ? `\nUser requests: ${userPrompts.join(' → ')}\n` : '';
-
-    // cso F#4: split system/user. The userPrompts content (line 921) is the
-    // single highest-leakage path for memory poisoning — putting it in the
-    // user role behind an explicit boundary is the main win here.
-    const system = `Summarize this coding session. Return ONLY valid JSON, no markdown fences.
-${MEMORY_INPUT_GUARD}
-
-JSON: {"request":"what the user was working on","completed":"specific items accomplished with file names","remaining_items":"specific unfinished items from the original request — compare investigation scope with actual changes to infer what was NOT yet done; be precise with file:issue format, or empty string if all done","next_steps":"suggested follow-up","lessons":["non-obvious insights discovered during this session"],"key_decisions":["important design choices made and WHY"]}
-lessons: Only genuinely non-obvious insights (debugging discoveries, gotchas, architectural reasons). Empty array if routine.
-key_decisions: Only decisions with lasting impact (library choices, architecture, data model). Include reasoning. Empty array if none.`;
-    const user = `Project: ${project}${promptCtx}
-Observations (${recentObs.length} total):
-${obsList}`;
-    const prompt = { system, user };
+      .map((p) => p.prompt_text);
+    // D19 + D22 (D#825): every turn's last reply, as Stop recorded them under this session
+    // (lib/turn-replies.mjs). Two or more show every turn; one is the final reply; none gives the
+    // prompt without a reply. The Stop worker and the /clear or /compact one read the same record,
+    // so neither depends on which transcript it was handed or what was written there since.
+    const turnReplies = readTurnReplies(RUNTIME_DIR, sessionId);
+    const prompt = buildSessionSummaryPrompt({
+      project,
+      observations: recentObs,
+      userPrompts,
+      finalReply: turnReplies.at(-1) ?? null,
+      turnReplies,
+    });
 
     if (!(await acquireLLMSlot())) {
       debugLog('WARN', 'llm-summary', 'semaphore timeout, skipping summary');
@@ -1840,65 +1964,17 @@ ${obsList}`;
       releaseLLMSlot();
     }
 
-    // Coerce a prose field to a string before scrub/bind. Haiku sometimes returns a LIST for
-    // completed/next_steps/remaining_items; binding a non-string straight to SQL throws
-    // ("Too many parameter values") out of this try/finally and drops the WHOLE summary incl.
-    // lessons + key_decisions. Join array items; non-strings → ''. (lessons/key_decisions are
-    // JSON.stringify'd separately below.)
-    const asText = (v) =>
-      Array.isArray(v)
-        ? v.filter((x) => typeof x === 'string' && x.trim()).join('; ')
-        : typeof v === 'string'
-          ? v
-          : '';
-
-    // Persist when ANY meaningful field is present — not just `request`. Gating on `request`
-    // alone dropped the whole INSERT/UPDATE (losing the session's highest-value fields:
-    // lessons + key_decisions) whenever Haiku returned an empty request string but a rich
-    // `{completed, lessons, key_decisions}` — a common degraded shape. Downstream tolerates an
-    // empty request: INSERT writes '' and the UPDATE keeps the row's own request (or an older row's)
-    // when the reply's is empty. Use asText in the gate so a non-string / empty-array field can't falsely
-    // trigger it.
-    // Items are kept only when they are non-empty strings. Array.isArray alone stored a reply of
-    // [123, null, {…}, "real lesson"] as-is, and SessionStart then injected
-    // "Lessons: 123; ; [object Object]", pushing the real lesson out of its 3-item window.
-    const textItems = (v) =>
-      Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim()) : [];
-    const lessons = llmParsed ? textItems(llmParsed.lessons) : [];
-    const keyDecisions = llmParsed ? textItems(llmParsed.key_decisions) : [];
-    const hasSummaryContent =
-      llmParsed &&
-      (asText(llmParsed.request) ||
-        asText(llmParsed.completed) ||
-        asText(llmParsed.remaining_items) ||
-        asText(llmParsed.next_steps) ||
-        lessons.length > 0 ||
-        keyDecisions.length > 0);
-    if (hasSummaryContent) {
+    // The reply's fields, coerced and scrubbed (lib/fast-summary.mjs), or null with nothing to
+    // write.
+    const safe = modelSummaryFields(llmParsed);
+    if (safe) {
       const now = new Date();
-      const lessonsJson = lessons.length > 0 ? JSON.stringify(lessons) : null;
-      const decisionsJson = keyDecisions.length > 0 ? JSON.stringify(keyDecisions) : null;
-
       // Upgrade the session's summary row instead of creating another. This worker runs after
       // EVERY Stop (one per assistant turn) and again from SessionStart's /clear path; selecting
       // only a `notes = 'fast'` row found nothing once the first run had upgraded it, and each
       // later turn INSERTed (one live session: 37 rows in 65 minutes). mergeModelSummary lands
       // on the session's newest row and keeps a report's Done / Not done over the model's
       // (lib/fast-summary.mjs).
-      //
-      // Scrub LLM-output text fields at the write boundary. lessons / key_decisions are
-      // JSON.stringify(array<string>); scrubSecrets uses opaque placeholders that preserve
-      // JSON structure, so the JSON string is scrubbed whole.
-      const safe = scrubRecord('session_summaries', {
-        request: asText(llmParsed.request),
-        investigated: asText(llmParsed.investigated),
-        learned: asText(llmParsed.learned),
-        completed: asText(llmParsed.completed),
-        next_steps: asText(llmParsed.next_steps),
-        remaining_items: asText(llmParsed.remaining_items),
-        lessons: lessonsJson,
-        key_decisions: decisionsJson,
-      });
       if (mergeModelSummary(db, { sessionId, project, fields: safe, now, spawnEpoch })) {
         outcome('written');
       } else {

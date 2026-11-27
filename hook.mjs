@@ -53,7 +53,7 @@ import {
 // their canonical module.
 import { inferProjectDir } from './project-utils.mjs';
 import { extractFileTargets } from './bash-utils.mjs';
-import { isPluginDisabledInScopes, pluginSettingsScopes } from './lib/plugin-key.mjs';
+import { isPluginDisabledInScopes, pluginSettingsScopes, readSettingsScope } from './lib/plugin-key.mjs';
 import { readHookStdin, salvageTruncatedHookEvent, TOOL_INPUT_FILE_MAX_BYTES } from './lib/hook-stdin.mjs';
 import { normalizeToolName } from './lib/tool-names.mjs';
 // Aliased: `acquireLock` from hook-episode.mjs below is the episode buffer's own
@@ -154,6 +154,7 @@ import {
   resolveDefaultMaintainOps,
   markAutoCompressible,
   selectFuzzyDedupeIds,
+  selectExactDedupeIds,
   stampDedupSuperseded,
   hardDeleteCandidateCount,
   purgeStale,
@@ -164,21 +165,20 @@ import {
 } from './lib/maintain-core.mjs';
 import { snapshotDb } from './lib/db-backup.mjs';
 import {
-  extractCitationsFromTranscript,
-  extractInjectedBySurface,
-  buildCitationRelevanceSet,
+  citationRelevanceSetFrom,
   unionSurfaces,
   extractInjectedFromKeyContext,
   bumpCitationAccess,
-  computeCiteRecall,
+  citeRecallStats,
   applyCitationDecay,
   recordCitationFunnel,
   recordCitationSurfaces,
-  collectSubagentSurface,
-  hasMainThreadAssistantText,
+  subagentSurfaceFrom,
 } from './lib/citation-tracker.mjs';
+import { digestTranscript, DIGEST_FILE_PREFIX } from './lib/transcript-digest.mjs';
 import { resolveEdgeAttribution, readPreRecallFileEdges } from './lib/edge-attribution.mjs';
 import { extractTailAssistantText, extractStructuredSummary } from './lib/summary-extractor.mjs';
+import { recordTurnReply, TURN_REPLIES_PREFIX } from './lib/turn-replies.mjs';
 import { searchRelevantMemories, formatMemoryLine, selectImperativeLesson } from './hook-memory.mjs';
 import { searchInjectableEvents, renderInjectableEvent } from './lib/events-injection.mjs';
 import { upsFtsQuery } from './lib/ups-query.mjs';
@@ -210,11 +210,10 @@ import {
 } from './hook-handoff.mjs';
 import {
   loadCiteBackForEpisode,
-  extractCiteBackSignals,
   buildUnsavedBugfixHint,
   claimBugfixNudge,
   BUGFIX_NUDGE_MARKER_PREFIX,
-  countUnsavedBugfixShape,
+  bugfixShapeStats,
   buildCiteRecallNudge as libBuildCiteRecallNudge,
   nextCiteStreakState,
 } from './lib/cite-back-hint.mjs';
@@ -308,21 +307,13 @@ else if (event === 'session-start') setHookDbDeadline(performance.timeOrigin + S
 // in Claude UI does not automatically remove them. Exit early to make disable actually work.
 // The KEY and the predicate live in lib/plugin-key.mjs (P2-7) - install.mjs branches on the
 // same decision, and a key that drifts on one side leaves the user with a plugin they
-// switched off and a settings.json hook set that never noticed. Reading the file stays here:
-// install.mjs already holds a parsed settings object when it asks, this process does not.
+// switched off and a settings.json hook set that never noticed.
 // The user, project and local scopes are merged as the host merges them (lib/plugin-key.mjs).
+// A missing, unparseable or non-regular scope sets nothing. Fail OPEN: a corrupt file must not
+// switch the plugin off for a user who never asked for that.
 function pluginDisabledHere() {
-  const read = (path) => {
-    try {
-      return JSON.parse(readFileSync(path, 'utf8'));
-    } catch {
-      // Missing or unparseable → sets nothing. Fail OPEN: a corrupt file must not switch the
-      // plugin off for a user who never asked for that.
-      return null;
-    }
-  };
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  return isPluginDisabledInScopes(pluginSettingsScopes(claudeConfigDir(), projectDir).map(read));
+  return isPluginDisabledInScopes(pluginSettingsScopes(claudeConfigDir(), projectDir).map(readSettingsScope));
 }
 
 if (event && pluginDisabledHere()) process.exit(0);
@@ -1017,7 +1008,8 @@ async function handlePostToolUse() {
 
 /**
  * N2 (session-history analysis r2): stay silent on a deliberate TDD RED and on an exit-0
- * command that merely PRINTS error text. The decision is lib/error-recall-gate.mjs; this
+ * command that merely PRINTS error text; D#717 adds an exit-0 git command whose failure words
+ * all sit in the commit records the gate sets aside. The decision is lib/error-recall-gate.mjs; this
  * hands it the episode buffer the hook already keeps (read without the lock: a snapshot is
  * enough, and writeEpisode replaces the file by rename) and meters what it silenced, so the
  * suppressed volume is readable next to `error_recall` rather than inferred from its drop.
@@ -1077,7 +1069,8 @@ function triggerErrorRecall(db, toolInput, response, opts = {}) {
     });
     if (!selected) return;
     // Per-thread dedup, like the PreToolUse and UserPromptSubmit faces: a red/green loop re-sent
-    // the identical block on every failing run (lib/recall-shown.mjs ERROR_RECALL_REPEAT_MS).
+    // the identical block on every failing run (lib/recall-shown.mjs errorRecallRepeatMs: once per
+    // thread until compaction, R3 O3).
     const shownPath = errorRecallShownPath(RUNTIME_DIR, opts.thread);
     const shown = readErrorRecallShown(shownPath);
     const rows = selected.rows.filter((r) => !shown.has(String(r.id)));
@@ -1263,6 +1256,9 @@ async function readStopHookInput() {
   // collides across parallel sessions for the same project (see docs/bug.txt).
   let ccSessionId = null;
   let transcriptPath = null;
+  // The host's own copy of this turn's final reply (Claude Code's Stop input, optional). Kept as
+  // given, '' included: an empty one means the turn ended without text, not that it is unknown.
+  let lastAssistantMessage = null;
   try {
     const raw = await readStdin();
     const hookData = JSON.parse(raw.text);
@@ -1272,10 +1268,44 @@ async function readStopHookInput() {
     if (typeof hookData?.transcript_path === 'string' && hookData.transcript_path.length > 0) {
       transcriptPath = hookData.transcript_path;
     }
+    if (typeof hookData?.last_assistant_message === 'string') {
+      lastAssistantMessage = hookData.last_assistant_message;
+    }
   } catch {
     /* stdin unavailable - fall back to local session id */
   }
-  return { ccSessionId, transcriptPath };
+  return { ccSessionId, transcriptPath, lastAssistantMessage };
+}
+
+/**
+ * This turn's final reply: the host's `last_assistant_message` when it sends one, else the
+ * transcript's last assistant text, read backwards from the end of the file. A forward parse of
+ * the whole file took 1.6 s on a 475 MB transcript, on every turn (issue #53). Claude Code
+ * 2.1.322 omits the field only when its last assistant message carries no text.
+ */
+function stopFinalReply({ transcriptPath, lastAssistantMessage }) {
+  if (lastAssistantMessage !== null) return lastAssistantMessage;
+  return transcriptPath ? extractTailAssistantText(transcriptPath) : null;
+}
+
+/**
+ * D#825 — record this turn's final reply under this Stop's memory session and its current prompt
+ * number, for the summary worker (lib/turn-replies.mjs). The reply is stopFinalReply's, the one
+ * the Stop baseline reads. A turn answering a task notice stores no prompt, so its reply lands
+ * on the prompt before it and replaces that reply: a turn's last reply wins. Never throws.
+ */
+function recordStopTurnReply(db, { sessionId, transcriptPath, lastAssistantMessage }) {
+  try {
+    const reply = stopFinalReply({ transcriptPath, lastAssistantMessage });
+    if (!reply || !reply.trim()) return;
+    const n =
+      db
+        .prepare('SELECT MAX(prompt_number) AS n FROM user_prompts WHERE content_session_id = ?')
+        .get(sessionId)?.n ?? 0;
+    recordTurnReply(RUNTIME_DIR, sessionId, n, reply);
+  } catch (e) {
+    debugCatch(e, 'stop-turn-reply');
+  }
 }
 
 /** Flush whatever is left in the episode buffer, under the PostToolUse lock. */
@@ -1396,7 +1426,7 @@ function markSessionCompletedAndSaveHandoff(
 }
 
 /** Fast summary baseline - ensures a summary exists even if the background LLM fails. */
-function writeFastSummaryBaseline(db, { sessionId, project, transcriptPath }) {
+function writeFastSummaryBaseline(db, { sessionId, project, transcriptPath, lastAssistantMessage }) {
   // Stop fires once per assistant TURN and the mem session survives it (R10-P1-1), so this
   // runs on every turn of a session. The first turn with anything to say INSERTs the row
   // (T4-P2-B's guard: never a second row); every later turn REFRESHES that row from its tail's
@@ -1412,8 +1442,7 @@ function writeFastSummaryBaseline(db, { sessionId, project, transcriptPath }) {
     // CLAUDE.md §10 mandates Done/Not done/Failed/Uncertain markers, so the
     // tail is deterministically parseable without Haiku. Prior baseline left
     // remaining_items=='' for every session whose Haiku pass failed (≈66%
-    // in prod data), losing the user-visible "Not done" list. handleStop calls this
-    // AFTER trackCitationsAtStop so the parse is the one it left memoized.
+    // in prod data), losing the user-visible "Not done" list.
     let structuredCompleted = '';
     let structuredNotDone = '';
     let structuredNotes = '';
@@ -1421,7 +1450,7 @@ function writeFastSummaryBaseline(db, { sessionId, project, transcriptPath }) {
     // (D#121, lib/fast-summary.mjs writeStopSummary).
     let tail = null;
     try {
-      tail = transcriptPath ? extractTailAssistantText(transcriptPath) : null;
+      tail = stopFinalReply({ transcriptPath, lastAssistantMessage });
       if (tail) {
         const s = extractStructuredSummary(tail);
         structuredCompleted = s.done;
@@ -1461,23 +1490,26 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
   // applyCitationDecay checks separately.
   try {
     if (transcriptPath && !process.env.QWEN_MEM_NO_CITATION_TRACK) {
-      // D#152/D#177: the `subagent` face, collected ONCE, up front, and used twice -
-      // by the decay block below (only under QWEN_MEM_SUBAGENT_DECAY) and by its own
-      // metering call at the tail. It used to be collected at the tail only, with a
-      // comment saying the position was load-bearing because lib/transcript-scan.mjs
-      // memoizes ONE file and reading the sidechains evicts the parent. That constraint
-      // is real but it is not "last" - it is "not BETWEEN two parent scans". Running it
-      // FIRST parses the sidechains before anything has memoized the parent, so the
-      // parent is then parsed once and stays memoized for every scanner after it:
-      // still one parent parse per Stop, the property the tail comment was protecting.
-      let sub = { injected: new Set(), cited: new Set(), files: 0 };
-      try {
-        sub = collectSubagentSurface(transcriptPath);
-      } catch (e) {
-        debugCatch(e, 'handleStop-subagent-collect');
+      // Issue #53: every question below is answered from the digest, which parses only the
+      // bytes appended since the previous Stop (lib/transcript-digest.mjs). Each of them used
+      // to parse the whole transcript: one shared parse per Stop within lib/transcript-scan.mjs's
+      // heap budget (256 MB at most), one parse per question above it. Each answer is copied
+      // where the code below used to get a fresh Set and may add to it.
+      const digest = digestTranscript(transcriptPath, { runtimeDir: RUNTIME_DIR });
+      if (!digest.complete) {
+        // A transcript first seen larger than one Stop's read budget is caught up over several
+        // Stops. Writing from part of it would bank verdicts the rest contradicts — an id cited
+        // later in the unread part would be decided uncited — so this Stop writes nothing.
+        debugLog('DEBUG', 'handleStop', 'citations: transcript digest still catching up; nothing written');
+        return;
       }
+      const d = digest.main;
+      // D#152/D#177: the `subagent` face, collected ONCE, up front, and used twice —
+      // by the decay block below (only under QWEN_MEM_SUBAGENT_DECAY) and by its own
+      // metering call at the tail.
+      const sub = subagentSurfaceFrom(digest.subagents);
 
-      const ids = extractCitationsFromTranscript(transcriptPath);
+      const ids = new Set(d.cited);
       if (ids.size > 0) {
         // Gate the access-count channel on relevance (audit FLOW-2 / D#179). The cited
         // set is every `#NN` in this session's assistant text and cannot tell a
@@ -1485,8 +1517,9 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
         // session names dozens of ids in prose, and access_count > 3 promotes a row a
         // tier via boostAccessed. The population to credit - all seven faces, and why
         // extractAllInjected alone is the wrong five - lives in the builder.
-        const relevant = buildCitationRelevanceSet({
-          transcriptPath,
+        const relevant = citationRelevanceSetFrom({
+          attachmentInjected: unionSurfaces(d.injected),
+          userTyped: d.userTyped,
           runtimeDir: RUNTIME_DIR,
           project,
           sessionId: ccSessionId,
@@ -1504,11 +1537,9 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
         );
       }
 
-      // v32 citation-decay: tighter feedback loop on top of P4. Re-scan
-      // transcript with main-thread filter, extract injected IDs from BOTH
-      // surfaces (PTR + UserPromptSubmit <memory-context>) via extractAllInjected,
-      // then mutate importance/streak per applyCitationDecay's contract.
-      // Cheap (file still in OS cache).
+      // v32 citation-decay: tighter feedback loop on top of P4. The main-thread
+      // injected ids from every attachment face (PTR + UserPromptSubmit
+      // <memory-context> + …), then mutate the streaks per applyCitationDecay's contract.
       //
       // v34.x: pre-v34 this only saw pre-tool-recall injections, leaving the
       // UPS surface (highest-volume - all decision-type FTS hits) starved.
@@ -1525,13 +1556,13 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
         // survives to citation_surface_log below so "which face earns its
         // budget" becomes answerable. Before this, every face was merged
         // before anything was recorded and no lever had a target.
-        const injectedBySurface = extractInjectedBySurface(transcriptPath, { mainOnly: true });
+        const injectedBySurface = d.injectedMain;
         const injected = unionSurfaces(injectedBySurface);
         // P5 ①: cite-back signals - observations whose warned file the agent
         // edited this session. Union into injected so they're resolved (they
         // were injected via pre-tool-recall) and, below, into cited so the
         // edit promotes them even without a literal #NN in text.
-        const citeBackIds = extractCiteBackSignals(transcriptPath);
+        const citeBackIds = d.citeBack;
         for (const id of citeBackIds) injected.add(id);
         // D#124, promotion-only (v3.66.1): the SessionStart Key Context block
         // leaves no hook attachment, so its ids come from the per-session
@@ -1568,14 +1599,14 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
           // contract is "NEXT time you produce user-facing text," so a
           // session with zero main-thread text gets a free pass - the
           // next Stop in the same session will re-evaluate.
-          if (!hasMainThreadAssistantText(transcriptPath)) {
+          if (!d.mainText.seen) {
             debugLog(
               'DEBUG',
               'handleStop',
               `citation-decay: skipped (no main-thread assistant text yet, injected=${injected.size})`,
             );
           } else {
-            const citedMain = extractCitationsFromTranscript(transcriptPath, { mainOnly: true });
+            const citedMain = new Set(d.citedMain);
             for (const id of citeBackIds) citedMain.add(id);
             // D#177: admit the `subagent` face to the decay loop. It cannot ride the
             // normal path because its injection lands in a dispatched agent's PROMPT
@@ -1704,15 +1735,9 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
       }
 
       // Persist cite-recall ratio for the next SessionStart to surface as
-      // feedback. This block re-scans the transcript rather than threading the
-      // count through `extractCitationsFromTranscript`, so the bump path stays
-      // unchanged - and since P2-8 every scanner in it shares ONE parse via
-      // lib/transcript-scan.mjs, so "scan again" costs an array iteration, not a
-      // re-read. (The old wording, "cheap; the file is already in OS cache", was
-      // arguing the pre-memo case: the OS cache saved the read, never the parse,
-      // which was ~all of the cost.)
+      // feedback.
       try {
-        const stats = computeCiteRecall(transcriptPath);
+        const stats = citeRecallStats(d.citeRecall);
         // D#19: the RATIO GATE's own denominator, alongside the wide one. `stats` counts
         // every `#NN`-shaped token in non-assistant text - tool_result bodies, file
         // contents, CLI output, pasted reports - which is the right caliber for "what has
@@ -1720,24 +1745,19 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
         // (measured 11.2x inflation, R11-B-P2-2). Both are persisted; buildCiteRecallNudge
         // gates on this pair and falls back to the wide one for older payloads.
         //
-        // Cost is an array iteration, not a parse: this block runs after the decay loop's
-        // own extractInjectedBySurface on the same path, and lib/transcript-scan.mjs memoizes
-        // the parse. mainOnly mirrors the decay loop - an id injected only inside a subagent
+        // mainOnly mirrors the decay loop — an id injected only inside a subagent
         // would otherwise enter the denominator while its citation lands in another
         // transcript, scoring a miss the main thread never had a chance to avoid.
         let gate = { gateInjected: null, gateRecalled: null, gateRatio: null };
         try {
-          const gateInjectedIds = unionSurfaces(extractInjectedBySurface(transcriptPath, { mainOnly: true }));
+          const gateInjectedIds = unionSurfaces(d.injectedMain);
           // The nudge asks whether the agent ANSWERED what the hooks showed it, so a
           // `#NN n/a - <reason>` still counts. Since D#98 the default directive asks for no
           // reply on a lesson that did not apply, so that silence now reads as a miss here and
           // the gate fires more (projected 78/95 → up to 87/95 qualifying sessions,
           // docs/audits/20260927-d98-dismissal-baseline.md). Left as is: the gate already fired
           // on most sessions and self-silences after 3; D#111's readout re-measures it.
-          const gateCited = extractCitationsFromTranscript(transcriptPath, {
-            mainOnly: true,
-            includeDismissed: true,
-          });
+          const gateCited = d.citedMainAnswered;
           let hit = 0;
           for (const id of gateInjectedIds) if (gateCited.has(id)) hit++;
           gate = {
@@ -1752,9 +1772,8 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
         }
         // B2 (v2.83.1): also persist the bugfix-shape nudge/save delta so
         // the next SessionStart can surface "N unsaved bugfix-shape edits"
-        // alongside cite-recall. Same scan target (transcript already in OS
-        // cache); same persistence file; one extra line in buildCiteRecallNudge.
-        const bugfixStats = countUnsavedBugfixShape(transcriptPath);
+        // alongside cite-recall. Same persistence file; one extra line in buildCiteRecallNudge.
+        const bugfixStats = bugfixShapeStats(d.bugfixShape);
         const dest = citeRecallPathFor(RUNTIME_DIR, project);
         // Carry the consecutive-low-cite streak forward so the SessionStart
         // nag can self-silence after the project has ignored it N times.
@@ -1785,11 +1804,11 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
           `,
             )
             .all(sessionId);
-          const d = detectUnpersistedDecision({
+          const u = detectUnpersistedDecision({
             prompts: promptRows.map((r) => r.prompt_text),
-            transcriptPath,
+            persistenceCount: d.persistence.count,
           });
-          if (d.fire) decisionSignal = d.signal;
+          if (u.fire) decisionSignal = u.signal;
         } catch (e) {
           debugCatch(e, 'handleStop-persist-reminder');
         }
@@ -1826,25 +1845,14 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
       // promotion all keep the un-widened set. `QWEN_MEM_SUBAGENT_DECAY=0` returns
       // the face to metering-only.
       //
-      // The "placed LAST" note below is now historical: `collectSubagentSurface` runs
-      // at the HEAD of this block (the decay loop needs its result), and `sub` here is
-      // that same object rather than a second call. The parse-count property the note
-      // defends is unchanged - see the comment at the collection site.
-      // earlier, this block costs ONE extra parse of the parent - the memo
-      // re-caches on the first re-read, so it is one, not one per later
-      // scanner - and breaks the "one parse per Stop" property the block
-      // above documents. Measured by instrumenting the parse: 1 parent parse
-      // at this position, 2 when relocated earlier. ~25ms on the largest
-      // real transcript here (5.4MB), matching lib/transcript-scan.mjs's
-      // own header figure.
-      // The text floor is re-checked rather than inherited - same reason as
+      // `sub` is the one collected at the head of this block (the decay loop needs it too).
+      // The text floor is re-checked rather than inherited — same reason as
       // every other face: a tool-only Stop must not bank a verdict, and it
       // must not enter the funnel's session denominator either.
       try {
-        if (hasMainThreadAssistantText(transcriptPath)) {
-          // `sub` is the one collected at the top of this block - a second
-          // collectSubagentSurface call here would re-parse every sidechain file and,
-          // worse, could disagree with the set the decay loop above just scored.
+        if (d.mainText.seen) {
+          // `sub` is the one collected at the top of this block, so this records the set
+          // the decay loop above just scored.
           if (sub.injected.size > 0) {
             recordCitationSurfaces(
               db,
@@ -1871,7 +1879,7 @@ function trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptP
 
 async function handleStop() {
   // Read Claude Code's real session_id from hook stdin for parallel-session scoping.
-  const { ccSessionId, transcriptPath } = await readStopHookInput();
+  const { ccSessionId, transcriptPath, lastAssistantMessage } = await readStopHookInput();
 
   // Capture session info BEFORE cleanup. All DB lookups use the mem-internal id
   // (that's what handleUserPrompt wrote into user_prompts / sdk_sessions / observations
@@ -1893,11 +1901,8 @@ async function handleStop() {
   if (db) {
     try {
       markSessionCompletedAndSaveHandoff(db, { sessionId, project, ccSessionId, episodeSnapshot, stopEpoch });
-      // Citations first: they read the subagent transcripts before the parent, so the parent is
-      // parsed once and stays memoized (D#152). The summary reads the parent's tail on every
-      // turn; run before them, it parsed the parent a second time in any session with subagents.
       trackCitationsAtStop(db, { sessionId, project, ccSessionId, transcriptPath });
-      writeFastSummaryBaseline(db, { sessionId, project, transcriptPath });
+      writeFastSummaryBaseline(db, { sessionId, project, transcriptPath, lastAssistantMessage });
     } catch (e) {
       // Another process held the write lock past HOOK_DB_DEADLINE_MS: this turn's handoff,
       // citations and baseline are lost either way. The summary worker below does not run under
@@ -1906,6 +1911,9 @@ async function handleStop() {
       if (!isDbBusyError(e)) throw e;
       debugLog('WARN', 'stop', 'database locked by another process; this turn was not recorded');
     } finally {
+      // A read and a file write, so it records even when the writes above lost the lock (pre-ship
+      // review of abeac529, F2); before the worker below is spawned, which reads these replies.
+      recordStopTurnReply(db, { sessionId, transcriptPath, lastAssistantMessage });
       db.close();
     }
   }
@@ -1988,7 +1996,9 @@ function gcStalePreRecallCooldowns() {
         name.startsWith('.claude-mem-injected-') ||
         name.startsWith('.claude-mem-keyctx-') || // D#123 Key Context marker — same per-session growth, same 24h GC
         name.startsWith(BUGFIX_NUDGE_MARKER_PREFIX) || // §9-B once-per-session nudge claim — same shape
-        name.startsWith(RECALL_SHOWN_PREFIX); // injection budget C1/C3 per-thread marker — same shape
+        name.startsWith(RECALL_SHOWN_PREFIX) || // injection budget C1/C3 per-thread marker — same shape
+        name.startsWith(TURN_REPLIES_PREFIX) || // D#825 per-session turn replies; its workers read it within minutes
+        name.startsWith(DIGEST_FILE_PREFIX); // issue #53 per-transcript Stop digest; a later Stop re-reads from byte 0
       if (!isCooldown && !isInjectedMarker) continue;
       try {
         const p = join(RUNTIME_DIR, name);
@@ -2182,34 +2192,13 @@ function runSessionStartAutoMaintain(db, project) {
         debugLog('DEBUG', 'auto-maintain', `boosted ${boosted} frequently-accessed observations`);
 
       // Auto-dedup (exact): merge identical-title observations within 1h.
-      // Catches rapid duplicate writes (same hook firing twice, race conditions).
-      // BOTH join sides must be live (audit 2026-08-14 H-1): without the
-      // superseded_at filters (which the fuzzy channel below always had), a row the
-      // fuzzy pass had tombstoned could come back as `a` (a.id < b.id) and tombstone
-      // the LIVE keeper `b` - both copies gone from every read path. Worse, a user
-      // correction saved with supersedes=[#A] (A.superseded_by = B's NUMERIC id) has
-      // the same title as A, so the pair (A, B) tombstoned the correction B itself
-      // and the string 'auto-dedup' write clobbered numeric supersession chains that
-      // citation-tracker decay hand-off and timeline re-anchoring both follow. The
-      // UPDATE repeats the guard so a concurrent writer can't re-stamp a chain.
-      const dupPairs = db
-        .prepare(
-          `
-        SELECT a.id as keep_id, b.id as remove_id
-        FROM observations a
-        JOIN observations b ON a.title = b.title AND a.project = b.project
-          AND a.id < b.id
-          AND ABS(a.created_at_epoch - b.created_at_epoch) < 3600000
-          AND ${liveObsFilterSql('a')}
-          AND ${liveObsFilterSql('b')}
-        LIMIT 20
-      `,
-        )
-        .all();
-      if (dupPairs.length > 0) {
-        const removeIds = dupPairs.map((p) => p.remove_id);
+      // Catches rapid duplicate writes (same hook firing twice, race conditions). Both join
+      // sides live (audit 2026-08-14 H-1); the keeper is the copy carrying a lesson, then the
+      // older one (converge R28) — lib/maintain-core.mjs selectExactDedupeIds.
+      const removeIds = selectExactDedupeIds(db);
+      if (removeIds.length > 0) {
         stampDedupSuperseded(db, removeIds, 'auto-dedup');
-        debugLog('DEBUG', 'auto-maintain', `auto-deduped ${dupPairs.length} near-identical observations`);
+        debugLog('DEBUG', 'auto-maintain', `auto-deduped ${removeIds.length} near-identical observations`);
       }
 
       // Auto-dedup (fuzzy): catches near-identical titles that exact-match
@@ -2231,7 +2220,7 @@ function runSessionStartAutoMaintain(db, project) {
         const recent = db
           .prepare(
             `
-          SELECT id, project, title, importance, created_at_epoch, narrative, text
+          SELECT id, project, title, importance, created_at_epoch, narrative, text, lesson_learned
           FROM observations
           WHERE ${liveObsFilterSql('')}
             AND created_at_epoch > ?
@@ -2249,6 +2238,7 @@ function runSessionStartAutoMaintain(db, project) {
             project: r.project,
             title: r.title,
             importance: r.importance,
+            lesson: r.lesson_learned,
             body: (r.narrative && r.narrative.trim()) || (r.text && r.text.trim()) || '',
           }));
           const fuzzyRemoveIds = selectFuzzyDedupeIds(rows, { maxMerges: FUZZY_MAX_MERGES });

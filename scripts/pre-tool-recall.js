@@ -25,6 +25,7 @@ import {
   fileMatchClause,
   fileMatchParams,
   basenameAnySep,
+  edgesNameOtherFile,
   jsonArrayLikeNeedle,
   toolEditPath,
 } from '../lib/file-edge-match.mjs';
@@ -261,6 +262,27 @@ const EDGE_DECAY_K = Math.max(1, Number.isNaN(EDGE_DECAY_K_RAW) ? 3 : EDGE_DECAY
 // environment and project pairs sit in the same bands, so the head-to-head is not
 // era-confounded. The `(null)` bucket and the face-overall figure ARE, being
 // dominated by legacy rows.
+// R3 O1 (lib/file-edge-match.mjs edgesNameOtherFile): a row whose every same-named edge is ANOTHER
+// file of this project is dropped after the SELECT. The SELECT is then PAGED until the slots are
+// filled, because a filter downstream of a LIMIT shrinks the set instead of refilling it (the
+// D#172 shape) — and the files this rule exists for are the ones with many same-named siblings:
+// a fixed over-fetch of 3 left a Read of a Rust `mod.rs` silent in 8 of 122 probes on the
+// maintainer's store (pre-ship review M2). Bounded at PATH_PRECISION_MAX_PAGES pages.
+// QWEN_MEM_PRETOOL_PATH_PRECISION=off restores the name-only match and the single LIMIT.
+const PATH_PRECISION_ON = !['0', 'off', 'false', 'no'].includes(
+  String(process.env.QWEN_MEM_PRETOOL_PATH_PRECISION ?? '').toLowerCase(),
+);
+// D#949 (v6.37.0): the observations matching one file are ranked by write time before cite
+// history (citeFactorClause), which only breaks a same-millisecond tie ahead of `id`; the
+// lesson-first key still leads. D#771's pre-registered
+// blind re-run preferred this order 37:9 on lessons written after 2026-09-22
+// (docs/audits/20261016-citation-regime-consumers.md §9). QWEN_MEM_PRETOOL_RECENCY_FIRST=off
+// restores the A1.5 (v2.83.2) order: cite history ahead of recency.
+const RECENCY_FIRST_ON = !['0', 'off', 'false', 'no'].includes(
+  String(process.env.QWEN_MEM_PRETOOL_RECENCY_FIRST ?? '').toLowerCase(),
+);
+const PATH_PRECISION_PAGE_EXTRA = 20;
+const PATH_PRECISION_MAX_PAGES = 10;
 const SCOPE_FILTER_ON = ['1', 'on', 'true', 'yes'].includes(
   String(process.env.QWEN_MEM_SCOPE_FILTER || '').toLowerCase(),
 );
@@ -728,11 +750,6 @@ try {
     const crossHookSeen = readCrossHookInjected(project, dedupKey);
     const dedupSlack = Math.min(crossHookSeen.size, CROSS_HOOK_DEDUP_SLACK_MAX);
     const obsLimit = (isRead ? 1 : 2) + dedupSlack;
-    // A1.5 (v2.83.2): cite_factor as a tertiary sort key. When multiple file-
-    // matching lessons exist, the one with proven cite history outranks the
-    // merely-most-recent one. Single-match files unchanged (obsLimit=1 Read /
-    // 2 Edit). Composes with v2.83.0 A1 to extend the citation-decay feedback
-    // loop to the 85%-recall PreToolUse:Read/Edit path.
     // P2 (D#78): decayed-edge filter. This readonly fast-path never migrates,
     // so a pre-v43 DB has no miss_streak column and the filter would throw at
     // prepare time — probe pragma_table_info and fall back to unfiltered
@@ -761,29 +778,91 @@ try {
         /* probe failure → unfiltered */
       }
     }
-    const rows = db
-      .prepare(
-        `
-      SELECT DISTINCT o.id, o.type, o.title, o.lesson_learned
-      FROM observations o
-      JOIN observation_files of2 ON of2.obs_id = o.id
-      WHERE o.project = ?
+    // Several lessons matching one file: D#949 orders them newest first, cite history breaking a
+    // tie (RECENCY_FIRST_ON); the `off` arm is A1.5 (v2.83.2), cite history ahead of recency.
+    // Each arm is a whole SELECT with its own FROM and ORDER BY, so
+    // tests/order-by-created-at-guard.test.mjs resolves the table and checks each id tiebreak.
+    // `LIMIT` stays a literal keyword, and the PATH_PRECISION switch-off text must stay what it was.
+    const obsWhere = `WHERE o.project = ?
         AND o.importance >= 2
         AND ${liveObsFilterSql('o')}
         AND o.created_at_epoch > ?
         AND ${fileMatch}
         ${edgeDecayFilter}
         ${scopeFilter}
-        ${typeFallback}
+        ${typeFallback}`;
+    const obsSelect = (limitArgs) =>
+      RECENCY_FIRST_ON
+        ? `
+      SELECT DISTINCT o.id, o.type, o.title, o.lesson_learned
+      FROM observations o
+      JOIN observation_files of2 ON of2.obs_id = o.id
+      ${obsWhere}
+      ORDER BY
+        CASE WHEN o.lesson_learned IS NOT NULL AND o.lesson_learned != '' THEN 0 ELSE 1 END,
+        o.created_at_epoch DESC,
+        ${citeFactorClause('o')} DESC,
+        o.id DESC
+      LIMIT ${limitArgs}
+    `
+        : `
+      SELECT DISTINCT o.id, o.type, o.title, o.lesson_learned
+      FROM observations o
+      JOIN observation_files of2 ON of2.obs_id = o.id
+      ${obsWhere}
       ORDER BY
         CASE WHEN o.lesson_learned IS NOT NULL AND o.lesson_learned != '' THEN 0 ELSE 1 END,
         ${citeFactorClause('o')} DESC,
         o.created_at_epoch DESC,
         o.id DESC
-      LIMIT ${obsLimit}
-    `,
-      )
-      .all(project, cutoff, ...fileParams);
+      LIMIT ${limitArgs}
+    `;
+    let rows;
+    if (!PATH_PRECISION_ON) {
+      rows = db.prepare(obsSelect(`${obsLimit}`)).all(project, cutoff, ...fileParams);
+    } else {
+      const page = obsLimit + PATH_PRECISION_PAGE_EXTRA;
+      const select = db.prepare(obsSelect('? OFFSET ?'));
+      const projectRoot = inferProjectDir();
+      rows = [];
+      // Rows the old single LIMIT would have FETCHED and this rule removed (the metric's unit; the
+      // dedup and merge caps downstream may still have kept some of them out — delta review F4).
+      let displaced = 0;
+      let position = 0;
+      const pushed = new Set();
+      // One read transaction for every page, so a write landing between two pages cannot shift
+      // the OFFSET under them (a repeated or a skipped row — delta review F2).
+      db.transaction(() => {
+        for (let k = 0; k < PATH_PRECISION_MAX_PAGES && rows.length < obsLimit; k++) {
+          const batch = select.all(project, cutoff, ...fileParams, page, k * page);
+          if (batch.length === 0) break;
+          // The edges the match itself may use: with QWEN_MEM_EDGE_DECAY on, a decayed edge is not a
+          // match, so it must not keep the row here either (pre-ship review L1).
+          const ids = batch.map((r) => r.id);
+          const edges = new Map();
+          for (const e of db
+            .prepare(
+              `SELECT of2.obs_id, of2.filename FROM observation_files of2 WHERE of2.obs_id IN (${ids.map(() => '?').join(',')}) ${edgeDecayFilter}`,
+            )
+            .all(...ids)) {
+            if (!edges.has(e.obs_id)) edges.set(e.obs_id, []);
+            edges.get(e.obs_id).push(e.filename);
+          }
+          for (const r of batch) {
+            if (rows.length >= obsLimit) break;
+            if (edgesNameOtherFile(edges.get(r.id) || [], keyPath, projectRoot)) {
+              if (position < obsLimit) displaced++;
+            } else if (!pushed.has(r.id)) {
+              pushed.add(r.id);
+              rows.push(r);
+            }
+            position++;
+          }
+          if (batch.length < page) break;
+        }
+      })();
+      if (displaced > 0) recordMetric(DATA_DIR, { event: 'pretool_path_dropped', dropped: displaced });
+    }
 
     // T9: also query the `events` table — after T9, bugfix/lesson/decision/etc.
     // route here instead of observations, so we must read both sources to keep

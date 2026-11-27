@@ -1,21 +1,21 @@
 // CLAUDE.md-steering plan (v3.13): content generators for the qwen-mem-lite
-// managed block (written into <cwd>/CLAUDE.md) and its companion
-// <cwd>/.claude/plugin_claude_mem_lite.md detail doc. Kept separate from the
-// claudemd.mjs primitives so the strings are testable without side effects.
+// managed block (written into <cwd>/CLAUDE.md and <cwd>/QWEN.md) and the shared
+// detail doc in the plugin data directory. Kept separate from the claudemd.mjs
+// primitives so the strings are testable without side effects.
 //
 // CURRENT_SENTINEL_VERSION tags the managed block as `<!-- qwen-mem-lite:begin
 // vN -->`. needsRefresh() (claudemd.mjs) compares the version tag AND the block
-// body AND the detail-doc content - ANY of the three differing triggers an
-// in-place refresh (drift = intended content change, overwritten rather than
-// treated as a user edit). So a template edit propagates on the next SessionStart
-// even WITHOUT a version bump; the tag need not be monotonic and, in practice,
-// need not change at all - we keep `v1` across content edits (see mem #8846).
-// We deliberately use `v1` (not `v2`) so the version digit differs from
-// the sibling code-graph-mcp plugin's `<!-- code-graph-mcp:begin v2 -->` block in
-// the same CLAUDE.md; the slug already scopes the two independently (claudemd.mjs),
-// so this is a cosmetic distinguisher, not a functional one. The pre-v3.13 legacy
-// memory-dir MEMORY.md sentinel also carried `v1`, but it lives in a different file
-// and is migrated away (claudemd.migrateLegacyMemoryDir), so there is no collision.
+// body - either differing triggers an in-place refresh (drift = intended content
+// change, overwritten rather than treated as a user edit). So a template edit
+// propagates on the next SessionStart even WITHOUT a version bump; the tag need
+// not be monotonic and, in practice, need not change at all - we keep `v1` across
+// content edits (see mem #8846). We deliberately use `v1` (not `v2`) so the
+// version digit differs from the sibling code-graph-mcp plugin's
+// `<!-- code-graph-mcp:begin v2 -->` block in the same CLAUDE.md; the slug already
+// scopes the two independently (claudemd.mjs), so this is a cosmetic
+// distinguisher, not a functional one. The pre-v3.13 legacy memory-dir MEMORY.md
+// sentinel also carried `v1`, but it lives in a different file and is migrated
+// away (claudemd.migrateLegacyMemoryDir), so there is no collision.
 
 export const PLUGIN_SLUG = 'qwen-mem-lite';
 export const CURRENT_SENTINEL_VERSION = 'v1';
@@ -23,13 +23,12 @@ export const CURRENT_SENTINEL_VERSION = 'v1';
 // The CLI name as written into the user's project tree - deliberately NOT `CLI_INVOKE`
 // (audit R7 P2-1). CLI_INVOKE resolves to an absolute, VERSION-PINNED path
 // (`node /home/<user>/.claude/plugins/cache/thenewnano/qwen-mem-lite/<version>/cli.mjs`), and
-// both generators below write files the user may commit: the managed block lands in
-// <cwd>/CLAUDE.md and the detail doc in <cwd>/.claude/, which is the standard home for
-// project-scoped settings/commands/agents and is commonly tracked. Embedding the resolved
-// path there rewrote the file on every plugin release (needsRefresh sees doc drift) and gave
-// teammates a $HOME path that exists on no other machine. This module's output must be
-// byte-identical across installs; the resolved path belongs only on runtime-generated
-// surfaces that never touch the repo (MCP `instructions`, hook recovery lines).
+// the managed block lands in <cwd>/CLAUDE.md, which users commonly commit. Embedding the
+// resolved path there rewrote the file on every plugin release and gave teammates a $HOME path
+// that exists on no other machine. This module's output must be byte-identical across installs;
+// the resolved path belongs only on runtime-generated surfaces that never touch the repo (MCP
+// `instructions`, hook recovery lines). The detail doc itself lives outside the repository, in
+// the data directory, so it no longer creates per-project files at all.
 const CLI = 'qwen-mem-lite';
 
 /**
@@ -39,7 +38,7 @@ const CLI = 'qwen-mem-lite';
  * per-project-type variation. Keep it tight (cheap always-loaded context); the
  * full tables + rules live in the detail doc this block points to.
  */
-export function buildClaudeMdBlock({ detailDocRef = '.claude/plugin_claude_mem_lite.md' } = {}) {
+export function buildClaudeMdBlock({ detailDocRef = '~/.qwen-mem-lite/plugin_claude_mem_lite.md' } = {}) {
   // Intentionally machine-stable: MCP tool names only, NO CLI_INVOKE (that
   // resolves to an absolute path that differs per install - it would make this
   // committed/refreshed block churn across machines). The detail doc holds the
@@ -51,10 +50,10 @@ PreToolUse hooks already run \`mem_recall\` for past lessons before Read/Edit/Wr
 | When | Call |
 |------|------|
 | Before Edit/Write | hook already recalled; if an injected \`#NN\` lesson changed what you did, add the bare tag \`(#NN)\` once at the end of the sentence describing that change (citing = adopting; uncited lessons decay; skip ones that did not apply). No other mention of memory ids, saves or the memory store in replies to the user |
-| A recalled memory drives an answer or a design choice | check its claim in the code or \`git log\` first: \`#NN\` and \`E#NN\` rows are notes from past sessions, many written automatically, so they can be wrong, and they describe the code as it was. If the code disagrees, trust the code and replace the note: \`mem_save(..., supersedes=[NN])\`, or \`supersedes=["E#NN"]\` for an event |
+| A recalled memory drives an answer or a design choice | check its claim in the code or \`git log\` first: \`#NN\` and \`E#NN\` rows are notes from past sessions, many written automatically, so they can be wrong, and they describe the code as it was. If the code disagrees, trust the code and replace the note: \`mem_save(..., supersedes=[NN])\`, or \`supersedes=["E#NN"]\` for an event (CLI: \`save "<correction>" --supersedes NN,E#NN\`) |
 | After fixing a non-trivial bug | \`mem_save(type="bugfix", lesson_learned="<root cause + fix, only what this change's diff shows>", importance=2)\` |
 | After a non-obvious architecture decision | \`mem_save(type="decision", lesson_learned="<constraint + tradeoff>")\` |
-| Deferring to a future session | \`mem_defer({title, priority:1|2|3, detail})\`; when fixed, add \`closes_deferred=[N]\` to \`mem_save\` |
+| Deferring to a future session | \`mem_defer({title, priority:1|2|3, detail})\`; when fixed, add \`closes_deferred=[N]\` to \`mem_save\`. CLI: \`defer update D#N --title "<t>" --detail "<d>" --priority <1-3>\` edits it in place (no drop and re-add); \`save "<fix>" --closes-deferred D#N\` closes it; \`defer drop D#N --reason "<why>"\` drops it |
 | Looking up past work / history | \`mem_search "keywords"\` · \`mem_recent\` · \`mem_timeline\` |
 
 Path cost is round-trips, not milliseconds: the PreToolUse hook above already recalls (0 calls) - prefer it. For an explicit query, if these \`mem_*\` tools are deferred behind ToolSearch this session, the Bash CLI \`${CLI}\` is one call vs two (ToolSearch + call); the MCP server instructions carry the absolute path to use when it is not on PATH.
@@ -63,140 +62,178 @@ Full tool + CLI tables, citation/decay rules, and save discipline → \`${detail
 }
 
 /**
- * Full detail doc rendered into `<cwd>/.claude/plugin_claude_mem_lite.md`.
- * Not auto-loaded by Claude Code - the CLAUDE.md block points to it and Claude
- * reads it on demand. claudemd.writeManaged() prepends the `managed-by` marker;
- * this returns pure content.
+ * Full detail doc kept in the plugin's data directory (lib/local-steering.mjs
+ * ensureSteeringDetailDoc) and shared by every project. Not auto-loaded by the
+ * host - the managed block points to it and the model reads it on demand. A
+ * project no longer gets its own copy, so adopting leaves no untracked files.
  */
 export function getDetailDoc() {
-  return `# qwen-mem-lite 插件契约（完整）
+  return `# qwen-mem-lite plugin contract (full)
 
-> 由 \`${CLI} adopt\` 生成、随版本自动刷新；卸载用 \`${CLI} unadopt\`。
-> 精炼触发表由 SessionStart 注入会话上下文（显式 \`${CLI} adopt\` 过的项目则写在 \`CLAUDE.md\` 的 \`qwen-mem-lite\` 托管块里）；本文件是其展开。
+> Generated by \`${CLI} adopt\`, refreshed automatically with each version; remove the project block with \`${CLI} unadopt\`.
+> The compact trigger table is injected into the session context by SessionStart (in a project that
+> ran \`${CLI} adopt\` explicitly it lives in the \`qwen-mem-lite\` managed block of \`CLAUDE.md\`); this
+> file is its expanded form. It lives in the plugin's data directory
+> (\`~/.qwen-mem-lite/plugin_claude_mem_lite.md\`) and is shared by every project, so a version bump
+> never changes a tracked file.
 
-> **本文下方所有命令写作 \`${CLI} <cmd>\`。** 该名字只在全局装过
-> （\`npm i -g qwen-mem-lite\`）时才在 PATH 上；否则用等价的
-> \`node <插件根目录>/cli.mjs <cmd>\`，绝对路径见本会话 MCP server 的 instructions。
-> 本文件**刻意不写死绝对路径**：它随安装位置与版本变化，而本文件可能被提交进仓库，
-> 写死会导致每次升版都改动该文件、且队友拿到的是只在别人机器上存在的路径。
+> **Every command below is written \`${CLI} <cmd>\`.** That name is on PATH only when the package was
+> installed globally (\`npm i -g qwen-mem-lite\`); otherwise use the equivalent
+> \`node <plugin root>/cli.mjs <cmd>\`, whose absolute path is in this session's MCP server
+> instructions. The command paths below do not depend on where this file lives.
 
-## 被动 recall（hook 已自动跑，你只需采纳）
+## Passive recall (the hook already ran; just adopt it)
 
-PreToolUse hook 在你 Read / Edit / Write 文件前已自动 \`mem_recall\` 该文件：
-- **Read** 路径：asymmetric-quiet——最多 1 条 lesson、120 字符、要求带 \`lesson_learned\`。
-- **Edit / Write** 路径：decision-support——最多 3 条、240 字符、高重要度 bugfix/decision 即使无
-  lesson 也注入。
-- Read→Edit 同文件共享 cooldown（不重复注入正文），但 Read 注入后的首个 Edit 会把 lesson **ID**
-  以一行 ack 指令重新浮出。看到 \`#NN [bugfix] …\` 这类行时：**某条 lesson 改变了你的做法，就在描述
-  那处改动的句子末尾加一个裸标签 \`(#NN)\`**；没用上的 lesson 不必提，也不要逐条列出。纯工具回合不算；
-  把 ID 记在工作记忆里，写回时引用。
-- 给用户的回复里，除了这个 \`(#NN)\` 标签，不要再提记忆编号：不要报告保存、延期得到的编号
-  （如"已记进项目记忆，编号 #1"），也不要讨论记忆库本身（如"和记忆库里 #1 的记录一致"）。
-- 系统按会话追踪引用：被引用的 lesson 在召回排序里上浮，被注入却未引用的下沉（有界的排序乘数）；
-  反复注入却从未被引用的，后台维护会把它的 importance 降到 2（无 lesson 的降到 1）。
-  写成 \`#NN n/a\` 的驳回不算采纳：排序上与未引用相同，同样下沉——所以不必写。
-  引用是给系统的反馈，不是合规仪式——注入池据此自调。
+Before you Read / Edit / Write a file, the PreToolUse hook has already run \`mem_recall\` for it:
+- **Read** path: asymmetric-quiet - at most 1 lesson, 120 characters, and only with \`lesson_learned\`.
+- **Edit / Write** path: decision-support - at most 3, 240 characters; a high-importance
+  bugfix/decision is injected even without a lesson.
+- Read→Edit of the same file shares a cooldown (the body is not injected twice), but the first Edit
+  after a Read re-surfaces the lesson **ID** in a one-line ack instruction. When you see a line like
+  \`#NN [bugfix] ...\`: **if a lesson changed what you did, add a bare tag \`(#NN)\` at the end of the
+  sentence describing that change**; do not mention lessons you did not use, and do not list them
+  one by one. A pure tool-only turn does not count; keep the ID in working memory and cite it when
+  you write back.
+- In replies to the user, apart from that \`(#NN)\` tag, do not mention memory ids: do not report ids
+  from saves or deferrals (e.g. "saved to project memory, id #1"), and do not discuss the memory
+  store itself (e.g. "this matches record #1 in the memory store").
+- The system tracks citations per session: a cited lesson rises in the ranking used for search and
+  injection; one injected but not cited sinks (a bounded ranking multiplier). One injected
+  repeatedly and never cited is lowered to importance 2 by background maintenance (and one with no
+  lesson to 1). A rejection written as \`#NN n/a\` does not count as adoption: it ranks like an
+  uncited lesson and sinks the same way, so there is no need to write it. Citation is feedback to
+  the system, not a compliance ritual; the injection pool tunes itself from it.
 
-## 记忆是旧笔记，不是现在的代码
+## Memory is old notes, not the current code
 
-- \`E#NN\` 是后台根据会话自动写的事件摘要，可能写错：2026-09 的沙箱实测里 43 条中有 6 条事实错误、13 条部分错误。
-  \`#NN\` 可能是 agent 主动保存的笔记，\`#NN\` 也可能是后台自动整理的会话摘要；主动保存的也可能说得超出当时那次改动的实际范围。两者描述的都是保存那一刻的代码。
-- 用一条记忆回答"之前做了什么、为什么"，或据此做设计决定之前，先在代码或 \`git log -S\` / \`git show\` 里核对它的具体说法。
-- 代码与记忆矛盾时，以代码为准，回复里按代码说；然后用
-  \`mem_save(type=<原类型>, title=..., lesson_learned="<按代码更正后的说法>", supersedes=[NN])\`
-  替换那条记忆（事件写 \`supersedes=["E#NN"]\`），被替换的记录不再被召回。只更正你在代码里亲眼核实过的那一点；拿不准就不写。
-- 保存教训时只写这次 diff 能证明的内容：修了什么、为什么这样修；之后才做的或打算做的，不写进去。
+- \`E#NN\` is an event summary the background writes from a session, and it can be wrong: in the
+  2026-09 sandbox measurement, 6 of 43 were factually wrong and 13 partly wrong. \`#NN\` may be a
+  note the agent saved deliberately, or a session summary the background compiled; even a
+  deliberate save can claim more than that change actually did. Both describe the code at the
+  moment they were saved.
+- Before you answer "what was done before, and why" from a memory, or make a design decision based
+  on one, verify its specific claim in the code or with \`git log -S\` / \`git show\`.
+- When code and memory disagree, trust the code and say so in the reply; then replace that memory
+  with
+  \`mem_save(type=<original type>, title=..., lesson_learned="<the corrected claim from the code>", supersedes=[NN])\`
+  (for an event write \`supersedes=["E#NN"]\`); a superseded record is no longer recalled. Correct
+  only the point you verified in the code yourself; if you are unsure, do not write it.
+- When saving a lesson, write only what this change's diff proves: what was fixed and why it was
+  fixed that way. Leave out what was done later or is only planned.
 
-## 何时主动调用 MCP 工具
+## When to call MCP tools proactively
 
-\`tools/list\` 默认暴露 6 个核心工具 + 3 个 defer 工具：
+\`tools/list\` exposes 6 core tools + 3 defer tools by default:
 \`mem_search\` / \`mem_recent\` / \`mem_recall\` / \`mem_get\` / \`mem_save\` / \`mem_timeline\` +
-\`mem_defer\` / \`mem_defer_list\` / \`mem_defer_drop\`。
+\`mem_defer\` / \`mem_defer_list\` / \`mem_defer_drop\`.
 
-### 选 MCP 还是 CLI：按 round-trip,不是执行毫秒
+### MCP or CLI: choose by round trips, not milliseconds
 
-真正的开销是模型往返次数,不是工具执行——暖 MCP 调用 ~25ms、CLI 冷启 ~90ms,在一次推理(秒级)面前都是噪声。按往返次数选路：
+The real cost is model round trips, not tool execution - a warm MCP call is ~25 ms and a cold CLI
+start ~90 ms, both noise next to one reasoning pass (seconds). Choose by round trips:
 
-1. **被动 hook（0 往返）**：上面的 PreToolUse recall 已自动跑,最快,优先采纳,别重复调。
-2. **CLI via Bash（1 往返）**：工具多的会话里 \`mem_*\` 会被 defer 到 ToolSearch 后面——这时一次 MCP 调用 = ToolSearch + call = **2 往返**,而 Bash 跑一条 CLI 只 **1 往返**。派出去的子 agent 通常也拿不到 \`mem_*\` 工具,CLI 是它唯一的 1-往返路径。用下面「CLI 速查」表里的命令。
-3. **MCP 直调（已加载时 1 往返）**：\`mem_*\` 已在上下文里(未被 defer)就直接调,暖进程执行最快、省掉 ToolSearch。
+1. **Passive hook (0 round trips)**: the PreToolUse recall above already ran; it is fastest, so
+   prefer adopting it and do not call again.
+2. **CLI via Bash (1 round trip)**: in a tool-heavy session \`mem_*\` is deferred behind ToolSearch -
+   then one MCP call = ToolSearch + call = **2 round trips**, while one Bash CLI run is **1 round
+   trip**. A dispatched subagent usually does not get the \`mem_*\` tools either, so the CLI is its
+   only 1-round-trip path. Use the commands in the "CLI quick reference" tables below.
+3. **Direct MCP call (1 round trip when loaded)**: if \`mem_*\` is already in context (not deferred),
+   call it directly; the warm process is fastest and skips ToolSearch.
 
-一句话：能让 hook 代劳就别调；要显式查,若得先 ToolSearch 才能用 \`mem_*\`,改跑 CLI。
+In one sentence: let the hook do it when it can; for an explicit lookup, if using \`mem_*\` would
+require ToolSearch first, run the CLI instead.
 
-| 时机 | 工具 | 关键参数 |
-|------|------|----------|
-| Edit / Write 前 | \`mem_recall\` | \`file="<路径>"\`（hook 通常已代劳） |
-| Test failure / error | \`mem_search\` | \`query="<错误关键词>", obs_type="bugfix"\` |
-| Refactor 前 | \`mem_search\` | \`query="<模块>", obs_type="refactor"\` |
-| 新功能起手 | \`mem_search\` | \`query="<功能区域>"\` —— 找 prior art |
-| 解决非平凡 bug 后 | \`mem_save\` | \`type="bugfix", lesson_learned="<根因+修法>", importance=2\` |
-| 非显然架构决策后 | \`mem_save\` | \`type="decision", lesson_learned="<约束+取舍>"\` |
-| 上下文提到 #NN | \`mem_get\` | \`ids=[NN]\` |
+| When | Tool | Key arguments |
+|------|------|---------------|
+| Before Edit / Write | \`mem_recall\` | \`file="<path>"\` (the hook usually did it) |
+| Test failure / error | \`mem_search\` | \`query="<error keywords>", obs_type="bugfix"\` |
+| Before a refactor | \`mem_search\` | \`query="<module>", obs_type="refactor"\` |
+| Starting a feature | \`mem_search\` | \`query="<feature area>"\` - look for prior art |
+| After a non-trivial bugfix | \`mem_save\` | \`type="bugfix", lesson_learned="<root cause + fix>", importance=2\` |
+| After a non-obvious architecture decision | \`mem_save\` | \`type="decision", lesson_learned="<constraint + tradeoff>"\` |
+| Context mentions #NN | \`mem_get\` | \`ids=[NN]\` |
 
-## 必做契约（dogfood，本仓库尤其严格）
+## Mandatory contract (dogfood; this repository is especially strict)
 
-- **解决非平凡 bug 后**（≠ typo / rename）**必须** \`mem_save(type="bugfix",
-  lesson_learned="<一行根因+一行修法>", importance=2)\`。判据：未来改同一文件的会话看到这条能否避坑？能→存。
-- **非显然架构决策后**（≠ 改名/挪代码）调 \`mem_save(type="decision",
-  lesson_learned="<约束+为何这样选+牺牲了什么>")\`。\`decision\` 命中率显著高于 \`change\`（当前遥测约
-  3:1，会漂移——用 \`${CLI} stats\` 实测，别套固定倍数）；方向稳健：一条好 decision 抵数条 change。
-  别注水：decision 只留给真权衡，不是风格选择。
-- **推迟到未来会话**（≠ 在途 todo、≠ 本 PR 跟进）调
-  \`mem_defer({title, priority:1|2|3, detail:"<约束+为何推迟>"})\`。
-  触发词：中文「下次/下个会话/不在本轮范围/留给下个会话」；en「next session / defer to next round /
-  out of scope for this PR / pick up later」。
-- 修掉 deferred 项时 **必须** 给 \`mem_save\` 加 \`closes_deferred=[N]\`（N 是 SessionStart
-  \`### Deferred Work\` banner 里的序号，或原始 id \`["D#42"]\`，混用 OK），让 carry-forward 链闭合。
-  若该项无需修（flaky/scope shift）改用 \`mem_defer_drop({id, reason})\`，reason 必填、作审计。
-- **不要为凑 schema 写 \`lesson_learned: 'none'\`**：写不出能复用的教训就留 NULL，接受低重要度观测。
-  Haiku 默认过于激进地填 "none"——手动 save 时覆盖它。
+- **After fixing a non-trivial bug** (not a typo / rename) you **must** call
+  \`mem_save(type="bugfix", lesson_learned="<one line of root cause + one line of fix>", importance=2)\`.
+  Test: would a future session touching the same file avoid the trap after seeing it? If yes, save it.
+- **After a non-obvious architecture decision** (not a rename / code move) call
+  \`mem_save(type="decision", lesson_learned="<constraint + why this choice + what was sacrificed>")\`.
+  \`decision\` has a much higher hit rate than \`change\` (current telemetry is about 3:1 and drifts -
+  measure it with \`${CLI} stats\`, do not assume a fixed multiplier); the direction is stable: one
+  good decision is worth several changes. Do not pad: reserve decision for a real tradeoff, not a
+  style choice.
+- **Deferring to a future session** (not an in-flight todo, not a follow-up in this PR) call
+  \`mem_defer({title, priority:1|2|3, detail:"<constraint + why deferred>"})\`.
+  Trigger phrases: Chinese "下次/下个会话/不在本轮范围/留给下个会话"; English "next session / defer
+  to next round / out of scope for this PR / pick up later".
+- When you fix a deferred item you **must** add \`closes_deferred=[N]\` to \`mem_save\` (N is the
+  ordinal in the SessionStart \`### Deferred Work\` banner, or the raw id \`["D#42"]\`; mixing is OK),
+  so the carry-forward chain closes. If the item needs no fix (flaky / scope shift), use
+  \`mem_defer_drop({id, reason})\` instead; reason is required and audited.
+- **Do not write \`lesson_learned: 'none'\` just to fill the schema**: if you cannot state a reusable
+  lesson, leave it NULL and accept a low-importance observation. Haiku is too eager to fill "none"
+  by default - override it on a manual save.
 
-## 维护 / 管理类工具（走 CLI）
+## Maintenance / admin tools (use the CLI)
 
-以下工具从 \`tools/list\` 隐藏（缩小启动上下文）；仍注册在 MCP 层、按名 \`tools/call\` 可命中，
-但对 Claude Code 这类只读 tools/list 的调用方只走 CLI：
+These tools are hidden from \`tools/list\` (to shrink the startup context). They are still registered
+at the MCP layer and can be reached by name with \`tools/call\`, but for a caller such as Claude Code
+that only reads \`tools/list\`, use the CLI:
 
-| 场景 | CLI |
-|------|-----|
-| 清理过期记忆 | \`${CLI} maintain scan\` 预览；清理本身交给用户启动的 \`/qwen-mem-lite:update\` |
-| 深度优化（Haiku） | \`${CLI} optimize\`（默认 preview；\`--run\` 执行，\`--task re-enrich,normalize,cluster-merge,smart-compress\`） |
-| 压缩旧条目 | \`${CLI} compress\`（默认 preview；\`--execute\` 执行，\`--age-days N\`） |
-| FTS5 索引检查 / 重建 | \`${CLI} fts-check <check\\|rebuild>\` |
-| tier 分组浏览 | \`${CLI} browse [--tier active]\` |
-| 导出 JSON/JSONL | \`${CLI} export [--format jsonl]\` |
-| 统计总量 / 健康 | \`${CLI} stats [--days 30]\` |
-| 删除 / 更新某条 | \`${CLI} delete <id>[,<id>]\` · \`${CLI} update <id> [--title ...]\` |
+| Scenario | CLI |
+|----------|-----|
+| Clean up stale memories | \`${CLI} maintain scan\` to preview; the cleanup itself is left to the user-started \`/qwen-mem-lite:update\` |
+| Deep optimization (Haiku) | \`${CLI} optimize\` (preview by default; \`--run\` executes, \`--task re-enrich,normalize,cluster-merge,smart-compress\`) |
+| Compress old entries | \`${CLI} compress\` (preview by default; \`--execute\` runs, \`--age-days N\`) |
+| FTS5 index check / rebuild | \`${CLI} fts-check <check\\|rebuild>\` |
+| Browse by tier | \`${CLI} browse [--tier active]\` |
+| Export JSON/JSONL | \`${CLI} export [--format jsonl]\` |
+| Totals / health | \`${CLI} stats [--days 30]\` |
+| Delete / update one | \`${CLI} delete <id>[,<id>]\` · \`${CLI} update <id> [--title ...]\` |
 
-## CLI 速查（常用检索）
+## CLI quick reference (search)
 
-| 命令 | 用途 |
-|------|------|
-| \`${CLI} search "query"\` | FTS5 全文搜索（默认排除低信号 \`Modified X\` 等；加 \`--include-noise\` 找文件变更记录） |
-| \`${CLI} search "err" --type bugfix\` | 按类型过滤 |
-| \`${CLI} recall "file.mjs"\` | 文件相关记忆 |
-| \`${CLI} recent 5\` | 最近 5 条 |
-| \`${CLI} get 42,43\` | 按 ID 展开 |
-| \`${CLI} timeline --anchor 42\` | 时间线上下文 |
+| Command | Purpose |
+|---------|---------|
+| \`${CLI} search "query"\` | FTS5 full-text search (low-signal \`Modified X\` records excluded by default; add \`--include-noise\` for file-change records) |
+| \`${CLI} search "err" --type bugfix\` | Filter by type |
+| \`${CLI} recall "file.mjs"\` | Memories tied to a file |
+| \`${CLI} recent 5\` | The 5 most recent |
+| \`${CLI} get 42,43\` | Expand by ID |
+| \`${CLI} timeline --anchor 42\` | Timeline context |
 
-## CLI 速查（写入 / 记录）
+## CLI quick reference (write / record)
 
-写入类工具多从 \`tools/list\` 隐藏 → 只能走 CLI。下表带**硬上限**（超限直接报错，别撞了才知道）；完整 flag 见 \`${CLI} help\`。
+Most write tools are hidden from \`tools/list\`, so the CLI is the only path. The table lists the
+**hard limits** (going over fails immediately; do not learn by hitting them); full flags in
+\`${CLI} help\`.
 
-| 命令 | 签名（含硬约束） |
-|------|------------------|
-| 存观测 | \`${CLI} save "<text>" --type bugfix\\|decision --lesson "<≤500 字符>" [--importance 1-3] [--closes-deferred N] [--supersedes 12,E#34]\` - \`<text>\` **必填定位参数**；\`--lesson\` 超 500 直接 fail；\`--supersedes\` 替换代码已推翻的旧记忆 |
-| 推迟工作 | \`${CLI} defer add "<title ≤200>" [--priority 1\\|2\\|3] [--detail "<约束+为何推迟>"]\` - 标题 >200 挪到 \`--detail\` |
-| 改某条 | \`${CLI} update <id> [--lesson "<≤500>"] [--title T] [--type T] [--importance 1-3] [--narrative T] [--concepts "a b c"]\` |
-| 事件日志 | \`${CLI} activity save --type <bugfix\\|lesson\\|bug\\|discovery\\|refactor\\|feature\\|observation\\|decision> "<title>" [--body T] [--files f1,f2]\` |
+| Command | Signature (including hard limits) |
+|---------|-----------------------------------|
+| Save an observation | \`${CLI} save "<text>" --type bugfix\\|decision --lesson "<≤500 chars>" [--importance 1-3] [--closes-deferred N] [--supersedes 12,E#34]\` - \`<text>\` is a **required positional**; \`--lesson\` over 500 fails immediately; \`--supersedes\` replaces an old memory the code has overturned |
+| Defer work | \`${CLI} defer add "<title ≤200>" [--priority 1\\|2\\|3] [--detail "<constraint + why deferred>"]\` - a title over 200 moves to \`--detail\` |
+| Edit a deferred item | \`${CLI} defer update D#N [--title T] [--detail T] [--priority 1\\|2\\|3]\` - edits in place, id unchanged; do not drop and re-add |
+| Drop a deferred item | \`${CLI} defer drop D#N --reason "<why it is not being done>"\` - for a fixed item use \`save ... --closes-deferred D#N\`, not drop |
+| Edit one memory | \`${CLI} update <id> [--lesson "<≤500>"] [--title T] [--type T] [--importance 1-3] [--narrative T] [--concepts "a b c"]\` |
+| Event log | \`${CLI} activity save --type <bugfix\\|lesson\\|bug\\|discovery\\|refactor\\|feature\\|observation\\|decision> "<title>" [--body T] [--files f1,f2]\` |
 
-\`maintain\` / \`optimize\` / \`compress\` 见上方「维护 / 管理类工具」；\`maintain --ops\` 取值 \`cleanup,decay,boost,demote_pinned,dedup,purge_stale,vacuum\`，省略时默认 \`cleanup,decay,boost,demote_pinned\`（顺序有意义：demote_pinned 必须在 boost 之后）；\`--retain-days\` ∈ [7,365]。
+\`maintain\` / \`optimize\` / \`compress\` are under "Maintenance / admin tools" above; \`maintain --ops\`
+takes \`cleanup,decay,boost,demote_pinned,dedup,purge_stale,vacuum\`; when omitted it defaults to
+\`cleanup,decay,boost,demote_pinned\` (order matters: demote_pinned must come after boost);
+\`--retain-days\` ∈ [7,365].
 
-## 卸载 / 关闭
+## Uninstall / disable
 
-- \`${CLI} unadopt\`：移除 CLAUDE.md 托管块 + \`.claude/plugin_claude_mem_lite.md\`；
-  CLAUDE.md 里你自己的内容（sentinel 之外）不动。
-- 本项目永久关闭自动 adopt：\`${CLI} adopt --disable\`（\`--enable\` 重新武装）。
-- 全局禁用自动 adopt：环境变量 \`MEM_NO_AUTO_ADOPT=1\`。
-- 关闭版本漂移自动刷新（保留你对托管块的手改）：\`QWEN_MEM_NO_TEMPLATE_REFRESH=1\`。
+- \`${CLI} unadopt\`: removes the managed block from CLAUDE.md and QWEN.md. A per-project
+  detail doc or state sidecar left by an older version is removed too when it is untracked and
+  still carries the plugin marker; your own content in those files (outside the sentinel) is left
+  alone. The shared data-dir copy of this file stays.
+- Disable auto-adopt permanently for this project: \`${CLI} adopt --disable\` (\`--enable\` re-arms it).
+- Disable auto-adopt globally: environment variable \`MEM_NO_AUTO_ADOPT=1\`.
+- Disable automatic refresh on version drift (keeping your manual edits to the managed block):
+  \`QWEN_MEM_NO_TEMPLATE_REFRESH=1\`.
 `;
 }

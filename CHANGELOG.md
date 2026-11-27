@@ -2,6 +2,44 @@
 
 All notable changes to qwen-mem-lite are documented in this file.
 
+## v7.4.0 - synced with upstream through v6.37.0
+
+This release folds in everything upstream shipped between v6.30.9 and v6.37.0 (305
+commits), with the fork identity and the dual-host behaviour kept.
+
+- **PreToolUse recall ranks by write time first** - for several observations on one file,
+  write time comes before citation history; `QWEN_MEM_PRETOOL_RECENCY_FIRST=off` restores
+  the old order. Same-named files in other project directories no longer match
+  (`QWEN_MEM_PRETOOL_PATH_PRECISION=off` restores), and error recall shows a thread a memory
+  once while the thread lasts and ignores git's own commit records.
+- **`defer update D#N`** rewrites an open deferred item in place, keeping its id. The
+  steering block lists the CLI write forms for `defer update`, `save --closes-deferred`,
+  `defer drop --reason` and `save --supersedes`.
+- **Safer writes** - project files committed as links out of the repository are refused;
+  instruction and settings files are read only when regular and under 4 MiB; `uninstall
+  --purge` with a relocated data directory removes only this plugin's own files, and refuses
+  to delete through a link; write commands refuse `--project .` inside Claude Code's
+  `projects/` state directory.
+- **The steering detail doc is English and shared** - `adopt` writes only the managed block into
+  `CLAUDE.md` and `QWEN.md`. The full contract lives in
+  `~/.qwen-mem-lite/plugin_claude_mem_lite.md`, shared by every project, so adoption no longer
+  creates untracked `.claude/` or `.qwen/` files. The next `adopt`/SessionStart removes a legacy
+  per-project detail doc or state sidecar when it is untracked and still carries the plugin
+  marker; tracked files are left alone.
+- **Session summaries** - Stop records each turn's last reply (the host's
+  `last_assistant_message` when sent, else the transcript tail) and the summary worker reads
+  only its own session's turns. The Last Session line orders completed work by importance.
+  Citation tracking reads a transcript digest that parses only the bytes appended since the
+  previous Stop.
+- **Secret scrubber** - erases more cut-off private keys and credentials written inside JSON
+  strings; `import-jsonl` scrubs each tool input and result string before storing it.
+- **Dependencies** - `better-sqlite3` 13.2.0 (SQLite 3.54.1),
+  `@modelcontextprotocol/sdk` 1.32.2, and the `hono` / `@hono/node-server` security updates;
+  dev dependencies refreshed (`vitest` 5.1.2, `knip` 6.48.0, `fast-check` 4.11.0).
+
+The first open adds one nullable `memory_session_id` column to `events`, which an older
+build ignores; no data move and no configuration change.
+
 ## v7.3.0 - synced with upstream through v6.30.8
 
 This release folds in everything upstream shipped between v6.26.0 and v6.30.8 (506
@@ -234,6 +272,551 @@ three pre-ship review rounds and without a re-measured Baselines row in `CLAUDE.
 still describes the v6.11.0 tree at `9c41144`, which is what it claims to describe. Neither
 absence is a claim about the code — the full suite is green — but neither ritual was performed,
 and pretending otherwise in a changelog would be worse than saying so.
+
+## v6.37.0 — PreToolUse recall ranks a file's observations by write time before citation history
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is setting
+`CLAUDE_MEM_PRETOOL_RECENCY_FIRST=off`, or pinning `claude-mem-lite@6.36.0`.
+
+- **When several observations match the file being read or edited, PreToolUse recall now ranks
+  them by write time before citation history.** Until now citation history came before write
+  time; it now only breaks a tie between observations written in the same millisecond. As before,
+  observations with a lesson come before those without one, and matches from the events table
+  come after the observations. Read shows at most one lesson and Edit at most three, so on a file
+  with several matches the ones shown can change. `CLAUDE_MEM_PRETOOL_RECENCY_FIRST=off` restores
+  the old order.
+- **Why:** in a pre-registered blind comparison on the maintainer's transcripts (D#771,
+  `docs/audits/20261016-citation-regime-consumers.md` §9), 177 edits (at most two per file and
+  lesson pair) had both compared lessons written after 2026-09-22 and the two orders showed different
+  lessons. In 46 of them exactly one side's lesson was rated as constraining the edit by both of
+  two blind judges: the newest-first side in 37, the old order in 9 (two-sided exact sign test
+  p = 4.1 × 10⁻⁵). The judges were Claude subagents, the transcripts come from one machine, and
+  only edits were judged, not Read.
+- **Search and the lessons injected at prompt time still use citation history in their
+  ranking;** only the per-file order of PreToolUse recall changes. The detail doc
+  `.claude/plugin_claude_mem_lite.md` now says so: in a project whose `CLAUDE.md` carries the
+  block, the first session rewrites that file with one changed line, and
+  `CLAUDE_MEM_NO_TEMPLATE_REFRESH=1` keeps it as it is.
+
+## v6.36.0 — `defer update`; the steering block lists the CLI write forms; `save --project .` and five other writes are refused in Claude Code's `projects/` folder
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.35.6`.
+
+- **`defer update <D#N|ordinal> [--title T] [--detail T] [--priority 1|2|3]` changes an open
+  deferred item in place and keeps its id.** Until now an item could only be dropped and added
+  again under a new id. Only the fields given change, and `--detail=` clears the detail. An item
+  that is done or dropped, or belongs to another project, is refused.
+- **The steering block lists the CLI forms for editing, closing and dropping a deferred item and
+  for superseding a memory:** `defer update D#N …`, `save "<fix>" --closes-deferred D#N`,
+  `defer drop D#N --reason "<why>"` and `save "<correction>" --supersedes NN,E#NN`. The first
+  session of this version refreshes the block, so a `CLAUDE.md` that carries it shows a two-line
+  change; `CLAUDE_MEM_NO_TEMPLATE_REFRESH=1` keeps the block as it is. The detail file gains rows
+  for `defer update` and `defer drop`.
+- **`save`, `defer add`, `activity save`, `import-jsonl`, `verify-apply` and `restore` given
+  `--project .` or `--project current` are refused inside Claude Code's `projects/` folder
+  (`~/.claude/projects/` by default).** In 6.35.6, `defer add --project=current` run in a folder
+  there still filed the item under that folder's name.
+- **Windows: background workers and `claude` CLI calls no longer open a console window** (PR #60,
+  from an outside contributor).
+- **In a header naming several sections, the names after the first are Done, Not done, Failed or
+  Uncertain only.** Outside a `## 汇报` / `## Report` heading this is the 6.35.5 reading again: in
+  6.35.6, `**Done / Changes**: …` there became the session's Done. Inside a report, a header naming
+  two parts (`**Changes / Open items**: …`) is read as a line of the part before it.
+
+## v6.35.6 — Last Session reads 汇报 reports; a save without --project from Claude Code's own project folder is refused
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.35.5`.
+
+- **Last Session reads a final report written as `## 汇报` with 变更 / 验证 / 遗留 parts, or as
+  `## Report` with Changes / Verification / Open items.** The Stop hook's report reader did not know
+  these part names. Below the report's heading, 变更 / Changes is now the session's Done and
+  遗留 / Open items its Not done; 验证 / Verification ends the part before it. As with Done / Not
+  done since 6.13.5, the report takes precedence over the model's summary.
+- **A write without `--project` run inside Claude Code's own per-project folder is refused instead
+  of filed under a project named after that folder.** `save`, `defer add`, `activity save`,
+  `import-jsonl` and `restore`, run in `~/.claude/projects/<dir>/…` (for example right after
+  `cd`-ing into its `memory/` to edit `MEMORY.md`), took that folder as the project. They now exit 1
+  and say to run from the project directory or pass `--project`. `restore` refuses only when some
+  row carries no project and no `--project` was given. `$CLAUDE_CONFIG_DIR` is followed when
+  absolute; the config folder outside `projects/` stays writable.
+
+## v6.35.5 — better-sqlite3 13.2.0, and a repair for the shape its load order opens
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.35.4`.
+
+- **better-sqlite3 13.0.3 → 13.2.0 (SQLite 3.54.1).** 13.2.0 loads an addon compiled into its
+  `build/` directory before the prebuilt one it ships. A normal install compiles nothing there
+  on a platform it ships a prebuilt addon for, so that addon still loads: checked on Linux x64
+  with npm's install scripts blocked and with them allowed.
+- **A compiled addon that will not load no longer keeps the database closed when the prebuilt
+  one would load.** Under 13.2.0 such an addon in `node_modules/better-sqlite3/build/` hides the
+  prebuilt one. The binding repair now renames it to
+  `<file>.unusable` when the prebuilt addon loads in its place, before any npm step and without
+  compiling, so the repair at SessionStart covers it too; `claude-mem-lite rebuild-binding` and
+  the SessionStart probe name the file they moved. A compiled addon that loads is left alone.
+
+## v6.35.4 — a repository's links no longer lead the plugin's writes out of it
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.35.3`.
+
+- **A cloned repository's committed links no longer make the plugin write or delete files
+  outside it.** With `.claude` committed as a link out of the repository, a session started in a
+  repository whose `CLAUDE.md` carries the managed block, and `adopt`, wrote the detail doc and
+  its state file into the directory the link named, and `unadopt` deleted them there. With
+  `CLAUDE.md` committed as such a link, that session refreshed the block in the file the link
+  named and added the `AGENTS.md` import to it, `adopt` appended the block to it, and the
+  one-time cleanup of the old `<claude-mem-context>` block rewrote it when it held one. A link at
+  `CLAUDE.md` or `.claude` is now written through only when it resolves inside the project and
+  outside `.git` (in any letter case), or when git lists it as untracked, which is how git shows
+  a link you made. An archive unpacked into a git work tree, or one you run `git init` in, is not
+  covered: git lists its links as untracked too. A link at the detail doc or the state file itself
+  is never written through, as in 6.35.3.
+- **Layouts 6.35.3 wrote and 6.35.4 refuses.** A link at `CLAUDE.md` or `.claude` that leads out
+  of the project is refused when the project is not in a git work tree, when git does not answer
+  (a repository it refuses as another user's, git missing, a 5-second timeout), when you
+  committed the link yourself, and when your link sits where the repository tracks a file of
+  that name. `adopt` names the link. A session started there leaves the block as it was and says
+  nothing; `adopt --status` still reports the project adopted.
+- **`unadopt` leaves a refused link and what is behind it alone, and says so.** When the block is
+  in a file that a refused `CLAUDE.md` link names, the block, the detail doc and its state file
+  stay, and `unadopt` exits 1 and says to remove the block from that file by hand; `unadopt --all`
+  counts that project as not removed.
+- **The cleanup of the old `<claude-mem-context>` block no longer turns `keep this`, the block,
+  then `trailing` into `keep thistrailing`.**
+
+## v6.35.3 — project files committed as links; native-binding repair from the CLI
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.35.2`.
+
+- **The detail doc and the state file under `.claude/` are no longer written through a symbolic
+  link.** A repository that carried the managed block in `CLAUDE.md` and committed either file as
+  a link out of the repository had a session started in it overwrite the file the link named.
+  Both are now refused when they are links; `adopt` reports the refusal.
+- **Project files that are not regular files are no longer read without bound.** A repository
+  can commit `CLAUDE.md` as a symlink to `/dev/zero`, which SessionStart's automatic adoption read
+  without bound, and every hook event read the project's `.claude/settings*.json` the same way.
+  The plugin now reads `CLAUDE.md`, `CLAUDE.local.md`, the rules file, the detail doc and its
+  state file, `.claude/settings*.json`, `.mcp.json`, and the `package.json`, `.npmignore` or
+  `.gitignore` it checks for publishing only when they are regular files, and treats one over
+  4 MiB, Claude Code's limit for an instruction file, as unreadable; `unadopt` still removes its
+  block from a larger one. The managed block, the `AGENTS.md` imports and the detail doc are not
+  written into a FIFO, a device or a file over 4 MiB.
+- **A CLI command over a native binding that will not load starts at most one automatic
+  rebuild every 6 hours.** Before, every command ran `rebuild-binding` again before failing;
+  measured with no prebuild for the platform and no compiler, a command that failed in
+  73–81 ms took 20.5 s on the first call and 0.47 s on each one after it. Inside the 6 hours
+  the command prints `automatic rebuild skipped: last attempted … ago (one per 6 h)` and the
+  Fix line. A rebuild that works ends the wait, as does a `rebuild-binding` run after which
+  every code home loads. `rebuild-binding` itself is never held back.
+- **The CLI's automatic rebuild and `rebuild-binding` no longer stop the compile partway.** The
+  CLI stopped its rebuild after 300 s, and a rebuild stopped its compile from source after 240 s.
+  Neither stop reached the compiler, which kept running after the repair had reported failure.
+  The two `npm rebuild` steps keep their 240 s limit.
+
+## v6.35.2 — `hono` dependency updates; a reminder fix for half-applied updates
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.35.1`.
+
+- **The unsaved-decision reminder counts the session's saves again while an update is half
+  applied.** An update replaces files one at a time; a hook from 6.35.0 or earlier running over
+  6.35.1's library counted no saves, so the next SessionStart could say a finalized decision went
+  unsaved in a session that had saved it.
+- **Dependencies: `hono` 4.13.13 → 4.13.18 and `@hono/node-server` 2.1.5 → 2.1.8**, both through
+  `@modelcontextprotocol/sdk`. `npm audit --omit=dev` reported advisories against the replaced
+  versions: five for `hono`, two for `@hono/node-server`.
+
+## v6.35.1 — Stop no longer re-reads the whole transcript every turn
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.35.0`. 6.35.0 does not remove the `transcript-digest-*.json` files this
+release writes to its runtime directory.
+
+- **Citation tracking at Stop reads only what the transcript gained since its previous run**
+  (issue #53). Stop runs at the end of every assistant turn, and it parsed the session's whole
+  transcript each time, once per question it asks when the transcript was too large to keep in
+  memory. Stop now keeps its results so far in one file per transcript in its runtime directory
+  (`~/.claude-mem-lite/runtime/` by default) and parses only the lines added since.
+  - A transcript first seen above 64 MiB, such as a long session already running when you update,
+    is read over several turns. Citation tracking writes nothing for it until it has been read to
+    the end.
+- **The session summary takes the turn's final reply from Claude Code** (`last_assistant_message`,
+  issue #53) when Claude Code sends it, as the per-turn reply record already did. Otherwise the reply is read
+  from the end of the transcript rather than by parsing the whole file.
+
+## v6.35.0 — the Last Session line names the session's main outcome more often
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.34.0`. One default changes: the session summary prompt's rule for the
+session's replies asks the model to order the work it lists as completed by importance.
+
+- **The Last Session line names the session's main finished work more often.** SessionStart shows
+  a new session the summary's Completed field cut to 120 characters, and the summary model listed
+  finished work in the order it happened, so a release or a deploy came after the details and fell
+  past the cut. The prompt's rule for the session's replies now asks for the most important
+  finished outcome first, with every other finished item kept. On 30 of the maintainer's own
+  sessions, each prompt called twice, the line left the main finished work out in 11 of 60 calls,
+  against 23 of 60 with 6.34.0's prompt. The Completed field the summary writes is longer: 936 characters on average,
+  against 635. A continuation handoff shows it whole.
+- **`uninstall --purge` no longer says `Done!` when `~/.claude-mem-lite` is a symbolic link.**
+  - With `~/.claude-mem-lite` a link, the purge removed the link, printed `Done!` and left the
+    store where the link pointed. It now removes nothing, `CLAUDE_MEM_DIR` included, and names the
+    link.
+  - A removal of `~/.claude-mem-lite` that fails is named, where it printed a stack trace; the
+    relocated `CLAUDE_MEM_DIR` purge still runs.
+  - When `~/.claude-mem-lite` is still there after the removal returned, the run says so.
+  - None of these ends in `Done!` or exit 0.
+
+## v6.34.0 — the session summary reads every turn's last reply
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.33.0`, which never reads the `runtime/turn-replies-*.json` files this version
+writes: delete them by hand. One default changes: the session summary model reads each turn's last
+reply.
+
+- **The session summary model reads each turn's last reply**, oldest first, and its prompt says
+  that work a reply reports as done is completed. It read the session's observations and prompts
+  only. Stop records each turn's last reply (Claude Code's own copy when it sends one, else the
+  transcript's last assistant text), scrubbed, under its session in `runtime/`, and the summary
+  reads that record. On 30 of the maintainer's own sessions, against the same prompt with only the
+  final reply: a main piece of finished work missing from the summary went from 12 to 0, done work
+  written as not done from 4 to 0. On those sessions the prompt grows from 2,411 characters on
+  average in 6.33.0 to 5,435.
+- **The secret scrubber erases Hugging Face, DigitalOcean, PyPI, Shopify and Groq tokens.**
+
+## v6.33.0 — `uninstall --purge` leaves your own files in a relocated data directory
+
+**Upgrade note: nothing to run; the schema version stays 49.** The first open adds a nullable
+`memory_session_id` column to `events`; an older build ignores it. Going back is pinning
+`claude-mem-lite@6.32.0`. Two defaults change: dates are shown in local time, and the daily
+maintenance pass no longer runs `normalize`.
+
+- **`uninstall --purge` with `CLAUDE_MEM_DIR` set removed the whole directory, your own files in
+  it included.** It now removes only what claude-mem-lite writes there: files matched by each
+  writer's exact file-name format (the store and its sidecars, snapshots, legacy backups, the
+  steering doc, metrics/errors shards, verify-apply backups, update residue), and its `runtime/`
+  and `managed/` directories, whole, when nothing of yours sits beside them. Beside files of yours
+  they stay, and that run says the purge is incomplete. It names what it leaves. The store is
+  removed last. A purge that cannot remove an entry of its own, or cannot look into the
+  directory, says the purge is incomplete, keeps the store and exits 1 instead of printing
+  `Done!`. The directory itself goes only when it is empty. The default `~/.claude-mem-lite` is
+  removed whole, as before.
+- **The daily unattended maintenance pass no longer runs `normalize`.** It rewrote concept tags
+  with synonym groups a model picked, with no record and no undo; one run on a copy of the
+  maintainer's store returned 21 groups, among them `fmtDate ← date` and
+  `CLAUDE.md ← CLAUDE.local.md`. Re-enrich, cluster-merge and smart-compress
+  still run daily. To run it yourself: `claude-mem-lite optimize --run --task normalize`
+  (`--run-all` instead of `--run` skips its weekly gate) or `mem_optimize`. Tags it rewrote before
+  stay.
+- **Dates and times are shown in local time**, the zone `--from` / `--to` and
+  `date_from` / `date_to` already read a bare date in. A save made in the evening west of
+  Greenwich showed as the next day, and filtering by the date shown did not find it. This covers
+  the lists, SessionStart's `Recent (<date>)`, `stats`' daily activity and `maintain`'s purge
+  preview;
+  `mem_get` and `get D#N` print ISO 8601 with the offset and milliseconds, so a time pasted back
+  as `date_to` finds its row. Compress weeks and metric files stay in UTC.
+- **`mem_defer_drop` takes several items in one call** (`id`: one id, an array, or `"1,2"`). The
+  open list renumbers after each drop, so dropping items 1 and 2 in two calls dropped the wrong
+  second item. Every id resolves against one snapshot, one bad id drops nothing, and the drop is
+  one transaction (CLI `defer drop 1,2` too). `defer add` and `mem_defer` answer `Deferred as D#N`
+  without the `(item N)` that went stale.
+- `--project .` and `--project current` mean the current project on every CLI command; before,
+  only `optimize` read them, and `save --project .` filed the row under a project named `.`.
+- Database snapshots are created owner-only (0600) like the store; one written into an existing
+  0755 `CLAUDE_MEM_DIR` was readable by every local user.
+- `maintain scan`'s suggested merges and the hook's automatic dedup keep the copy that carries a
+  lesson, then the higher importance; a bare re-save no longer hides the copy with the lesson.
+  Weekly summaries are no longer offered as duplicates of each other.
+- A save refused as a near-duplicate says nothing was saved, the lesson included, and names
+  `force` / `--force`.
+- SessionStart's Recent Activity names the project of a row borrowed from another project.
+- `activity recent` / `activity search` print event ids as `E#N`, the spelling `get` and
+  `activity show` read as an event.
+- `help` lists the install commands (`status`, `repair`, `rebuild-binding`, `self-update`,
+  `cleanup`, `cleanup-hooks`, `install`, `uninstall`).
+- The MCP server that cannot open the database points at `doctor` instead of telling you to
+  remove the WAL files.
+- `help` no longer calls `export` a complete backup: its default leaves out rows hidden from
+  search, and `--include-compressed` adds the compressed, merged and idle ones.
+- A normal install over an `install --dev` one no longer copies the hook scripts through the
+  dev-mode link into the developer's checkout; both dev links are removed first, and install
+  says so.
+- Episodes stored as events record the session they came from. Nothing reads it yet.
+
+## v6.32.0 — the steering sync looks above the repository before writing its copy
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.31.0`: its next session writes the local copy back.
+
+- **No `CLAUDE.local.md` copy where Claude Code already loads the current block from above the
+  repository root.** Claude Code loads `CLAUDE.md` and `CLAUDE.local.md` from every directory above
+  the session, across git boundaries, up to but not including the filesystem root. A
+  `claude --worktree` session loaded the main checkout's `CLAUDE.local.md` and the copy the plugin
+  wrote in the worktree; a repository below a directory you ran `adopt` in loaded that directory's
+  `CLAUDE.md` and its own copy. Counted with Claude Code 2.1.322's InstructionsLoaded hook in a
+  sandbox, each session loaded the block twice before and once now. The plugin now writes nothing
+  there and takes out an untracked copy it wrote before (frozen with
+  `CLAUDE_MEM_NO_TEMPLATE_REFRESH=1`, the copy stays, with any edits in it); the copy comes back if
+  that block goes. Only the block as this version ships it stands in (any block while frozen).
+  In a worktree session the `CLAUDE.md` of the main checkout and of the directories between it and
+  the worktree never does, since Claude Code does not load them; while `claudeMdExcludes` is set in
+  your user or project settings, nothing does. `adopt --status` names the file that carries the
+  block, or an out-of-date one that loads as well. A `CLAUDE.md` block names the detail file
+  relative to itself (`.claude/plugin_claude_mem_lite.md`): in one run from a repository below
+  such a directory, the model's first read of it missed and its second found it.
+- **Outside git, a session below a directory whose `CLAUDE.md` carries the current block no longer
+  gets the text injected as well.**
+- `adopt` run in a subdirectory of a git repository whose root `CLAUDE.local.md` carries the block
+  says that sessions there load both, and how to keep one copy.
+- The PostToolUse error check no longer goes quadratic on a long run of blank lines followed by an
+  indented `at` (constructed input; 100,000 newlines: 2,805 ms → 0.3 ms per call on the
+  maintainer's machine, against the hook's 5 s).
+- Docs and the `citation-stats --sidechain` message no longer say the plugin's hooks do not fire
+  inside subagents: they do. A subagent starts without the SessionStart context.
+
+## v6.31.0 — recall injects less that does not apply to the step at hand
+
+**Upgrade note: nothing to run; the schema version stays 49.** The first three changes each have a
+switch back; the rest change text only. Evidence: `docs/audits/20261103-124956-session-history-analysis-r3.md` and
+`docs/audits/20261103-r3-optimization-plan.md` (194 session transcripts, 2026-10-06..11-03).
+
+- **PreToolUse recall no longer injects the lesson of a same-named file in another directory.**
+  Editing `src/snapshot/mod.rs` used to pull the lessons recorded for `src/mcp/server/mod.rs`, and
+  a `tasks/x/README.md` those of the root `README.md`: 210 of 4,037 injected rows were such a
+  different file. Bare file names, Claude Code worktree copies, paths outside the project,
+  spellings that cannot be placed (`../`, `~/`, a drive letter) and paths that name no file now (a
+  file that moved) still match; paths are compared as
+  POSIX paths, so a native Windows host is unchanged. A dropped row's slot goes to the next
+  candidate: candidates are read page by page until the slots are filled (at most 10 pages). Back:
+  `CLAUDE_MEM_PRETOOL_PATH_PRECISION=off`.
+- **Error recall shows a thread a memory once while the thread lasts** (until `/compact`, `/clear`
+  or a new session, or the 24 h runtime GC; a subagent keeps its record for its whole run), not
+  once per 30 minutes. Back: `CLAUDE_MEM_ERROR_RECALL_REPEAT_MIN=30`.
+- **Error recall reads an exit-0 git command's output without the commit records git prints**,
+  and stays silent when nothing left reads as a failure (`git commit -m "fix: … traceback" && git
+  log --oneline`; 6 of 422 exit-0 firings on the maintainer's transcripts, 2026-11-03). The
+  records set aside are a line starting `[<branch> <sha>] `, a one-line log entry `<sha> subject`
+  whose sha holds a letter (after any `--graph` columns), and a line starting `commit <40-hex sha>`
+  with the header fields and indented message under it; the command must run `git log`, `show`,
+  `commit`, `cherry-pick`, `revert`, `merge`, `rebase` or `reflog`. Back:
+  `CLAUDE_MEM_ERROR_RECALL_GIT_RECORD=off`.
+- The error-recall block no longer ends with `→ Use mem_get(ids=[…]) for details.` (622 blocks,
+  3 `mem_get` calls); its rows keep their `#id`.
+- The MCP server instructions list `defer add` and `save` with their flags, so a write through
+  the CLI does not start with a `help` call.
+
+## v6.30.15 — two fixes to the JSON-string scrubbing 6.30.14 added
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.30.14`. Text that earlier versions already stored is not rescanned on upgrade.
+
+- **Security: 6.30.14 stored values that 6.30.13 erased, in JSON one encoder wrote inside a string
+  another encoder wrote** (D#701), such as a PHP service's JSON returned as a string field by a .NET
+  service. PHP's `json_encode` writes `/` as `\/`, .NET's System.Text.Json writes `"`, `'` and `+`
+  as `\u0022`, `\u0027` and `\u002B`, and Gson writes `=` and `'` as `\u003d` and `\u0027`; a
+  webhook URL's token, or a password that a `+` joins into a URL, on a line after a credential was
+  kept. On 40,000 generated texts that nest these encoders and plain JSON (329,366 values), 6.30.14
+  stored 220 values that 6.30.13 erased; 6.30.15 stores none of them, and none that 6.30.14 erased.
+- **`import-jsonl` imports a transcript holding minified JSON of millions of characters in one
+  string**, which 6.30.14 failed on (D#698). Scrubbing still throws on a single unbroken value of
+  millions of characters after a credential label, after a private key's BEGIN line or in a token,
+  and `import-jsonl` then imports nothing from that transcript file (D#705).
+- On about 199,000 texts of Claude Code transcripts from other projects (prompts, tool results and
+  the strings of tool inputs), 6.30.15 gives the same output as 6.30.14.
+- **Still stored**: the shapes 6.30.14 lists; some values on a line after a credential in a JSON
+  string that 6.30.13 erased together with that credential's value, such as the rest of a URL path
+  after a token (D#706); a credential in a JSON string that a text ends inside right after a
+  backslash (D#703); and, in text found only by fuzzing, words that 6.30.14 erased between a private
+  key's BEGIN and END lines or after a credential label, next to an escape in a JSON string (D#707,
+  D#708).
+
+## v6.30.14 — a credential inside a JSON string is erased
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.30.13`. Text that earlier versions already stored is not rescanned on upgrade.
+
+- **Security: a credential inside a JSON string was stored** (D#687, D#693, D#685). A JSON string
+  writes a quote as `\"` and a line break as `\n`, and a credential written in one was kept: what
+  `aws secretsmanager get-secret-value` prints (the whole JSON or `--query SecretString`), an MCP
+  result holding JSON in a string, a `.env` value holding escaped JSON
+  (`APP_CONFIG="{\"api_key\":…}"`), an escaped JSON literal in source code, a `.env` inside
+  `kubectl … | jq -c .data`, a credential label or token at a line start in a JSON string
+  (`\ntoken: …`, `\nghp_…`), and a cut-off key printed as JavaScript string concatenation or by
+  `util.inspect` inside a JSON string. Now a double-quoted string holding an escape is decoded and
+  scrubbed as text, and rewritten when that erased something. Of 14 recorded shapes, each through
+  the tool-call hook, import-jsonl and a pasted prompt, 6.30.13 stored 13 through at least one of
+  them and 6.30.14 none.
+- **Scrubbing takes longer**: on about 198,000 texts of Claude Code transcripts from other projects,
+  timed in alternating passes over the same texts, 6.30.14 takes 1.13 times as long as 6.30.13 on
+  Node 26 and 1.10 times on Node 22; on prompts 1.12 and 1.12, on tool results 1.07 and 1.05, on
+  the strings of tool inputs 1.30 and 1.21.
+- **Some text that is not a credential is erased or rewritten now as well.** Of those texts,
+  6.30.14 changes 69 and keeps nothing in them that 6.30.13 erased. In 66 it erases the value of a
+  `"token"`, `"session_id"` or `"sessionId"` key in JSON written inside a command
+  (`echo "{\"token\":\"…\"}"`), as 6.30.13 did in JSON outside a string. In 3 it writes `\|` in a
+  grep pattern as `\\|`, in a string it rewrites.
+- **Still stored**, besides the shapes 6.30.11 lists: a cut-off key printed one string per line in
+  a diff or as a JSON array, and the `git diff` of a PEM key that gained a passphrase, in text
+  pasted into a prompt; key lines in a diff hunk that does not show the key's BEGIN line
+  (`git show` of an edited key line); a credential in a text after its first 256 strings
+  holding an escape (a notebook with long outputs); a credential label or token at a line start in
+  a single-quoted string (Python's `repr`, Node's `util.inspect`); a credential label right after
+  a terminal color code (`…[0mAPI_KEY=…`); an environment list written as name/value pairs
+  (Kubernetes `name: DB_PASSWORD` then `value: …`), through the tool-call hook, import-jsonl and
+  the prompt hook (D#679); a value under a name no pattern covers, such as `ENCRYPTION_KEY=`,
+  `SECRET_KEY_BASE=` or `APP_KEY=` in a `.env` file, and under a quoted credential key followed by
+  `=` (`"api_key" = "…"` in TOML or HCL) (D#690).
+
+## v6.30.13 — an empty credential label no longer hides the next line's credential
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.30.12`. Text that earlier versions already stored is not rescanned on upgrade.
+
+- **Security: a credential label with no value took the next line's label as its value, and that
+  line's credential was stored** (D#683). Under `POSTGRES_PASSWORD:` in a compose file, `password =`
+  in an INI section or `token:` in YAML, the next line's `JWT_SECRET:`, `api_key =` or
+  `client_secret:` was erased instead of its value, by the tool-call hook too (a `cat` of such a
+  file). On 100,000 generated config texts (247,410 values), 6.30.12 stored 4,417 values that
+  6.30.13 erases; each of the 96 values 6.30.13 keeps and 6.30.12 erased is on a line that 6.30.12
+  also keeps when the line stands alone (no pattern covers its label, such as `DATABASE_URL：` with a
+  full-width colon).
+- **Security: `import-jsonl` stored credentials and lines of private keys from tool calls** (D#684).
+  Now each string of a tool's input, and of a result made of blocks (an MCP tool's), is scrubbed as
+  text before it is written as JSON, unless a string holds a `<private>` tag; and a tool call's
+  input or result keeps only what comes before its first private-key marker, object keys included,
+  and nothing when that marker is an END. Of 12 shape groups measured, import-jsonl stored 7 and
+  stores none: credential labels at line starts and a JSON object, each in a file written with Write
+  and in an MCP result; a cut-off key printed one string per line in an MCP result; the `git diff`
+  of a PEM key that gained a passphrase; a key line that `git show` printed as a hunk header's
+  context, with the key's END in the hunk. Some text that is not a credential is erased now as well,
+  such as a session id in hook JSON that a command prints (`"session_id": "…"`) and part of a
+  command after a quoted credential name. On Node 22, `JSON.stringify` throws from about 4,200
+  levels of nesting, and such a tool call failed the import of its whole transcript; import-jsonl no
+  longer calls it on a tool call's value.
+- **Still stored**, besides the shapes 6.30.11 lists: the shapes 6.30.12 lists, in text pasted into
+  a prompt; a credential label or token at a line start or a double-quoted credential value in a
+  JSON string, such as one a tool prints
+  (`aws secretsmanager get-secret-value --query SecretString`, `kubectl … | jq -c`) or one written
+  into a file (`APP_CONFIG="{\"api_key\": …}"`), through the tool-call hook and import-jsonl; a key
+  line that `git show` prints as a hunk header's context when the key's END line is outside the
+  hunk; an environment list written as name/value pairs (Kubernetes `name: DB_PASSWORD` then
+  `value: …`), through the tool-call hook, import-jsonl and the prompt hook (D#679); a value under a
+  name no pattern covers, such as `ENCRYPTION_KEY=`, `SECRET_KEY_BASE=` or `APP_KEY=` in a `.env`
+  file (D#690).
+
+## v6.30.12 — a private key right after a credential label is erased
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.30.11`. Text that earlier versions already stored is not rescanned on upgrade.
+
+- **Security: a private key written right after a credential label lost its BEGIN line to the
+  label's value, and was stored** (D#657). The label patterns run before the private key ones, so
+  under `PRIVATE_KEY=-----BEGIN …`, `private_key:`, `secret_key:`, `API_KEY=`, `SECRET=`, `token:`,
+  and a Terraform `private_key = <<EOT` in a JSON string, every line of a cut-off key was kept. A
+  key printed one string per line after a label (`const PRIVATE_KEY = "-----BEGIN …\n" +`, or
+  Node's `util.inspect` of an object such as a parsed service account) lost its BEGIN the same way,
+  and a whole key printed by `util.inspect` was stored when the text was in a JSON string. These are
+  erased now. On keys made by `ssh-keygen`, `openssl` and `gpg` (13 key types), in `cat` of a
+  Terraform heredoc, a `.env` file and a JavaScript file, `git show`, `git log -p` and `git diff` of
+  a repository holding them and a service account JSON, `node` printing that service account and an
+  object holding a key, and `python` printing the service account, each cut after every line, as
+  is, with CRLF, in a JSON string, in a tool's JSON and in an MCP result: 6.30.11 kept 2,560,712 of
+  5,899,615 sixteen-character key windows, 6.30.12 keeps 728,014, and none that 6.30.11 erased.
+- **Still stored**, besides the shapes 6.30.11 lists: a credential label or token at the start of a
+  line in a JSON string (`\nAPI_KEY=…`, `\nghp_…`) (D#663); a double-quoted credential value in a
+  JSON string (`API_KEY=\"…\"`, `{\"api_key\":\"…\"}`) (D#664); a cut-off key printed one string
+  per line inside a JSON string or in a diff (JavaScript string concatenation, Node's
+  `util.inspect`) (D#662); the `git diff` of a PEM key that gained a passphrase
+  (`ssh-keygen -p -m PEM`) (D#670).
+
+## v6.30.11 — a cut-off key under a context BEGIN in a diff hunk is erased
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.30.10`. Text that earlier versions already stored is not rescanned on upgrade.
+
+- **Security: a cut-off OpenSSH key without a passphrase, encrypted PEM key or PGP key was stored in
+  a diff hunk when its BEGIN and the lines under it were context lines** (D#649; 6.30.10's first
+  "Still stored" item). Under such a BEGIN in a hunk whose `@@ -a,b +c,d @@` line is in the text,
+  the removed and added key lines are erased now: in `git diff`, `git show`, `git log -p` and
+  `git format-patch` output, GNU `diff -u`, with `diff.suppressBlankEmpty`, and in a hunk inside a
+  JSON string (the `patch` and `diff_hunk` fields of `gh api`, `jq` output). On keys
+  made by `ssh-keygen`, `openssl` and `gpg` (13 key types), in `git` and GNU `diff` output and the
+  `gh api` file list for a replaced, added and deleted key with two or more lines of context, as is,
+  with CRLF, in a JSON string, in one inside another and in a JSON object, cut after every line,
+  6.30.10 kept 11,820,908 of 56,451,594 sixteen-character key windows and 6.30.11 none.
+- **Inside a hunk these readings, like the earlier ones, can erase text near a BEGIN that is no key**
+  (D#615): a hash or long identifier under it and the lines between them, or a short line right after
+  an erased key.
+- **Still stored**: a diff shown without its `@@` line or with less than two lines of context
+  (`git diff -U0`, `-U1`); a word diff (`git diff --word-diff`); a diff in a single-quoted string
+  (Python's `repr`, Node's `util.inspect`); a cut-off key whose lines carry two prefixes (`git log --graph -p`,
+  `> -KEY = '''`); an encrypted or PGP key whose first body line is cut inside its first 40
+  characters; grep output without line numbers; a diff printed with color codes; code over 4,096
+  characters before the BEGIN's last quote.
+
+## v6.30.10 — cut-off private keys in more diff and grep shapes are erased
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.30.9`. Text that earlier versions already stored is not rescanned on upgrade.
+
+- **Security: a private key cut off before its END line was stored in `git diff` output when its
+  BEGIN sat on a context line over the removed lines** (D#614). It is erased now when the line under
+  the BEGIN is a removed or added line, as in the diff of a replaced PKCS#1, PKCS#8 or SEC1 key. On
+  keys made by `ssh-keygen`, `openssl` and `gpg` (13 key types; replaced, inside a longer file,
+  deleted, added; the diff cut after every line; as is, with CRLF, in a JSON string, in a JSON
+  string inside another), 6.30.9 kept 156,704 of 212,388 sixteen-character key windows and 6.30.10
+  67,416, all from the key types the first "Still stored" item names.
+- **Security: with code before the BEGIN, a cut-off key was stored in numbered grep output
+  (`path:5:`, `path-6-`) under a path holding a backslash, a space, a drive letter, another colon,
+  a quote or a backtick, or starting with `-`, `+` or `>`** (`keys\conf.py:5:KEY = '''`,
+  `My Keys/conf.py:5:KEY = '''`), **and, in a JSON string, when the code before the BEGIN's last
+  quote ran over 256 characters** (D#614); up to 4,096 are now read.
+- **Fixed** (D#633): the crafted added-diff shape under 6.30.9's known limits, with a second BEGIN
+  inside a header line, kept key lines that 6.30.8 erased.
+- **These readings, like 6.30.9's, can erase lines that look like key lines without being one**
+  (D#615): a hash or long identifier under a BEGIN, or a short line right after an erased key.
+- **Still stored** (D#641): the diff of an OpenSSH key without a passphrase, an encrypted PEM key
+  or a PGP key, whose first lines under the BEGIN are context lines too (an OpenSSH key's first body
+  line, the `Proc-Type` header, a PGP block's blank line); a cut-off key whose lines carry two
+  prefixes (`> -KEY = '''`); the same grep output without line numbers; a diff printed with color
+  codes; a diff that does not show the BEGIN line (`git diff -U0`); code over 4,096 characters before
+  the BEGIN's last quote.
+
+## v6.30.9 — more cut-off private keys are erased before they are stored
+
+**Upgrade note: nothing to run; the schema version stays 49.** Going back is pinning
+`claude-mem-lite@6.30.8`.
+
+- **Security: a private key cut off before its END line was stored when code or a string opener
+  stood before its BEGIN** (D#168, D#607). In a diff, Read output, grep output or a quoted reply,
+  the BEGIN line then carries more than the line prefix the key's other lines share (`-KEY = '''`,
+  `     5\tKEY = """`, `keys/conf.py:5:KEY = '''`, `> key = "`, or a string opener before a diff
+  mark: `'+`, `"-`, `b'+`). On the test matrix of 4 key kinds × 2 cut points × 15 such contexts × 3
+  wrappings (raw, in a JSON string, in a JSON string inside another), 6.30.8 stored key lines in 236
+  of the 360 cases and 6.30.9 in none; neither lost the text around the key.
+- **The same reading can erase lines below the BEGIN that look like key lines (a hex hash, or the
+  start of a long path or identifier) even when they are not a key** (D#615).
+- **Still as in 6.30.8** (D#614): a cut-off key is stored when its BEGIN sits on a diff context line
+  (no `-` or `+`) over the removed key lines, and, with code before the BEGIN, when a grep path
+  holds, for example, a backslash, a space or a drive letter (`keys\conf.py:5:KEY = '''`,
+  `My Keys/conf.py:5:KEY = '''`, `C:/src/conf.py:5:KEY = '''`), or when its lines carry two prefixes
+  (`> -KEY = '''`).
+- **Known limit** (D#633): a crafted added-diff shape, with a second BEGIN inside a header line, can
+  keep key lines that 6.30.8 erased.
+- **`@modelcontextprotocol/sdk` 1.32.2** (the range moves from `^1.30.0` to `^1.32.2`) **and
+  `@hono/node-server` 2.1.5**, lockfile only. `npm audit --omit=dev` reported the 2.0.11 that 6.30.8
+  shipped (moderate, GHSA-rmxm-3fg6-px4f: `serveStatic` decodes the request path a second time). It
+  comes in through `@modelcontextprotocol/sdk`; claude-mem-lite's MCP server speaks stdio and
+  serves no files.
+- **Development dependencies**: knip 6.43.0. The published package does not install them.
+- **Published from GitHub Actions through npm trusted publishing**: the publish job holds no npm
+  token, and the package carries a provenance attestation
+  (`npm view claude-mem-lite@6.30.9 dist.attestations`).
 
 ## v6.30.8 — doctor checks the backup snapshots before its restore command names one, and the claude-mem backup keeps its log
 
@@ -14090,7 +14673,7 @@ The audit found that (a) `softprops/action-gh-release@v3` in `publish.yml` was u
 
 ### Changed
 
-- **`.github/workflows/publish.yml:76` — pinned `softprops/action-gh-release@v3` to commit SHA `b4309332981a82ec1c5618f44dd2e27cc8bfbfda` (= `v3.0.0`).** The publish job has access to `NPM_TOKEN`. If `softprops`'s GitHub credentials were compromised and a malicious release was force-tagged as `v3`, the next claude-mem-lite tag push would execute attacker code with npm publishing rights — and Finding #3's auto-update would propagate the malicious npm package to all users inside 24h. SHA pinning closes this lateral-movement path. Use Dependabot to track upstream version bumps. First-party `actions/*` (checkout, setup-node, upload-artifact) remain on floating major tags — lower risk (would require GitHub itself to be compromised) but worth pinning in a future bundle.
+- **`.github/workflows/publish.yml:76` — pinned `softprops/action-gh-release@v3` to commit SHA `b430933` (= `v3.0.0`).** The publish job has access to `NPM_TOKEN`. If `softprops`'s GitHub credentials were compromised and a malicious release was force-tagged as `v3`, the next claude-mem-lite tag push would execute attacker code with npm publishing rights — and Finding #3's auto-update would propagate the malicious npm package to all users inside 24h. SHA pinning closes this lateral-movement path. Use Dependabot to track upstream version bumps. First-party `actions/*` (checkout, setup-node, upload-artifact) remain on floating major tags — lower risk (would require GitHub itself to be compromised) but worth pinning in a future bundle.
 
 - **`hook-llm.mjs` — refactored 3 prompt assembly sites + `buildLessonRetryPrompt` to return `{system, user}` form.** Static instructions (output schema, type definitions, importance scale, lesson_learned guidance, low-signal token exclusion) move to the `system` slot — constant per call, never tainted by user data. Per-call data (`Tool`, `File`, `Action`, `Project`, `Files`, `Actions`, `userPrompts`, `Observations`) moves to the `user` slot. The session-summary site at line 921 was the highest-leakage path — `userPrompts` content (truncated to 300 chars × up to 10 prompts) flowed directly into the prompt template; now it sits behind the boundary marker. Existing downstream gates (low-signal title filter, JSON-schema parse, `lowSignalLesson` set) unchanged.
 

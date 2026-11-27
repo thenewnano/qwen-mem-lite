@@ -14,6 +14,7 @@ import {
   renameSync,
   symlinkSync,
   unlinkSync,
+  rmdirSync,
   readdirSync,
   statSync,
   lstatSync,
@@ -76,6 +77,18 @@ import {
   isPluginExplicitlyDisabled,
   pluginSettingsScopes,
 } from './lib/plugin-key.mjs';
+// A namespace, as for lib/proc-lock.mjs below: readSettingsScope is newer than v6.35.2 and this file
+// is the repair path. Without it, the plain read that release used.
+import * as pluginKeyModule from './lib/plugin-key.mjs';
+const readSettingsScope =
+  pluginKeyModule.readSettingsScope ??
+  ((p) => {
+    try {
+      return JSON.parse(readFileSync(p, 'utf8'));
+    } catch {
+      return null;
+    }
+  });
 import { isNpxRun } from './lib/npx-run.mjs';
 import { doctorDbModeHint } from './lib/doctor-modes.mjs';
 // Static, matching doctor-modes above. Safe here where it would not be for a heavier
@@ -643,6 +656,26 @@ export function deployCodeTree(IS_DEV) {
   } else {
     log('Installing to ~/.qwen-mem-lite/...');
     const scriptsDir = join(DATA_DIR, 'scripts');
+    // An earlier `install --dev` left scripts/ and node_modules/ as symlinks into the developer's
+    // checkout. existsSync is true for a link, so the hook-script copies below went THROUGH
+    // scripts/ — overwriting the checkout's uncommitted edits, with hooks then running out of
+    // the checkout (R32 E2E install F2, P0) — and npm writes through a linked node_modules when
+    // its `force` option is set (it replaces the link otherwise; R32 review). Drop the links
+    // themselves. The per-file source links need nothing: atomicCopyFileSync renames over a
+    // link, it does not write through it.
+    for (const name of ['scripts', 'node_modules']) {
+      const p = join(DATA_DIR, name);
+      let isLink = false;
+      try {
+        isLink = lstatSync(p).isSymbolicLink();
+      } catch {
+        /* absent */
+      }
+      if (isLink) {
+        unlinkSync(p);
+        log(`Removed the dev-mode ${name}/ link into the checkout; installing a real copy`);
+      }
+    }
     if (!existsSync(scriptsDir)) mkdirSync(scriptsDir, { recursive: true });
     for (const f of SOURCE_FILES) {
       const src = join(PROJECT_DIR, f);
@@ -875,7 +908,8 @@ function noteForeignMem(foreignMem) {
 export function projectScopedMemRegistrations(cwd) {
   const file = join(cwd, '.mcp.json');
   try {
-    const servers = JSON.parse(readFileSync(file, 'utf8'))?.mcpServers;
+    // Bounded like a settings scope: a repository can commit `.mcp.json -> /dev/zero`.
+    const servers = readSettingsScope(file)?.mcpServers;
     // Array.isArray is load-bearing: `typeof [] === 'object'`, so without it an array
     // falls through to the membership filter and the guard cannot fire on its own
     // named input - which is how the test case for it was passing.
@@ -1723,12 +1757,9 @@ function projectPluginOverride(userSettings) {
   const userValue = userSettings?.enabledPlugins?.[PLUGIN_KEY];
   let found = null;
   for (const file of pluginSettingsScopes(claudeConfigDir(), projectDir).slice(1)) {
-    try {
-      const v = JSON.parse(readFileSync(file, 'utf8'))?.enabledPlugins?.[PLUGIN_KEY];
-      if (typeof v === 'boolean') found = { enabled: v, file };
-    } catch {
-      /* missing or unparseable: sets nothing */
-    }
+    // Missing, unparseable or not a regular file: sets nothing.
+    const v = readSettingsScope(file)?.enabledPlugins?.[PLUGIN_KEY];
+    if (typeof v === 'boolean') found = { enabled: v, file };
   }
   if (!found) return null;
   // The user scope's effective reading: an absent key is enabled unless set false.
@@ -1948,21 +1979,121 @@ async function uninstall() {
   }
 
   // 6. Purge data if requested
+  let purgeIncomplete = false; // reported, and not followed by "Done!" and exit 0
   if (flags.has('--purge')) {
     const homeDir = join(homedir(), '.qwen-mem-lite');
-    // Always remove the homedir code/install dir (guarded to the canonical path).
-    if (existsSync(DATA_DIR) && DATA_DIR === homeDir) {
-      rmSync(DATA_DIR, { recursive: true, force: true });
-      ok('Data purged (~/.qwen-mem-lite/)');
+    // D#829: with ~/.qwen-mem-lite a link, rmSync took the link alone and the run said
+    // "Data purged" and "Done!" with the store left behind it. The target may be a directory the
+    // user chose, and it holds the code too, so nothing is removed through the link. Nothing is
+    // removed at all: removing the link first and leaving the rest to the relocated purge ended in
+    // "Done!" with the store left when QWEN_MEM_DIR named the target by another spelling
+    // (`<link>/`), and telling that spelling apart needs resolved paths, whose failures were read
+    // as "the target is gone" (D#811 reviews r1 F1, r2 R2-1). One lstat decides; the link stays as
+    // the record of where the store is.
+    let homeIsLink = false;
+    try {
+      homeIsLink = lstatSync(DATA_DIR).isSymbolicLink();
+    } catch {
+      /* absent, or not lstat-able: existsSync below decides, as before */
+    }
+    if (homeIsLink) {
+      let to = '';
+      try {
+        to = ` to ${readlinkSync(DATA_DIR)}`;
+      } catch {
+        /* raced away */
+      }
+      warn(
+        `~/.qwen-mem-lite is a link${to}. --purge does not delete through a link, so it removed nothing` +
+          (MEM_DATA_DIR !== homeDir ? ` (QWEN_MEM_DIR ${MEM_DATA_DIR} included).` : '.'),
+      );
+      purgeIncomplete = true;
+    } else if (existsSync(DATA_DIR) && DATA_DIR === homeDir) {
+      // Always remove the homedir code/install dir (guarded to the canonical path). An entry it
+      // may not remove threw out of here uncaught, and the relocated purge below never ran (D#815).
+      try {
+        rmSync(DATA_DIR, { recursive: true, force: true });
+        // D#835 (D#829 review r2 X1): with another process deleting files in it, rmSync returned
+        // normally and the directory, store included, was still there (7 of 12 runs on Node 26).
+        if (existsSync(DATA_DIR)) {
+          warn('Could not remove ~/.qwen-mem-lite: it was still there when the removal returned.');
+          purgeIncomplete = true;
+        } else ok('Data purged (~/.qwen-mem-lite/)');
+      } catch (e) {
+        warn(`Could not remove ~/.qwen-mem-lite (${e.code || e.message}).`);
+        purgeIncomplete = true;
+      }
     } else if (existsSync(DATA_DIR)) {
       fail('DATA_DIR path mismatch, refusing to purge for safety: ' + DATA_DIR);
     }
-    // Also remove the relocated data dir - but ONLY if it's genuinely our data dir
-    // (contains qwen-mem-lite.db), so a mistyped QWEN_MEM_DIR is never rm'd.
-    if (MEM_DATA_DIR !== homeDir) {
-      if (existsSync(join(MEM_DATA_DIR, 'qwen-mem-lite.db'))) {
-        rmSync(MEM_DATA_DIR, { recursive: true, force: true });
-        ok(`Relocated data purged (${MEM_DATA_DIR})`);
+    // Also purge the relocated data dir — ONLY if it's genuinely our data dir (contains
+    // qwen-mem-lite.db), so a mistyped QWEN_MEM_DIR is never touched. Even then only what
+    // qwen-mem-lite writes there goes: the directory may be one the user keeps other files in,
+    // and removing it whole took those too (R32 E2E install F1, P0). It is removed only once
+    // nothing else is left in it. Not when ~/.qwen-mem-lite is a link (above).
+    if (MEM_DATA_DIR !== homeDir && !homeIsLink) {
+      // Not existsSync: it is false on EACCES too, so a store it could not look for was reported
+      // absent, then "Done!" (R32 depth-2 review M1).
+      let storeLookup = null;
+      try {
+        statSync(join(MEM_DATA_DIR, 'qwen-mem-lite.db'));
+      } catch (e) {
+        storeLookup = e.code || e.message;
+      }
+      if (storeLookup !== null && storeLookup !== 'ENOENT' && storeLookup !== 'ENOTDIR') {
+        warn(
+          `Could not look for qwen-mem-lite.db in ${MEM_DATA_DIR} (${storeLookup}) — nothing there was removed.`,
+        );
+        purgeIncomplete = true;
+      } else if (storeLookup === null) {
+        const r = purgeOwnedDataEntries(MEM_DATA_DIR);
+        // Up to 50 names, then how many more: a bare "…" after 10 hid a user's notes.txt among
+        // 19 kept entries (R33 review L2).
+        const list = (xs) =>
+          `${xs.slice(0, 50).join(', ')}${xs.length > 50 ? ` and ${xs.length - 50} more` : ''}`;
+        if (r.unreadable) {
+          warn(`Could not list ${MEM_DATA_DIR} (${r.unreadable}) — nothing there was removed.`);
+          purgeIncomplete = true;
+        } else {
+          let removedDir = false;
+          if (r.kept.length === 0 && r.failed.length === 0) {
+            try {
+              rmdirSync(MEM_DATA_DIR); // never recursive: something written meanwhile stays
+              removedDir = true;
+            } catch {
+              /* not empty after all, or not removable — reported below */
+            }
+          }
+          if (r.failed.length > 0) {
+            warn(
+              `Could not remove ${r.failed.length} of its own entries in ${MEM_DATA_DIR}: ${list(r.failed)}` +
+                (r.storeKept
+                  ? ' — qwen-mem-lite.db stays until they go, so running the purge again finishes it'
+                  : ''),
+            );
+            purgeIncomplete = true;
+          }
+          if (r.left.length > 0) {
+            warn(
+              `Left ${r.left.join(', ')} in ${MEM_DATA_DIR}: qwen-mem-lite's own, but the directory also holds ` +
+                `entries that are not, so a file of yours may be inside. Remove ${r.left.length === 1 ? 'it' : 'them'} yourself once nothing of yours is.`,
+            );
+            purgeIncomplete = true;
+          }
+          if (r.failed.length === 0 && r.left.length === 0) {
+            ok(
+              removedDir
+                ? `Relocated data purged (${MEM_DATA_DIR})`
+                : `Relocated data purged from ${MEM_DATA_DIR}`,
+            );
+          }
+          if (r.kept.length > 0) {
+            warn(
+              `Kept ${r.kept.length} entr${r.kept.length === 1 ? 'y' : 'ies'} there that it does not recognise as qwen-mem-lite's: ` +
+                `${list(r.kept)}. Remove them yourself if intended.`,
+            );
+          }
+        }
       } else if (existsSync(MEM_DATA_DIR)) {
         warn(
           `QWEN_MEM_DIR (${MEM_DATA_DIR}) has no qwen-mem-lite.db - left untouched. Remove manually if intended.`,
@@ -2002,7 +2133,152 @@ async function uninstall() {
     process.exitCode = EXIT_MCP_UNREGISTERED;
     return;
   }
+  if (purgeIncomplete) {
+    console.log('\n  ✗ Uninstalled, but the purge is incomplete: see the lines above.\n');
+    process.exitCode = 1;
+    return;
+  }
   console.log('\n  Done!\n');
+}
+
+// What qwen-mem-lite writes at the top of a relocated data dir, in the exact formats its writers
+// use, so a user file that merely starts with the same letters is never taken for one (R32
+// reviews). STORE is the store and its pre-rename name; ISO is toISOString() with [:.] → '-'.
+const STORE_RE = '(?:qwen-mem-lite|claude-mem(?:-lite)?)\\.db';
+const ISO_RE = '\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z';
+const OWNED_TOP_RE = new RegExp(
+  `^(?:${[
+    `${STORE_RE}(?:-wal|-shm|-journal)?`, // the store; SQLite's own sidecars
+    // snapshots (lib/db-backup.mjs); VACUUM INTO's own journal stays behind if it is killed
+    `${STORE_RE}\\.[a-z][a-z0-9-]*-${ISO_RE}-\\d+-\\d+\\.bak(?:-journal)?`,
+    `${STORE_RE}\\.legacy-backup-\\d+(?:-wal|-shm)?`, // legacy migration backup (here, scripts/setup.sh)
+    `${STORE_RE}-(?:wal|shm)\\.legacy-backup-\\d+`, // its log under the pre-fix name
+    // a set-aside damaged store (lib/db-unusable.mjs); bare `.corrupt` is the name an earlier
+    // release's remedy told the user to `mv` it to
+    `${STORE_RE}\\.corrupt(?:-${ISO_RE}(?:-\\d+)?(?:-wal|-shm)?)?`,
+    'resource-registry\\.db(?:-wal|-shm|-journal)?', // the skill registry releases before 5.0.0 kept
+    'plugin_claude_mem_lite\\.md(?:\\.tmp-\\d+)?', // steering detail doc (lib/local-steering.mjs)
+    '\\.legacy-backup-(?:copy|setup)-\\d+-\\d+(?:-wal|-shm)?', // backup copy temps (here, setup.sh)
+    '\\.snapshot-check-\\d+-[A-Za-z0-9]{6}', // lib/db-unusable.mjs CHECK_DIR_RE
+    '\\.update-(?:staging|backup)-(?:s\\d+-)?\\d+-\\d+', // update residue (hook-update.mjs)
+  ].join('|')})$`,
+);
+// Directories it creates there, and the only files it writes in each: daily shards
+// (lib/metrics.mjs, lib/err-sampler.mjs) and verify-apply's backups (lib/verify-apply-core.mjs).
+// A file of any other name in them is the user's.
+const OWNED_DIR_FILES = Object.freeze({
+  metrics: /^\d{4}-\d{2}-\d{2}\.jsonl$/,
+  errors: /^\d{4}-\d{2}-\d{2}\.jsonl$/,
+  // verify-<ISO>-<6 hex>.json, the only name it has ever written there (v6.12.0 on); anything
+  // looser took a user's backups/verify-settings.json (R32 depth-2 review M2).
+  backups: new RegExp(`^verify-${ISO_RE}-[0-9a-f]{6}\\.json(?:\\.tmp-\\d+)?$`),
+});
+
+// Its directories whose files it cannot tell from a user's by name: `runtime/`, the working
+// directory every hook writes dozens of kinds of state into (lib/resolve-data-dir.mjs's default),
+// and `managed/`, the resource clones releases before 5.0.0 installed. Each goes whole, and only from a
+// directory that holds nothing that is not qwen-mem-lite's; beside a user's files it stays and
+// is named (R33 review H1, H2: runtime/my-notes.txt went with it).
+const OWNED_WHOLE_DIRS = new Set(['runtime', 'managed']);
+// The store goes last, and only once nothing of its own failed: it is how a re-run knows the
+// directory is qwen-mem-lite's (R33 review M2: removed first, the re-run the failure message
+// asks for found no store, left the rest and said Done!).
+const LIVE_STORE_RE = /^(?:qwen-mem-lite|claude-mem-lite)\.db(?:-wal|-shm|-journal)?$/;
+
+/**
+ * Remove what qwen-mem-lite wrote into a relocated data dir, and nothing else (R32 E2E
+ * install F1 and its review). A name it does not recognise stays and is reported: a leftover
+ * can be removed later, a deleted user file cannot be recovered. Never throws.
+ * @param {string} dir
+ * @returns {{unreadable?: string, kept: string[], failed: string[], left: string[], storeKept?: boolean}}
+ *   `kept` = entries left because they are not its own (paths relative to `dir`); `failed` = its
+ *   own entries it could not remove, with the reason; `left` = its own whole directories left
+ *   because `kept` is not empty; `storeKept` = the store stayed because something failed
+ */
+function purgeOwnedDataEntries(dir) {
+  const kept = [];
+  const failed = [];
+  const whole = [];
+  const store = [];
+  const remove = (rel) => {
+    try {
+      rmSync(join(dir, rel), { recursive: true, force: true });
+    } catch (e) {
+      failed.push(`${rel} (${e.code || e.message})`);
+    }
+  };
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch (e) {
+    return { unreadable: e.code || e.message, kept, failed, left: [] };
+  }
+  for (const name of names) {
+    if (LIVE_STORE_RE.test(name)) {
+      store.push(name);
+      continue;
+    }
+    if (OWNED_WHOLE_DIRS.has(name)) {
+      whole.push(name);
+      continue;
+    }
+    if (OWNED_TOP_RE.test(name)) {
+      remove(name);
+      continue;
+    }
+    const inner = OWNED_DIR_FILES[name];
+    let isDir = false;
+    try {
+      isDir = inner !== undefined && lstatSync(join(dir, name)).isDirectory();
+    } catch {
+      /* raced away */
+    }
+    if (!isDir) {
+      kept.push(name); // a symlink under one of its names is listed, never followed
+      continue;
+    }
+    let children;
+    try {
+      children = readdirSync(join(dir, name));
+    } catch (e) {
+      failed.push(`${name} (${e.code || e.message})`);
+      continue;
+    }
+    for (const c of children) {
+      if (!inner.test(c)) {
+        kept.push(join(name, c));
+        continue;
+      }
+      // A file only: a directory carrying a shard's name is not one of its files. When unlink
+      // fails, what is there decides, not the code: a directory is EISDIR on Linux but EPERM on
+      // macOS, EPERM on Linux is a file it may not remove, and nothing there means a live session
+      // pruned the shard meanwhile, which is what was wanted (R32 depth-2 review L3, L4).
+      const path = join(dir, name, c);
+      try {
+        unlinkSync(path);
+      } catch (e) {
+        let isDir = false;
+        let gone = false;
+        try {
+          isDir = lstatSync(path).isDirectory();
+        } catch (le) {
+          gone = le.code === 'ENOENT';
+        }
+        if (isDir) kept.push(join(name, c));
+        else if (!gone) failed.push(`${join(name, c)} (${e.code || e.message})`);
+      }
+    }
+    try {
+      rmdirSync(join(dir, name));
+    } catch {
+      /* not empty: what is left is listed above */
+    }
+  }
+  const left = kept.length === 0 ? [] : whole.sort();
+  if (left.length === 0) for (const name of whole) remove(name);
+  const storeKept = failed.length > 0 && store.length > 0;
+  if (!storeKept) for (const name of store) remove(name);
+  return { kept: kept.sort(), failed: failed.sort(), left, storeKept };
 }
 
 /**
@@ -3682,20 +3958,19 @@ async function doctor() {
     }
   }
 
-  // Protections the operator has switched off. `doctor` is the channel because the surface
-  // that would otherwise carry it cannot: the daily normalize runs in a worker spawned by
-  // hook-shared.mjs::spawnBackground with `stdio: 'ignore'`, so its `console.error` warning
-  // reaches /dev/null. That warning is still correct for the foreground CLI path; this is
-  // the unattended one. Same shape as the QWEN_MEM_SKIP_SIG_VERIFY notice.
+  // Protections the operator has switched off, said where the user looks. The flag reaches a
+  // normalize run without --project from the CLI, which warns in the user's own terminal, or
+  // from `mem_optimize`, whose warning lands in the host's MCP log; the daily pass runs no
+  // normalize since D20 (2026-11-11). Same shape as the QWEN_MEM_SKIP_SIG_VERIFY notice.
   // dwarn, not fail: the flag is set deliberately, so it must be VISIBLE without pushing
   // doctor to exit 1 - a diagnostic that fails on a supported configuration stops being run.
   // `=== '1'` mirrors executeNormalize exactly; warning on `true` would describe a machine
   // that is in fact still fanning out.
   if (String(process.env.QWEN_MEM_NORMALIZE_CROSS_PROJECT || '') === '1') {
     dwarn(
-      'QWEN_MEM_NORMALIZE_CROSS_PROJECT=1: the daily normalize runs over every project at ' +
-        "once, so one project's stored content can steer the synonym groups applied to all of " +
-        'them (R10-P3-21). Unset it for the per-project default.',
+      'QWEN_MEM_NORMALIZE_CROSS_PROJECT=1: a normalize run without --project goes over every ' +
+        "project at once, so one project's stored content can steer the synonym groups applied " +
+        'to all of them (R10-P3-21). Unset it for the per-project default.',
     );
   }
 
@@ -4622,6 +4897,9 @@ async function rebuildBinding() {
           // dependency is the kind of thing that reads as corruption six months later.
           log(`  the shipped prebuild would not load - moved aside to ${verify.quarantined}.unusable`);
         }
+        for (const f of verify.setAside || []) {
+          log(`  a compiled addon would not load — moved aside to ${f}.unusable`);
+        }
       } else {
         fail(`better-sqlite3 binding still unusable in ${label}: ${verify.error}`);
         log(`Try manually: ${nativeBindingRepairHint(root)}`);
@@ -4631,8 +4909,17 @@ async function rebuildBinding() {
     if (failed > 0) {
       process.exitCode = 1;
     } else {
-      // Every tree is loadable → drop the marker so session-start stops retrying.
+      // Every tree is loadable → drop the marker so session-start stops retrying, and the CLI's
+      // cooldown (D#311) so a later, unrelated break heals on the next command. The name is
+      // binding-probe's CLI_HEAL_MARKER written out, not imported: 6.35.2's lib lacks that export,
+      // and a named import of it would stop this recovery path loading over a half-swapped tree.
+      // tests/native-binding-selfheal.test.mjs runs rebuild-binding against the constant.
       clearNativeBindingBreakage(MEM_RUNTIME_DIR);
+      try {
+        unlinkSync(join(MEM_RUNTIME_DIR, 'native-binding-cli-lastheal'));
+      } catch {
+        /* none armed */
+      }
     }
   } finally {
     release();
@@ -4873,7 +5160,7 @@ Usage:
   node install.mjs install            Install (copy files to ~/.qwen-mem-lite/)
   node install.mjs install --dev      Install dev mode (symlinks to dev dir)
   node install.mjs uninstall          Remove (keep data)
-  node install.mjs uninstall --purge  Remove and delete all data
+  node install.mjs uninstall --purge  Remove and delete the data
   node install.mjs status             Show current status (use --json for structured output)
   node install.mjs doctor             Diagnose issues (use --json for structured output)
   node install.mjs cleanup            Remove stale temp/staging files (use --dry-run to preview)

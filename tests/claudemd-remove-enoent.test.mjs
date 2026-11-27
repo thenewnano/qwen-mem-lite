@@ -34,9 +34,9 @@ describe('removeBlockAt when another process deleted the file first', () => {
   it('leaves no file behind', () => {
     dir = mkdtempSync(join(tmpdir(), 'cml-enoent-'));
     const p = join(dir, 'CLAUDE.local.md');
-    writeFileSync(p, '<!-- claude-mem-lite:begin v1 -->\nguidance\n<!-- claude-mem-lite:end -->\n');
+    writeFileSync(p, '<!-- qwen-mem-lite:begin v1 -->\nguidance\n<!-- qwen-mem-lite:end -->\n');
     lost.race = true;
-    expect(removeBlockAt(p, 'claude-mem-lite').action).toBe('removed');
+    expect(removeBlockAt(p, 'qwen-mem-lite').action).toBe('removed');
     expect(existsSync(p)).toBe(false);
   });
 });

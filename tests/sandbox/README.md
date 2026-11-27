@@ -9,7 +9,12 @@ full pass takes minutes and needs network.
 SBX_BASE=/tmp/claude/sbx node tests/sandbox/phaseA-plugin.mjs   # /plugin install …    47 checks
 SBX_BASE=/tmp/claude/sbx node tests/sandbox/phaseB-npm.mjs      # npm i -g + install   56 checks
 SBX_BASE=/tmp/claude/sbx node tests/sandbox/phaseC-update.mjs   # version swap         15 checks
+SBX_BASE=/tmp/claude/sbx node tests/sandbox/phaseD-claude-cli.mjs # real claude CLI     8 checks
 ```
+
+Phases A–C stand in a fake `claude`; phase D needs the real Claude Code CLI on `PATH` and
+installs from GitHub (`sdsrss/claude-mem-lite`), so it tests what a user gets from the
+default branch, not this checkout. Its CI job installs `@anthropic-ai/claude-code@latest`.
 
 Each exits non-zero if any check fails and prints a `PASS`/`FAIL` line per check. **The
 counts above are also asserted** — each phase carries an `EXPECTED_CHECKS` constant and
@@ -19,11 +24,11 @@ with better-sqlite3 13, so eight checks silently stopped running and the only wi
 run printing 37 where this file said 45 — a number nobody diffs. Change the constant when
 you add or remove a check on purpose, never to quiet a mismatch.
 
-**Never name the native addon's path.** `loadedBindingPath()` in `lib.mjs` asks
-better-sqlite3's own `lib/binding.js` which file it would load; 12 compiled
-`build/Release/better_sqlite3.node` and 13 ships `prebuilds/<platform>.node`, so the
-literal both phases used to carry pointed at a file that no longer exists and the self-heal
-checks were vacuous from v4.0.0 to v5.1.0.
+**Never name the native addon's path.** `loadedBindingPath()` in `lib.mjs` returns the
+file better-sqlite3 would load: a compiled `build/` addon when one exists (13.2.0 loads it
+first), otherwise the prebuild its own `lib/binding.js` names. 12 compiled
+`build/Release/better_sqlite3.node` and 13 ships `prebuilds/<platform>.node`; with the
+literal both phases used to carry, the self-heal checks were vacuous from v4.0.0 to v5.1.0.
 Sandboxes are created under `SBX_BASE`, falling back to `$TMPDIR`, and are **left on
 disk** so a failure can be inspected — delete them when you are done. Phase B alone
 leaves ~50 MB (a real `npm i -g` tree).
@@ -67,6 +72,7 @@ cache populated the way Claude Code populates one (a git checkout, **no**
 | A | marketplace add → cold `setup.sh` (real `npm install`) → all six hook events → MCP `initialize`/`tools/list`/`tools/call` → bundled CLI → auto-update in plugin mode → stale-ABI self-heal → uninstall residue |
 | B | `npm pack` → `npm i -g` → `qwen-mem-lite install` → settings.json hooks actually firing → MCP from the managed install → `self-update` → self-heal with the CLI's own tree healthy and the managed one broken → **plugin-cache launch.mjs sync (R10-P2-11)** → **an in-place install under live hook traffic (R10-P2-12)** → `uninstall` and `--purge` |
 | C | a new cache version dir arriving without `node_modules`, a hook firing from it before its deps exist, `setup.sh` provisioning it, memory surviving the version swap, cache pruning to the latest 3 |
+| D | the real Claude Code CLI: `plugin marketplace add sdsrss/claude-mem-lite` → `plugin install` → cache dir, no `node_modules` in it, `enabledPlugins`, `plugin list`; prints `plugin validate`'s verdict as context (D#463: it rejects the name as reserved while install still succeeds) |
 
 ## Conventions worth keeping
 

@@ -28,6 +28,8 @@ import {
   rmSync,
   readdirSync,
   chmodSync,
+  symlinkSync,
+  lstatSync,
 } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -227,6 +229,50 @@ describe('install: deploying the code tree under live hook traffic (D#223)', () 
     expect(body).toMatch(
       /prepareInstallDirs\(\);\s*await finishInterruptedSwaps\(\);\s*await withSwapBarrier\(async \(\) => \{\s*deployCodeTree\(IS_DEV\);\s*retireLeftoverJournals\(\);\s*await installDependencies\(IS_DEV\);\s*\}\);/,
     );
+  });
+  // R32 E2E install F2 (P0): `install --dev` leaves scripts/ as a symlink into the developer's
+  // checkout. A later normal install kept it (existsSync is true for a link) and copied the hook
+  // scripts THROUGH it, overwriting uncommitted edits in the checkout, and the "copy" install
+  // went on running hooks out of that checkout. The link is replaced by a real directory.
+  it('a copy install over a dev install does not write into the checkout', () => {
+    // Own setup: run alone (-t), no earlier case has created the code home (R32 review).
+    mkdirSync(dataDir, { recursive: true });
+    const checkout = sandbox('mem-dev-checkout-');
+    const edited = join(checkout, 'scripts', 'post-tool-use.sh');
+    const depFile = join(checkout, 'node_modules', 'dep', 'index.js');
+    mkdirSync(dirname(edited), { recursive: true });
+    mkdirSync(dirname(depFile), { recursive: true });
+    writeFileSync(edited, '# DEV-LOCAL-EDIT\n');
+    writeFileSync(depFile, '// dev dependency\n');
+    const scripts = join(dataDir, 'scripts');
+    const nodeModules = join(dataDir, 'node_modules');
+    for (const [link, target] of [
+      [scripts, join(checkout, 'scripts')],
+      [nodeModules, join(checkout, 'node_modules')],
+    ]) {
+      rmSync(link, { recursive: true, force: true });
+      symlinkSync(target, link);
+    }
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+    let lines;
+    try {
+      install.deployCodeTree(false);
+      lines = logged.mock.calls.map((c) => String(c[0])); // before mockRestore clears them
+    } finally {
+      logged.mockRestore();
+    }
+
+    expect(readFileSync(edited, 'utf8')).toBe('# DEV-LOCAL-EDIT\n');
+    expect(readdirSync(join(checkout, 'scripts'))).toEqual(['post-tool-use.sh']);
+    expect(readFileSync(depFile, 'utf8')).toBe('// dev dependency\n');
+    expect(lstatSync(scripts).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(scripts, 'post-tool-use.sh'), 'utf8')).toBe(
+      readFileSync(join(REPO, 'scripts', 'post-tool-use.sh'), 'utf8'),
+    );
+    // npm writes into a linked node_modules when its `force` option is set; npm then installs
+    // a real one into the emptied path.
+    expect(existsSync(nodeModules)).toBe(false);
+    expect(lines.filter((l) => /dev-mode (scripts|node_modules)\/ link/.test(l))).toHaveLength(2);
   });
 });
 

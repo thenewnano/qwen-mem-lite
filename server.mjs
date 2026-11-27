@@ -12,7 +12,7 @@ import {
   checkWriteProject,
   unknownProjectNote,
 } from './project-utils.mjs';
-import { ensureDbWithWalRecovery, refreshPlannerStats, DB_PATH, DB_DIR, CODE_DIR } from './schema.mjs';
+import { ensureDbWithWalRecovery, refreshPlannerStats, DB_DIR, CODE_DIR } from './schema.mjs';
 // schema.mjs already imports this module for SCHEMA_SKEW_CODE, so it is in the graph before
 // the DB is touched - a static import here adds no cold-start cost.
 import {
@@ -50,6 +50,7 @@ import {
 import {
   runMaintainOps,
   findDuplicates,
+  pickDedupKeeper,
   reviewRows,
   maintenanceStats,
   OP_CAP,
@@ -93,9 +94,14 @@ import { countMcpEligibleCorpus, rateSearchResults, recordSearch } from './lib/s
 import { recordHookError } from './lib/hook-telemetry.mjs';
 import { stripPrivate } from './lib/private-strip.mjs';
 // The partial-export warning points the caller at the CLI twin, which exports the complete
-// set by default - the invocation has to be the one that actually works on this install.
-import { CLI_INVOKE, shellWord } from './cli-path.mjs';
-import { neutralizeContextDelimiters, neutralizeSkillDelimiters, queryLabel } from './format-utils.mjs';
+import { CLI_INVOKE } from './cli-path.mjs';
+import {
+  neutralizeContextDelimiters,
+  neutralizeSkillDelimiters,
+  queryLabel,
+  localYmd,
+  localIsoTime,
+} from './format-utils.mjs';
 import {
   memSearchSchema,
   memSearchFeedbackSchema,
@@ -145,11 +151,9 @@ import { AUTO_MERGE_THRESHOLD } from './lib/dedup-constants.mjs';
 import {
   insertDeferred,
   listOpenWithOrdinal,
-  openOrdinalOf,
   deferredDropLabel,
-  dropDeferred,
+  dropDeferredMany,
   formatDropReasonHint,
-  resolveDeferredIds,
   getDeferredByIds,
   formatDeferredDetail,
   searchDeferredWork,
@@ -253,15 +257,16 @@ try {
   }
   // Fatal: log and exit with descriptive message (Claude Code shows stderr)
   console.error(`[qwen-mem-lite] FATAL: Database cannot be opened: ${err.message}`);
+  // The remedy is doctor's to name (D#488): it reads which damage this is and prints the command,
+  // the CLI's line on the same failure says so too. This used to say `rm` the -wal/-shm files —
+  // which the failed recovery had already deleted, and whose removal loses uncommitted writes — or
+  // run `node install.mjs install` from wherever the user stood (converge R30, E2E MCP F7).
   if (err.walRecoveryAttempted) {
-    console.error(
-      `[qwen-mem-lite] Try: rm ${shellWord(`${DB_PATH}-wal`)} ${shellWord(`${DB_PATH}-shm`)} or reinstall with: node install.mjs install`,
-    );
+    console.error('[qwen-mem-lite] Recovering from the write-ahead log did not help.');
   } else {
-    console.error(
-      `[qwen-mem-lite] Left WAL/SHM intact (not a corruption error). If this persists, retry or reinstall: node install.mjs install`,
-    );
+    console.error('[qwen-mem-lite] Left WAL/SHM intact (not a corruption error). If this persists:');
   }
+  console.error(`[qwen-mem-lite] Next: run \`${CLI_INVOKE} doctor\`.`);
   process.exit(1);
 }
 // Server process uses longer busy_timeout for concurrent MCP requests
@@ -1204,8 +1209,9 @@ server.registerTool(
         foundBySource.session.add(row.id);
         const lines = [`── S#${row.id} ──`];
         for (const f of sessFields) {
-          const val = row[f];
-          if (val === null || val === undefined || val === '') continue;
+          const raw = row[f];
+          if (raw === null || raw === undefined || raw === '') continue;
+          const val = f === 'created_at' ? localIsoTime(raw) || raw : raw;
           const maxLen = 500;
           lines.push(
             `${f}: ${typeof val === 'string' && val.length > maxLen ? val.slice(0, maxLen) + '…' : val}`,
@@ -1221,8 +1227,9 @@ server.registerTool(
         const lines = [`── P#${row.id} ──`];
         for (const f of PROMPT_DETAIL_FIELDS) {
           if (f === 'id') continue; // already in the header
-          const val = row[f];
-          if (val === null || val === undefined || val === '') continue;
+          const raw = row[f];
+          if (raw === null || raw === undefined || raw === '') continue;
+          const val = f === 'created_at' ? localIsoTime(raw) || raw : raw;
           lines.push(`${f}: ${typeof val === 'string' && val.length > 500 ? val.slice(0, 500) + '…' : val}`);
         }
         sections.push(lines.join('\n'));
@@ -1239,8 +1246,9 @@ server.registerTool(
         if (retired) lines.push(retired);
         for (const f of EVENT_DETAIL_FIELDS) {
           if (f === 'id' || f === 'event_type') continue; // already in the header
-          const val = row[f];
-          if (val === null || val === undefined || val === '') continue;
+          const raw = row[f];
+          if (raw === null || raw === undefined || raw === '') continue;
+          const val = f === 'created_at' ? localIsoTime(raw) || raw : raw;
           lines.push(`${f}: ${typeof val === 'string' && val.length > 500 ? val.slice(0, 500) + '…' : val}`);
         }
         sections.push(lines.join('\n'));
@@ -1457,7 +1465,10 @@ server.registerTool(
     if (result.kind === 'duplicate') {
       // D#201: this branch returns before the note below, so it renders its own.
       const dupSkip = formatSupersedeSkipped(result.supersedeSkipped);
-      const dupText = `Skipped: similar to existing #${result.existingId} in project "${project}". Use mem_get(ids=[${result.existingId}]) to review.`;
+      // converge R28: say what did not happen — a lesson riding on the refused save is gone too —
+      // and the way past the window for a memory that really is different (force).
+      const lost = args.lesson_learned ? ', including lesson_learned' : '';
+      const dupText = `Skipped: similar to existing #${result.existingId} in project "${project}" — nothing was saved${lost}. Use mem_get(ids=[${result.existingId}]) to review; if this is a different memory, call mem_save again with force: true.`;
       return { content: [{ type: 'text', text: dupSkip ? `${dupText}\n${dupSkip}` : dupText }] };
     }
 
@@ -1503,14 +1514,12 @@ server.registerTool(
       detail: args.detail ?? null,
       files: args.files ?? null,
     });
-    // Compute the ordinal for the freshly-inserted row so the response is
-    // immediately actionable ("ok, I deferred this as item 1").
-    const ord = openOrdinalOf(db, project, r.id);
+    // D#N only (D17): an `(item N)` here went stale on the next higher-priority add.
     return {
       content: [
         {
           type: 'text',
-          text: `Deferred as D#${r.id} (item ${ord ?? '?'}) in project "${project}"${projectCheck.note} — surfaces in next SessionStart banner.`,
+          text: `Deferred as D#${r.id} in project "${project}"${projectCheck.note} — surfaces in next SessionStart banner.`,
         },
       ],
     };
@@ -1557,18 +1566,22 @@ server.registerTool(
   safeHandler(async (args) => {
     if (args.project) args = { ...args, project: resolveProject(args.project) };
     const project = args.project || inferProject();
-    // Resolve id (accept D#N or ordinal int) via resolveDeferredIds with a
-    // single-element array - reuses the same project + status validation.
-    const [realId] = resolveDeferredIds(db, project, [args.id]);
-    const r = dropDeferred(db, realId, args.reason);
-    if (r.changed === 0) {
-      return { content: [{ type: 'text', text: `D#${realId} was not in 'open' status - drop is a no-op.` }] };
-    }
+    // Every id (D#N or ordinal) resolves against ONE snapshot of the open list, and every drop
+    // runs in the same transaction: one bad id, or a failure part-way, drops nothing (D17).
+    const { dropped, noop } = dropDeferredMany(db, project, args.id, args.reason);
+    const lines = [
+      ...dropped.map(
+        (realId) =>
+          `Dropped ${deferredDropLabel(db, realId)} in project "${project}". Reason: ${args.reason}`,
+      ),
+      ...noop.map((realId) => `D#${realId} was not in 'open' status - drop is a no-op.`),
+    ];
     // D#195 (c): same advisory as the CLI's `defer drop`, so an agent reaching
-    // this through MCP gets the same steer toward `mem_save(closes_deferred)`.
-    const hint = formatDropReasonHint(args.reason);
-    const dropText = `Dropped ${deferredDropLabel(db, realId)} in project "${project}". Reason: ${args.reason}`;
-    return { content: [{ type: 'text', text: hint ? `${dropText}\n${hint}` : dropText }] };
+    // this through MCP gets the same steer toward `mem_save(closes_deferred)` — and, like the
+    // CLI, only when something was dropped (R31 review L4).
+    const hint = dropped.length > 0 ? formatDropReasonHint(args.reason) : null;
+    if (hint) lines.push(hint);
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
   }),
 );
 
@@ -1761,8 +1774,8 @@ server.registerTool(
         if (autoMergeable.length > 0) {
           lines.push('', `Auto-mergeable pairs (similarity >= ${AUTO_MERGE_THRESHOLD}):`);
           for (const d of autoMergeable.slice(0, DUPLICATE_DISPLAY)) {
-            // Keep the higher-importance or newer observation
-            const keep = d.a.importance >= d.b.importance ? d.a : d.b;
+            // The copy carrying a lesson, then the higher importance (pickDedupKeeper)
+            const keep = pickDedupKeeper(d.a, d.b);
             const remove = keep === d.a ? d.b : d.a;
             lines.push(
               `  [${keep.id}] "${truncate(keep.title, 40)}" <-> [${remove.id}] "${truncate(remove.title, 40)}" (${d.similarity})`,
@@ -1770,7 +1783,7 @@ server.registerTool(
           }
           // Build ready-to-use merge_ids for auto-mergeable pairs
           const mergeIds = autoMergeable.map((d) => {
-            const keep = d.a.importance >= d.b.importance ? d.a : d.b;
+            const keep = pickDedupKeeper(d.a, d.b);
             const remove = keep === d.a ? d.b : d.a;
             return [keep.id, remove.id];
           });
@@ -1854,8 +1867,8 @@ server.registerTool(
             lines.push('  Nothing to delete.');
             return lines.join('\n');
           }
-          lines.push(`  Oldest: ${new Date(previewRow.oldest).toISOString().slice(0, 10)}`);
-          lines.push(`  Newest: ${new Date(previewRow.newest).toISOString().slice(0, 10)}`);
+          lines.push(`  Oldest: ${localYmd(previewRow.oldest)}`);
+          lines.push(`  Newest: ${localYmd(previewRow.newest)}`);
           lines.push('  Nothing was deleted. To delete, re-run with confirm=true:');
           lines.push(
             `  mem_maintain(action="execute", operations=${JSON.stringify(ops)}, confirm=true${args.retain_days ? `, retain_days=${args.retain_days}` : ''}${args.project ? `, project="${args.project}"` : ''})`,
@@ -2086,7 +2099,7 @@ async function runExport(db, args) {
     const total = db.prepare(`SELECT COUNT(*) AS c FROM observations ${where}`).get(...params).c;
     cap =
       `\nWARNING - PARTIAL EXPORT, NOT A COMPLETE BACKUP: capped at ${exportLimit} of ${total} matching observations; ${total - exportLimit} rows are missing from this payload and restoring it would lose them.` +
-      `\nFor a complete backup, write it to a FILE instead of pulling it through this conversation: \`${CLI_INVOKE} export --format jsonl > backup.jsonl\` (the CLI exports the complete set by default). Narrowing with date_from/date_to also works.` +
+      `\nFor a backup without this cap, write it to a FILE instead of pulling it through this conversation: \`${CLI_INVOKE} export --format jsonl > backup.jsonl\` (the CLI has no row cap). Narrowing with date_from/date_to also works.` +
       `\nRaising \`limit\` here is the last resort, not the first: this result is model context, so all ${total} rows would be loaded into the transcript.`;
   }
   return {
