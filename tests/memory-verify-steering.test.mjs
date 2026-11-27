@@ -50,11 +50,11 @@ describe('the steering tells the agent to check a recalled memory and correct it
 
   it('the detail doc carries the same rules in full', () => {
     const doc = getDetailDoc();
-    expect(doc).toMatch(/## 记忆是旧笔记，不是现在的代码/);
-    expect(doc).toMatch(/`#NN` 也可能是后台自动整理的/);
-    expect(doc).not.toMatch(/`#NN` 是 agent 主动保存的笔记/);
+    expect(doc).toMatch(/## Memory is old notes, not the current code/);
+    expect(doc).toMatch(/`#NN` may be a\s+note the agent saved deliberately/);
+    expect(doc).not.toMatch(/`#NN` is a note the agent saved deliberately/);
     expect(doc).toContain('supersedes=["E#NN"]');
-    expect(doc).toMatch(/只写这次 diff 能证明的内容/);
+    expect(doc).toContain("only what this change's diff proves");
   });
 });
 

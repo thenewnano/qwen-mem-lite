@@ -1,6 +1,6 @@
 ---
 name: unadopt
-description: "Use when: user wants to remove the qwen-mem-lite steering block from the current project (or from every project Claude Code knows about with --all). Removes the <cwd>/CLAUDE.md managed block + <cwd>/.claude/plugin_qwen_mem_lite.md, the auto-written CLAUDE.local.md or .claude/rules/qwen-mem-lite.md block and its .git/info/exclude entry, and cleans any legacy memory-dir residue. User content outside the sentinel is preserved. Benign no-op when not adopted."
+description: 'Use when: user wants to remove the qwen-mem-lite steering block from the current project (or from every project Claude Code knows about with --all). Removes the <cwd>/CLAUDE.md and <cwd>/QWEN.md managed blocks, the auto-written CLAUDE.local.md or .claude/rules/qwen-mem-lite.md block and its .git/info/exclude entry, cleans legacy per-project detail docs/state when untracked, and cleans any legacy memory-dir residue. The shared data-dir detail doc stays. User content outside the sentinel is preserved. Benign no-op when not adopted.'
 ---
 
 # /unadopt
@@ -11,12 +11,13 @@ Remove the qwen-mem-lite steering block from the current project. Opposite of
 ## What it removes
 
 1. The `<!-- qwen-mem-lite:begin vN --> … <!-- qwen-mem-lite:end -->` managed
-   block from `<cwd>/CLAUDE.md`. Everything else in the file is preserved
-   byte-for-byte.
-2. `<cwd>/.claude/plugin_qwen_mem_lite.md` detail doc.
-3. `<cwd>/.claude/.plugin_qwen_mem_lite_state.json` sidecar (and an emptied
-   `.claude/` dir).
-4. The block auto-adopt keeps in `CLAUDE.local.md` at the git repository root, or in
+   block from `<cwd>/CLAUDE.md` and `<cwd>/QWEN.md`. Everything else in those
+   files is preserved byte-for-byte.
+2. A per-project detail doc (`plugin_qwen_mem_lite.md`) or state sidecar left by
+   an older version, when it is untracked and still carries the plugin marker
+   (and an emptied `.claude/`/`.qwen/` dir). The shared
+   `~/.qwen-mem-lite/plugin_claude_mem_lite.md` stays.
+3. The block auto-adopt keeps in `CLAUDE.local.md` at the git repository root, or in
    `.claude/rules/qwen-mem-lite.md` there (with `QWEN_MEM_RULES_STEERING=1`, next to an
    `AGENTS.md`; the file too, when
    nothing else is in it, and an emptied `.claude/rules/` and `.claude/`), and the lines

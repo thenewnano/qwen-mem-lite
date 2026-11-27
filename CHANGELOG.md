@@ -20,6 +20,12 @@ commits), with the fork identity and the dual-host behaviour kept.
   --purge` with a relocated data directory removes only this plugin's own files, and refuses
   to delete through a link; write commands refuse `--project .` inside Claude Code's
   `projects/` state directory.
+- **The steering detail doc is English and shared** - `adopt` writes only the managed block into
+  `CLAUDE.md` and `QWEN.md`. The full contract lives in
+  `~/.qwen-mem-lite/plugin_claude_mem_lite.md`, shared by every project, so adoption no longer
+  creates untracked `.claude/` or `.qwen/` files. The next `adopt`/SessionStart removes a legacy
+  per-project detail doc or state sidecar when it is untracked and still carries the plugin
+  marker; tracked files are left alone.
 - **Session summaries** - Stop records each turn's last reply (the host's
   `last_assistant_message` when sent, else the transcript tail) and the summary worker reads
   only its own session's turns. The Last Session line orders completed work by importance.

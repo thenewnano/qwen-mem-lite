@@ -19,6 +19,7 @@ import {
 import { memdirPath, writePluginSection, isAdopted as memdirIsAdopted } from '../memdir.mjs';
 import { PLUGIN_SLUG } from '../adopt-content.mjs';
 import { isOwnAdoptionArtifact } from '../claudemd.mjs';
+import { steeringDetailDocPath } from '../lib/local-steering.mjs';
 import { mkdtempWithoutInstructionAncestors } from './test-helpers.mjs';
 
 function claudeMd(cwd) {
@@ -65,14 +66,15 @@ describe('cmdAdopt / cmdUnadopt (current project, CLAUDE.md scheme)', () => {
     process.exitCode = 0;
   });
 
-  it('writes the managed block + detail doc into the project tree', () => {
+  it('writes the managed block, not a project detail doc', () => {
     cmdAdopt([]);
     expect(existsSync(claudeMd(fakeCwd))).toBe(true);
-    expect(existsSync(detailDoc(fakeCwd))).toBe(true);
+    expect(existsSync(detailDoc(fakeCwd))).toBe(false);
     const body = readFileSync(claudeMd(fakeCwd), 'utf8');
     expect(body).toContain(BEGIN);
     expect(body).toContain('mem_recall');
-    expect(readFileSync(detailDoc(fakeCwd), 'utf8')).toMatch(/^<!-- managed-by: qwen-mem-lite -->/);
+    expect(body).toContain('~/.qwen-mem-lite/plugin_claude_mem_lite.md');
+    expect(existsSync(steeringDetailDocPath())).toBe(true);
     expect(process.exitCode).toBe(0);
   });
 
@@ -133,6 +135,7 @@ describe('cmdAdopt / cmdUnadopt (current project, CLAUDE.md scheme)', () => {
     cmdAdopt(['--dry-run']);
     expect(existsSync(claudeMd(fakeCwd))).toBe(false);
     expect(existsSync(detailDoc(fakeCwd))).toBe(false);
+    expect(existsSync(steeringDetailDocPath())).toBe(false);
     expect(logs.some((l) => l.includes('--dry-run'))).toBe(true);
   });
 
@@ -145,9 +148,11 @@ describe('cmdAdopt / cmdUnadopt (current project, CLAUDE.md scheme)', () => {
     expect(body).toContain(BEGIN);
   });
 
-  it('unadopt removes block + detail doc but keeps user prose', () => {
+  it('unadopt removes the block and an older project detail doc, but keeps user prose', () => {
     writeFileSync(claudeMd(fakeCwd), '# My Project\n\nuser intro\n');
     cmdAdopt([]);
+    mkdirSync(join(fakeCwd, '.claude'), { recursive: true });
+    writeFileSync(detailDoc(fakeCwd), '<!-- managed-by: qwen-mem-lite -->\nlegacy doc\n');
     cmdUnadopt([]);
     const body = readFileSync(claudeMd(fakeCwd), 'utf8');
     expect(body).toContain('# My Project');
@@ -169,7 +174,7 @@ describe('cmdAdopt / cmdUnadopt (current project, CLAUDE.md scheme)', () => {
     const before = readFileSync(claudeMd(fakeCwd), 'utf8');
     cmdUnadopt(['--status']);
     expect(readFileSync(claudeMd(fakeCwd), 'utf8')).toBe(before);
-    expect(existsSync(detailDoc(fakeCwd))).toBe(true);
+    expect(existsSync(detailDoc(fakeCwd))).toBe(false);
     expect(logs.some((l) => l.includes('[adopt --status]'))).toBe(true);
   });
 
@@ -178,7 +183,7 @@ describe('cmdAdopt / cmdUnadopt (current project, CLAUDE.md scheme)', () => {
     const before = readFileSync(claudeMd(fakeCwd), 'utf8');
     cmdUnadopt(['--dry-run']);
     expect(readFileSync(claudeMd(fakeCwd), 'utf8')).toBe(before);
-    expect(existsSync(detailDoc(fakeCwd))).toBe(true);
+    expect(existsSync(detailDoc(fakeCwd))).toBe(false);
     expect(
       logs.some((l) => l.includes('would-remove') || l.includes('would-clean') || l.includes('--dry-run')),
     ).toBe(true);

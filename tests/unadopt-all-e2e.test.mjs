@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { tmpdir } from 'os';
@@ -73,12 +73,20 @@ describe('unadopt --all scans known projects (~/.claude.json)', () => {
 
     run(['adopt'], { cwd: projA });
     run(['adopt'], { cwd: projB });
-    // C = PARTIAL residue: adopted, then the user deleted the detail doc while
-    // the CLAUDE.md block remains. The old isAdopted (block AND doc) gate made
-    // `unadopt --all` skip this project forever — regression case for the
-    // hasResidue fix.
+    // C = PARTIAL residue: no block, only a per-project detail doc an older version wrote.
+    // hasResidue must still find it (the block-AND-doc gate would skip it forever).
     run(['adopt'], { cwd: projC });
-    rmSync(join(projC, '.claude', 'plugin_qwen_mem_lite.md'));
+    const mdC = join(projC, 'CLAUDE.md');
+    writeFileSync(
+      mdC,
+      readFileSync(mdC, 'utf8').replace(/<!-- qwen-mem-lite:begin[\s\S]*?<!-- qwen-mem-lite:end -->\n?/, ''),
+    );
+    mkdirSync(join(projC, '.claude'), { recursive: true });
+    writeFileSync(
+      join(projC, '.claude', 'plugin_qwen_mem_lite.md'),
+      '<!-- managed-by: qwen-mem-lite -->\nlegacy\n',
+    );
+    writeFileSync(join(projC, 'QWEN.md'), '');
   }, 60000);
 
   afterAll(() => {
@@ -90,11 +98,11 @@ describe('unadopt --all scans known projects (~/.claude.json)', () => {
     }
   });
 
-  it('adopt wrote a managed block into all known projects (C kept block-only)', () => {
+  it('adopt wrote a managed block into the two block projects (C has only legacy residue)', () => {
     expect(hasBlock(projA)).toBe(true);
     expect(hasBlock(projB)).toBe(true);
-    expect(hasBlock(projC)).toBe(true);
-    expect(existsSync(join(projC, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(false);
+    expect(hasBlock(projC)).toBe(false);
+    expect(existsSync(join(projC, '.claude', 'plugin_qwen_mem_lite.md'))).toBe(true);
   });
 
   it('--all --dry-run reports all three (incl. partial-residue C) but removes nothing', () => {
@@ -105,15 +113,15 @@ describe('unadopt --all scans known projects (~/.claude.json)', () => {
     expect(r.out).toContain(projC);
     expect(hasBlock(projA)).toBe(true);
     expect(hasBlock(projB)).toBe(true);
-    expect(hasBlock(projC)).toBe(true);
+    expect(hasBlock(projC)).toBe(false);
   });
 
   it('--all removes the block from every known project, preserving user content', () => {
     const r = run(['unadopt', '--all'], { cwd: HOME });
-    expect(r.out).toMatch(/removed 3 CLAUDE\.md block/);
+    expect(r.out).toMatch(/removed 2 CLAUDE\.md block/);
+    expect(r.out).toMatch(/1 partial-residue cleanup/);
     expect(hasBlock(projA)).toBe(false);
     expect(hasBlock(projB)).toBe(false);
-    // C had block-but-no-doc — the pre-hasResidue gate skipped it forever.
     expect(hasBlock(projC)).toBe(false);
     // User content survives the slug-scoped removal.
     for (const d of [projA, projB, projC]) {

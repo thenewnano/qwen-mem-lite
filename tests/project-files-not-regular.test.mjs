@@ -140,7 +140,8 @@ describe('SessionStart auto-adopt in a repository holding a link to a device or 
     expect(s.r).toMatchObject({ action: 'local', written: 'created' });
   });
 
-  it('an adopted CLAUDE.md whose committed detail doc links to /dev/zero: the link is not read or replaced', () => {
+  // Retired in v7.4.0: adopt no longer writes or reads a per-project detail doc.
+  it.skip('an adopted CLAUDE.md whose committed detail doc links to /dev/zero: the link is not read or replaced', () => {
     const s0 = capped(`const m = await import(${url('claudemd.mjs')});
 const c = await import(${url('adopt-content.mjs')});
 m.writeManaged(process.cwd(), { slug: c.PLUGIN_SLUG, version: c.CURRENT_SENTINEL_VERSION, block: c.buildClaudeMdBlock(), doc: 'an older doc' });`);
@@ -309,7 +310,8 @@ m.writeManaged(process.cwd(), { slug: c.PLUGIN_SLUG, version: c.CURRENT_SENTINEL
     symlinkSync(relative(dirname(p), victim), p);
   };
 
-  it('SessionStart does not write through a committed detail-doc link', () => {
+  // Retired in v7.4.0: no per-project detail doc is written.
+  it.skip('SessionStart does not write through a committed detail-doc link', () => {
     expect(capped(ADOPT_OLDER_DOC).status).toBe(0);
     const doc = join(app, '.claude', 'plugin_qwen_mem_lite.md');
     const victim = join(home, 'victim-doc.txt');
@@ -321,7 +323,8 @@ m.writeManaged(process.cwd(), { slug: c.PLUGIN_SLUG, version: c.CURRENT_SENTINEL
     expect(lstatSync(doc).isSymbolicLink()).toBe(true);
   });
 
-  it('SessionStart does not write through a committed state-sidecar link', () => {
+  // Retired in v7.4.0: no per-project state sidecar is written.
+  it.skip('SessionStart does not write through a committed state-sidecar link', () => {
     expect(capped(ADOPT_OLDER_DOC).status).toBe(0);
     const state = join(app, '.claude', '.plugin_qwen_mem_lite_state.json');
     const victim = join(home, 'victim-state.txt');
@@ -379,7 +382,8 @@ try { m.writeBlockAt(process.cwd() + '/CLAUDE.local.md', { slug: 'qwen-mem-lite'
     expect(lstatSync(p).isFIFO()).toBe(true);
   });
 
-  it("writeManaged's state read does not read a sidecar linked to /dev/zero", () => {
+  // Retired in v7.4.0: writeManaged no longer reads a state sidecar.
+  it.skip("writeManaged's state read does not read a sidecar linked to /dev/zero", () => {
     mkdirSync(join(app, '.claude'));
     const state = join(app, '.claude', '.plugin_qwen_mem_lite_state.json');
     symlinkSync('/dev/zero', state);

@@ -108,7 +108,9 @@ function claudeDirLinkedOut({ victims = true } = {}) {
   commitAll(app);
 }
 
-describe('a committed .claude directory link out of the repository', () => {
+// Retired in v7.4.0: adopt no longer writes into .claude/.qwen, so these old write-through cases
+// cannot occur. The linked directory is simply left alone.
+describe.skip('a committed .claude directory link out of the repository', () => {
   it('SessionStart does not overwrite the two files in the linked directory', () => {
     claudeDirLinkedOut();
     ok(run(SESSION_START));
@@ -199,7 +201,8 @@ describe('a committed CLAUDE.md link out of the repository', () => {
     expect(s.stdout).not.toMatch(/run adopt again/);
   });
 
-  it('unadopt keeps the detail doc and state while the block stays, and removes them once it is gone', () => {
+  // Retired in v7.4.0: there is no per-project detail doc or state sidecar to keep.
+  it.skip('unadopt keeps the detail doc and state while the block stays, and removes them once it is gone', () => {
     ok(run(ADOPT_OLDER_DOC));
     const other = join(outside, 'CLAUDE.md');
     renameSync(join(app, 'CLAUDE.md'), other);
@@ -312,7 +315,8 @@ describe('a committed CLAUDE.md link out of the repository', () => {
   });
 });
 
-describe('a committed detail-doc link stays refused wherever it points', () => {
+// Retired in v7.4.0: adopt no longer writes a per-project detail doc.
+describe.skip('a committed detail-doc link stays refused wherever it points', () => {
   it("SessionStart does not overwrite the user's untracked file inside the repository", () => {
     ok(run(ADOPT_OLDER_DOC));
     const env = join(app, '.env');
@@ -328,7 +332,8 @@ describe('a committed detail-doc link stays refused wherever it points', () => {
 
 // v6.35.4 pre-tag r1 defects F1/F2: git lists a link an unpacked archive left as untracked, the same
 // as one the user made, so "untracked" cannot clear a link at a file the plugin writes whole.
-describe('detail-doc and state links git cannot vouch for', () => {
+// Retired in v7.4.0: adopt no longer writes a per-project detail doc or state sidecar.
+describe.skip('detail-doc and state links git cannot vouch for', () => {
   it('SessionStart does not write through doc and state links an unpacked archive left untracked', () => {
     ok(run(ADOPT_OLDER_DOC));
     const env = join(outside, 'dot-env');
@@ -382,7 +387,8 @@ describe('detail-doc and state links git cannot vouch for', () => {
 });
 
 describe('layouts built with links keep working', () => {
-  it('an untracked .claude linked into a dotfiles directory is written', () => {
+  // Retired in v7.4.0: adopt no longer writes into .claude.
+  it.skip('an untracked .claude linked into a dotfiles directory is written', () => {
     ok(run(ADOPT_OLDER_DOC));
     const dot = join(home, 'dotfiles', 'app-claude');
     mkdirSync(dirname(dot), { recursive: true });
@@ -413,7 +419,8 @@ describe('layouts built with links keep working', () => {
     expect(lstatSync(join(app, 'CLAUDE.md')).isSymbolicLink()).toBe(true);
   });
 
-  it('a committed .claude linked to a directory inside the repository is written', () => {
+  // Retired in v7.4.0: adopt no longer writes into .claude.
+  it.skip('a committed .claude linked to a directory inside the repository is written', () => {
     ok(run(ADOPT_OLDER_DOC));
     mkdirSync(join(app, 'config'));
     renameSync(join(app, '.claude'), join(app, 'config', 'claude'));
@@ -423,7 +430,8 @@ describe('layouts built with links keep working', () => {
     expect(read(join(app, 'config', 'claude', 'plugin_qwen_mem_lite.md'))).not.toContain('an older doc');
   });
 
-  it('in a subdirectory, a committed .claude linked elsewhere inside the repository is written', () => {
+  // Retired in v7.4.0: adopt no longer writes into .claude.
+  it.skip('in a subdirectory, a committed .claude linked elsewhere inside the repository is written', () => {
     const pkg = join(app, 'pkg');
     mkdirSync(join(app, 'shared-claude'), { recursive: true });
     mkdirSync(pkg);
@@ -435,7 +443,8 @@ describe('layouts built with links keep working', () => {
 });
 
 describe('a directory git does not track', () => {
-  it('adopt refuses a .claude linked out of it', () => {
+  // Retired in v7.4.0: adopt no longer writes into .claude, so there is no link to refuse.
+  it.skip('adopt refuses a .claude linked out of it', () => {
     const plain = join(home, 'plain');
     mkdirSync(plain);
     symlinkSync('../outside', join(plain, '.claude'));
@@ -458,7 +467,8 @@ describe('a directory git does not track', () => {
     expect(read(dot)).toBe('owner line\n');
   });
 
-  it('adopt writes through a .claude linked inside it', () => {
+  // Retired in v7.4.0: adopt no longer writes into .claude.
+  it.skip('adopt writes through a .claude linked inside it', () => {
     const plain = join(home, 'plain');
     mkdirSync(join(plain, 'cfg'), { recursive: true });
     symlinkSync('cfg', join(plain, '.claude'));
@@ -484,5 +494,26 @@ describe("the legacy <claude-mem-context> cleanup keeps the user's line breaks",
     );
     ok(run(LEGACY_CLEANUP, { env: { CLAUDE_PROJECT_DIR: app, MEM_NO_AUTO_ADOPT: '1' } }));
     expect(read(join(app, 'CLAUDE.md'))).toBe('keep this\n\ntrailing\n');
+  });
+});
+
+describe('adopt keeps the detail doc outside the project (v7.4.0)', () => {
+  it('writes only the managed block, not a .claude/.qwen detail doc', () => {
+    ok(run(ADOPT));
+    expect(existsSync(join(app, 'CLAUDE.md'))).toBe(true);
+    expect(existsSync(join(app, 'QWEN.md'))).toBe(true);
+    expect(existsSync(join(app, '.claude'))).toBe(false);
+    expect(existsSync(join(app, '.qwen'))).toBe(false);
+    expect(read(join(app, 'CLAUDE.md'))).toContain('→ `~/');
+  });
+
+  it('cleans an untracked legacy detail doc and state on the next SessionStart', () => {
+    mkdirSync(join(app, '.claude'), { recursive: true });
+    writeFileSync(join(app, DOC), '<!-- managed-by: qwen-mem-lite -->\nold\n');
+    writeFileSync(join(app, STATE), '{}');
+    ok(run(SESSION_START));
+    expect(existsSync(join(app, DOC))).toBe(false);
+    expect(existsSync(join(app, STATE))).toBe(false);
+    expect(existsSync(join(app, '.claude'))).toBe(false);
   });
 });

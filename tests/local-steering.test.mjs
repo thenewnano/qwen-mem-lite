@@ -2898,8 +2898,14 @@ describe('D#509(4): steering already loaded from above the top-level', () => {
 
   it('an out-of-date block above keeps the local copy, and --status names the file to refresh', () => {
     adoptIn(work());
-    const docPath = join(work(), '.claude', 'plugin_qwen_mem_lite.md');
-    writeFileSync(docPath, `${readFileSync(docPath, 'utf8')}\nan older detail doc\n`);
+    const mdPath = join(work(), 'CLAUDE.md');
+    writeFileSync(
+      mdPath,
+      readFileSync(mdPath, 'utf8').replace(
+        '## qwen-mem-lite - persistent memory',
+        '## qwen-mem-lite - old steering',
+      ),
+    );
     expect(silentAutoAdopt({ cwd: app() })).toMatchObject({ action: 'local', written: 'created' });
     expect(localBlock(app())).not.toBeNull();
     const st = statusIn(app());
@@ -2988,8 +2994,14 @@ describe('D#509(4): steering already loaded from above the top-level', () => {
 
   it('outside git, an out-of-date block above still gets the steering injected', () => {
     adoptIn(work());
-    const docPath = join(work(), '.claude', 'plugin_qwen_mem_lite.md');
-    writeFileSync(docPath, `${readFileSync(docPath, 'utf8')}\nan older detail doc\n`);
+    const mdPath = join(work(), 'CLAUDE.md');
+    writeFileSync(
+      mdPath,
+      readFileSync(mdPath, 'utf8').replace(
+        '## qwen-mem-lite - persistent memory',
+        '## qwen-mem-lite - old steering',
+      ),
+    );
     const deep = join(work(), 'notes', 'a');
     mkdirSync(deep, { recursive: true });
     expect(silentAutoAdopt({ cwd: deep }).action).toBe('inject');

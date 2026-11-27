@@ -173,7 +173,7 @@ describe('R10 P2-4 — the purge instruction the model reads actually purges', (
   it('the adoption block and detail doc leave the purge to /qwen-mem-lite:update', async () => {
     const { getDetailDoc, buildClaudeMdBlock } = await import('../adopt-content.mjs');
     const doc = getDetailDoc();
-    expect(doc, 'premise: the detail doc has a cleanup row').toMatch(/清理过期记忆/);
+    expect(doc, 'premise: the detail doc has a cleanup row').toMatch(/Clean up stale memories/);
     for (const [name, text] of [
       ['detail doc', doc],
       ['CLAUDE.md block', buildClaudeMdBlock()],
@@ -183,7 +183,9 @@ describe('R10 P2-4 — the purge instruction the model reads actually purges', (
         /purge_stale[^\n|]*(--confirm|confirm\s*[=:]\s*true)|--confirm[^\n|]*purge_stale/,
       );
     }
-    expect(doc.split('\n').find((l) => l.includes('清理过期记忆'))).toContain('/qwen-mem-lite:update');
+    expect(doc.split('\n').find((l) => l.includes('Clean up stale memories'))).toContain(
+      '/qwen-mem-lite:update',
+    );
   });
 
   // D#461: the dedup step had the model judge Needs-review pairs from 40-char titles; the scan now

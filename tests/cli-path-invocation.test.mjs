@@ -163,8 +163,10 @@ describe('steering-surface consistency + injection budget', () => {
     // Raised 2000 → 2300 for D#934 T4 (2026-11-24): the block gained the CLI defer update / drop /
     // --closes-deferred / --supersedes forms, 1,866 → 2,118 bytes.
     expect(contentLen(buildClaudeMdBlock()), 'CLAUDE.md block').toBeLessThan(2300);
-    // The fork's detail doc is English and longer than upstream's; keep the fork's ceiling.
-    expect(contentLen(getDetailDoc()), 'detail doc').toBeLessThan(10000);
+    // The fork ships this doc in English. English prose is longer than the Chinese upstream
+    // writes, and the doc is read on demand rather than injected, so its tripwire moves to
+    // 12,000 while the block above keeps the 2,300 injection budget.
+    expect(contentLen(getDetailDoc()), 'detail doc').toBeLessThan(12000);
     expect(contentLen(buildServerInstructions(false)), 'instructions full').toBeLessThan(3500);
     expect(contentLen(buildServerInstructions(true)), 'instructions BASE').toBeLessThan(2200);
   });

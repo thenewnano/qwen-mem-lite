@@ -41,14 +41,14 @@ describe('claudemd primitives', () => {
     rmSync(tmpHome, { recursive: true, force: true });
   });
 
-  it('writeManaged creates CLAUDE.md + .claude detail doc with marker', () => {
+  it('writeManaged creates CLAUDE.md and QWEN.md, with no project detail doc', () => {
     const r = writeManaged(cwd, argsOf(cwd));
     expect(r.action).toBe('created');
     const body = readFileSync(claudeMdPath(cwd), 'utf8');
     expect(body).toContain(`<!-- ${SLUG}:begin ${V} -->`);
     expect(body).toContain('line one');
     expect(body).toContain(`<!-- ${SLUG}:end -->`);
-    expect(readFileSync(detailDocPath(cwd, SLUG), 'utf8')).toBe(`<!-- managed-by: ${SLUG} -->\n${DOC}`);
+    expect(existsSync(detailDocPath(cwd, SLUG))).toBe(false);
     expect(isAdopted(cwd, SLUG)).toBe(true);
   });
 
@@ -63,9 +63,7 @@ describe('claudemd primitives', () => {
       expect(body, name).toContain(`<!-- ${SLUG}:begin ${V} -->`);
       expect(body, name).toContain('line one');
     }
-    expect(readFileSync(join(cwd, '.qwen', `plugin_${SLUG.replace(/-/g, '_')}.md`), 'utf8')).toContain(
-      'managed-by',
-    );
+    expect(existsSync(join(cwd, '.qwen')), 'no per-project detail doc').toBe(false);
     expect(readBlock(cwd, SLUG).body, 'the legacy single-file read still sees the block').toContain(
       'line one',
     );
@@ -73,17 +71,18 @@ describe('claudemd primitives', () => {
     const r = removeManaged(cwd, SLUG);
     expect(r.action).toBe('removed');
     expect(existsSync(join(cwd, 'QWEN.md')), 'the QWEN.md we created is removed again').toBe(false);
-    expect(existsSync(join(cwd, '.qwen')), 'an emptied .qwen/ is dropped like .claude/').toBe(false);
+    expect(existsSync(join(cwd, '.qwen')), 'no .qwen/ is left behind').toBe(false);
   });
 
-  it('writeManaged is idempotent on user-visible files', () => {
+  it('writeManaged is idempotent on the context files', () => {
     writeManaged(cwd, argsOf(cwd));
     const cm = readFileSync(claudeMdPath(cwd), 'utf8');
-    const doc = readFileSync(detailDocPath(cwd, SLUG), 'utf8');
+    const qwen = readFileSync(join(cwd, 'QWEN.md'), 'utf8');
     const r = writeManaged(cwd, argsOf(cwd));
     expect(r.action).toBe('unchanged');
     expect(readFileSync(claudeMdPath(cwd), 'utf8')).toBe(cm);
-    expect(readFileSync(detailDocPath(cwd, SLUG), 'utf8')).toBe(doc);
+    expect(readFileSync(join(cwd, 'QWEN.md'), 'utf8')).toBe(qwen);
+    expect(existsSync(detailDocPath(cwd, SLUG))).toBe(false);
   });
 
   it('preserves user prose outside the sentinel', () => {
@@ -95,12 +94,12 @@ describe('claudemd primitives', () => {
     expect(body).toContain(`<!-- ${SLUG}:begin`);
   });
 
-  it('needsRefresh: false when in sync, true on version / block / doc drift', () => {
+  it('needsRefresh: false when in sync, true on version / block drift; doc drift is ignored', () => {
     writeManaged(cwd, argsOf(cwd));
     expect(needsRefresh(cwd, argsOf(cwd))).toBe(false);
     expect(needsRefresh(cwd, { slug: SLUG, version: 'v3', block: BLOCK, doc: DOC })).toBe(true);
     expect(needsRefresh(cwd, { slug: SLUG, version: V, block: BLOCK + ' x', doc: DOC })).toBe(true);
-    expect(needsRefresh(cwd, { slug: SLUG, version: V, block: BLOCK, doc: DOC + ' x' })).toBe(true);
+    expect(needsRefresh(cwd, { slug: SLUG, version: V, block: BLOCK, doc: DOC + ' x' })).toBe(false);
   });
 
   it('needsRefresh: true when not yet adopted', () => {

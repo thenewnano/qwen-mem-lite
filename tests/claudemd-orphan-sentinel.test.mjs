@@ -125,9 +125,8 @@ describe('an unpaired managed sentinel must not eat user content or be reported 
     expect(blk.body, 'the match swallowed the user runbook').not.toMatch(/STEP ONE/);
   });
 
-  it('unadopt does not answer "absent" after deleting the detail doc and leaving an orphan', () => {
+  it('unadopt does not answer "absent" after leaving an orphan', () => {
     writeManaged(cwd, args());
-    expect(existsSync(detailDocPath(cwd, SLUG))).toBe(true);
     writeFileSync(md, read().replace(/<!-- qwen-mem-lite:end -->\n?/, ''));
     // writeManaged now writes BOTH layouts (claudemd.mjs LAYOUTS), and the case this test
     // states is "no block was removed anywhere, only an orphan remains" — a healthy QWEN.md
@@ -137,8 +136,7 @@ describe('an unpaired managed sentinel must not eat user content or be reported 
     rmSync(join(cwd, '.qwen'), { recursive: true, force: true });
 
     const r = removeManaged(cwd, SLUG);
-    expect(existsSync(detailDocPath(cwd, SLUG)), 'premise: the doc really was deleted').toBe(false);
-    expect(r.action, 'reported as a no-op while it deleted files and left a block').not.toBe('absent');
+    expect(r.action, 'reported as a no-op while it left a block').not.toBe('absent');
     expect(r.action).toBe('partial');
     expect(r.residue, 'the caller cannot tell the user what is left').toMatch(/CLAUDE\.md/);
   });
@@ -336,8 +334,6 @@ describe('an unpaired managed sentinel must not eat user content or be reported 
     it('refuses, names the line and the fix, and writes nothing', () => {
       expect(adoptCli().status).toBe(0);
       writeFileSync(md, read().replace(/(<!-- qwen-mem-lite:begin v\d+ -->)\n/, '$1 (team note)\n'));
-      // A half state adopt would otherwise heal: the doc coming back is a write.
-      rmSync(detailDocPath(cwd, SLUG));
       const before = read();
       const line = before.split('\n').findIndex((l) => l.includes('(team note)')) + 1;
       expect(line, 'premise: the damaged line is there').toBeGreaterThan(0);

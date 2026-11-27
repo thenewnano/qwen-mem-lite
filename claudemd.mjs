@@ -18,12 +18,11 @@
 //
 // See docs/CLAUDE-MD-STEERING-PLAN.md for rationale + migration.
 
-import { existsSync, unlinkSync, mkdirSync, rmdirSync, readdirSync, lstatSync, statSync } from 'fs';
+import { existsSync, unlinkSync, rmdirSync, readdirSync, lstatSync, statSync } from 'fs';
 import { atomicWriteFileSync as atomicWrite } from './lib/atomic-write.mjs';
 import { readRegularText, readRegularTextOrThrow } from './lib/regular-file.mjs';
 import { linkRefusal, refusalText } from './lib/project-link.mjs';
 import { join, basename } from 'path';
-import { createHash } from 'crypto';
 import { memdirPath, removePluginSection, removePluginDoc, isAdopted as memdirIsAdopted } from './memdir.mjs';
 
 // ─── Path helpers ────────────────────────────────────────────────────────────
@@ -81,11 +80,7 @@ export function contextTargets(cwd, slug) {
 
 // The three files adopt writes for ONE layout, each with whether the plugin writes it whole
 // (lib/project-link.mjs).
-const managedTargets = (slug, layout = PRIMARY_LAYOUT) => [
-  [layout.contextFile, false],
-  [docRel(slug, layout), true],
-  [stateRel(slug, layout), true],
-];
+const managedTargets = (slug, layout = PRIMARY_LAYOUT) => [[layout.contextFile, false]];
 
 // Throws the first refusal: a link on the way to `rel` that the plugin must not write through.
 function assertWritable(cwd, rel, whole) {
@@ -282,10 +277,6 @@ function renderBlock(slug, version, body) {
   return `<!-- ${slug}:begin ${version} -->\n${body}\n<!-- ${slug}:end -->`;
 }
 
-function sha256(s) {
-  return createHash('sha256').update(s).digest('hex');
-}
-
 // `atomicWriteFileSync`, not a local temp+rename (audit 2026-09-02 P0-5). The local twin
 // renamed onto the PATH; when a project's CLAUDE.md is a symlink into a dotfiles repo
 // (chezmoi/stow/yadm) or a monorepo's shared root, that REPLACES the link with a regular
@@ -293,22 +284,6 @@ function sha256(s) {
 // typechange. The shared writer lstats first and writes THROUGH to the real target. It has
 // been in this repo, shipped and used by install.mjs for ~/.claude/settings.json, since the
 // day that failure mode was first written down in its own docblock.
-
-function writeState(cwd, slug, state, layout = PRIMARY_LAYOUT) {
-  const dir = dotDir(cwd, layout);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  atomicWrite(stateFilePath(cwd, slug, layout), JSON.stringify(state, null, 2) + '\n');
-}
-
-function clearState(cwd, slug, layout = PRIMARY_LAYOUT) {
-  const p = stateFilePath(cwd, slug, layout);
-  if (existsSync(p))
-    try {
-      unlinkSync(p);
-    } catch {
-      /* best-effort */
-    }
-}
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -391,14 +366,12 @@ export function isOwnAdoptionArtifact(cwd, relPath, slug) {
 }
 
 /**
- * Adopted under the new scheme = managed block present in CLAUDE.md AND the
- * detail doc exists. Both must hold so a half-written state still self-heals.
+ * Adopted under the new scheme = managed block present in CLAUDE.md or QWEN.md.
+ * The detail doc lives in the plugin's data directory now, shared by every
+ * project, so its presence is no longer part of the project's state.
  */
 export function isAdopted(cwd, slug) {
-  return LAYOUTS.some((layout) => {
-    const blk = readBlock(cwd, slug, layout);
-    return blk.body !== null && existsSync(detailDocPath(cwd, slug, layout));
-  });
+  return LAYOUTS.some((layout) => readBlock(cwd, slug, layout).body !== null);
 }
 
 /**
@@ -448,83 +421,47 @@ export function needsRefresh(cwd, args) {
   return LAYOUTS.some((layout) => layoutNeedsRefresh(cwd, layout, args));
 }
 
-function layoutNeedsRefresh(cwd, layout, { slug, version, block, doc }) {
+function layoutNeedsRefresh(cwd, layout, { slug, version, block }) {
   const blk = readBlock(cwd, slug, layout);
   if (blk.body === null) return true;
   if (blk.version !== version) return true;
-  if (blk.body !== block) return true;
-  const dp = detailDocPath(cwd, slug, layout);
-  if (!existsSync(dp)) return true;
-  let cur;
-  try {
-    cur = readRegularText(dp);
-  } catch {
-    return true;
-  }
-  return cur !== `${managedByMarker(slug)}\n${doc}`;
+  return blk.body !== block;
 }
 
 /**
- * Write (insert-or-replace) the managed block in CLAUDE.md and the detail doc
- * under .claude/, plus a state sidecar. Idempotent on the user-visible files:
- * re-running with identical inputs leaves CLAUDE.md, the detail doc and the state
- * sidecar byte-for-byte unchanged.
+ * Write (insert-or-replace) the managed block in CLAUDE.md and QWEN.md.
+ * The detail doc lives in the plugin's data directory, shared by every project,
+ * so adopt no longer writes a per-project doc or state sidecar. Idempotent:
+ * re-running with identical inputs leaves the context files byte-for-byte
+ * unchanged.
  *
  * CLAUDE.md is created if absent. Only our slug-scoped region is rewritten;
  * everything else in the file is preserved verbatim.
  *
- * @returns {{action: 'created'|'updated'|'unchanged', docAction: 'created'|'updated'|'unchanged'}}
- *   (block disposition, and the detail doc's)
+ * @returns {{action: 'created'|'updated'|'unchanged', docAction: 'unchanged'}}
+ *   (block disposition; docAction stays for callers that log it)
  */
 
 export function writeManaged(cwd, args) {
-  // Both layouts get the same block/doc text. The steering text is host-neutral apart from
-  // its detail-doc pointer, which names the pair (adopt-content.mjs), so there is no
-  // per-host variant to thread through here.
+  // Both layouts get the same block text. The steering text is host-neutral apart from
+  // its detail-doc pointer, which names the shared data-dir copy (adopt-content.mjs), so
+  // there is no per-host variant to thread through here.
   let action = 'unchanged';
-  let docAction = 'unchanged';
   for (const layout of LAYOUTS) {
     const one = writeManagedIn(cwd, layout, args);
     if (one.action === 'created' || (one.action === 'updated' && action !== 'created')) action = one.action;
-    if (one.docAction === 'created' || (one.docAction === 'updated' && docAction !== 'created'))
-      docAction = one.docAction;
   }
-  return { action, docAction };
+  return { action, docAction: 'unchanged' };
 }
 
-function writeManagedIn(cwd, layout, { slug, version, block, doc }) {
-  // The shared writer writes THROUGH a link (for a dotfiles-managed context file), and a cloned
-  // repository can commit links: one as the doc or the state, as .claude/.qwen, or as the context
-  // file had this write outside the project (D#880). All three are checked before anything is
-  // written, so a refusal leaves the context file as it was too.
+function writeManagedIn(cwd, layout, { slug, version, block }) {
+  // The shared writer writes THROUGH a link (for a dotfiles-managed context file), and a
+  // cloned repository can commit a link as the context file, had this write outside the
+  // project (D#880). Checked before anything is written, so a refusal leaves the context
+  // file as it was.
   for (const [rel, whole] of managedTargets(slug, layout)) assertWritable(cwd, rel, whole);
   const { action } = writeBlockAt(claudeMdPath(cwd, layout), { slug, version, block });
-
-  // Detail doc (marker on first line so unadopt/refresh can tell it apart from a
-  // user's same-named file).
-  const docContent = `${managedByMarker(slug)}\n${doc}`;
-  const dp = detailDocPath(cwd, slug, layout);
-  const dir = dotDir(cwd, layout);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const existingDoc = existsSync(dp) ? readRegularTextOrThrow(dp) : null;
-  if (existingDoc !== docContent) atomicWrite(dp, docContent);
-  const docAction = existingDoc === null ? 'created' : existingDoc === docContent ? 'unchanged' : 'updated';
-
-  // Written only when what it records changed: it is committed alongside the block in a team
-  // repo, and a fresh writtenAt on every re-run of adopt left a diff each time (E2E
-  // 2026-10-16). Nothing reads writtenAt.
-  const blockHash = sha256(block);
-  const docHash = sha256(doc);
-  let prev = null;
-  try {
-    prev = JSON.parse(readRegularTextOrThrow(stateFilePath(cwd, slug, layout)));
-  } catch {
-    /* absent or unreadable: write it */
-  }
-  if (!(prev?.version === version && prev?.blockHash === blockHash && prev?.docHash === docHash)) {
-    writeState(cwd, slug, { version, blockHash, docHash, writtenAt: new Date().toISOString() }, layout);
-  }
-  return { action, docAction };
+  return { action, docAction: 'unchanged' };
 }
 
 export function writeBlockAt(p, { slug, version, block }) {
@@ -585,7 +522,7 @@ export function writeBlockAt(p, { slug, version, block }) {
  * @returns {{action: 'removed'|'partial'|'absent'|'skipped-symlink', residue?: string,
  *   left?: {link: string, why: string}[]}}
  */
-export function removeManaged(cwd, slug) {
+export function removeManaged(cwd, slug, options = {}) {
   // One outcome for the caller: a block left behind a refused link wins, then 'removed' over
   // 'partial' over 'absent' (the same precedence the single-file version used). Residue and
   // `left` from either layout ride along; the two facts stay separate.
@@ -593,7 +530,7 @@ export function removeManaged(cwd, slug) {
   const residues = [];
   const left = [];
   for (const layout of LAYOUTS) {
-    const r = removeManagedIn(cwd, slug, layout);
+    const r = removeManagedIn(cwd, slug, layout, options);
     if (r.action === 'skipped-symlink') action = 'skipped-symlink';
     else if (r.action === 'removed' && action !== 'skipped-symlink') action = 'removed';
     else if (r.action === 'partial' && action === 'absent') action = 'partial';
@@ -606,7 +543,7 @@ export function removeManaged(cwd, slug) {
   return out;
 }
 
-function removeManagedIn(cwd, slug, layout) {
+function removeManagedIn(cwd, slug, layout, options) {
   const p = claudeMdPath(cwd, layout);
   const left = [];
   // A context file the plugin will not write through is left alone only while the block is in it
@@ -620,29 +557,23 @@ function removeManagedIn(cwd, slug, layout) {
     : mdRefusal
       ? { action: 'absent', orphans: 0 }
       : removeBlockAt(p, slug);
-  // The doc and the state go only with the block: a block left behind a link still points at the
-  // doc (v6.35.4 pre-tag round 1, F5). Deleting either one is unlinkSync, which removes a link
-  // itself, not what it names; what can lead it out of the project is a .claude/.qwen link.
+  // A per-project detail doc or state sidecar is residue an older version wrote. Remove it
+  // only when it is untracked and still provably ours; a link on `.claude`/`.qwen` is left
+  // alone, because deleting through it would reach outside the project (D#880).
   const dirRefusal = linkRefusal(cwd, layout.dir);
   if (dirRefusal) left.push(dirRefusal);
-  const keep = dirRefusal !== null || mdLeft;
-  const dp = detailDocPath(cwd, slug, layout);
-  const wasOurs = action === 'removed' || existsSync(dp) || existsSync(stateFilePath(cwd, slug, layout));
-  if (!keep && existsSync(dp))
+  const cleanup = dirRefusal ? { removed: [] } : cleanupLegacyProjectDetail(cwd, slug, layout, options);
+  // An orphan counts as ours only when a sentinel-shaped line starts a line: a project that
+  // merely mentions the marker in prose (or a code span) must not be told to delete its own
+  // paragraph when `unadopt` runs.
+  const ownSentinelLine = (() => {
     try {
-      unlinkSync(dp);
+      return (readRegularText(p) ?? '').split('\n').some((l) => l.startsWith(`<!-- ${slug}:`));
     } catch {
-      /* best-effort */
+      return false;
     }
-  if (!keep) clearState(cwd, slug, layout);
-  // Drop an emptied .claude/ (or .qwen/) so unadopt leaves no trace (skips if it holds
-  // anything else - e.g. settings.local.json).
-  try {
-    const dir = dotDir(cwd, layout);
-    if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
-  } catch {
-    /* best-effort */
-  }
+  })();
+  const wasOurs = action === 'removed' || cleanup.removed.length > 0 || (orphans > 0 && ownSentinelLine);
   // `action` answers ONE question - what happened to the block - and `residue` is an
   // independent fact that rides alongside it. A first cut let an orphan override 'removed'
   // too, on the reasoning that both are "unfinished". Pre-ship review P2-1: unadoptAll's
@@ -654,6 +585,48 @@ function removeManagedIn(cwd, slug, layout) {
   if (action === 'removed') return residue ? { action, residue, ...leftField } : { action, ...leftField };
   if (residue) return { action: 'partial', residue, ...leftField };
   return { action, ...leftField };
+}
+
+/**
+ * Remove the per-project detail doc and state sidecar an older qwen-mem-lite wrote.
+ * The detail doc now lives in the plugin data directory, shared by every project, so
+ * these files only create untracked changes. Only untracked files that still carry
+ * the plugin's marker (or the state file's exact name) are removed; a link on the
+ * `.claude`/`.qwen` directory stops the cleanup before it leaves the project.
+ * @param {string} cwd
+ * @param {string} slug
+ * @param {object} [layout]
+ * @param {{isTracked?: (rel: string) => boolean}} [options]
+ * @returns {{removed: string[]}}
+ */
+function cleanupLegacyProjectDetail(cwd, slug, layout = PRIMARY_LAYOUT, { isTracked = () => false } = {}) {
+  const removed = [];
+  if (linkRefusal(cwd, layout.dir)) return { removed };
+  for (const rel of [docRel(slug, layout), stateRel(slug, layout)]) {
+    if (isTracked(rel)) continue;
+    if (!isOwnAdoptionArtifact(cwd, rel, slug)) continue;
+    try {
+      unlinkSync(join(cwd, rel));
+      removed.push(rel);
+    } catch {
+      /* best-effort */
+    }
+  }
+  try {
+    const dir = dotDir(cwd, layout);
+    if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
+  } catch {
+    /* best-effort */
+  }
+  return { removed };
+}
+
+/** Clean the legacy per-project files out of both layouts. */
+export function cleanupLegacyProjectDetails(cwd, slug, options = {}) {
+  const removed = [];
+  for (const layout of LAYOUTS)
+    removed.push(...cleanupLegacyProjectDetail(cwd, slug, layout, options).removed);
+  return { removed };
 }
 
 export function orphanResidueNote(orphans, slug, p) {

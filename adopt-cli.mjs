@@ -49,7 +49,7 @@ import {
   migrateLegacyMemoryDir,
   hasLegacyMemdirSentinel,
   claudeMdPath,
-  detailDocPath,
+  cleanupLegacyProjectDetails,
   addAgentsImports,
   holdsOnlyPluginLines,
   straySentinelLines,
@@ -201,8 +201,12 @@ export function cmdAdopt(args = []) {
 }
 
 function adoptOne(cwd, { force, dryRun }) {
-  const block = buildClaudeMdBlock();
   const doc = getDetailDoc();
+  // The detail doc is shared by every project and lives in the data directory; the project
+  // keeps only the managed block, so adopt leaves no untracked `.claude`/`.qwen` files behind.
+  const block = dryRun
+    ? buildClaudeMdBlock({ detailDocRef: tildePath(steeringDetailDocPath()) })
+    : buildClaudeMdBlock({ detailDocRef: tildePath(ensureSteeringDetailDoc()) });
   const version = CURRENT_SENTINEL_VERSION;
   // A damaged sentinel line pairs with no block, so writing would add a second block beside it
   // (E2E 2026-10-16 round 2, B14). Which lines are the block is the user's call: refuse first.
@@ -238,7 +242,7 @@ function adoptOne(cwd, { force, dryRun }) {
   if (dryRun) {
     log(`[adopt --dry-run] ${cwd}`);
     log(`  CLAUDE.md block:  ${claudeMdPath(cwd)} (${block.length} chars, ${version})`);
-    log(`  detail doc:       ${detailDocPath(cwd, PLUGIN_SLUG)} (${doc.length} chars)`);
+    log(`  detail doc:       ${steeringDetailDocPath()} (${doc.length} chars, shared by every project)`);
     if (imports.length > 0)
       log(`  AGENTS.md:        would import ${imports.join(', ')} at the top of CLAUDE.md`);
     for (const line of elsewhere('would stop')) log(line);
@@ -251,7 +255,14 @@ function adoptOne(cwd, { force, dryRun }) {
 
   try {
     const mig = migrateLegacyMemoryDir(cwd, PLUGIN_SLUG, { force });
-    const r = writeManaged(cwd, { slug: PLUGIN_SLUG, version, block, doc });
+    const r = writeManaged(cwd, { slug: PLUGIN_SLUG, version, block });
+    const cleanup = cleanupLegacyProjectDetails(cwd, PLUGIN_SLUG, {
+      isTracked: (rel) => trackedByGit(cwd, rel),
+    });
+    const cleanupNote =
+      cleanup.removed.length > 0
+        ? ` (+removed ${cleanup.removed.length} legacy project file${cleanup.removed.length === 1 ? '' : 's'})`
+        : '';
     const importNote =
       imports.length > 0 && addAgentsImports(cwd, PLUGIN_SLUG, imports) === 'added'
         ? ` (+imported ${imports.join(', ')}: Claude Code stops reading AGENTS.md once a CLAUDE.md exists)`
@@ -268,11 +279,7 @@ function adoptOne(cwd, { force, dryRun }) {
             ? ` (could not remove the block from ${local.path}, so sessions here load it twice)`
             : ` (+removed the block from ${local.path})`;
     // The block's disposition alone read "unchanged" over a rewritten detail doc (D#470).
-    const docNote =
-      r.action === 'unchanged' && r.docAction !== 'unchanged'
-        ? ` (+${r.docAction === 'created' ? 'wrote' : 'refreshed'} detail doc)`
-        : '';
-    log(`[adopt] ${cwd} → ${r.action}${docNote}${migNote}${localNote}${importNote}`);
+    log(`[adopt] ${cwd} → ${r.action}${cleanupNote}${migNote}${localNote}${importNote}`);
     for (const line of elsewhere('stops')) log(line);
     for (const line of sharedNote('stops')) log(line);
     // In a subdirectory the root's local copy stays for the root's sessions, and sessions started
@@ -374,10 +381,16 @@ export function silentAutoAdopt({ cwd, markerDir, markerKey }) {
       return { ok: true, action: 'disabled', reason: 'disabled-by-sentinel' };
     }
     migrateLegacyMemoryDir(cwd, PLUGIN_SLUG);
+    // Older versions wrote the detail doc and a state sidecar into each project. The doc is
+    // shared from the data directory now, so sweep those untracked copies on every session
+    // (both layouts), leaving tracked files and links alone.
+    const cleanupRoot = localSteeringRoot(cwd) || cwd;
+    cleanupLegacyProjectDetails(cleanupRoot, PLUGIN_SLUG, {
+      isTracked: (rel) => trackedByGit(cleanupRoot, rel),
+    });
 
-    const block = buildClaudeMdBlock();
-    const doc = getDetailDoc();
     const version = CURRENT_SENTINEL_VERSION;
+    const block = buildClaudeMdBlock({ detailDocRef: tildePath(ensureSteeringDetailDoc()) });
 
     // Report §9-A (docs/audits/20260929-sandbox-usage-eval.md): a project with NO managed
     // block is no longer written into. The first SessionStart used to add CLAUDE.md and
@@ -479,13 +492,13 @@ export function silentAutoAdopt({ cwd, markerDir, markerKey }) {
     dropLocalSteering(cwd, { atRootOnly: true, keepTracked: true });
     let action = 'already-adopted';
     if (!claudeMdIsAdopted(cwd, PLUGIN_SLUG)) {
-      writeManaged(cwd, { slug: PLUGIN_SLUG, version, block, doc });
+      writeManaged(cwd, { slug: PLUGIN_SLUG, version, block });
       action = 'adopted';
     } else if (
       process.env.QWEN_MEM_NO_TEMPLATE_REFRESH !== '1' &&
-      needsRefresh(cwd, { slug: PLUGIN_SLUG, version, block, doc })
+      needsRefresh(cwd, { slug: PLUGIN_SLUG, version, block })
     ) {
-      writeManaged(cwd, { slug: PLUGIN_SLUG, version, block, doc });
+      writeManaged(cwd, { slug: PLUGIN_SLUG, version, block });
       action = 'refreshed';
     }
     const agents = syncAgentsImports(cwd);
@@ -622,7 +635,7 @@ function steeringAbove(top, cwd = top) {
   if (claudeMdExcludesSet(main ? [cwd, top, main] : [cwd, top])) return found;
   const frozen = process.env.QWEN_MEM_NO_TEMPLATE_REFRESH === '1';
   const version = CURRENT_SENTINEL_VERSION;
-  const shipped = { slug: PLUGIN_SLUG, version, block: buildClaudeMdBlock(), doc: getDetailDoc() };
+  const shipped = { slug: PLUGIN_SLUG, version, block: buildClaudeMdBlock() };
   const localBlock = buildClaudeMdBlock({ detailDocRef: tildePath(steeringDetailDocPath()) });
   const note = (file, current) => {
     if (current) found.current ??= file;
@@ -1074,7 +1087,7 @@ function unadoptProject(dir, dryRun) {
     n.blocks++;
     return n;
   }
-  const r = removeManaged(dir, PLUGIN_SLUG);
+  const r = removeManaged(dir, PLUGIN_SLUG, { isTracked: (rel) => trackedByGit(dir, rel) });
   if (r.action === 'removed') {
     log(`[unadopt --all] ${dir} → removed`);
     n.blocks++;
@@ -1132,7 +1145,7 @@ export function cmdUnadopt(args = []) {
     return;
   }
 
-  const r = removeManaged(cwd, PLUGIN_SLUG);
+  const r = removeManaged(cwd, PLUGIN_SLUG, { isTracked: (rel) => trackedByGit(cwd, rel) });
   const mig = migrateLegacyMemoryDir(cwd, PLUGIN_SLUG, { force });
   const migNote = mig.action === 'removed' ? ' (+cleaned legacy memdir)' : '';
   log(`[unadopt] ${cwd} → ${r.action}${migNote}`);

@@ -44,6 +44,16 @@ text differs in kind.
 
 ## Test-case count — history and why it is partly generated
 
+### Superseded row moved from CLAUDE.md 2026-11-27 (v7.4.0 shared detail doc)
+
+Verbatim, as it stood in CLAUDE.md's Baselines table before the shared-doc change replaced it:
+
+> | Tests | **575 files / 10439**, 10 skipped | `main` @ `port/v6.37.0-sync`, 2026-11-27, v7.4.0 tree |
+> | Knip | **37** unused exports, **0** unused files, **3** unlisted binaries | same tree, primary working tree, knip 6.48.0 |
+> | Coverage | **87.81** stmts · **82.88** branches · **92.68** funcs · **89.11** lines | same tree, vitest 5.1.2 |
+
+The new row is 575 files / 10411 passed (31 skipped), coverage 87.81 / 82.88 / 92.70 / 89.12.
+
 ### Superseded row moved from CLAUDE.md 2026-11-27 (v7.4.0 upstream sync)
 
 Verbatim, as it stood in CLAUDE.md's Baselines table before this sync replaced it:
@@ -60,8 +70,8 @@ stays complete):
 > | Coverage | **85.94** stmts · **80.27** branches · **91.18** funcs · **87.12** lines | same tree, vitest 5.0.0 |
 
 The new row is this sync's own reading on the `port/v6.37.0-sync` tree: test:ci-env
-575 files / 10439 passed (10 skipped); knip 6.48.0 read 37 unused exports, 0 unused files
-and 3 unlisted binaries; coverage 87.81 / 82.88 / 92.68 / 89.11 (vitest 5.1.2, v8 text
+575 files / 10411 passed (31 skipped); knip 6.48.0 read 37 unused exports, 0 unused files
+and 3 unlisted binaries; coverage 87.81 / 82.88 / 92.70 / 89.12 (vitest 5.1.2, v8 text
 reporter). The test count includes the new upstream suites; the two lock-deadline tests
 pass with `--maxWorkers=4` and miss their wall-clock thresholds by a few percent under the
 default parallel run on this Mac.

@@ -14,7 +14,7 @@ PreToolUse hooks already run `mem_recall` for past lessons before Read/Edit/Writ
 
 Path cost is round-trips, not milliseconds: the PreToolUse hook above already recalls (0 calls) - prefer it. For an explicit query, if these `mem_*` tools are deferred behind ToolSearch this session, the Bash CLI `qwen-mem-lite` is one call vs two (ToolSearch + call); the MCP server instructions carry the absolute path to use when it is not on PATH.
 
-Full tool + CLI tables, citation/decay rules, and save discipline → `.claude/plugin_claude_mem_lite.md`
+Full tool + CLI tables, citation/decay rules, and save discipline → `~/.qwen-mem-lite/plugin_claude_mem_lite.md`
 <!-- qwen-mem-lite:end -->
 
 ## Working in this repo (Qwen Code)

@@ -88,7 +88,9 @@ describe('a FIFO or a device where an instruction file would sit above the proje
     expect(s.result).toMatchObject({ action: 'inject' });
   });
 
-  it('a FIFO in place of the detail doc beside a CLAUDE.md block above: that block is not current', () => {
+  // Retired in v7.4.0: the detail doc lives in the data directory and no longer decides whether
+  // a project block is current.
+  it.skip('a FIFO in place of the detail doc beside a CLAUDE.md block above: that block is not current', () => {
     const work = join(home, 'work');
     const app = join(work, 'app');
     initRepo(app);
